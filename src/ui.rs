@@ -9579,6 +9579,93 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// A reply over the output token limit is sent again once with twice
+    /// the limit; the raw API error is never shown or spoken.
+    #[test]
+    fn token_limit_error_retries_with_a_higher_cap() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::app_assistant::Who;
+        use crate::assistant::BrainEvent as B;
+        let (mut app, home) = test_app("tokencap");
+        let rec = home.join("brain-in.txt");
+        let stub = crate::test_stub::claude(
+            &home.join("brain"),
+            &[
+                ("stdin_to", rec.display().to_string()),
+                ("stdin_append", "1".into()),
+            ],
+        );
+        app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
+        assert_eq!(
+            crate::config::AssistantCfg::default().max_output_tokens,
+            8192
+        );
+        app.cfg.assistant.max_output_tokens = 300;
+        let err = "API Error: Claude's response exceeded the 300 output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.";
+        let said = "add this to the engineering memory";
+        app.ask_assistant_from(said, Some(said));
+        app.on_brain(B::Text(err.into()));
+        app.on_brain(B::Done {
+            text: err.into(),
+            cost: None,
+            error: true,
+        });
+        assert!(app.assistant.busy, "sent again");
+        assert_eq!(app.assistant.token_cap, Some(600));
+        assert!(app.assistant.spoken.is_empty());
+        assert!(!app
+            .assistant
+            .log
+            .iter()
+            .any(|e| e.text.contains("API Error")));
+        assert_eq!(
+            app.assistant
+                .log
+                .iter()
+                .filter(|e| e.who == Who::User)
+                .count(),
+            1
+        );
+        assert!(app
+            .assistant
+            .log
+            .iter()
+            .any(|e| e.who == Who::Preamble && e.text.contains("trying again with 600")));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let sent = std::fs::read_to_string(&rec).unwrap_or_default();
+        assert!(
+            sent.contains(&format!("(spoken) {said}")),
+            "the new brain got the same request: {sent}"
+        );
+        app.on_brain(B::Text("Added it to the engineering memory.".into()));
+        app.on_brain(B::Done {
+            text: String::new(),
+            cost: None,
+            error: false,
+        });
+        assert_eq!(
+            app.assistant.spoken,
+            vec!["Added it to the engineering memory."]
+        );
+        // Too long again after the retry: a plain message, not the API error.
+        app.ask_assistant("summarize everything");
+        for _ in 0..2 {
+            app.on_brain(B::Done {
+                text: err.into(),
+                cost: None,
+                error: true,
+            });
+        }
+        assert!(!app.assistant.busy);
+        assert_eq!(app.assistant.token_cap, Some(1200));
+        let last = app.assistant.log.last().unwrap();
+        assert!(
+            last.text.contains("longer than my reply limit") && !last.text.contains("API Error")
+        );
+        app.assistant.brain = None;
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn assistant_routing() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

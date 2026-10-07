@@ -1031,11 +1031,11 @@ fn assistant_rows(cfg: &Config, all: bool) -> Vec<Setting> {
             "assistant.max_output_tokens",
             "Longest reply (tokens)",
             Kind::Number {
-                min: 64,
-                max: 4000,
-                step: 50,
+                min: 1024,
+                max: 32000,
+                step: 1024,
             },
-            "Short spoken answers start and finish sooner.",
+            "Upper limit for one reply including tool calls; spoken answers are kept short separately.",
         ),
     );
     r.when(on, why, g("assistant.endpoint_ms", "End of speech (ms)", Kind::Number { min: 250, max: 2000, step: 50 }, "Milliseconds of silence that end what you say while the assistant or open mic is on; shorter answers sooner."));

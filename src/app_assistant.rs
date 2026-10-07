@@ -116,6 +116,13 @@ pub struct AssistantState {
     /// This turn was started by GodTerm (a delegated answer arrived), not
     /// by the user.
     pub system_turn: bool,
+    /// A raised reply limit (after a reply hit the old one), for every
+    /// brain started from now on.
+    pub token_cap: Option<u32>,
+    /// This turn was already retried with a higher limit.
+    cap_retried: bool,
+    /// The current turn, to send again: (text, heard, system note).
+    last_turn: Option<(String, Option<String>, Option<String>)>,
     /// Questions sent to tabs whose answers are reported back.
     pub follow_ups: Vec<crate::app_followup::FollowUp>,
     pub follow_seq: u64,
@@ -276,7 +283,10 @@ impl App {
         let dir = self.cfg.accounts[a].config_dir();
         let _ = crate::trust::seed_trust(&dir, &crate::assistant::dir());
         let bin = self.cfg.claude_bin();
-        let acfg = self.cfg.assistant.clone();
+        let mut acfg = self.cfg.assistant.clone();
+        if let Some(c) = self.assistant.token_cap {
+            acfg.max_output_tokens = acfg.max_output_tokens.max(c);
+        }
         let b = Brain::start(&bin, &dir, a, &acfg, &self.cfg.pass_env, self.tx.clone())
             .map_err(|e| format!("{e:#}"))?;
         crate::log::info(&format!(
@@ -630,6 +640,12 @@ impl App {
     }
 
     fn start_turn(&mut self, text: &str, heard: Option<&str>, system: Option<&str>) {
+        self.assistant.cap_retried = false;
+        self.assistant.last_turn = Some((
+            text.to_string(),
+            heard.map(str::to_string),
+            system.map(str::to_string),
+        ));
         self.assistant.unsaid = None;
         self.assistant.system_turn = system.is_some();
         self.assistant.log.push(match system {
@@ -1113,6 +1129,19 @@ impl App {
                 };
                 self.assistant.finals.clear();
                 self.assistant.current.clear();
+                let (reply, error) = if crate::assistant::token_cap_hit(&reply)
+                    || (error && crate::assistant::token_cap_hit(&text))
+                {
+                    if self.retry_with_higher_cap() {
+                        return;
+                    }
+                    (
+                        "That answer came out longer than my reply limit allows, even after raising it. Try asking for a shorter part, or raise Longest reply in Settings > Assistant.".to_string(),
+                        true,
+                    )
+                } else {
+                    (reply, error)
+                };
                 if self.assistant.ignored_turn {
                     // Not addressed to it: nothing said, nothing shown but a note.
                     if let Some(u) = self
@@ -1191,6 +1220,47 @@ impl App {
                 self.assistant.muted = false;
             }
         }
+    }
+
+    /// The reply hit the output token limit: start a brain with twice the
+    /// limit (up to 32000) and send the same turn again, once. False when
+    /// it was already retried or cannot go higher.
+    fn retry_with_higher_cap(&mut self) -> bool {
+        let cur = self
+            .assistant
+            .token_cap
+            .unwrap_or(0)
+            .max(self.cfg.assistant.max_output_tokens.max(64));
+        let new = (cur * 2).min(crate::assistant::MAX_OUTPUT_CAP);
+        let Some((text, heard, system)) = self.assistant.last_turn.clone() else {
+            return false;
+        };
+        if self.assistant.cap_retried || new <= cur {
+            crate::log::info(&format!(
+                "assistant: reply exceeded the {cur} token limit again; giving up"
+            ));
+            return false;
+        }
+        crate::log::info(&format!(
+            "assistant: reply exceeded the {cur} token limit; retrying with {new}"
+        ));
+        self.assistant.token_cap = Some(new);
+        self.assistant.brain = None;
+        self.assistant.busy = false;
+        self.assistant.log.push(Entry {
+            who: Who::Preamble,
+            text: format!(
+                "(that reply was too long for the {cur} token limit; trying again with {new})"
+            ),
+        });
+        let n = self.assistant.log.len();
+        self.start_turn(&text, heard.as_deref(), system.as_deref());
+        // The request is shown once.
+        if self.assistant.log.len() > n {
+            self.assistant.log.remove(n);
+        }
+        self.assistant.cap_retried = true;
+        true
     }
 
     /// End a turn the brain never finished: drop the process (it starts

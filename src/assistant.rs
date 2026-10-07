@@ -301,6 +301,15 @@ pub fn parse_line(line: &str) -> Vec<BrainEvent> {
 
 /// The sentences of a reply: cut after . ! ? (or a line break) that is
 /// followed by space, so "1.08" and "v2.1" stay whole.
+/// claude's "response exceeded the N output token maximum" error.
+pub fn token_cap_hit(text: &str) -> bool {
+    let t = text.to_lowercase();
+    t.contains("exceeded the") && t.contains("output token maximum")
+}
+
+/// The most a retry may raise the reply limit to.
+pub const MAX_OUTPUT_CAP: u32 = 32000;
+
 pub fn sentences(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = vec![];

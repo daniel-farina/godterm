@@ -297,7 +297,9 @@ pub struct AssistantCfg {
     /// claude --effort: low (default, quickest), medium, high. Thinking is
     /// off at low.
     pub effort: String,
-    /// Longest reply in tokens (short spoken answers are quicker).
+    /// Upper limit in tokens for one reply including its tool calls (a
+    /// long send_prompt or summary needs room); speech is kept short by
+    /// spoken_sentences instead.
     pub max_output_tokens: u32,
     /// Start a fresh conversation after this many turns (keeps context
     /// small and answers quick); a one line summary carries over.
@@ -331,7 +333,7 @@ impl Default for AssistantCfg {
             max_tool_calls: 16,
             follow_up_s: 8,
             effort: "low".into(),
-            max_output_tokens: 300,
+            max_output_tokens: 8192,
             reset_after_turns: 40,
             endpoint_ms: 550,
             prewarm: true,

@@ -7,6 +7,16 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-07
+
+### Fixed
+- The assistant failed on tool heavy replies with "API Error: Claude's
+  response exceeded the 300 output token maximum": its reply limit
+  (`assistant.max_output_tokens`) now defaults to 8192, and a reply that
+  still hits the limit is retried once with twice the limit (then a plain
+  message instead of an API error).
+
+
 ## [0.2.2] - 2026-10-07
 
 ### Self update
@@ -140,7 +150,8 @@ The first public release, under the MIT License. claudego is now GodTerm.
 
 - claudego: config, credentials, usage, sessions, PTY panes and the TUI.
 
-[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/daniel-farina/godterm/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/daniel-farina/godterm/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/daniel-farina/godterm/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/daniel-farina/godterm/releases/tag/v0.2.0
