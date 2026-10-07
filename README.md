@@ -152,6 +152,36 @@ if you turn on Grok voice does audio (Grok recognition) or reply text
 (Grok talk back) go to xAI. Details in [Privacy](#privacy) and
 [SECURITY.md](SECURITY.md).
 
+## Updates
+
+From v0.2.2 GodTerm updates itself. It checks GitHub Releases at start and
+every 6 hours (`[update] enabled = false` turns this off, `check_hours`
+changes the interval) and downloads the update for your platform in the
+background. Before anything is used it checks:
+
+- the download's SHA-256 against the release's `SHA256SUMS`,
+- the minisign signature on `SHA256SUMS` (`SHA256SUMS.minisig`, on every
+  release from 0.2.2; set `[update] require_signature = true` to refuse a
+  release without one),
+- on macOS, the Developer ID signature, and Gatekeeper for the app.
+
+A chip in the status bar says when the update is ready. Restart to update
+(`Ctrl-a N`, or Settings > About) restarts into it with your tabs resumed.
+From the command line: `godterm update`, `godterm update --check`, and
+`godterm update --rollback` to go back to the previous version.
+
+Homebrew, apt and dnf installs are never changed by GodTerm; update them
+with your package manager (`brew upgrade godterm`). Versions 0.2.0 and
+0.2.1 have no updater: update them once by hand (Homebrew, the DMG, a
+package, or `curl -fsSL https://godterm.com/install.sh | sh`).
+
+To check a download yourself:
+
+```sh
+minisign -Vm SHA256SUMS -P RWTNzCFSrTk4Erhp4n8mN0kO3VgXNUYQliJVGM6jC0jaVe07tPVATFcT
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
 ## License
 
 GodTerm is released under the [MIT License](LICENSE). Models and tools it
