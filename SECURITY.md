@@ -28,8 +28,10 @@ Only the latest release gets security fixes before 1.0.
 - **Logs.** `~/.godterm/godterm.log` (rotated at 2 MB) records actions, not
   secrets: tokens and OAuth credentials must never be logged. Privacy mode
   hides account emails on screen.
-- **Voice.** Audio is processed on the machine (whisper.cpp, Apple
-  on-device recognition, Kokoro). Debug utterances, when enabled, stay in
+- **Voice.** Local by default: audio is processed on the machine
+  (whisper.cpp, Apple on device recognition, Kokoro). Grok voice is opt in:
+  Grok recognition sends microphone audio to xAI and Grok talk back sends
+  the reply text to xAI. Debug utterances, when enabled, stay in
   `~/.godterm/voice/debug` (newest 20).
 - **Release integrity.** macOS builds are signed with a Developer ID and
   notarized by Apple. Every release ships SHA256SUMS.

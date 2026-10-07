@@ -40,9 +40,9 @@ your hands stay on the keyboard (or off it).
 - **Move and take over.** Move a running conversation to another account
   and continue it there, or bring in a session running in another
   terminal (take over or copy).
-- **Voice.** Push to talk, a wake word or open mic, transcribed on your
-  machine (whisper.cpp or Apple's on device speech), with spoken replies
-  (Kokoro, or Grok's voices) and barge in.
+- **Voice.** Push to talk, a wake word or open mic. Local by default
+  (whisper.cpp or Apple's on device speech, replies by Kokoro or `say`),
+  with optional Grok voice for recognition and spoken replies, and barge in.
 - **An assistant that operates GodTerm.** Ask in plain words: "open a tab
   on account two in the api folder and tell it to run the tests". It plans,
   asks once before anything destructive, and reports what really happened.
@@ -121,12 +121,21 @@ godterm          # first run asks: how many accounts, their labels and folders
 
 ## Voice in short
 
-Voice is optional and local. Install `whisper-cpp` and `ffmpeg` (Homebrew
-on macOS, your package manager on Linux) and a ggml model, or on macOS 26
-use Apple's on device recognition. Modes: push to talk (`Ctrl-a space`),
-a wake word, or open mic with an echo reference so GodTerm does not hear
-itself. Replies are spoken by Kokoro (run in process) or Grok's voices.
-The full guide is in [Voice control](#voice-control).
+Voice is optional, and local by default. Install `whisper-cpp` and
+`ffmpeg` (Homebrew on macOS, your package manager on Linux) and a ggml
+model, or on macOS 26 use Apple's on device recognition; replies are
+spoken by Kokoro (run in process) or `say`. Modes: push to talk
+(`Ctrl-a space`), a wake word, or open mic with an echo reference so
+GodTerm does not hear itself.
+
+Grok voice is an option for recognition, for talk back, or both. With
+Grok recognition your microphone audio goes to xAI (after the local
+speaker lock, which only filters once you have trained it); live partial
+transcripts still come from the local recognizer. With Grok talk back the
+reply text goes to xAI. It signs in with `grok login` or an xAI API key in
+the Keychain, uses your Grok voice credits, and falls back to the local
+engines you have installed. The full guide is in
+[Voice control](#voice-control).
 
 On Linux the microphone is read through ffmpeg from PulseAudio (PipeWire
 serves it too), device `default`; set `[voice] device = "alsa:hw:1"` to
@@ -136,9 +145,11 @@ replies use Kokoro or Grok.
 ## Privacy in short
 
 GodTerm has no telemetry and no account of its own. It talks to the
-network only to read usage (Anthropic's usage endpoint with each
-account's own login, xAI's billing endpoint for Grok accounts). Audio is
-transcribed on your machine. Details in [Privacy](#privacy) and
+network to read usage (Anthropic's usage endpoint with each account's own
+login, xAI's billing endpoint for Grok accounts). Voice is local by
+default: audio is transcribed and replies are spoken on your machine. Only
+if you turn on Grok voice does audio (Grok recognition) or reply text
+(Grok talk back) go to xAI. Details in [Privacy](#privacy) and
 [SECURITY.md](SECURITY.md).
 
 ## License
@@ -1126,9 +1137,15 @@ Nothing is ever approved without you asking.
 
 GodTerm has no telemetry and no account of its own. Everything it keeps
 stays in `~/.godterm` (owner only, files 0600): settings, open tabs, the
-session index, assistant conversations and the log. Audio is captured
-and transcribed on your Mac (whisper.cpp or Apple speech); recordings are
-not kept unless you turn on `debug_save_audio`. It talks to the network
+session index, assistant conversations and the log. By default audio is
+captured and transcribed on your machine (whisper.cpp or Apple speech)
+and replies are spoken locally (Kokoro or `say`); recordings are not kept
+unless you turn on `debug_save_audio`. Grok voice is opt in: Grok
+recognition sends your microphone audio to xAI (after the local speaker
+lock, which filters only once trained; live partials stay local), and
+Grok talk back sends the reply text to xAI, signed in with `grok login`
+or an xAI API key in the Keychain, using your Grok voice credits, with the
+local engines as the fallback. Otherwise GodTerm talks to the network
 only to fetch usage: Anthropic's usage endpoint with each account's own
 login, and xAI's billing endpoint for Grok accounts. The assistant and
 your tabs are Claude Code (or Grok) itself, which talks to its own
