@@ -20,7 +20,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 REF="${REF:-HEAD}"
-export DIST="${DIST:-$ROOT/dist}"
+# Release output has its own folder: other tools keep files in dist/ (the
+# video renders in dist/video), and this script must never touch them.
+export DIST="${DIST:-$ROOT/dist/release}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target-release-eng}"
 
 sha="$(git -C "$ROOT" rev-parse --verify "$REF^{commit}")"
@@ -34,8 +36,15 @@ if [[ "$REF" == v* && ( -n "${DRAFT:-}" || -n "${LINUX_FROM_CI:-}" ) ]]; then
   git -C "$ROOT" push -q origin "refs/tags/$REF"
 fi
 
-# KEEP_DIST=1 adds to dist/ (for example ONLY=linux after a macOS run).
-[[ -n "${KEEP_DIST:-}" ]] || rm -rf "$DIST"
+# KEEP_DIST=1 adds to the previous artifacts (for example ONLY=linux after
+# a macOS run). Otherwise only this script's own artifacts are removed,
+# never the folder itself.
+if [[ -z "${KEEP_DIST:-}" && -d "$DIST" ]]; then
+  rm -rf "$DIST/stage" "$DIST/ci"
+  find "$DIST" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.tar.gz' \
+    -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.exe' \
+    -o -name 'SHA256SUMS*' -o -name '.linux.log' -o -name '.windows.log' \) -delete
+fi
 mkdir -p "$DIST"
 linux_from_ci() {
   local before id
@@ -91,7 +100,7 @@ if [[ -n "${DRAFT:-}" ]]; then
   pre=(); [[ "$tag" == *-* ]] && pre=(--prerelease)
   # Create the draft with notes only, then upload each asset on its own
   # with retries: large multi file uploads tend to stall.
-  gh release create "$tag" --repo daniel-farina/godterm --draft "${pre[@]}" --verify-tag \
+  gh release create "$tag" --repo daniel-farina/godterm --draft ${pre[@]+"${pre[@]}"} --verify-tag \
     --title "GodTerm ${tag#v}" --notes-file "$notes"
   for f in "$DIST"/*.dmg "$DIST"/*.zip "$DIST"/*.tar.gz "$DIST"/*.deb "$DIST"/*.rpm \
            "$DIST"/*.AppImage "$DIST"/*.exe "$DIST"/SHA256SUMS*; do

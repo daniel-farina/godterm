@@ -97,16 +97,13 @@ cask "godterm" do
   desc "Run many Claude Code sessions side by side, each on its own account"
   homepage "https://github.com/$REPO"
 
+  depends_on macos: :monterey
   container type: :dmg
-  depends_on macos: ">= :monterey"
-  conflicts_with formula: "godterm"
 
   app "GodTerm.app"
   binary "#{appdir}/GodTerm.app/Contents/MacOS/godterm"
 
-  zap trash: [
-    "~/.godterm",
-  ]
+  zap trash: "~/.godterm"
 
   caveats <<~TEXT
     GodTerm runs Claude Code: install it too (npm install -g @anthropic-ai/claude-code).
@@ -125,6 +122,8 @@ cp "$OUT/Casks/godterm.rb" "$work/Casks/"
 cp "$OUT/TAP_README.md" "$work/README.md"
 git -C "$work" add Formula/godterm.rb Casks/godterm.rb README.md
 if git -C "$work" diff --cached --quiet; then echo "tap already up to date"; exit 0; fi
-git -C "$work" commit -q -m "godterm $v"
+# The public tap's commits carry the GitHub noreply address, not a personal one.
+email="${TAP_EMAIL:-$(gh api user --jq '"\(.id)+\(.login)@users.noreply.github.com"')}"
+git -C "$work" -c user.name="${TAP_NAME:-$(gh api user --jq '.name // .login')}" -c user.email="$email" commit -q -m "godterm $v"
 git -C "$work" push -q origin HEAD
 echo "pushed godterm $v to $TAP"

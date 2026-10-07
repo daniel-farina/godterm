@@ -9,15 +9,16 @@
 #   --only LIST       comma list of: 4k,1080p,square,vertical,poster,srt (default: all)
 #   --concurrency N   Remotion browser tabs (default: sized from free CPU and RAM, at most 10)
 #   --frames A-B      render only a frame range (quick tests)
-#   --preview         quick quarter-scale landscape preview only: dist/video/godterm-demo-preview.mp4
+#   --preview         quick quarter-scale landscape preview only: out/godterm-demo-preview.mp4
 #
-# Outputs (dist/video/): godterm-demo-4k.mp4, godterm-demo-1080p.mp4, godterm-demo-square.mp4,
+# Outputs (~/godterm-video/out/, or $GODTERM_VIDEO_OUT): godterm-demo-4k.mp4, godterm-demo-1080p.mp4, godterm-demo-square.mp4,
 #   godterm-demo-vertical.mp4, godterm-demo-poster.png, godterm-demo.srt
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROJ="${GODTERM_VIDEO_DIR:-$HOME/godterm-video}"
-OUT="$REPO/dist/video"
+# Outside the repo and its release tree (dist/ is the release scripts' scratch).
+OUT="${GODTERM_VIDEO_OUT:-$PROJ/out}"
 MUSIC=""; NO_MUSIC=0; ONLY="4k,1080p,square,vertical,poster,srt"; CONC=""; FRAMES=""; PREVIEW=0
 
 while [ $# -gt 0 ]; do
@@ -91,6 +92,16 @@ BUNDLE="$PROJ/work/bundle"
 FR=(); [ -n "$FRAMES" ] && FR=(--frames="$FRAMES")
 RFLAGS=(--concurrency="$CONC" --codec=h264 --hardware-acceleration=if-possible --audio-codec=aac --audio-bitrate=320k)
 timed() { local s=$SECONDS; "$@"; echo "   took $((SECONDS - s)) s"; }
+# Final mix to -14 LUFS integrated (true peak -1 dBTP), two pass, linear;
+# the video stream is copied untouched.
+loud() {
+  local f="$1" m
+  m=$(ffmpeg -hide_banner -i "$f" -vn -af loudnorm=I=-14:TP=-1:LRA=11:print_format=json -f null - 2>&1 \
+      | python3 -c 'import sys,json,re; t=sys.stdin.read(); j=json.loads(t[t.rindex("{"):t.rindex("}")+1]); print(":".join(f"{k}={j[v]}" for k,v in [("measured_I","input_i"),("measured_TP","input_tp"),("measured_LRA","input_lra"),("measured_thresh","input_thresh"),("offset","target_offset")]))')
+  ffmpeg -loglevel error -y -i "$f" -c:v copy -af "loudnorm=I=-14:TP=-1:LRA=11:linear=true:$m,aresample=48000" \
+    -c:a aac -b:a 320k -movflags +faststart "${f%.mp4}.loud.mp4" && mv "${f%.mp4}.loud.mp4" "$f"
+  echo "   loudness: $(ffmpeg -hide_banner -i "$f" -af ebur128 -f null - 2>&1 | awk '/I:/{v=$2} END{print v}') LUFS"
+}
 
 if [ "$PREVIEW" = 1 ]; then
   log "preview (quarter scale)"
@@ -101,6 +112,7 @@ fi
 if want 4k; then
   log "4K landscape"
   timed npx remotion render "$BUNDLE" Promo "$OUT/godterm-demo-4k.mp4" "${RFLAGS[@]}" --video-bitrate=40M ${FR[@]+"${FR[@]}"}
+  loud "$OUT/godterm-demo-4k.mp4"
 fi
 if want 1080p; then
   log "1080p"
@@ -114,10 +126,12 @@ fi
 if want square; then
   log "square 1080x1080"
   timed npx remotion render "$BUNDLE" PromoSquare "$OUT/godterm-demo-square.mp4" "${RFLAGS[@]}" --video-bitrate=12M ${FR[@]+"${FR[@]}"}
+  loud "$OUT/godterm-demo-square.mp4"
 fi
 if want vertical; then
   log "vertical 1080x1920"
   timed npx remotion render "$BUNDLE" PromoVertical "$OUT/godterm-demo-vertical.mp4" "${RFLAGS[@]}" --video-bitrate=16M ${FR[@]+"${FR[@]}"}
+  loud "$OUT/godterm-demo-vertical.mp4"
 fi
 if want poster; then
   log "poster"

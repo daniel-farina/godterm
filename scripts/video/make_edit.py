@@ -14,6 +14,7 @@ import re
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--project", default=os.path.expanduser("~/godterm-video"))
+ap.add_argument("--song-end", type=float, default=125.88, help="music length: the outro holds until then (0: off)")
 a = ap.parse_args()
 P = a.project
 REC = os.path.join(P, "rec")
@@ -154,14 +155,22 @@ ov(type="kinetic", start=0.5, end=out(a0 + 8.8) - 0.2, text="Usage limit.\nMid-t
 ov(type="box", start=out(a0 + 5.5), end=out(a0 + 8.8), rect=to_out(grow(R["work_gauges"], 4), cam_hook), tone="warn")
 
 # 2. intro
-scenes.append({"type": "intro", "start": round(T, 3), "dur": 4.3})
-say("n02_meet", T + 0.5)
-T += 4.3
+# Cut points on the song's grid (120 BPM, first beat ~0.06 s): the grid
+# shot starts on the 4 bar phrase at 8.03 s, the move lands on the drop.
+BEAT0, BEAT = 0.058, 60.0 / 120.45
+def on_beat(n):
+    return BEAT0 + n * BEAT
+intro_d = max(3.4, on_beat(16) - T)
+scenes.append({"type": "intro", "start": round(T, 3), "dur": round(intro_d, 3)})
+say("n02_meet", T + 0.3)
+T += intro_d
 
 # 3. the grid: every account side by side, then the gauges
 a3 = M("grid") - 0.8
 cam_g = cam_for(R["top_gauges"], pad=1.05)
-out, cam = term_scene("s03_grid", a3, a3 + 9.6, keys=[(a3 - 1, FULL, 0), (a3 + 5.0, cam_g, 1.2)],
+# the grid runs until the zero shot ends on the drop (beat 44, ~21.97 s)
+grid_d = max(9.0, on_beat(44) - T - 3.8)
+out, cam = term_scene("s03_grid", a3, a3 + grid_d, keys=[(a3 - 1, FULL, 0), (a3 + 5.0, cam_g, 1.2)],
                       focus={"x": 0, "y": 0, "w": OUTW, "h": OUTH})
 say("n03_grid", out(a3) + 0.25)
 ov(type="spotlight", start=out(a3 + 6.4), end=out(a3 + 9.5), rect=to_out(grow(R["top_gauges"], 2), cam_g), dim=0.55)
@@ -297,15 +306,20 @@ ov(type="callout", start=out(n0) + 0.5, end=out(n0 + 4.6) - 0.1, rect=to_out(cel
 ov(type="callout", start=out(n0) + 0.9, end=out(n0 + 4.6) - 0.1, rect=to_out(cells(82, 30, 30, 1), cam_b), text="Grok Build", side="bottom", tone="spectrum")
 
 # 12. outro
-scenes.append({"type": "outro", "start": round(T, 3), "dur": 8.2})
+# The outro holds until the next 4 bar boundary of the music (120 BPM:
+# every 8 s), so the song's phrase and the video end together.
+# the outro holds to the song's final hit and tail (it ends ~125.9 s)
+od = max(8.2, a.song_end - T) if a.song_end > 0 else 8.2
+scenes.append({"type": "outro", "start": round(T, 3), "dur": round(od, 3), "badge": "Now available", "url": "godterm.com"})
 t = say("n14_outro", T + 0.8)
 say("n15_url", t + 0.5)
-T += 8.2
+T += od
 
 edit = {
     "fps": 30, "width": OUTW, "height": OUTH, "durationInFrames": int(round(T * 30)),
     "footage": {"width": OUTW, "height": OUTH}, "transitionFrames": 9, "poster": 12.0,
-    "music": {"file": "audio/placeholder-pad.wav", "gain": 0.55, "duckTo": 0.16, "attack": 0.25, "release": 0.6, "fadeIn": 1.0, "fadeOut": 3.0},
+    # music bed about -18 LUFS, -12 dB under every voice line, quick release
+    "music": {"file": "audio/placeholder-pad.wav", "gain": 0.75, "duckTo": 0.19, "attack": 0.15, "release": 0.35, "fadeIn": 0.05, "fadeOut": 0.8},
     "voice": sorted(voice, key=lambda v: v["start"]), "scenes": scenes, "overlays": overlays,
 }
 # keep whatever music render.sh set
