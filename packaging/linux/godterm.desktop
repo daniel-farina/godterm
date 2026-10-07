@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=GodTerm
+GenericName=Claude Code sessions
+Comment=Run many Claude Code sessions side by side, each on its own account
+Exec=godterm
+Icon=godterm
+Terminal=true
+Categories=Development;Utility;
+Keywords=claude;terminal;tui;

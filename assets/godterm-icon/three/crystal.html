@@ -1,0 +1,75 @@
+<!doctype html><html><head><meta charset="utf-8"><title>GodTerm crystal core</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head><body>
+<script type="module">
+import { THREE, rig, body, gradientTexture, promptGlyph, composer, run, studioEnv } from './common.js';
+// ?small=1 renders the 16/32 px master: bolder edges, larger glyph, thicker beams, brighter core
+const SMALL = new URLSearchParams(location.search).has('small');
+const { renderer, scene, camera } = rig({ exposure: 1.0 });
+scene.environment = studioEnv(renderer, [
+  { c: '#ffffff', i: 2.2, p: [0, 9, 3], s: [10, 0.5, 8] },
+  { c: '#ff6bd0', i: 5, p: [8, 4, 3], s: [0.5, 8, 6] },
+  { c: '#58cfff', i: 5, p: [-8, 4, 3], s: [0.5, 8, 6] },
+  { c: '#ffc66b', i: 4, p: [6, -7, 4], s: [6, 0.5, 5] },
+  { c: '#8a6bff', i: 5, p: [-6, -7, 4], s: [6, 0.5, 5] },
+  { c: '#ffffff', i: 1.2, p: [5, 6, 9], s: [2, 2, 0.5] },
+]);
+const b = body(scene, { map: gradientTexture([[0, '#7a63ff'], [0.22, '#4a35c9'], [0.6, '#1a1250'], [1, '#07051a']], { radial: [0.5, 0.48, 0.72] }), roughness: 0.6, clearcoat: 0.6 });
+b.material.envMapIntensity = 0.12; b.material.clearcoatRoughness = 0.35;
+// soft radial light pool behind the crystal
+const pool = new THREE.Mesh(new THREE.CircleGeometry(360, 96), new THREE.MeshBasicMaterial({ map: gradientTexture([[0, 'rgba(150,120,255,0.75)'], [0.45, 'rgba(90,60,220,0.22)'], [1, 'rgba(0,0,0,0)']], { radial: [0.5, 0.5, 0.5] }), transparent: true, depthWrite: false }));
+pool.position.set(0, 0, 1); scene.add(pool);
+// a white beam enters from the left, a spectrum fans out to the right (kept inside the body)
+const beamMat = (col, op) => new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: op, depthWrite: false, blending: THREE.AdditiveBlending });
+const inBeam = new THREE.Mesh(new THREE.PlaneGeometry(215, SMALL ? 16 : 9), beamMat(new THREE.Color(2.2, 2.2, 2.4), 0.9));
+inBeam.geometry.translate(-107, 0, 0); inBeam.position.set(-105, 34, 6); inBeam.rotation.z = THREE.MathUtils.degToRad(-14); scene.add(inBeam);
+[0, 28, 52, 120, 195, 265, 290].forEach((h, i) => {
+  const beam = new THREE.Mesh(new THREE.PlaneGeometry(205, SMALL ? 13 : 8), beamMat(new THREE.Color().setHSL(h / 360, 1, 0.55).multiplyScalar(2.4), 0.9));
+  beam.geometry.translate(102, 0, 0);
+  beam.position.set(105, -16, 6); beam.rotation.z = THREE.MathUtils.degToRad(-24 + i * 7.5); scene.add(beam);
+});
+// faceted crystal
+const crystal = new THREE.Mesh(new THREE.IcosahedronGeometry(190, 0), new THREE.MeshPhysicalMaterial({
+  color: new THREE.Color('#9d8cff'), metalness: 0.15, roughness: 0.04, transmission: 0.75, thickness: 40, ior: 1.3, dispersion: 3,
+  iridescence: 1, iridescenceIOR: 1.5, iridescenceThicknessRange: [250, 800], clearcoat: 1, flatShading: true,
+  specularIntensity: 1, envMapIntensity: 2.2, attenuationColor: new THREE.Color('#cbbcff'), attenuationDistance: 600 }));
+crystal.scale.set(0.9, 1.25, 0.9);
+crystal.rotation.set(0.35, 0.5, 0.12);
+crystal.position.set(0, 0, 250);
+scene.add(crystal);
+// crisp facet edges as fine luminous tubes, front-facing edges only
+{
+  crystal.updateMatrixWorld();
+  const g = crystal.geometry.toNonIndexed(); const P = g.attributes.position;
+  const nm = new THREE.Matrix3().getNormalMatrix(crystal.matrixWorld);
+  const key = v => v.toArray().map(x => Math.round(x)).join(',');
+  const edges = new Map();
+  for (let f = 0; f < P.count; f += 3) {
+    const v = [0, 1, 2].map(k => new THREE.Vector3().fromBufferAttribute(P, f + k));
+    const n = new THREE.Vector3().subVectors(v[1], v[0]).cross(new THREE.Vector3().subVectors(v[2], v[0])).applyMatrix3(nm).normalize();
+    const c = v[0].clone().add(v[1]).add(v[2]).multiplyScalar(1 / 3).applyMatrix4(crystal.matrixWorld);
+    const front = n.dot(camera.position.clone().sub(c).normalize()) > 0;
+    for (let k = 0; k < 3; k++) {
+      const a2 = v[k], b2 = v[(k + 1) % 3]; const id = [key(a2), key(b2)].sort().join('|');
+      const e = edges.get(id) || { a: a2, b: b2, front: false }; e.front = e.front || front; edges.set(id, e);
+    }
+  }
+  const edgeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.25, 1.2, 1.6) });
+  const grp = new THREE.Group();
+  for (const e of edges.values()) {
+    if (!e.front) continue;
+    const len = e.a.distanceTo(e.b); const t = new THREE.Mesh(new THREE.CylinderGeometry(SMALL ? 4.2 : 1.2, SMALL ? 4.2 : 1.2, len, 8), edgeMat);
+    t.position.copy(e.a).add(e.b).multiplyScalar(0.5); t.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), e.b.clone().sub(e.a).normalize());
+    grp.add(t);
+  }
+  grp.applyMatrix4(crystal.matrixWorld); scene.add(grp);
+}
+// glowing prompt inside the crystal
+const glyphMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: new THREE.Color('#fff4e6'), emissiveIntensity: 4.0 });
+const glyph = promptGlyph(SMALL ? 128 : 96, glyphMat, { depth: 8, bevel: 3, stroke: SMALL ? 0.26 : 0.2 });
+glyph.position.set(-2, -4, 440); scene.add(glyph);
+const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(-600, 900, 1400); scene.add(key);
+const { c } = composer(renderer, scene, camera, SMALL ? { strength: 0.3, radius: 0.3, threshold: 0.9 } : { strength: 0.42, radius: 0.5, threshold: 0.85 });
+run(() => c.render(), 8);
+</script></body></html>

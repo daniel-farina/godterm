@@ -1,0 +1,12 @@
+ Edit file
+ src/main.rs
+ ────────────────────────────────────────────────────────────────
+  12  fn main() {
+  13 -    println!("hi");
+  13 +    println!("hello");
+ ────────────────────────────────────────────────────────────────
+ Do you want to make this edit to main.rs?
+   1. Yes
+ ❯ 2. Yes, allow all edits during this session (shift+tab)
+   3. No, and tell Claude what to do differently (esc)
+

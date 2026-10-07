@@ -1,0 +1,12 @@
+{
+  "five_hour": { "utilization": 23.0, "resets_at": "2099-10-06T03:00:00.000000+00:00" },
+  "seven_day": { "utilization": 61.0, "resets_at": "2099-10-09T17:00:00.123456+00:00" },
+  "seven_day_oauth_apps": null,
+  "seven_day_opus": { "utilization": 12.0, "resets_at": null },
+  "seven_day_sonnet": null,
+  "model_scoped": [
+    { "display_name": "Fable", "utilization": 4.0, "resets_at": "2099-10-09T17:00:00+00:00" }
+  ],
+  "iguana_necktie": null,
+  "extra_usage": { "is_enabled": false, "monthly_limit": null, "used_credits": null, "utilization": null }
+}

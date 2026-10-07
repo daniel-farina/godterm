@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>godterm</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3f45"/>
+      <stop offset="1" stop-color="#26292d"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS icon grid: 824 px body centered on a 1024 canvas -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#sheen)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="184.5" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="3"/>
+
+  <!-- four session panes -->
+  <g stroke-width="10" fill="#1f2226">
+    <rect x="196" y="196" width="296" height="296" rx="44" stroke="#8aa080"/>
+    <rect x="532" y="196" width="296" height="296" rx="44" stroke="#c4b086"/>
+    <rect x="196" y="532" width="296" height="296" rx="44" stroke="#80949f"/>
+    <rect x="532" y="532" width="296" height="296" rx="44" stroke="#b8806a"/>
+  </g>
+
+  <!-- terminal lines -->
+  <g stroke-linecap="round" stroke-width="18" opacity="0.85">
+    <line x1="246" y1="268" x2="300" y2="268" stroke="#8aa080"/>
+    <line x1="246" y1="320" x2="420" y2="320" stroke="#a7a39a" stroke-opacity="0.55"/>
+    <line x1="246" y1="372" x2="372" y2="372" stroke="#a7a39a" stroke-opacity="0.55"/>
+
+    <line x1="582" y1="268" x2="636" y2="268" stroke="#c4b086"/>
+    <line x1="582" y1="320" x2="740" y2="320" stroke="#a7a39a" stroke-opacity="0.55"/>
+    <line x1="582" y1="372" x2="700" y2="372" stroke="#a7a39a" stroke-opacity="0.35"/>
+
+    <line x1="246" y1="604" x2="300" y2="604" stroke="#80949f"/>
+    <line x1="246" y1="656" x2="410" y2="656" stroke="#a7a39a" stroke-opacity="0.55"/>
+    <line x1="246" y1="708" x2="360" y2="708" stroke="#a7a39a" stroke-opacity="0.35"/>
+  </g>
+
+  <!-- prompt chevrons in the first three panes -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+    <polyline points="250,452 274,466 250,480" stroke="#8aa080" transform="translate(0,-12)"/>
+    <polyline points="586,452 610,466 586,480" stroke="#c4b086" transform="translate(0,-12)"/>
+    <polyline points="250,788 274,802 250,816" stroke="#80949f" transform="translate(0,-12)"/>
+  </g>
+
+  <!-- microphone in the fourth pane -->
+  <g fill="none" stroke="#d6cfc2" stroke-width="18" stroke-linecap="round">
+    <rect x="644" y="590" width="72" height="128" rx="36" fill="#d6cfc2" stroke="none"/>
+    <path d="M616 676 a64 64 0 0 0 128 0"/>
+    <line x1="680" y1="740" x2="680" y2="772"/>
+    <line x1="648" y1="776" x2="712" y2="776"/>
+  </g>
+</svg>

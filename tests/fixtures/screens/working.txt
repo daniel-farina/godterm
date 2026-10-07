@@ -1,0 +1,10 @@
+> refactor the parser
+
+⏺ Reading src/parser.rs
+
+✻ Pondering… (12s · ↓ 1.2k tokens · esc to interrupt)
+
+────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

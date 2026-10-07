@@ -1,0 +1,5 @@
+# Unit tests skipped on Windows (CI test-windows job): they assume Unix (a shell
+# script fake claude, /etc, permission bits, backslash free paths in TOML).
+# Remove a line once its test is portable.
+# None left: take-over and system_check use src/procs.rs (sysinfo, netstat,
+# the console) on Windows.

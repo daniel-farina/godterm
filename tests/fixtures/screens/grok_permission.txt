@@ -1,0 +1,11 @@
+ Grok Build                                                     grok-4.7-build-fast
+
+ ● Bash(rm -rf build)
+   Remove the build directory
+
+ Allow this command?
+ › Allow once
+   Always allow this command
+   Always allow on all sessions
+   Reject
+

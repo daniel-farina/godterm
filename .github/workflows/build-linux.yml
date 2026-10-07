@@ -1,0 +1,47 @@
+name: Build Linux
+
+# Manual: build the Linux release artifacts for a ref on native runners and
+# keep them as a workflow artifact. Used by local releases on Macs whose
+# Docker cannot emulate x86_64 (scripts/release/all.sh LINUX_FROM_CI=1).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit, branch or tag to build"
+        required: true
+
+jobs:
+  linux:
+    name: linux (${{ matrix.target }})
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Packaging scripts from main (the ref's source, today's tooling)
+        run: |
+          git fetch -q origin main
+          git checkout origin/main -- scripts/release packaging/linux
+      - name: build and package in packaging/linux/Dockerfile
+        env:
+          LINUX_TARGETS: ${{ matrix.target }}
+        run: scripts/release/linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+          if-no-files-found: error

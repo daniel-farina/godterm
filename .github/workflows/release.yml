@@ -1,0 +1,165 @@
+name: Release
+
+# Builds every artifact for a v* tag and creates a DRAFT GitHub release with
+# SHA256SUMS and notes from CHANGELOG.md. Nothing is published until a
+# maintainer publishes the draft. Secrets: see docs/RELEASING.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (must exist), for example v0.2.0-rc1"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  # Without the signing secrets (docs/RELEASING.md) the release is made
+  # locally with scripts/release/all.sh, so CI skips instead of failing.
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      signing: ${{ steps.s.outputs.signing }}
+    steps:
+      - id: s
+        env:
+          P12: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          KEY: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -n "$P12" ] && [ -n "$KEY" ]; then echo signing=true >> "$GITHUB_OUTPUT"
+          else echo "::notice::signing secrets not set; skipping (release locally with scripts/release/all.sh)"; echo signing=false >> "$GITHUB_OUTPUT"; fi
+
+  macos:
+    needs: check
+    if: needs.check.outputs.signing == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Newest Xcode (godterm-speech needs the macOS 26 SDK)
+        run: |
+          x="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$x"
+          xcrun swiftc --version
+      - name: Import the Developer ID certificate into a temporary keychain
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/release.keychain-db"
+          KCPW="$(openssl rand -hex 24)"
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KCPW" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          echo "KEYCHAIN=$KC" >> "$GITHUB_ENV"
+      - name: App Store Connect API key for notarytool
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          umask 077
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+      - name: Build, sign, notarize, staple
+        env:
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: scripts/release/macos.sh
+      - name: Clean up the keychain
+        if: always()
+        run: |
+          [ -n "${KEYCHAIN:-}" ] && security delete-keychain "$KEYCHAIN" || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+
+  linux:
+    needs: check
+    if: needs.check.outputs.signing == 'true'
+    name: linux (${{ matrix.target }})
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - name: build and package in packaging/linux/Dockerfile
+        env:
+          LINUX_TARGETS: ${{ matrix.target }}
+        run: scripts/release/linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+          if-no-files-found: error
+
+  release:
+    needs: [macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: scripts/release/checksums.sh
+      - name: Optional minisign signature
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        if: env.MINISIGN_SECRET_KEY != ''
+        run: |
+          sudo apt-get update && sudo apt-get install -y minisign
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$RUNNER_TEMP/minisign.key" -m dist/SHA256SUMS
+          rm -f "$RUNNER_TEMP/minisign.key"
+      - name: Release notes from CHANGELOG.md
+        run: scripts/release/notes.sh "${TAG#v}" > "$RUNNER_TEMP/notes.md"
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""
+          case "$TAG" in *-*) pre="--prerelease" ;; esac
+          gh release create "$TAG" --draft $pre --verify-tag \
+            --title "GodTerm ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md" dist/*

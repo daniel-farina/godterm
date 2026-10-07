@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Blocking: the code base is rustfmt clean since 3496222. Run
+  # `cargo fmt --all` before committing.
+  fmt:
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: ALSA headers (cpal)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # Compiler warnings fail the build (clippy above stays advisory).
+      - name: build
+        env:
+          RUSTFLAGS: -Dwarnings
+        run: cargo build --locked --all-targets
+      - name: test
+        env:
+          RUSTFLAGS: -Dwarnings
+        run: cargo test --locked -- --test-threads=4
+
+  test-windows:
+    name: test (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        env:
+          RUSTFLAGS: -Dwarnings
+        run: cargo build --locked --all-targets
+      - name: test (Unix only tests skipped, see .github/windows-test-skips.txt)
+        shell: pwsh
+        env:
+          RUSTFLAGS: -Dwarnings
+        run: |
+          $skips = Get-Content .github/windows-test-skips.txt | Where-Object { $_ -and -not $_.StartsWith('#') } | ForEach-Object { '--skip'; $_ }
+          cargo test --locked --bin godterm -- --test-threads=1 @skips
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  linux-package:
+    name: linux package (x86_64, Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: build and package in packaging/linux/Dockerfile
+        env:
+          LINUX_TARGETS: x86_64-unknown-linux-gnu
+          PROFILE: release
+        run: scripts/release/linux.sh
+      - name: install the .deb and run it
+        run: |
+          sudo apt-get install -y ./dist/godterm_*_amd64.deb
+          godterm --version

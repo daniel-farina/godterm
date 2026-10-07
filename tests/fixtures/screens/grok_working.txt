@@ -1,0 +1,4 @@
+ Grok Build                                                     grok-4.7-build-fast
+
+ > add tests for the parser
+ ✶ Thinking (4s)   Press Ctrl+c to cancel the turn

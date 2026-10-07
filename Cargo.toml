@@ -1,0 +1,92 @@
+[package]
+name = "godterm"
+version = "0.2.0"
+edition = "2021"
+description = "Run many Claude Code sessions side by side, each on its own account"
+license = "MIT"
+publish = false
+authors = ["Daniel Farina"]
+repository = "https://github.com/daniel-farina/godterm"
+homepage = "https://godterm.com"
+readme = "README.md"
+keywords = ["claude", "tui", "terminal", "multiplexer"]
+categories = ["command-line-utilities"]
+rust-version = "1.89"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+crossterm = "0.29"
+dirs = "6"
+portable-pty = "0.9"
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signal-hook = "0.3"
+libc = "0.2"
+sha2 = "0.10"
+toml = "0.8"
+toml_edit = "0.22"
+unicode-width = "0.2"
+ureq = { version = "3", features = ["json"] }
+vt100 = "0.16"
+ort = { version = "=2.0.0-rc.10", features = ["coreml"] }
+ndarray = "0.16"
+cpal = "0.15"
+nnnoiseless = { version = "0.5", default-features = false }
+
+# Windows: the control socket over AF_UNIX (Windows 10 1803+), and process
+# control for the platform shims.
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1"
+getrandom = "0.3"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Console"] }
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+
+# Release artifacts: full LTO, one codegen unit, panics still unwind so the
+# crash handler can restore the terminal. `cargo build --profile dist`.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
+[package.metadata.deb]
+maintainer = "Daniel Farina"
+copyright = "2026, Daniel Farina"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+GodTerm runs many interactive Claude Code sessions side by side in one \
+terminal, each signed in to its own Claude account, with a usage \
+dashboard, a session browser and optional local voice control."""
+section = "devel"
+priority = "optional"
+depends = "$auto"
+recommends = "ffmpeg"
+assets = [
+  ["target/release/godterm", "usr/bin/", "755"],
+  ["README.md", "usr/share/doc/godterm/README.md", "644"],
+  ["CHANGELOG.md", "usr/share/doc/godterm/CHANGELOG.md", "644"],
+  ["assets/icon_256.png", "usr/share/icons/hicolor/256x256/apps/godterm.png", "644"],
+  ["packaging/linux/godterm.desktop", "usr/share/applications/godterm.desktop", "644"],
+]
+
+[package.metadata.generate-rpm]
+license = "MIT"
+summary = "Run many Claude Code sessions side by side, each on its own account"
+assets = [
+  { source = "target/release/godterm", dest = "/usr/bin/godterm", mode = "755" },
+  { source = "README.md", dest = "/usr/share/doc/godterm/README.md", mode = "644", doc = true },
+  { source = "CHANGELOG.md", dest = "/usr/share/doc/godterm/CHANGELOG.md", mode = "644", doc = true },
+  { source = "assets/icon_256.png", dest = "/usr/share/icons/hicolor/256x256/apps/godterm.png", mode = "644" },
+  { source = "packaging/linux/godterm.desktop", dest = "/usr/share/applications/godterm.desktop", mode = "644" },
+]
+

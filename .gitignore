@@ -1,0 +1,17 @@
+/target
+/target-*
+/dist
+.claude/
+.DS_Store
+*.p12
+*.p8
+*.cer
+*.mobileprovision
+notary.env
+__pycache__/
+/assets/video/music.*
+
+# Internal working notes (kept locally and in the private history only)
+/docs/PRODUCTION_READINESS.md
+/docs/QA_REPORT.md
+/docs/STALE_STATE_HUNT.md

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>dev.godterm.speech</string>
+  <key>CFBundleName</key><string>godterm-speech</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>GodTerm turns what you say into commands for your sessions, on this Mac.</string>
+  <key>NSMicrophoneUsageDescription</key><string>GodTerm listens for voice commands.</string>
+</dict>
+</plist>
