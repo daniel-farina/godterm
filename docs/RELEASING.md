@@ -17,6 +17,23 @@ nothing is public until a maintainer publishes the draft.
 | `GodTerm-<v>-windows-x64-setup.exe` | per user Windows installer (Inno Setup): Start menu entry, optional PATH and desktop icon, clean uninstall. Unsigned (no Authenticode certificate yet) |
 | `SHA256SUMS` (+ `SHA256SUMS.minisig` or `.asc` when a key is set up) | checksums of everything above |
 
+## Repositories
+
+- `daniel-farina/godterm` (public): one squashed history. Never push local
+  branches to it directly.
+- `daniel-farina/godterm-private` (private): the full development history,
+  the local `private` remote; `master` pushes to its `main`.
+
+Publish the current `master` tree to the public repo as one new commit
+(it refuses if the change contains secrets, personal emails, paths or
+hosts; extra patterns in `~/.config/godterm/public-deny.txt`):
+
+```sh
+scripts/release/publish-public.sh "What changed"
+```
+
+Tag releases on the public commit (`git tag -a vX.Y.Z public-main`).
+
 ## Version
 
 1. Set `version` in `Cargo.toml` (one place; the app's Info.plist, the
