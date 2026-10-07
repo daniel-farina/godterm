@@ -1,0 +1,6 @@
+# Signed and hashed files must reach every checkout byte for byte (no CRLF
+# conversion on Windows), or their signatures and checksums stop matching.
+tests/fixtures/** -text
+*.minisig binary
+SHA256SUMS* -text
+*.sha256 -text
