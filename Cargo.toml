@@ -1,6 +1,6 @@
 [package]
 name = "godterm"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Run many Claude Code sessions side by side, each on its own account"
 license = "MIT"
@@ -35,6 +35,7 @@ ort = { version = "=2.0.0-rc.10", features = ["coreml"] }
 ndarray = "0.16"
 cpal = "0.15"
 nnnoiseless = { version = "0.5", default-features = false }
+minisign-verify = "0.2"
 
 # Windows: the control socket over AF_UNIX (Windows 10 1803+), and process
 # control for the platform shims.

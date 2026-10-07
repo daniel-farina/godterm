@@ -115,6 +115,27 @@ pub fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Become `bin` with `args` (the same pid, the same terminal): exec(3) on
+/// Unix. Windows has no exec, so the new program runs as a child sharing
+/// this console and this process exits with its code. Returns only on
+/// failure.
+pub fn exec_replace(bin: &Path, args: &[String]) -> std::io::Error {
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(args);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.exec()
+    }
+    #[cfg(windows)]
+    {
+        match cmd.status() {
+            Ok(st) => std::process::exit(st.code().unwrap_or(0)),
+            Err(e) => e,
+        }
+    }
+}
+
 /// The terminal device on stdin, e.g. /dev/ttys012 (None on Windows).
 pub fn own_tty() -> Option<String> {
     #[cfg(unix)]

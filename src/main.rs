@@ -20,6 +20,7 @@ mod app_sysprompt;
 mod app_tabgroups;
 mod app_tabhist;
 mod app_tabmove;
+mod app_update;
 mod app_voice;
 mod app_wake;
 mod assistant;
@@ -89,6 +90,7 @@ mod ui;
 mod ui_chrome;
 mod ui_livemap;
 mod ui_settings;
+mod update;
 mod usage;
 mod voice;
 mod window;
@@ -374,6 +376,7 @@ fn main() -> Result<()> {
         Some("migrate-accounts") => {
             migrate_accounts::command(args.iter().any(|a| a == "--dry-run"))
         }
+        Some("update") => update::command(&args[1..]),
         Some("install") => install::install(args.iter().any(|a| a == "--dock")),
         Some("uninstall") => install::uninstall(args.iter().any(|a| a == "--purge")),
         Some("window") => window_cmd(args.get(1).map(String::as_str)),
@@ -733,7 +736,16 @@ fn voice_test(
     Ok(())
 }
 
+/// The TUI, then (after a restart to update) the new version in its place.
 fn run_tui(opts: TuiOpts) -> Result<()> {
+    let r = run_tui_inner(opts);
+    if r.is_ok() {
+        update::relaunch_if_requested();
+    }
+    r
+}
+
+fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     // One GodTerm per home: a second one would resume the same sessions
     // twice and take the control socket.
     let _instance = match instance::acquire() {
@@ -858,7 +870,13 @@ fn run_tui(opts: TuiOpts) -> Result<()> {
     };
     // Size the panes before the first spawn so claude starts at the right size.
     terminal.draw(|f| ui::draw(f, &mut app))?;
+    // Restarted into a new version: every tab comes back at once.
+    if std::env::var_os(update::EAGER_ENV).is_some() {
+        std::env::remove_var(update::EAGER_ENV);
+        app.force_eager = true;
+    }
     app.autostart();
+    app.start_update_checker();
     if onboarding {
         app.start_onboarding();
     } else {

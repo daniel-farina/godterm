@@ -130,6 +130,10 @@ pub enum UiAction {
     SettingEdit(usize),
     OpenConfig,
     RunDoctor,
+    /// Settings > About: check for a new version now.
+    UpdateCheck,
+    /// Settings > About: do not offer this version again.
+    UpdateSkip,
     /// Settings > About: godterm install (true: with --dock).
     Install(bool),
     /// Play a sample of the selected talk back voice.

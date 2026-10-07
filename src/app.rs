@@ -475,6 +475,10 @@ pub struct App {
     pub recents: Vec<crate::picker::RecentDir>,
     pub flash: Option<(String, Instant)>,
     pub quit: bool,
+    /// Self update: the checker, the chip, restart to update.
+    pub update: crate::app_update::UpdateUi,
+    /// Restore every tab at once this start (after a restart to update).
+    pub force_eager: bool,
     pub pane_rects: Vec<Rect>,
     /// Terminal area of each pane (inside the border, above the footer).
     pub term_rects: Vec<Rect>,
@@ -633,6 +637,8 @@ impl App {
             last_window_check: Instant::now(),
             flash: None,
             quit: false,
+            update: Default::default(),
+            force_eager: false,
             pane_rects: vec![],
             term_rects: vec![],
             hits: Default::default(),
@@ -1525,6 +1531,7 @@ impl App {
         self.stop_tick();
         self.memory_tick();
         self.assistant_tick();
+        self.update_tick();
         self.control_tick();
         self.refresh_paths();
         for st in &mut self.accounts {
@@ -2427,6 +2434,7 @@ impl App {
             (_, Some('?')) => self.modal = Modal::Help,
             (_, Some('q')) => self.modal = Modal::ConfirmQuit,
             (_, Some('Q')) => self.quit = true,
+            (_, Some('N')) => self.restart_to_update(false),
             _ => {}
         }
     }

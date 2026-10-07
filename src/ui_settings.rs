@@ -891,12 +891,30 @@ fn draw_about(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::styled(format!("  {l}"), Style::default().fg(DIM)));
     }
     lines.push(Line::raw(""));
+    let ready = app.update.ready().is_some();
+    for (i, l) in app.update_lines().into_iter().enumerate() {
+        let st = if i == 0 && ready {
+            Style::default()
+                .fg(theme::SAGE)
+                .add_modifier(Modifier::BOLD)
+        } else if i == 0 {
+            Style::default().fg(FG)
+        } else {
+            Style::default().fg(DIM)
+        };
+        lines.push(Line::styled(format!("  {l}"), st));
+    }
+    lines.push(Line::raw(""));
+    let update_y = area.y + 1 + lines.len() as u16;
+    lines.push(Line::raw(""));
+    lines.push(Line::raw(""));
     if let Some(e) = &app.config_error {
         lines.push(Line::styled(
             format!("  {e}"),
             Style::default().fg(theme::CLAY),
         ));
     }
+    let n_lines = lines.len() as u16;
     f.render_widget(
         Paragraph::new(lines),
         Rect::new(
@@ -906,9 +924,51 @@ fn draw_about(f: &mut Frame, app: &App, area: Rect) {
             area.height.saturating_sub(1),
         ),
     );
-    let y = area.y + 14;
+    let mut hits = app.hits.borrow_mut();
+    if update_y < area.y + area.height {
+        let mut x = button(
+            f.buffer_mut(),
+            &mut hits,
+            app.mouse_pos,
+            area.x + 2,
+            update_y,
+            area.x + area.width,
+            "Check now",
+            UiAction::UpdateCheck,
+            "Look for a new GodTerm version on GitHub now",
+            theme::SLATE,
+        );
+        if ready {
+            x = button(
+                f.buffer_mut(),
+                &mut hits,
+                app.mouse_pos,
+                x + 1,
+                update_y,
+                area.x + area.width,
+                "Restart to update",
+                UiAction::Key('N'),
+                "Install the verified download and restart into it (Ctrl-a N); every tab resumes",
+                theme::SAGE,
+            );
+        }
+        if app.update_chip().is_some() {
+            button(
+                f.buffer_mut(),
+                &mut hits,
+                app.mouse_pos,
+                x + 1,
+                update_y,
+                area.x + area.width,
+                "Skip this version",
+                UiAction::UpdateSkip,
+                "Do not offer this version again (a newer one still shows)",
+                theme::STONE,
+            );
+        }
+    }
+    let y = (area.y + 1 + n_lines).max(area.y + 14);
     if y < area.y + area.height {
-        let mut hits = app.hits.borrow_mut();
         let x = button(
             f.buffer_mut(),
             &mut hits,

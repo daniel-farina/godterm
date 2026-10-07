@@ -867,6 +867,8 @@ impl App {
             UiAction::SettingEdit(i) => self.setting_edit(i),
             UiAction::OpenConfig => self.open_config_in_editor(),
             UiAction::RunDoctor => self.run_doctor_tab(),
+            UiAction::UpdateCheck => self.check_for_update(),
+            UiAction::UpdateSkip => self.skip_update(),
             UiAction::Install(dock) => {
                 let exe = crate::install::real_exe()
                     .map(|p| p.to_string_lossy().into_owned())

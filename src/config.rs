@@ -234,6 +234,39 @@ pub struct Config {
     /// `[viz]`: the live map.
     #[serde(default)]
     pub viz: crate::livemap::VizCfg,
+    /// `[update]`: checking for and installing new versions.
+    #[serde(default)]
+    pub update: UpdateCfg,
+}
+
+/// `[update]`: GodTerm checks GitHub Releases at start and every few
+/// hours, downloads and verifies a new version in the background, and
+/// restarts into it when you say so (Ctrl-a N).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UpdateCfg {
+    /// Check for new versions.
+    pub enabled: bool,
+    /// "stable", or "prerelease" to include pre-releases.
+    pub channel: String,
+    /// Download and verify a new version in the background.
+    pub auto_download: bool,
+    /// Refuse a release whose SHA256SUMS has no valid minisign signature.
+    pub require_signature: bool,
+    /// Hours between checks.
+    pub check_hours: u64,
+}
+
+impl Default for UpdateCfg {
+    fn default() -> Self {
+        UpdateCfg {
+            enabled: true,
+            channel: "stable".into(),
+            auto_download: true,
+            require_signature: false,
+            check_hours: 6,
+        }
+    }
 }
 
 /// `[assistant]`: the natural language voice assistant, a headless claude
@@ -727,6 +760,7 @@ impl Default for Config {
                 .collect(),
             voice: VoiceCfg::default(),
             viz: Default::default(),
+            update: Default::default(),
             assistant: AssistantCfg::default(),
         }
     }

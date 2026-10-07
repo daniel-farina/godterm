@@ -413,6 +413,11 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
             no_acct(sub("Permissions", MenuId::Permissions)),
             sep(),
             item("Doctor", "", UiAction::RunDoctor),
+            if app.update.ready().is_some() {
+                item("Restart to update", "C-a N", UiAction::Key('N'))
+            } else {
+                item("Check for updates", "C-a N", UiAction::UpdateCheck)
+            },
             item("Help", "C-a ?", UiAction::Key('?')),
             item("Tour", "C-a T", UiAction::Menu(Cmd::Tour)),
             item("Quit", "C-a q", UiAction::Key('q')),

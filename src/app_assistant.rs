@@ -450,6 +450,7 @@ impl App {
         }
         s.push_str(&self.modes_line());
         s.push_str(&self.pending_answers_line());
+        s.push_str(&self.update_state_line());
         // Listening is GodTerm's business: a message here means it is on.
         s.push_str(&match self.pause_left() {
             Some(left) => format!("listening_paused: {left} s left\n"),

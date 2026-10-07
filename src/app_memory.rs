@@ -90,7 +90,9 @@ impl App {
 
     /// Restore mode: the memory saver always restores lazily.
     pub fn restore_mode(&self) -> &str {
-        if self.memory_saver_on() {
+        if self.force_eager {
+            "eager"
+        } else if self.memory_saver_on() {
             "lazy"
         } else {
             &self.cfg.restore

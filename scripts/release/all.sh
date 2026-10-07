@@ -14,8 +14,8 @@
 # instead of local Docker, and download the artifacts into dist/. Needs REF
 # pushed. Use it on Macs whose Docker cannot emulate x86_64.
 #
-# Signing a Linux checksums file: set MINISIGN_KEY (path to a minisign
-# secret key) or GPG_KEY (a key id); without either only SHA256SUMS ships.
+# SHA256SUMS is signed with the self update key (UPDATE_KEY, default
+# ~/.config/godterm-release/minisign.key) into SHA256SUMS.minisig.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -87,10 +87,22 @@ esac
 "$WT/scripts/release/aliases.sh"
 "$WT/scripts/release/checksums.sh"
 
-if [[ -n "${MINISIGN_KEY:-}" ]]; then
-  minisign -S -s "$MINISIGN_KEY" -m "$DIST/SHA256SUMS"
+# SHA256SUMS.minisig: the self updater refuses a release without it. The
+# secret key stays outside the repo (default ~/.config/godterm-release/
+# minisign.key, made by scripts/update-signing/minisign.py keygen); the
+# public key is UPDATE_PUBKEY in src/update.rs. Verified right away.
+UPDATE_KEY="${UPDATE_KEY:-$HOME/.config/godterm-release/minisign.key}"
+if [[ -f "$UPDATE_KEY" ]]; then
+  python3 "$WT/scripts/update-signing/minisign.py" sign "$UPDATE_KEY" "$DIST/SHA256SUMS" >/dev/null
+  pub="$(sed -nE 's/^pub const UPDATE_PUBKEY: &str = "([^"]+)";/\1/p' "$WT/src/update.rs" 2>/dev/null || true)"
+  if [[ -n "$pub" ]] && command -v minisign >/dev/null; then
+    minisign -Vm "$DIST/SHA256SUMS" -P "$pub" -q || { echo "SHA256SUMS.minisig does not verify" >&2; exit 1; }
+    echo "==> SHA256SUMS signed and verified with the update key"
+  fi
 elif [[ -n "${GPG_KEY:-}" ]]; then
   gpg --batch --yes --local-user "$GPG_KEY" --armor --detach-sign -o "$DIST/SHA256SUMS.asc" "$DIST/SHA256SUMS"
+else
+  echo "warning: no update signing key ($UPDATE_KEY): releases without SHA256SUMS.minisig are refused by the self updater" >&2
 fi
 
 if [[ -n "${DRAFT:-}" ]]; then

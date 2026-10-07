@@ -87,6 +87,11 @@ pub const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "restart_to_update",
+        description: "Install the downloaded GodTerm update and restart into it once this answer ends; every tab resumes its session. Only when the state shows update_ready and the user asked (\"update now\"). If tabs are working it returns needs_confirmation: ask the user, then call again with confirm true.",
+        schema: || props(json!({"confirm": {"type": "boolean"}}), &[]),
+    },
+    Tool {
         name: "stop_waiting",
         description: "Stop watching for the answer to a question you sent a tab (tab), or to every one (no tab); the state's pending_answers lists them.",
         schema: || props(json!({"tab": tab_prop()}), &[]),
@@ -2463,6 +2468,27 @@ impl App {
                     })
                     .collect();
                 ok(json!({"tab": id, "state": self.state_word(sl, t), "turns": turns}))
+            }
+            "restart_to_update" => {
+                let Some(v) = self.update.ready() else {
+                    return Err("no update is downloaded and ready".into());
+                };
+                let confirm = args.get("confirm").and_then(Value::as_bool) == Some(true);
+                // The assistant's own turn is not a blocker: it restarts after it.
+                let blockers: Vec<String> = self
+                    .restart_blockers()
+                    .into_iter()
+                    .filter(|b| !b.starts_with("the assistant"))
+                    .collect();
+                if !blockers.is_empty() && !confirm {
+                    return Ok(
+                        json!({"ok": false, "needs_confirmation": format!("Restarting now interrupts this: {}. Ask the user; then call again with confirm true.", blockers.join(", "))}),
+                    );
+                }
+                self.update.after_turn = true;
+                ok(
+                    json!({"say": format!("Restarting into version {v} when I finish this answer; your tabs come back.")}),
+                )
             }
             "stop_waiting" => {
                 let uid = match args.get("tab") {

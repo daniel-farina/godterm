@@ -1773,6 +1773,14 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
             });
         }
     }
+    if let Some(text) = app.update_chip() {
+        v.push(Chip {
+            text,
+            bg: theme::SAGE,
+            action: UiAction::Key('N'),
+            hint: "A new GodTerm version: click (or Ctrl-a N) to restart into it; tabs resume",
+        });
+    }
     if app.undo_move_live() {
         v.push(Chip {
             text: "↶ UNDO MOVE".into(),
@@ -4623,6 +4631,10 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("Ctrl-a t", "new tab: pick a directory or resume a session"),
     ("Ctrl-a w", "close the current tab"),
+    (
+        "Ctrl-a N",
+        "restart into a downloaded update (tabs resume); checks for one otherwise",
+    ),
     ("Ctrl-a n / p", "next / previous tab"),
     ("Ctrl-a ,", "settings"),
     ("Ctrl-a R", "rename the current tab (or double click it)"),
@@ -9471,6 +9483,99 @@ mod tests {
             "Okay, I won't wait for trading room's answer."
         );
         app.assistant.brain = None;
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A verified update: the toast once, the chip, Settings > About, the
+    /// assistant's line; Ctrl-a N asks first while a tab works, then
+    /// installs, saves the tabs and asks main() to restart into it.
+    #[test]
+    fn update_ready_chip_about_and_restart_keeps_tabs() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::update;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (mut app, home) = test_app("update");
+        let l = update::Layout::default();
+        assert!(l.versions.starts_with(&home), "under the test home");
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let target = bin.join(if cfg!(windows) {
+            "godterm.exe"
+        } else {
+            "godterm"
+        });
+        std::fs::write(&target, "old build").unwrap();
+        let method = update::Method::Standalone {
+            path: target.clone(),
+        };
+        let srv = update::tests::mock_routes(
+            |b| update::tests::routes(b, "v9.9.9", true, update::tests::SUMS),
+            false,
+        );
+        let src = update::tests::test_source(&srv.base);
+        let cfg = app.cfg.update.clone();
+        crate::app_update::run_once(&app.update.shared, &cfg, &src, &l, method);
+        assert_eq!(app.update.ready().as_deref(), Some("9.9.9"));
+        // The toast, once.
+        app.update_tick();
+        assert!(app
+            .flash
+            .as_ref()
+            .unwrap()
+            .0
+            .contains("Update v9.9.9 is ready"));
+        app.flash = None;
+        app.update_tick();
+        assert!(app.flash.is_none());
+        // The chip and Settings > About.
+        let mut term = Terminal::new(TestBackend::new(200, 50)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(buffer_text(term.backend().buffer()).contains("UPDATE v9.9.9 · RESTART"));
+        app.view = crate::app::View::Settings;
+        app.settings_section = crate::settings::SECTIONS
+            .iter()
+            .position(|(s, _)| *s == crate::settings::Section::About)
+            .unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let t = buffer_text(term.backend().buffer());
+        assert!(
+            t.contains("v9.9.9 downloaded and verified")
+                && t.contains("Faster restarts")
+                && t.contains("Restart to update")
+                && t.contains("Skip this version")
+                && t.contains("Check now"),
+            "{t}"
+        );
+        assert!(app.state_preamble().contains("update_ready: v9.9.9"));
+        // A working tab: asked first, nothing installed yet.
+        app.panes[0].tabs[0].activity = crate::pane::Activity::Working;
+        app.restart_to_update(false);
+        assert!(!app.quit);
+        assert!(app
+            .flash
+            .as_ref()
+            .unwrap()
+            .0
+            .contains("Not yet: 1 tab is working"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old build");
+        // Again within 10 s: installed, tabs saved, restart requested.
+        app.panes[0].tabs[0].session_id = Some("7777aaaa-0000-4000-8000-000000000007".into());
+        app.restart_to_update(false);
+        assert!(app.quit, "{:?}", app.flash);
+        assert!(std::fs::read_to_string(&target)
+            .unwrap()
+            .contains("godterm 9.9.9"));
+        let next = update::take_restart().expect("main() restarts");
+        assert_eq!(next.program, target);
+        let saved = crate::state::AppState::load().expect("tabs saved");
+        assert!(serde_json::to_string(&saved)
+            .unwrap()
+            .contains("7777aaaa-0000-4000-8000-000000000007"));
+        // The new process restores every tab at once.
+        app.force_eager = true;
+        app.cfg.memory_saver = true;
+        assert_eq!(app.restore_mode(), "eager");
         let _ = std::fs::remove_dir_all(&home);
     }
 

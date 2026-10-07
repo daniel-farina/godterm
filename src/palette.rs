@@ -28,6 +28,7 @@ pub enum Action {
 
 pub const ACTIONS: &[(&str, Action)] = &[
     ("new tab", Action::Key('t')),
+    ("restart to update (or check for updates)", Action::Key('N')),
     ("close tab", Action::Key('w')),
     ("next tab", Action::Key('n')),
     ("previous tab", Action::Key('p')),

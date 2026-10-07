@@ -7,6 +7,29 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-07
+
+### Self update
+- GodTerm checks GitHub Releases at start and every 6 hours (`[update]`
+  enabled, channel, auto_download, require_signature, check_hours) and
+  downloads the update for your platform in the background.
+- Every update is verified before it is used: its sha256 against the
+  release's SHA256SUMS, the minisign signature of SHA256SUMS made with the
+  release key, and on macOS the Developer ID code signature.
+- Installed side by side in `~/.godterm/versions/<version>` and switched
+  with one atomic rename; the previous version is kept. "Restart to
+  update" saves your tabs and restarts into the new version with every tab
+  restored. The app bundle, AppImage and the Windows installer are updated
+  the same way; Homebrew, deb and rpm installs are told the command to
+  run instead.
+- `godterm update` (`--check`, `--rollback`, `--force`), a status bar chip,
+  Settings > About (Check now, Restart to update, Skip this version),
+  `Ctrl-a N`, and the assistant's restart_to_update tool.
+
+### Release
+- Every release's SHA256SUMS is signed (`SHA256SUMS.minisig`).
+
+
 ## [0.2.1] - 2026-10-07
 
 ### Assistant
@@ -117,7 +140,8 @@ The first public release, under the MIT License. claudego is now GodTerm.
 
 - claudego: config, credentials, usage, sessions, PTY panes and the TUI.
 
-[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/daniel-farina/godterm/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/daniel-farina/godterm/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/daniel-farina/godterm/releases/tag/v0.2.0
 [0.1.0]: https://github.com/daniel-farina/godterm/commits/v0.2.0
