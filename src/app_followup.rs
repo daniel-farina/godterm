@@ -358,14 +358,19 @@ impl App {
             }
             return;
         }
-        if !self.can_report() {
+        if !self.can_report()
+            || self
+                .assistant
+                .report_retry
+                .is_some_and(|t| Instant::now() < t)
+        {
             return;
         }
         let mut parts = vec![];
         let mut names = vec![];
         for &i in &answered {
-            let f = &mut self.assistant.follow_ups[i];
-            let FuState::Answered { text, at } = f.state.clone() else {
+            let f = &self.assistant.follow_ups[i];
+            let FuState::Answered { text, .. } = &f.state else {
                 continue;
             };
             parts.push(format!(
@@ -373,11 +378,9 @@ impl App {
                 f.uid,
                 f.tab,
                 trimmed(&f.question, 300),
-                trimmed(&text, 1500)
+                trimmed(text, 1500)
             ));
             names.push(format!("t{} ({})", f.uid, f.tab));
-            f.state = FuState::Reported { text, at };
-            f.ended = Some(Instant::now());
         }
         let how = if parts.len() > 1 {
             "Summarize each for the user in one or two spoken sentences, then ask if they want the details. Call no tools."
@@ -388,6 +391,21 @@ impl App {
         let note = format!("({} answered)", names.join(", "));
         crate::log::info(&format!("follow-up: reporting {}", names.join(", ")));
         self.ask_assistant_system(&note, &msg);
+        if !self.assistant.busy {
+            // The assistant could not start (no account, no claude): the
+            // answers stay and are told once it can.
+            crate::log::info("follow-up: the assistant did not start; the report waits");
+            self.assistant.report_retry = Some(Instant::now() + Duration::from_secs(30));
+            return;
+        }
+        self.assistant.report_retry = None;
+        for &i in &answered {
+            let f = &mut self.assistant.follow_ups[i];
+            if let FuState::Answered { text, at } = f.state.clone() {
+                f.state = FuState::Reported { text, at };
+                f.ended = Some(Instant::now());
+            }
+        }
     }
 
     /// The questions out to tabs, for the snapshot and get_state.

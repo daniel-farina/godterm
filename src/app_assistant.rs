@@ -119,6 +119,8 @@ pub struct AssistantState {
     /// Questions sent to tabs whose answers are reported back.
     pub follow_ups: Vec<crate::app_followup::FollowUp>,
     pub follow_seq: u64,
+    /// The assistant could not start for a report: try again after this.
+    pub report_retry: Option<Instant>,
 }
 
 /// Where the time of one turn went.

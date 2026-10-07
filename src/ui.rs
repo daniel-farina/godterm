@@ -9392,6 +9392,8 @@ mod tests {
         let (mut app, home) = test_app("followwait");
         let (uid, transcript) =
             tab_with_transcript(&mut app, &home, "6666ffff-0000-4000-8000-000000000006");
+        // No brain can start yet (no claude): the report must wait, not be lost.
+        app.cfg.claude_bin = Some(home.join("no-such-claude").display().to_string());
         let q = "Did the deploy finish?";
         // Paused: held, named in the summary, told after the pause.
         app.register_follow_up(uid, q);
@@ -9421,7 +9423,27 @@ mod tests {
         assert!(!app.assistant.busy, "not while the user talks");
         app.voice.partial = None;
         app.follow_ups_tick();
-        assert!(app.assistant.busy && app.assistant.system_turn);
+        assert!(!app.assistant.busy, "the brain could not start");
+        assert!(
+            matches!(
+                app.assistant.follow_ups[0].state,
+                crate::app_followup::FuState::Answered { .. }
+            ),
+            "the answer is kept for later"
+        );
+        // A brain (the stub) can start now; the retry time has come.
+        let stub = crate::test_stub::claude(
+            &home.join("brain"),
+            &[("stdin_to", home.join("brain-in.txt").display().to_string())],
+        );
+        app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
+        app.assistant.report_retry = Some(std::time::Instant::now());
+        app.follow_ups_tick();
+        assert!(
+            app.assistant.busy && app.assistant.system_turn,
+            "{:?}",
+            app.assistant.log
+        );
         app.reset_hung_turn("test over");
         // Timed out: dropped quietly.
         app.cfg.assistant.answer_wait_min = 1;
