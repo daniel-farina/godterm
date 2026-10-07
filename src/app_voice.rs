@@ -32,6 +32,11 @@ pub struct VoiceState {
     pub holding: Option<Instant>,
     /// After a bare wake word, the next utterance needs no wake word.
     pub(crate) wake_until: Option<Instant>,
+    /// Push to talk after a bare wake word: listen again once the reply
+    /// has been spoken.
+    pub listen_after_speech: bool,
+    /// What a bare wake word answered (tests and the HUD).
+    pub said_wake: Vec<String>,
     spoken: crate::notify::Limiter<(usize, usize, bool)>,
     notified: crate::notify::Limiter<(usize, usize, bool)>,
     /// Terminal focus as reported by focus events (None: never reported).
@@ -112,6 +117,8 @@ impl Default for VoiceState {
             hold_supported: false,
             holding: None,
             wake_until: None,
+            listen_after_speech: false,
+            said_wake: vec![],
             spoken: crate::notify::Limiter::new(Duration::from_secs(60), Duration::from_secs(5)),
             notified: crate::notify::Limiter::new(Duration::from_secs(60), Duration::from_secs(3)),
             term_focused: None,
@@ -388,6 +395,53 @@ impl App {
         self.voice.updated = Instant::now();
     }
 
+    /// The wake word alone ("hey god"): always an answer. A chime and a
+    /// short "Yes?" (or `reply`), "listening" on the HUD, and the next
+    /// utterance within the follow up window is the command. In push to
+    /// talk the mic opens again once the reply is spoken.
+    pub fn bare_wake(&mut self, reply: &str, ptt: bool, cut_in: bool) {
+        let secs = self.cfg.voice.wake_follow_up_s.clamp(3, 30);
+        crate::log::info(&format!(
+            "wake: bare{}, opening follow-up {secs} s",
+            if ptt { " (push to talk)" } else { "" }
+        ));
+        if cut_in {
+            if let Some(v) = &self.voice.engine {
+                // It cuts in over whatever was being said.
+                v.stop_speaking();
+                v.chime();
+            }
+            if let Some(p) = &self.voice.preview {
+                p.stop();
+            }
+        }
+        self.voice.wake_until = Some(Instant::now() + Duration::from_secs(secs));
+        self.voice.action = Some("listening…".into());
+        self.voice.asleep = false;
+        self.voice.listen_after_speech = ptt || !self.voice.always_on;
+        self.voice.said_wake.push(reply.to_string());
+        self.speak(reply);
+    }
+
+    /// After a bare wake word in push to talk: once "Yes?" is spoken,
+    /// listen for the command without the key.
+    pub fn listen_after_reply(&mut self, speaking: bool) {
+        if !self.voice.listen_after_speech || speaking {
+            return;
+        }
+        self.voice.listen_after_speech = false;
+        if self.voice.muted || self.voice.wake_until.is_none_or(|t| Instant::now() >= t) {
+            return;
+        }
+        if let Some(v) = &self.voice.engine {
+            if self.voice.status != VoiceStatus::Listening {
+                crate::log::info("wake: listening for the command (push to talk follow-up)");
+                v.push_to_talk();
+                self.voice.status = VoiceStatus::Listening;
+            }
+        }
+    }
+
     /// Hold to talk: while space is held after Ctrl-a space, swallow its
     /// repeats; on release after a real hold, end the capture. A quick tap
     /// keeps listening until the pause detector ends it. Returns true when
@@ -571,6 +625,12 @@ impl App {
         self.voice.heard = Some(text.to_string());
         let norm = grammar::normalize(text);
         self.voice.last_heard = Instant::now();
+        // Muted: the mic is off; a transcript still in flight is dropped.
+        if self.voice.muted {
+            crate::log::info(&format!("muted: ignored: {text}"));
+            self.voice.action = Some("(muted, ignored: Ctrl-a X unmutes)".into());
+            return;
+        }
         // Paused: only the wake word (or "resume") counts; it resumes and
         // what follows it runs as usual.
         if self.paused() {
@@ -578,9 +638,10 @@ impl App {
                 return;
             };
             if rest.trim().is_empty() {
-                self.voice.wake_until = Some(Instant::now() + Duration::from_secs(6));
-                return;
+                crate::log::info("paused: wake word, resuming");
+                return self.bare_wake("I'm back.", ptt, false);
             }
+            crate::log::info("paused: wake word with a command, resuming and running it");
             return self.run_heard(rest);
         }
         // Without a wake word (open mic, or the follow up window) short
@@ -590,8 +651,14 @@ impl App {
         let follow_up = self.voice.wake_until.is_some_and(|t| Instant::now() < t);
         let stats = self.voice.cur_stats;
         let woke = self.strip_wake(&norm).map(str::to_string);
+        // The wake word alone always gets an answer, in every mode (no
+        // length or noise filter applies to it).
+        if woke.as_deref().is_some_and(|c| c.trim().is_empty()) {
+            return self.bare_wake("Yes?", ptt, true);
+        }
         let why = if ptt {
-            None
+            // Push to talk is deliberate; only silence's stock text is dropped.
+            crate::app_openmic::is_noise(&norm).then_some("noise")
         } else if woke.is_none() && (self.voice.open_mic || follow_up) {
             crate::app_openmic::hands_free_filter(&norm, stats, &table)
         } else {
@@ -617,6 +684,7 @@ impl App {
             let command = woke.unwrap_or(norm.clone());
             return self.run_heard(command);
         }
+        let had_wake = woke.is_some();
         let command = if ptt || follow_up || !self.voice.always_on {
             self.voice.wake_until = None;
             Some(woke.unwrap_or(norm.clone()))
@@ -625,9 +693,22 @@ impl App {
         };
         let Some(command) = command else {
             self.voice.ignored += 1;
+            crate::log::info(&format!("wake: no wake word, ignored: {text}"));
             self.voice.action = Some("(no wake word, ignored)".into());
             return;
         };
+        crate::log::info(&format!(
+            "wake: {}: {command}",
+            if ptt {
+                "push to talk"
+            } else if follow_up {
+                "follow-up window"
+            } else if had_wake {
+                "wake word with a command"
+            } else {
+                "wake word not needed"
+            }
+        ));
         if !ptt && !follow_up {
             if let Some(v) = &self.voice.engine {
                 v.chime();
@@ -1024,6 +1105,7 @@ impl App {
         self.refresh_vocabulary();
         let any_speaking = speaking || self.voice.preview.as_ref().is_some_and(|p| p.speaking());
         self.assistant_follow_up(any_speaking);
+        self.listen_after_reply(any_speaking);
         if self.attention.is_empty() {
             return;
         }

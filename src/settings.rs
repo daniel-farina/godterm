@@ -705,6 +705,7 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
             "Silent minutes before open mic goes back to waiting for the wake word. 0: never.",
         ),
     );
+    r.add(g("voice.wake_follow_up_s", "After the wake word alone (s)", Kind::Number { min: 3, max: 30, step: 1 }, "Say the wake word alone and GodTerm answers \"Yes?\"; what you say within this many seconds is the command."));
     r.add(g("voice.pause_default_s", "Pause: default (s)", Kind::Number { min: 10, max: 3600, step: 30 }, "\"Hold on\" without a duration stops acting on speech this many seconds; the wake word resumes sooner."));
     r.add(g(
         "voice.pause_max_s",

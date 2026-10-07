@@ -72,6 +72,11 @@ pub fn confidence_gate(stats: UttStats) -> Option<&'static str> {
     None
 }
 
+/// Empty, a stock transcription of silence ("Thank you."), or a sound tag.
+pub fn is_noise(norm: &str) -> bool {
+    hands_free_filter(norm, UttStats::default(), &[]) == Some("noise")
+}
+
 /// Why an utterance heard without a wake word (open mic, or the follow up
 /// window) is ignored, or None to act on it.
 pub fn hands_free_filter(
@@ -123,6 +128,17 @@ impl App {
 
     /// The Voice dropdown: 0 off, 1 push to talk, 2 wake word, 3 open mic.
     pub fn set_voice_mode(&mut self, m: u8) {
+        // Muted means the mic is off: the mode waits for the unmute.
+        if self.voice.muted && m > 0 {
+            self.voice.muted_prev = m;
+            crate::log::info(&format!(
+                "voice: mode {m} chosen while muted; it starts on unmute"
+            ));
+            self.flash(
+                "The mic is muted: unmute with Ctrl-a X (or click ● MUTED); that mode starts then",
+            );
+            return;
+        }
         match m {
             0 => {
                 self.voice.open_mic = false;

@@ -21,6 +21,10 @@ copies the section for a tag into the GitHub release notes.
 - Settings > General: "Require signed updates" (turning it off is not
   recommended).
 
+### Voice
+- Fixed: saying the wake word alone ("hey god") did nothing after a pause
+  or in open mic; it now always answers, in every mode.
+
 
 ## [0.2.3] - 2026-10-07
 

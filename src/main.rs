@@ -93,6 +93,8 @@ mod ui_settings;
 mod update;
 mod usage;
 mod voice;
+#[cfg(test)]
+mod wake_tests;
 mod window;
 
 use anyhow::Result;

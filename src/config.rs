@@ -419,6 +419,9 @@ pub struct VoiceCfg {
     pub open_mic_sleep_min: u32,
     /// "Hold on" without a duration pauses listening this long (seconds).
     pub pause_default_s: u32,
+    /// After a bare wake word ("hey god" alone), the next utterance within
+    /// this many seconds is the command (no wake word needed).
+    pub wake_follow_up_s: u64,
     /// The longest pause (seconds).
     pub pause_max_s: u32,
     /// Talk back at all (confirmations, read backs, announcements).
@@ -536,6 +539,7 @@ impl Default for VoiceCfg {
             gain_db: 0.0,
             open_mic_sleep_min: 10,
             pause_default_s: 120,
+            wake_follow_up_s: 7,
             pause_max_s: 3600,
             noise_floor: "auto".into(),
             preroll_ms: 360,

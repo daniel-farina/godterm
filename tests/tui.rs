@@ -1559,6 +1559,49 @@ fn have(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The wake word alone through the whole pipeline (say, whisper, the
+/// app): it answers and opens the follow up window, and the command said
+/// after a pause runs without the wake word. Runs only where `say`,
+/// ffmpeg, whisper and the default model exist; nothing is played aloud.
+#[test]
+fn voice_file_bare_wake_then_command() {
+    let model = dirs::home_dir()
+        .unwrap()
+        .join(".cache/whisper-models/ggml-large-v3-turbo.bin");
+    if !(have("say")
+        && have("ffmpeg")
+        && model.is_file()
+        && Path::new("/opt/homebrew/bin/whisper-server").is_file())
+    {
+        eprintln!("skipping voice test: say, ffmpeg, whisper or model missing");
+        return;
+    }
+    let home = make_home("barewake", "");
+    let aiff = home.join("cmd.aiff");
+    let wav = home.join("cmd.wav");
+    let ok = std::process::Command::new("say")
+        .arg("-o")
+        .arg(&aiff)
+        .arg("[[slnc 1500]] Hey go. [[slnc 1800]] Next tab.")
+        .status()
+        .unwrap()
+        .success()
+        && std::process::Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-y", "-i"])
+            .arg(&aiff)
+            .args(["-ar", "16000", "-ac", "1"])
+            .arg(&wav)
+            .status()
+            .unwrap()
+            .success();
+    assert!(ok, "could not make the test recording");
+    let t = Tui::start(home, &["--voice", "--voice-file", &wav.to_string_lossy()]);
+    t.wait_for("voice", 15);
+    t.wait_for("listening…", 60);
+    t.wait_for("now on", 60);
+    assert_eq!(t.quit(), 0);
+}
+
 /// Runs only where `say`, ffmpeg, whisper and the default model exist.
 #[test]
 fn voice_file_commands() {
