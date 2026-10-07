@@ -310,9 +310,11 @@ ov(type="callout", start=out(n0) + 0.9, end=out(n0 + 4.6) - 0.1, rect=to_out(cel
 # every 8 s), so the song's phrase and the video end together.
 # the outro holds to the song's final hit and tail (it ends ~125.9 s)
 od = max(8.2, a.song_end - T) if a.song_end > 0 else 8.2
-scenes.append({"type": "outro", "start": round(T, 3), "dur": round(od, 3), "badge": "Now available", "url": "godterm.com"})
 t = say("n14_outro", T + 0.8)
-say("n15_url", t + 0.5)
+t = say("n15_url", t + 0.3)
+# never cut the last line: it ends at least 1.3 s before the end
+od = max(od, t + 1.3 - T)
+scenes.append({"type": "outro", "start": round(T, 3), "dur": round(od, 3), "badge": "Now available", "url": "godterm.com"})
 T += od
 
 edit = {
