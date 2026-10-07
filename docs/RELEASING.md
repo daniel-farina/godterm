@@ -173,3 +173,15 @@ brew install daniel-farina/godterm/godterm          # the godterm command
 2. Publish the draft (`gh release edit vX --draft=false`).
 3. Run `scripts/release/homebrew.sh vX`.
 4. Add a fresh `## [Unreleased]` heading to CHANGELOG.md.
+
+## Release signing key (minisign)
+
+Every release from v0.2.2 carries `SHA256SUMS.minisig`, signed with the GodTerm release
+key; installed copies verify it against the public key built into the app
+(`RWTNzCFSrTk4Erhp4n8mN0kO3VgXNUYQliJVGM6jC0jaVe07tPVATFcT`).
+
+- The secret key lives on the release machine at `~/.config/godterm-release/minisign.key`
+  (outside the repo, mode 0600).
+- **For now, a backup of the key is stored in a separate private repository** (owner
+  only). It is not in this repository and must never be committed here. If the key is
+  lost, future updates cannot be signed with the key existing installs trust.

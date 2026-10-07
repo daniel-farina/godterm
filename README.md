@@ -161,8 +161,10 @@ background. Before anything is used it checks:
 
 - the download's SHA-256 against the release's `SHA256SUMS`,
 - the minisign signature on `SHA256SUMS` (`SHA256SUMS.minisig`, on every
-  release from 0.2.2; set `[update] require_signature = true` to refuse a
-  release without one),
+  release from 0.2.2). From 0.2.4 the signature is required: a release
+  without one is refused ("release vX is not signed; refusing to update").
+  `[update] require_signature = false` turns this off, which is not
+  recommended,
 - on macOS, the Developer ID signature, and Gatekeeper for the app.
 
 A chip in the status bar says when the update is ready. Restart to update

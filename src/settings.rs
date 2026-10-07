@@ -161,6 +161,7 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("update.enabled", "Check for updates", Kind::Toggle, "Look for a new version on GitHub at start and every few hours (Settings > About shows it; Ctrl-a N restarts into it)."),
             g("update.channel", "Update channel", Kind::Choice(&["stable", "prerelease"]), "stable: releases only; prerelease: also release candidates."),
             g("update.auto_download", "Download updates", Kind::Toggle, "Download and verify a new version in the background, so a restart is all it takes. Homebrew and system packages only get a notice."),
+            g("update.require_signature", "Require signed updates", Kind::Toggle, "On (recommended): an update is installed only if its SHA256SUMS carries a valid signature from GodTerm's release key. Turning this off is not recommended: an unsigned release would then be trusted on its checksums alone."),
             g("grok_claude_compat.hooks", "Grok: Claude hooks", Kind::Toggle, "Let grok tabs run the hooks of your Claude Code setup (~/.claude plugins and settings). Off by default: grok fails on them (command not found .../hooks/node)."),
             g("grok_claude_compat.skills", "Grok: Claude skills", Kind::Toggle, "Let grok tabs use your Claude Code skills."),
             g("grok_claude_compat.rules", "Grok: Claude rules", Kind::Toggle, "Let grok tabs read Claude Code rules."),

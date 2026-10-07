@@ -251,7 +251,8 @@ pub struct UpdateCfg {
     pub channel: String,
     /// Download and verify a new version in the background.
     pub auto_download: bool,
-    /// Refuse a release whose SHA256SUMS has no valid minisign signature.
+    /// Refuse a release whose SHA256SUMS has no valid minisign signature
+    /// (on by default: every release from 0.2.2 is signed).
     pub require_signature: bool,
     /// Hours between checks.
     pub check_hours: u64,
@@ -263,7 +264,7 @@ impl Default for UpdateCfg {
             enabled: true,
             channel: "stable".into(),
             auto_download: true,
-            require_signature: false,
+            require_signature: true,
             check_hours: 6,
         }
     }

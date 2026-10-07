@@ -7,6 +7,21 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-10-07
+
+### Self update
+- Update signatures are now required by default
+  (`update.require_signature = true`): an update is installed only if the
+  release's SHA256SUMS carries a valid signature from GodTerm's release
+  key. A release without one is still reported by the check, but never
+  downloaded or installed ("release vX is not signed; refusing to update.
+  Set update.require_signature = false to override"). `--force` lifts only
+  the downgrade guard, never the signature check. Every release from 0.2.2
+  is signed, so updates keep working.
+- Settings > General: "Require signed updates" (turning it off is not
+  recommended).
+
+
 ## [0.2.3] - 2026-10-07
 
 ### Fixed
@@ -150,7 +165,8 @@ The first public release, under the MIT License. claudego is now GodTerm.
 
 - claudego: config, credentials, usage, sessions, PTY panes and the TUI.
 
-[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/daniel-farina/godterm/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/daniel-farina/godterm/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/daniel-farina/godterm/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/daniel-farina/godterm/compare/v0.2.0...v0.2.1

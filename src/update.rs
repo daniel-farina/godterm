@@ -877,8 +877,13 @@ pub fn stage(
             verify_sig(&sums, &sig, &src.pubkey).context("refused")?;
             crate::log::info(&format!("update: SHA256SUMS of {v} signature ok"));
         }
-        None if src.require_sig => bail!("refused: release {} is not signed", rel.tag),
-        None => crate::log::info(&format!("update: {v} has no signature (not required yet)")),
+        None if src.require_sig => bail!(
+            "release {} is not signed; refusing to update. Set update.require_signature = false to override",
+            rel.tag
+        ),
+        None => crate::log::info(&format!(
+            "update: {v} has no signature (update.require_signature is off)"
+        )),
     }
     let want = parse_sums(&String::from_utf8_lossy(&sums))
         .into_iter()
@@ -1805,6 +1810,45 @@ pub mod tests {
         // The signature itself verifies over the original file.
         verify_sig(SUMS, SIG, &test_pubkey()).unwrap();
         assert!(verify_sig(b"tampered", SIG, &test_pubkey()).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn signatures_are_required_by_default() {
+        assert!(crate::config::UpdateCfg::default().require_signature);
+        assert!(Source::github(true).require_sig);
+    }
+
+    /// An unsigned release while signatures are required: the check still
+    /// reports it, staging refuses before any download with a message that
+    /// names the override, and nothing is left on disk.
+    #[test]
+    fn unsigned_release_is_reported_but_never_installed() {
+        let (d, l) = tmp("unsigned");
+        let method = test_method(d.join("godterm"));
+        let alias = "godterm-test.tar.gz".to_string();
+        let srv = mock_routes(|b| routes(b, "v9.9.9", false, &sums_for(&alias)), false);
+        let mut src = test_source(&srv.base);
+        src.require_sig = true;
+        let rel = check(&src, &mut Cache::default(), "stable")
+            .unwrap()
+            .expect("the check still sees the release");
+        assert_eq!(rel.version().to_string(), "9.9.9");
+        let e = stage(&src, &rel, &method, &l, &|_, _| {})
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("release v9.9.9 is not signed; refusing to update")
+                && e.contains("update.require_signature = false"),
+            "{e}"
+        );
+        assert!(
+            !l.updates.join("9.9.9").exists(),
+            "nothing downloaded or left behind"
+        );
+        assert!(!l.versions.join("9.9.9").exists(), "nothing installed");
+        // --force only lifts the downgrade guard in install(); staging (where
+        // the signature is checked) takes no force flag, so it cannot skip it.
         let _ = std::fs::remove_dir_all(&d);
     }
 
