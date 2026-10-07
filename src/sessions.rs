@@ -501,6 +501,122 @@ pub fn last_assistant_text(path: &Path) -> Option<String> {
         .filter(|t| !t.trim().is_empty())
 }
 
+/// One exchange in a transcript: what was asked, and the last text the
+/// assistant wrote for it (its answer when the turn is over).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Turn {
+    pub user: String,
+    pub reply: Option<String>,
+    pub at: Option<String>,
+    /// Its last message is text with no tool call after it (the turn is
+    /// over, not paused between tools).
+    pub finished: bool,
+}
+
+/// The last `n` exchanges of a transcript (main chain only), oldest first.
+pub fn recent_turns(path: &Path, n: usize) -> Vec<Turn> {
+    use std::io::{Seek, SeekFrom};
+    let Ok(mut f) = fs::File::open(path) else {
+        return vec![];
+    };
+    const TAIL: u64 = 4 * 1024 * 1024;
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let skip_partial = len > TAIL;
+    if skip_partial && f.seek(SeekFrom::Start(len - TAIL)).is_err() {
+        return vec![];
+    }
+    let mut turns: Vec<Turn> = vec![];
+    // The message id the current reply text belongs to.
+    let mut msg_id = String::new();
+    for (i, line) in lossy_lines(BufReader::new(f)).enumerate() {
+        if i == 0 && skip_partial {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if v.get("isSidechain")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || v.get("isMeta").and_then(Value::as_bool).unwrap_or(false)
+        {
+            continue;
+        }
+        let at = v
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        match v.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                let text = match &v["message"]["content"] {
+                    Value::String(s) => Some(s.clone()),
+                    Value::Array(a) => {
+                        let t: Vec<&str> = a
+                            .iter()
+                            .filter(|b| b["type"] == "text")
+                            .filter_map(|b| b["text"].as_str())
+                            .collect();
+                        (!t.is_empty()).then(|| t.join("\n"))
+                    }
+                    _ => None,
+                };
+                match text.filter(|t| !t.trim().is_empty() && !t.starts_with('<')) {
+                    Some(t) => {
+                        turns.push(Turn {
+                            user: t,
+                            reply: None,
+                            at,
+                            finished: false,
+                        });
+                        msg_id.clear();
+                    }
+                    // A tool result: the turn goes on.
+                    None => {
+                        if let Some(turn) = turns.last_mut() {
+                            turn.finished = false;
+                        }
+                    }
+                }
+            }
+            Some("assistant") => {
+                let Some(turn) = turns.last_mut() else {
+                    continue;
+                };
+                let msg = &v["message"];
+                let id = msg["id"].as_str().unwrap_or("").to_string();
+                let calls = msg["content"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|b| b["type"] == "tool_use"));
+                turn.finished = !calls;
+                let texts: Vec<&str> = msg["content"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter(|b| b["type"] == "text")
+                            .filter_map(|b| b["text"].as_str())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if texts.is_empty() {
+                    continue;
+                }
+                let t = texts.join("\n\n");
+                match &mut turn.reply {
+                    Some(r) if id == msg_id && !id.is_empty() => {
+                        r.push_str("\n\n");
+                        r.push_str(&t);
+                    }
+                    _ => turn.reply = Some(t),
+                }
+                msg_id = id;
+            }
+            _ => {}
+        }
+    }
+    let k = turns.len().saturating_sub(n);
+    turns.split_off(k)
+}
+
 /// Text of the last prompt typed into a transcript (main chain, not tool
 /// results or meta lines).
 pub fn last_user_text(path: &Path) -> Option<String> {

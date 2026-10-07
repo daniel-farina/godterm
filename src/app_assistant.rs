@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::{Duration, Instant};
 
 use crate::app::App;
-use crate::assistant::{take_sentences, Brain, BrainEvent};
+use crate::assistant::{Brain, BrainEvent};
 use crate::pane::Activity;
 
 /// A barge-in colors only the request that follows soon after it.
@@ -34,8 +34,6 @@ pub struct AssistantState {
     pub log: Vec<Entry>,
     /// The reply being streamed.
     pub current: String,
-    /// What is left to speak of it.
-    say_buf: String,
     pub busy: bool,
     pub show: bool,
     pub input: String,
@@ -110,6 +108,17 @@ pub struct AssistantState {
     /// once with that.
     pub stale_ids: std::collections::HashMap<u64, String>,
     purged: bool,
+    /// The part of the last reply not spoken (past the spoken sentence
+    /// limit), and when: "more" says it.
+    pub unsaid: Option<(Instant, String)>,
+    /// What was spoken lately (newest last), for the panel and tests.
+    pub spoken: Vec<String>,
+    /// This turn was started by GodTerm (a delegated answer arrived), not
+    /// by the user.
+    pub system_turn: bool,
+    /// Questions sent to tabs whose answers are reported back.
+    pub follow_ups: Vec<crate::app_followup::FollowUp>,
+    pub follow_seq: u64,
 }
 
 /// Where the time of one turn went.
@@ -438,6 +447,7 @@ impl App {
             }
         }
         s.push_str(&self.modes_line());
+        s.push_str(&self.pending_answers_line());
         // Listening is GodTerm's business: a message here means it is on.
         s.push_str(&match self.pause_left() {
             Some(left) => format!("listening_paused: {left} s left\n"),
@@ -604,11 +614,37 @@ impl App {
         if text.is_empty() {
             return;
         }
-        self.assistant.log.push(Entry {
-            who: Who::User,
-            text: text.to_string(),
+        if self.say_more(text) || self.cancel_follow_ups_said(text) {
+            return;
+        }
+        self.start_turn(text, heard, None);
+    }
+
+    /// A turn GodTerm starts itself (a delegated answer arrived): `note`
+    /// shows in the panel, `msg` goes to the brain.
+    pub fn ask_assistant_system(&mut self, note: &str, msg: &str) {
+        self.start_turn(msg, None, Some(note));
+    }
+
+    fn start_turn(&mut self, text: &str, heard: Option<&str>, system: Option<&str>) {
+        self.assistant.unsaid = None;
+        self.assistant.system_turn = system.is_some();
+        self.assistant.log.push(match system {
+            Some(note) => Entry {
+                who: Who::Note,
+                text: note.to_string(),
+            },
+            None => Entry {
+                who: Who::User,
+                text: text.to_string(),
+            },
         });
-        self.assistant.last_user = text.to_string();
+        // A turn of our own is never the user's yes.
+        self.assistant.last_user = if system.is_some() {
+            String::new()
+        } else {
+            text.to_string()
+        };
         self.assistant.ignored_turn = false;
         self.trim_log();
         // New learned rules: the brain restarts with them, between turns.
@@ -642,7 +678,6 @@ impl App {
             ..Default::default()
         };
         self.assistant.current.clear();
-        self.assistant.say_buf.clear();
         self.assistant.block.clear();
         self.assistant.finals.clear();
         self.assistant.held.clear();
@@ -667,6 +702,7 @@ impl App {
             .conv
             .get_or_insert_with(crate::assistant_history::ConvLog::new);
         match heard {
+            _ if system.is_some() => conv.write("system", serde_json::json!({"text": text, "account": account, "model": model})),
             Some(h) => conv.write("user", serde_json::json!({"text": text, "via": "voice", "heard": h, "account": account, "model": model})),
             None => conv.write("user", serde_json::json!({"text": text, "via": "typed", "account": account, "model": model})),
         }
@@ -692,7 +728,14 @@ impl App {
             self.assistant.brain = None;
             self.note(format!("Could not send: {e}"));
         }
-        crate::log::info(&format!("assistant: user: {text}"));
+        if system.is_some() {
+            crate::log::info(&format!(
+                "assistant: system turn: {}",
+                text.chars().take(300).collect::<String>()
+            ));
+        } else {
+            crate::log::info(&format!("assistant: user: {text}"));
+        }
     }
 
     /// "new conversation" / "forget that".
@@ -734,6 +777,11 @@ impl App {
             .unwrap_or_else(|| "the account with the most left".into());
         self.note(format!("Now on {label}."));
         self.flash(format!("Assistant uses {label} from now on"));
+    }
+
+    /// Whether replies are spoken at all.
+    pub fn tts_on(&self) -> bool {
+        self.voice.engine.as_ref().is_some_and(|v| v.tts) || self.cfg.voice.tts
     }
 
     /// Speak a line of the assistant's reply (queued after what is being
@@ -802,23 +850,22 @@ impl App {
     /// chose to ignore what it heard).
     fn say_part(&mut self, t: &str) {
         if !self.assistant.muted && !self.assistant.ignored_turn && !t.trim().is_empty() {
+            self.assistant.spoken.push(t.trim().to_string());
+            let n = self.assistant.spoken.len();
+            if n > 20 {
+                self.assistant.spoken.drain(..n - 20);
+            }
             self.speak_assistant(t.trim());
         }
     }
 
-    /// The text block streamed so far has ended. Before any tool call it
-    /// is held: a tool call next makes it narration (shown dim, never
-    /// spoken), the end of the turn makes it the answer.
+    /// The text block streamed so far has ended. It is held: a tool call
+    /// next makes it narration (shown dim, never spoken), the end of the
+    /// turn makes it the answer. Nothing before the last tool call is
+    /// spoken.
     fn end_block(&mut self, tool_next: bool) {
         let b = std::mem::take(&mut self.assistant.block).trim().to_string();
-        if self.assistant.tools_this_turn > 0 {
-            // After a tool: it streamed out as speech already.
-            let rest = std::mem::take(&mut self.assistant.say_buf);
-            self.say_part(&rest);
-            if !b.is_empty() {
-                self.assistant.finals.push(b);
-            }
-        } else if tool_next {
+        if tool_next {
             if !b.is_empty() {
                 self.assistant.log.push(Entry {
                     who: Who::Preamble,
@@ -828,9 +875,111 @@ impl App {
         } else if !b.is_empty() {
             self.assistant.held.push(b);
         }
-        self.assistant.say_buf.clear();
         self.assistant.got_delta = false;
         self.refresh_current();
+    }
+
+    /// Speak the answer: narration dropped (shown dim), at most the
+    /// spoken sentence limit, the rest offered. Returns the reply without
+    /// its narration.
+    fn speak_reply(&mut self, reply: &str) -> String {
+        let max = self.cfg.assistant.spoken_sentences;
+        let (say, narr, rest) = crate::assistant::spoken_part(reply, max);
+        if !narr.is_empty() {
+            self.assistant.log.push(Entry {
+                who: Who::Preamble,
+                text: narr.join(" "),
+            });
+        }
+        let shown = match &rest {
+            Some(r) => format!("{say} {r}"),
+            None => say.clone(),
+        };
+        match rest {
+            Some(rest) => {
+                let offer = if say.contains('?') {
+                    "Say more for the rest."
+                } else {
+                    "Want the rest?"
+                };
+                self.say_part(&format!("{say} {offer}"));
+                self.assistant.unsaid = Some((Instant::now(), rest));
+            }
+            None => self.say_part(&say),
+        }
+        shown
+    }
+
+    /// "more", "go on", or a yes to "Want the rest?": say what the last
+    /// reply left unsaid, without a turn.
+    fn say_more(&mut self, text: &str) -> bool {
+        let Some((at, rest)) = self.assistant.unsaid.clone() else {
+            return false;
+        };
+        if at.elapsed() > Duration::from_secs(180) {
+            self.assistant.unsaid = None;
+            return false;
+        }
+        let c = text
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric() || c.is_whitespace() || *c == '\'')
+            .collect::<String>();
+        let c = c.split_whitespace().collect::<Vec<_>>().join(" ");
+        let more = [
+            "more",
+            "say more",
+            "tell me more",
+            "go on",
+            "keep going",
+            "continue",
+            "the rest",
+            "yes the rest",
+            "read the rest",
+            "say the rest",
+            "details",
+            "the details",
+            "give me the details",
+            "yes the details",
+            "more please",
+            "yes more",
+        ];
+        let yes = [
+            "yes",
+            "yeah",
+            "yep",
+            "sure",
+            "yes please",
+            "please",
+            "ok",
+            "okay",
+        ];
+        let offered_plainly = !self
+            .assistant
+            .log
+            .iter()
+            .rev()
+            .find(|e| e.who == Who::Reply)
+            .is_some_and(|e| {
+                crate::assistant::spoken_part(&e.text, self.cfg.assistant.spoken_sentences)
+                    .0
+                    .contains('?')
+            });
+        // A yes with a question waiting answers that question instead.
+        let yes_ok = offered_plainly && self.pending_confirms.is_empty();
+        if !(more.contains(&c.as_str()) || (yes_ok && yes.contains(&c.as_str()))) {
+            return false;
+        }
+        self.assistant.unsaid = None;
+        self.assistant.log.push(Entry {
+            who: Who::User,
+            text: text.to_string(),
+        });
+        crate::log::info(&format!("assistant: said the rest ({} chars)", rest.len()));
+        self.assistant.muted = false;
+        self.say_part(&rest);
+        self.assistant.follow_up = true;
+        true
     }
 
     fn refresh_current(&mut self) {
@@ -913,20 +1062,6 @@ impl App {
                 self.assistant.got_delta = true;
                 self.assistant.block.push_str(&t);
                 self.refresh_current();
-                // After a tool the text is the answer: speak as it streams.
-                if self.assistant.tools_this_turn > 0 {
-                    self.assistant.say_buf.push_str(&t);
-                    if self.assistant.timing.first_audio.is_none() {
-                        if let Some(c) =
-                            crate::assistant::take_first_clause(&mut self.assistant.say_buf)
-                        {
-                            self.say_part(&c);
-                        }
-                    }
-                    while let Some(s) = take_sentences(&mut self.assistant.say_buf) {
-                        self.say_part(&s);
-                    }
-                }
             }
             BrainEvent::Text(t) => {
                 // A whole block (after its deltas, or alone).
@@ -964,11 +1099,8 @@ impl App {
                 if !self.assistant.block.trim().is_empty() {
                     self.end_block(false);
                 }
-                let rest = std::mem::take(&mut self.assistant.say_buf);
-                self.say_part(&rest);
                 // No tool followed the held text: it is the answer.
                 for h in std::mem::take(&mut self.assistant.held) {
-                    self.say_part(&h);
                     self.assistant.finals.push(h);
                 }
                 let reply = if self.assistant.finals.is_empty() {
@@ -976,7 +1108,6 @@ impl App {
                 } else {
                     self.assistant.finals.join(" ")
                 };
-                let spoke = !self.assistant.finals.is_empty();
                 self.assistant.finals.clear();
                 self.assistant.current.clear();
                 if self.assistant.ignored_turn {
@@ -995,8 +1126,13 @@ impl App {
                     self.voice.action = Some("(not for the assistant, ignored)".into());
                     crate::log::info(&format!("assistant: ignored: {}", self.assistant.last_user));
                 } else if !reply.is_empty() {
-                    if !spoke {
-                        self.say_part(&reply.clone());
+                    let reply = self.speak_reply(&reply);
+                    // Voice off: a report of ours still reaches the user.
+                    if self.assistant.system_turn && !self.tts_on() {
+                        self.flash(format!(
+                            "Assistant: {}",
+                            crate::sessions::snippet(&reply, 160)
+                        ));
                     }
                     crate::log::info(&format!(
                         "assistant: reply: {}",
@@ -1012,6 +1148,7 @@ impl App {
                     });
                 }
                 self.assistant.busy = false;
+                self.assistant.system_turn = false;
                 self.assistant.asked_at = Some(Instant::now());
                 self.assistant.last_cost = cost;
                 let ep = self.cfg.assistant.endpoint_ms;
@@ -1126,6 +1263,7 @@ impl App {
     /// Every second or so: move off a nearly empty account.
     pub fn assistant_tick(&mut self) {
         self.assistant_deadlines();
+        self.follow_ups_tick();
         if self
             .assistant
             .memory_count

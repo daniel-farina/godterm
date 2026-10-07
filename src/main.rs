@@ -4,6 +4,7 @@ mod activity;
 mod add_account;
 mod app;
 mod app_assistant;
+mod app_followup;
 mod app_layout;
 mod app_learned;
 mod app_loops;

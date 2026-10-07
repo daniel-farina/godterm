@@ -1050,6 +1050,34 @@ fn assistant_rows(cfg: &Config, all: bool) -> Vec<Setting> {
             "Seconds after it speaks to listen for your reply without the wake word (wake mode).",
         ),
     );
+    r.when(
+        on,
+        why,
+        g(
+            "assistant.spoken_sentences",
+            "Spoken sentences",
+            Kind::Number {
+                min: 0,
+                max: 10,
+                step: 1,
+            },
+            "Say at most this many sentences of a reply (0: all); the rest stays in the panel, and saying \"more\" reads it.",
+        ),
+    );
+    r.when(
+        on,
+        why,
+        g(
+            "assistant.answer_wait_min",
+            "Wait for tab answers (min)",
+            Kind::Number {
+                min: 1,
+                max: 120,
+                step: 5,
+            },
+            "A question the assistant asks a tab's agent is reported back when it answers, for up to this many minutes.",
+        ),
+    );
     r.group("Confirmations and limits");
     r.when(on, why, g("assistant.confirm", "Ask before", Kind::Choice(&["destructive", "always", "never"]), "destructive: a spoken yes before closing several or busy tabs, stopping loops, broadcasting, denying, or approving rm, push, force and the like; always: every approval too; never: no confirmations (not recommended)."));
     r.when(

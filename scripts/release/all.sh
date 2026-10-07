@@ -84,6 +84,7 @@ case "${ONLY:-all}" in
     [[ $failed == 0 ]] || { echo "a Linux or Windows build failed (logs above)" >&2; exit 1; }
     ;;
 esac
+"$WT/scripts/release/aliases.sh"
 "$WT/scripts/release/checksums.sh"
 
 if [[ -n "${MINISIGN_KEY:-}" ]]; then

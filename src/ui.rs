@@ -9140,6 +9140,318 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// Narration is never spoken, even inside the answer's own block; a
+    /// long answer is cut to two spoken sentences and "more" says the rest.
+    #[test]
+    fn narration_is_never_spoken_and_speech_is_brief() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::app_assistant::Who;
+        use crate::assistant::BrainEvent as B;
+        let (mut app, home) = test_app("narration");
+        app.cfg.assistant.spoken_sentences = 2;
+        // The live log of 14:38: text between tool calls was read aloud.
+        app.assistant.busy = true;
+        app.on_brain(B::Tool("read_tab".into(), serde_json::json!({})));
+        app.on_brain(B::Delta("The trading room tab shows no new requests, it's idle and running its loops. Let me check what's in the folder to see what's been built out so far.".into()));
+        app.on_brain(B::BlockStart("tool_use".into()));
+        app.on_brain(B::Tool("list_dir".into(), serde_json::json!({})));
+        app.on_brain(B::Delta(
+            "The trading room has a full production application.".into(),
+        ));
+        app.on_brain(B::Text(
+            "The trading room has a full production application.".into(),
+        ));
+        app.on_brain(B::Done {
+            text: String::new(),
+            cost: None,
+            error: false,
+        });
+        assert_eq!(
+            app.assistant.spoken,
+            vec!["The trading room has a full production application."]
+        );
+        assert!(app.assistant.log.iter().any(
+            |e| e.who == Who::Preamble && e.text.contains("Let me check what's in the folder")
+        ));
+        // The same reply block: narration first, then the answer.
+        app.assistant.spoken.clear();
+        app.ask_assistant("what about the pauses");
+        let said = "Let me check\u{2026} Let me get the session detail\u{2026} Let me look at the PLAN\u{2026} The pause fix landed on Tuesday. Marcus now answers within a second. He also talks a bit faster.";
+        app.on_brain(B::Delta(said.into()));
+        app.on_brain(B::Text(said.into()));
+        app.on_brain(B::Done {
+            text: said.into(),
+            cost: None,
+            error: false,
+        });
+        assert_eq!(
+            app.assistant.spoken,
+            vec!["The pause fix landed on Tuesday. Marcus now answers within a second. Want the rest?"]
+        );
+        let reply = app
+            .assistant
+            .log
+            .iter()
+            .rev()
+            .find(|e| e.who == Who::Reply)
+            .unwrap();
+        assert!(
+            !reply.text.contains("Let me") && reply.text.ends_with("a bit faster."),
+            "{}",
+            reply.text
+        );
+        assert!(app
+            .assistant
+            .log
+            .iter()
+            .any(|e| e.who == Who::Preamble && e.text.contains("Let me look at the PLAN")));
+        // "more": the rest, without a turn.
+        app.ask_assistant_from("tell me more", Some("tell me more"));
+        assert!(!app.assistant.busy);
+        assert_eq!(
+            app.assistant.spoken.last().unwrap(),
+            "He also talks a bit faster."
+        );
+        assert!(app.assistant.unsaid.is_none());
+        app.assistant.brain = None;
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A tab with a transcript, waiting to start (a prompt to it queues).
+    fn tab_with_transcript(
+        app: &mut crate::app::App,
+        home: &std::path::Path,
+        sid: &str,
+    ) -> (u64, std::path::PathBuf) {
+        let proj = home.join("newtabs").join("trading-room");
+        std::fs::create_dir_all(&proj).unwrap();
+        let t = app.panes[0].add_tab(proj.clone());
+        let tab = &mut app.panes[0].tabs[t];
+        tab.session_id = Some(sid.into());
+        tab.custom_name = Some("trading room".into());
+        tab.pending = Some(crate::pane::LaunchKind::Normal);
+        tab.activity = crate::pane::Activity::Ready;
+        let uid = tab.uid;
+        let a = app.panes[0].account.unwrap();
+        let dir = app.cfg.accounts[a]
+            .config_dir()
+            .join("projects")
+            .join(crate::state::encode_project_dir(&proj));
+        std::fs::create_dir_all(&dir).unwrap();
+        (uid, dir.join(format!("{sid}.jsonl")))
+    }
+
+    /// The tab's agent got `question` and (with `reply`) answered it.
+    fn write_turn(path: &std::path::Path, question: &str, reply: Option<&str>) {
+        use serde_json::json;
+        let mut lines = vec![
+            json!({"type": "user", "message": {"role": "user", "content": "earlier work"}}),
+            json!({"type": "assistant", "message": {"id": "m0", "content": [{"type": "text", "text": "Earlier answer."}]}}),
+            json!({"type": "user", "message": {"role": "user", "content": question}, "timestamp": "2026-10-07T14:39:02Z"}),
+            json!({"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": "Let me look at the git log."}, {"type": "tool_use", "id": "x", "name": "Bash", "input": {}}]}}),
+            json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "abc fix pauses"}]}}),
+        ];
+        if let Some(r) = reply {
+            lines.push(json!({"type": "assistant", "message": {"id": "m2", "content": [{"type": "text", "text": r}]}}));
+        }
+        let body: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        std::fs::write(path, body.join("\n") + "\n").unwrap();
+    }
+
+    /// "Ask the agent": one send_prompt, nothing read; the tab's answer
+    /// comes back as a turn of our own and is spoken.
+    #[test]
+    fn ask_the_agent_then_its_answer_is_told() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::app_assistant::Who;
+        use crate::assistant::BrainEvent as B;
+        use serde_json::json;
+        let (mut app, home) = test_app("askagent");
+        let args_file = home.join("brain-args.txt");
+        let rec = home.join("brain-in.txt");
+        let stub = crate::test_stub::claude(
+            &home.join("brain"),
+            &[
+                ("args_to", args_file.display().to_string()),
+                ("stdin_to", rec.display().to_string()),
+                ("stdin_append", "1".into()),
+            ],
+        );
+        app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
+        let (uid, transcript) =
+            tab_with_transcript(&mut app, &home, "5555eeee-0000-4000-8000-000000000005");
+        let tid = format!("t{uid}");
+        let said =
+            "no I'm talking about the pauses, just ask the agent about the latest status on that";
+        app.ask_assistant_from(said, Some(said));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let argv = std::fs::read_to_string(&args_file).unwrap_or_default();
+        assert!(
+            argv.contains("make exactly one send_prompt")
+                && argv.contains("recent_turns")
+                && argv.contains("comes from the conversation, not the code"),
+            "the prompt carries both rules"
+        );
+        // The brain's turn: one send_prompt, nothing else.
+        let q = "What is the latest status on Marcus's long pauses while talking? Are they fixed?";
+        let v = app.control_call(
+            "send_prompt",
+            &json!({"_client": "brain", "tab": tid, "text": q, "expect_reply": true}),
+        );
+        assert!(v["error"].is_null(), "{v}");
+        app.on_brain(B::Tool("send_prompt".into(), json!({})));
+        app.on_brain(B::Text(
+            "Asked the trading room; I'll tell you when it answers.".into(),
+        ));
+        app.on_brain(B::Done {
+            text: String::new(),
+            cost: None,
+            error: false,
+        });
+        let tools: Vec<&str> = app
+            .assistant
+            .log
+            .iter()
+            .filter(|e| e.who == Who::Tool)
+            .map(|e| e.text.split(' ').next().unwrap_or(""))
+            .collect();
+        assert_eq!(tools, vec!["send_prompt"], "{tools:?}");
+        assert_eq!(app.assistant.turn_reads, 0);
+        assert!(
+            app.state_preamble().contains("pending_answers: ")
+                && app.state_preamble().contains("waiting 0 min")
+        );
+        // The prompt went in; the tab works on it.
+        app.deliveries.clear();
+        if let Some((s, t)) = app.find_tab(uid) {
+            app.panes[s].tabs[t].activity = crate::pane::Activity::Working;
+        }
+        write_turn(&transcript, q, None);
+        app.follow_ups_tick();
+        assert!(!app.assistant.busy);
+        // Ready, but nothing written yet after the tool call: still waiting.
+        if let Some((s, t)) = app.find_tab(uid) {
+            app.panes[s].tabs[t].activity = crate::pane::Activity::Ready;
+        }
+        app.follow_ups_tick();
+        assert!(!app.assistant.busy, "no answer yet");
+        // The answer arrives.
+        write_turn(&transcript, q, Some("The long pauses are fixed: synthesis now streams per sentence, so Marcus starts talking within 400 ms. Commit abc landed it."));
+        app.assistant.follow_ups[0].checked = None;
+        app.follow_ups_tick();
+        assert!(
+            app.assistant.busy && app.assistant.system_turn,
+            "a turn of our own"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let sent = std::fs::read_to_string(&rec).unwrap_or_default();
+        assert!(
+            sent.contains(&format!(
+                "(The agent in {tid} (trading room) answered your earlier question"
+            )) && sent.contains("synthesis now streams per sentence")
+                && sent.contains("one or two spoken sentences"),
+            "{sent}"
+        );
+        app.assistant.spoken.clear();
+        app.on_brain(B::Text("The trading room says the long pauses are fixed; Marcus starts talking within 400 milliseconds now. Want the details?".into()));
+        app.on_brain(B::Done {
+            text: String::new(),
+            cost: None,
+            error: false,
+        });
+        assert_eq!(
+            app.assistant.spoken,
+            vec!["The trading room says the long pauses are fixed; Marcus starts talking within 400 milliseconds now. Want the details?"]
+        );
+        assert!(!app.assistant.system_turn);
+        // "Did it answer?": the snapshot and get_state say so.
+        let st = app.control_call("get_state", &json!({}));
+        assert_eq!(
+            st["result"]["pending_answers"][0]["state"], "answered and told",
+            "{st}"
+        );
+        assert!(app.state_preamble().contains("(told; read_tab has it)"));
+        // recent_turns: the conversation, not the code.
+        let v = app.control_call("recent_turns", &json!({"tab": tid, "n": 2}));
+        let turns = v["result"]["turns"].as_array().unwrap();
+        assert_eq!(turns.len(), 2, "{v}");
+        assert_eq!(turns[1]["user"], json!(q));
+        assert!(turns[1]["reply"]
+            .as_str()
+            .unwrap()
+            .starts_with("The long pauses are fixed"));
+        app.assistant.brain = None;
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Answers wait for a pause or the user's own speech, a silent tab
+    /// times out, and "never mind" stops the wait.
+    #[test]
+    fn delegated_answers_wait_time_out_and_cancel() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, home) = test_app("followwait");
+        let (uid, transcript) =
+            tab_with_transcript(&mut app, &home, "6666ffff-0000-4000-8000-000000000006");
+        let q = "Did the deploy finish?";
+        // Paused: held, named in the summary, told after the pause.
+        app.register_follow_up(uid, q);
+        app.assistant.follow_ups[0].seen_working = true;
+        app.pause_listening(Some(60), None);
+        write_turn(&transcript, q, Some("Yes, the deploy finished at 14:20."));
+        app.follow_ups_tick();
+        assert!(!app.assistant.busy, "not while paused");
+        assert!(app
+            .voice
+            .paused
+            .as_ref()
+            .unwrap()
+            .queued
+            .iter()
+            .any(|m| m == "trading room answered your question"));
+        app.resume_listening("test");
+        assert!(app
+            .voice
+            .away_summary
+            .as_deref()
+            .unwrap()
+            .contains("trading room answered"));
+        // Mid utterance: still waits.
+        app.voice.partial = Some("hey god".into());
+        app.follow_ups_tick();
+        assert!(!app.assistant.busy, "not while the user talks");
+        app.voice.partial = None;
+        app.follow_ups_tick();
+        assert!(app.assistant.busy && app.assistant.system_turn);
+        app.reset_hung_turn("test over");
+        // Timed out: dropped quietly.
+        app.cfg.assistant.answer_wait_min = 1;
+        app.register_follow_up(uid, "Is the build green?");
+        let n = app.assistant.follow_ups.len();
+        app.assistant.follow_ups[n - 1].sent =
+            std::time::Instant::now() - std::time::Duration::from_secs(61);
+        app.follow_ups_tick();
+        assert_eq!(
+            app.assistant.follow_ups[n - 1].state,
+            crate::app_followup::FuState::TimedOut
+        );
+        assert!(!app.assistant.busy);
+        // "never mind": stop waiting, said locally.
+        app.register_follow_up(uid, "Which tests fail?");
+        app.ask_assistant_from("never mind", Some("never mind"));
+        let n = app.assistant.follow_ups.len();
+        assert_eq!(
+            app.assistant.follow_ups[n - 1].state,
+            crate::app_followup::FuState::Cancelled
+        );
+        assert!(!app.assistant.busy);
+        assert_eq!(
+            app.assistant.spoken.last().unwrap(),
+            "Okay, I won't wait for trading room's answer."
+        );
+        app.assistant.brain = None;
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn assistant_routing() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

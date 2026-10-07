@@ -77,6 +77,21 @@ pub const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "recent_turns",
+        description: "The last n exchanges in a tab's conversation (default 3, at most 10): each prompt and the reply claude gave, shortened. The first place to look for the status of ongoing work (\"what's the latest with X\", \"did that get fixed\"), before files or code.",
+        schema: || {
+            props(
+                json!({"tab": tab_prop(), "n": {"type": "integer"}}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "stop_waiting",
+        description: "Stop watching for the answer to a question you sent a tab (tab), or to every one (no tab); the state's pending_answers lists them.",
+        schema: || props(json!({"tab": tab_prop()}), &[]),
+    },
+    Tool {
         name: "list_dir",
         description: "List folders locally, instantly, without spending quota: one tab, a list or \"all\" in ONE call (each tab's listing comes back together), or a path inside the tab's folder. match filters names (\"*.html\"). depth 1 to 3. Entries are relative to the folder, which is returned absolute.",
         schema: || {
@@ -153,10 +168,10 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "send_prompt",
-        description: "Give claude in one or more tabs a prompt to work on. Returns per tab: delivered (claude started on it), queued (the tab is busy or starting; it is sent once ready) or failed (with the reason). More than one tab needs one confirmation for the whole set.",
+        description: "Give claude in one or more tabs a prompt to work on. Returns per tab: delivered (claude started on it), queued (the tab is busy or starting; it is sent once ready) or failed (with the reason). More than one tab needs one confirmation for the whole set. expect_reply true: you are asking the tab's agent a question for the user; GodTerm watches for its answer and starts a turn for you to tell the user when it arrives (default: true when the text or the user's request is a question).",
         schema: || {
             props(
-                json!({"tab": tab_prop(), "account": account_prop(), "text": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
+                json!({"tab": tab_prop(), "account": account_prop(), "text": {"type": "string"}, "expect_reply": {"type": "boolean"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
                 &["text"],
             )
         },
@@ -2335,6 +2350,7 @@ impl App {
             if matches!(
                 tool,
                 "read_tab"
+                    | "recent_turns"
                     | "read_file"
                     | "list_dir"
                     | "session_detail"
@@ -2401,6 +2417,10 @@ impl App {
                 }
             }
         }
+        // A question to a tab: its answer is told when it comes.
+        if brain && tool == "send_prompt" && v["error"].is_null() {
+            self.follow_up_sends(args, &v);
+        }
         self.assistant_log_tool(tool, args, &v);
         v
     }
@@ -2421,6 +2441,40 @@ impl App {
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
         Ok(match tool {
             "get_state" => ok(self.state_json()),
+            "recent_turns" => {
+                let (sl, t) = self.one_tab(args)?;
+                let id = tab_id(self.panes[sl].tabs[t].uid);
+                let n = args
+                    .get("n")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3)
+                    .clamp(1, 10) as usize;
+                let path = self
+                    .transcript_path(sl, t)
+                    .ok_or("no transcript for that tab yet (nothing was asked there)")?;
+                let turns: Vec<Value> = crate::sessions::recent_turns(&path, n)
+                    .into_iter()
+                    .map(|x| {
+                        json!({
+                            "at": x.at,
+                            "user": crate::sessions::first_sentences(&x.user, 300),
+                            "reply": x.reply.map(|r| crate::sessions::first_sentences(&r, 700)),
+                        })
+                    })
+                    .collect();
+                ok(json!({"tab": id, "state": self.state_word(sl, t), "turns": turns}))
+            }
+            "stop_waiting" => {
+                let uid = match args.get("tab") {
+                    Some(v) if !v.is_null() => {
+                        let (sl, t) = self.one_tab(args)?;
+                        Some(self.panes[sl].tabs[t].uid)
+                    }
+                    _ => None,
+                };
+                let n = self.cancel_follow_ups(uid);
+                ok(json!({"stopped": n}))
+            }
             "read_tab" => {
                 let (sl, t) = self.one_tab(args)?;
                 let id = tab_id(self.panes[sl].tabs[t].uid);
@@ -3912,6 +3966,7 @@ impl App {
         let now = chrono::Utc::now();
         json!({
             "modes": self.modes_line().trim(),
+            "pending_answers": self.pending_answers_json(),
             "listening_paused": self.voice.paused.as_ref().map(|p| json!({"seconds_left": self.pause_left(), "reason": p.reason, "announcements_held": p.queued.len()})),
             "closed": self.closed.iter().rev().take(10).enumerate().map(|(i, c)| json!({"index": i, "tab": c.label, "account": c.account, "cwd": c.cwd, "loops": c.loops.len()})).collect::<Vec<_>>(),
             "accounts": (0..self.cfg.accounts.len()).map(|a| json!({
@@ -4325,6 +4380,7 @@ pub fn test_control() -> bool {
 pub const READ_ONLY: &[&str] = &[
     "get_state",
     "read_tab",
+    "recent_turns",
     "list_dir",
     "read_file",
     "sessions",

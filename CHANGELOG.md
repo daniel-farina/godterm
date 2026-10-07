@@ -7,6 +7,34 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-07
+
+### Assistant
+- "Ask the agent" delegates: one prompt to the tab, nothing read first,
+  and the tab's answer is told back to you in a sentence or two when its
+  turn ends (it waits while you talk or listening is paused, batches
+  answers, gives up after `assistant.answer_wait_min`, and "never mind"
+  cancels).
+- Status questions start from the tab's own conversation (a new
+  `recent_turns` tool); files are read only when you ask about the code.
+- No spoken narration: "Let me...", "I'll check..." are dropped from
+  speech and shown dim, and nothing before the last tool call is spoken.
+- Spoken answers stop after two sentences (`assistant.spoken_sentences`)
+  with "Want the rest?"; saying "more" speaks the rest without a new turn.
+
+### Look
+- The app icon is the blue crystal, the same as the site and the README
+  (macOS app and DMG, the Windows exe and installer, the Linux desktop
+  icon).
+
+### Docs and release
+- The README says what is local and what optional Grok voice sends to
+  xAI.
+- Release downloads also have version-less names (for example
+  `GodTerm-macos-universal.dmg`), so `releases/latest/download/<name>`
+  links keep working across versions.
+
+
 ### Voice
 - Background voices: a speaker lock that only accepts your enrolled voice
   (WeSpeaker ResNet34, `godterm voice install-speaker`, Settings > Voice
@@ -89,6 +117,7 @@ The first public release, under the MIT License. claudego is now GodTerm.
 
 - claudego: config, credentials, usage, sessions, PTY panes and the TUI.
 
-[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/daniel-farina/godterm/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/daniel-farina/godterm/releases/tag/v0.2.0
 [0.1.0]: https://github.com/daniel-farina/godterm/commits/v0.2.0

@@ -279,6 +279,12 @@ pub struct AssistantCfg {
     /// A new assistant process remembers the conversations of this many
     /// days (a short summary of each; 0: none).
     pub memory_days: u32,
+    /// Speak at most this many sentences of a reply (0: all); the rest
+    /// stays in the panel, and "more" says it.
+    pub spoken_sentences: usize,
+    /// Watch for the answer to a question delegated to a tab this many
+    /// minutes, then stop waiting.
+    pub answer_wait_min: u64,
 }
 
 impl Default for AssistantCfg {
@@ -298,6 +304,8 @@ impl Default for AssistantCfg {
             prewarm: true,
             history_days: 30,
             memory_days: 2,
+            spoken_sentences: 2,
+            answer_wait_min: 15,
         }
     }
 }

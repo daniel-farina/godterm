@@ -299,59 +299,86 @@ pub fn parse_line(line: &str) -> Vec<BrainEvent> {
     out
 }
 
-/// Cut complete sentences off the front of a streamed reply, so speech
-/// can start before the reply is done.
-/// The first piece of a reply, as early as it reads well: up to a comma
-/// or sentence end after 4 words, or 8 words, so speech starts sooner.
-pub fn take_first_clause(buf: &mut String) -> Option<String> {
-    let mut words = 0;
-    let mut last_space = None;
-    for (i, c) in buf.char_indices() {
-        if c.is_whitespace() {
-            words += 1;
-            last_space = Some(i);
-            if words >= 8 {
-                break;
-            }
-        }
-        if matches!(c, ',' | ';' | ':' | '.' | '!' | '?') && words >= 3 {
-            let next_ok = buf[i + c.len_utf8()..].starts_with(char::is_whitespace);
-            if next_ok {
-                let cut = i + c.len_utf8();
-                let head = buf[..cut].trim().to_string();
-                *buf = buf[cut..].trim_start().to_string();
-                return Some(head);
-            }
+/// The sentences of a reply: cut after . ! ? (or a line break) that is
+/// followed by space, so "1.08" and "v2.1" stay whole.
+pub fn sentences(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = vec![];
+    let mut cur = String::new();
+    for i in 0..chars.len() {
+        cur.push(chars[i]);
+        let end = matches!(chars[i], '.' | '!' | '?' | '\n' | '\u{2026}');
+        let next_space = chars.get(i + 1).is_none_or(|c| c.is_whitespace());
+        if end && next_space && !cur.trim().is_empty() {
+            out.push(cur.trim().to_string());
+            cur.clear();
         }
     }
-    if words >= 8 {
-        let cut = last_space?;
-        let head = buf[..cut].trim().to_string();
-        *buf = buf[cut..].trim_start().to_string();
-        return (!head.is_empty()).then_some(head);
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
     }
-    None
+    out
 }
 
-pub fn take_sentences(buf: &mut String) -> Option<String> {
-    let chars: Vec<char> = buf.chars().collect();
-    let mut cut = None;
-    for i in 0..chars.len() {
-        let end = matches!(chars[i], '.' | '!' | '?' | '\n');
-        let next_space = chars.get(i + 1).is_some_and(|c| c.is_whitespace());
-        if end && (next_space || chars[i] == '\n') && i >= 12 {
-            cut = Some(i + 1);
-        }
+/// A sentence that only says what it is about to do ("Let me check...",
+/// "I'll check the tab."): never spoken.
+pub fn is_narration(sentence: &str) -> bool {
+    let s = sentence
+        .trim()
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase()
+        .replace('\u{2019}', "'");
+    let s = s
+        .strip_prefix("now ")
+        .or_else(|| s.strip_prefix("first, "))
+        .or_else(|| s.strip_prefix("first "))
+        .or_else(|| s.strip_prefix("okay, "))
+        .or_else(|| s.strip_prefix("ok, "))
+        .unwrap_or(&s);
+    const OPENERS: &[&str] = &[
+        "let me ",
+        "let's ",
+        "lets ",
+        "i'll check",
+        "i will check",
+        "i'll look",
+        "i'll take a look",
+        "i'll get ",
+        "i'll pull",
+        "i'll read",
+        "i'll see ",
+        "i'll find",
+        "i'm going to check",
+        "i'm going to look",
+        "i'm checking",
+        "i'm looking",
+        "checking ",
+        "looking at ",
+        "looking into ",
+    ];
+    OPENERS.iter().any(|o| s.starts_with(o))
+}
+
+/// What of a reply is spoken: narration dropped, at most `max` sentences
+/// (0: all). Returns (spoken, narration, the rest left unsaid).
+pub fn spoken_part(text: &str, max: usize) -> (String, Vec<String>, Option<String>) {
+    let (narr, keep): (Vec<String>, Vec<String>) =
+        sentences(text).into_iter().partition(|s| is_narration(s));
+    // Only narration: nothing else to say, so it is not dropped.
+    if keep.is_empty() {
+        return (narr.join(" "), vec![], None);
     }
-    let n = cut?;
-    let head: String = chars[..n].iter().collect();
-    *buf = chars[n..]
-        .iter()
-        .collect::<String>()
-        .trim_start()
-        .to_string();
-    let h = head.trim().to_string();
-    (!h.is_empty()).then_some(h)
+    let n = if max == 0 {
+        keep.len()
+    } else {
+        max.min(keep.len())
+    };
+    let rest = keep[n..].join(" ");
+    (
+        keep[..n].join(" "),
+        narr,
+        (!rest.trim().is_empty()).then_some(rest),
+    )
 }
 
 #[cfg(test)]
@@ -394,37 +421,35 @@ mod tests {
     }
 
     #[test]
-    fn sentences_stream_out() {
-        let mut b = String::from("Account two has 82 percent left. Opening a tab");
+    fn sentences_split_and_narration() {
         assert_eq!(
-            take_sentences(&mut b).as_deref(),
-            Some("Account two has 82 percent left.")
+            sentences("Marcus runs at 1.08 now. It is brisk! Done"),
+            vec!["Marcus runs at 1.08 now.", "It is brisk!", "Done"]
         );
-        assert_eq!(b, "Opening a tab");
-        assert!(take_sentences(&mut b).is_none());
-        b.push_str(" now. Then");
-        assert_eq!(
-            take_sentences(&mut b).as_deref(),
-            Some("Opening a tab now.")
+        for n in [
+            "Let me check\u{2026}",
+            "Let me get the session detail\u{2026}",
+            "Now let me look at the PLAN.",
+            "I'll check the git log.",
+            "I\u{2019}ll check with the tab.",
+        ] {
+            assert!(is_narration(n), "{n}");
+        }
+        for a in [
+            "I'll tell you when it answers.",
+            "Lettuce is on the list.",
+            "The tab is idle.",
+        ] {
+            assert!(!is_narration(a), "{a}");
+        }
+        let (say, narr, rest) = spoken_part(
+            "Let me check. The fix landed. Pauses are gone. Marcus is brisk.",
+            2,
         );
-        let mut short = String::from("Ok. ");
-        assert!(take_sentences(&mut short).is_none(), "too short to bother");
-    }
-
-    #[test]
-    fn first_clause_early() {
-        let mut b = String::from("Account two has the most left, about 82 percent");
-        assert_eq!(
-            take_first_clause(&mut b).as_deref(),
-            Some("Account two has the most left,")
-        );
-        let mut b = String::from("You have three tabs and two of them are working right now");
-        assert_eq!(
-            take_first_clause(&mut b).as_deref(),
-            Some("You have three tabs and two of them")
-        );
-        let mut b = String::from("Yes, sure");
-        assert!(take_first_clause(&mut b).is_none(), "too short yet");
+        assert_eq!(say, "The fix landed. Pauses are gone.");
+        assert_eq!(narr, vec!["Let me check."]);
+        assert_eq!(rest.as_deref(), Some("Marcus is brisk."));
+        assert_eq!(spoken_part("One. Two.", 0).2, None);
     }
 
     #[test]
