@@ -123,6 +123,15 @@ pub struct AssistantState {
     cap_retried: bool,
     /// The current turn, to send again: (text, heard, system note).
     last_turn: Option<(String, Option<String>, Option<String>)>,
+    /// The panel shows the admin actions instead of the chat.
+    pub show_admin: bool,
+    /// The panel shows the full timing of the last turn.
+    pub show_details: bool,
+    /// Requests typed in the panel, oldest first (↑/↓ walk them).
+    pub input_hist: Vec<String>,
+    pub hist_pos: Option<usize>,
+    /// Tool chips opened to show their raw arguments (log indices).
+    pub expanded: std::collections::HashSet<usize>,
     /// Questions sent to tabs whose answers are reported back.
     pub follow_ups: Vec<crate::app_followup::FollowUp>,
     pub follow_seq: u64,
@@ -178,8 +187,11 @@ impl App {
     /// The account it runs on: the configured one, or the logged in one
     /// with the most 5 hour quota left.
     pub fn assistant_account(&self) -> Option<usize> {
-        // The assistant's brain is claude: only Claude Code accounts.
-        let claude = |a: usize| self.cfg.accounts[a].harness() == crate::harness::Harness::Claude;
+        // Only accounts of the provider's harness (none: it has its own login).
+        let Some(h) = crate::providers::by_id(&self.cfg.assistant.provider).harness else {
+            return None;
+        };
+        let claude = |a: usize| self.cfg.accounts[a].harness() == h;
         let want = self.cfg.assistant.account.trim();
         if !want.is_empty() && want != "best" {
             return self
@@ -261,42 +273,69 @@ impl App {
             self.assistant.brain = None;
             self.assistant.turns_in_brain = 0;
         }
+        let provider = crate::providers::by_id(&self.cfg.assistant.provider);
         let best = self.cfg.assistant.account == "best";
         let want = self.assistant_account();
         if let Some(b) = self.assistant.brain.as_mut() {
             // With "best", a working brain stays put (the tick moves it off
             // an account under 5%); otherwise it follows the setting.
-            if b.running() && (best || Some(b.account) == want) {
+            if b.running()
+                && b.provider == provider.id
+                && (provider.harness.is_none() || best || b.account == want)
+            {
                 return Ok(());
             }
         }
         self.assistant.brain = None;
-        let a = self
-            .assistant_account()
-            .ok_or("no logged in account for the assistant")?;
-        if !self.accounts[a].login.logged_in() {
-            return Err(format!(
-                "{} is not logged in",
-                self.cfg.accounts[a].display()
-            ));
-        }
-        let dir = self.cfg.accounts[a].config_dir();
-        let _ = crate::trust::seed_trust(&dir, &crate::assistant::dir());
-        let bin = self.cfg.claude_bin();
+        let (account, home, label) = match provider.own_home {
+            Some(home) => (None, home(), format!("{}'s own login", provider.name)),
+            None => {
+                let a = self
+                    .assistant_account()
+                    .ok_or("no logged in account for the assistant")?;
+                if !self.accounts[a].login.logged_in() {
+                    return Err(format!(
+                        "{} is not logged in",
+                        self.cfg.accounts[a].display()
+                    ));
+                }
+                let dir = self.cfg.accounts[a].config_dir();
+                let _ = crate::trust::seed_trust(&dir, &crate::assistant::dir());
+                (Some(a), dir, self.cfg.accounts[a].display().to_string())
+            }
+        };
         let mut acfg = self.cfg.assistant.clone();
         if let Some(c) = self.assistant.token_cap {
             acfg.max_output_tokens = acfg.max_output_tokens.max(c);
         }
-        let b = Brain::start(&bin, &dir, a, &acfg, &self.cfg.pass_env, self.tx.clone())
-            .map_err(|e| format!("{e:#}"))?;
+        let model = crate::providers::model_for(provider, &acfg);
+        let ctx = crate::providers::StartCtx {
+            bin: (provider.bin)(&self.cfg),
+            home,
+            cfg: &acfg,
+            model: model.clone(),
+            pass_env: &self.cfg.pass_env,
+            events: self.tx.clone(),
+            gen: crate::assistant::next_gen(),
+            system_prompt: format!(
+                "{}{}",
+                crate::assistant::system_prompt(&acfg.style),
+                crate::learned::prompt_section(&crate::learned::load())
+            ),
+        };
+        let b = Brain::start(provider, account, ctx).map_err(|e| format!("{e:#}"))?;
         crate::log::info(&format!(
-            "assistant: started on {} ({})",
-            self.cfg.accounts[a].name, self.cfg.assistant.model
+            "assistant: started {} on {label} ({model})",
+            provider.name
         ));
         self.note(format!(
-            "Assistant on {} ({}); it spends this account's quota.",
-            self.cfg.accounts[a].display(),
-            self.cfg.assistant.model
+            "Assistant: {} on {label} ({model}){}.",
+            provider.name,
+            if account.is_some() {
+                "; it spends this account's quota"
+            } else {
+                ""
+            }
         ));
         self.assistant.brain = Some(b);
         self.assistant.brain_fresh = true;
@@ -461,6 +500,10 @@ impl App {
         s.push_str(&self.modes_line());
         s.push_str(&self.pending_answers_line());
         s.push_str(&self.update_state_line());
+        s.push_str(&self.admin_state_lines());
+        s.push_str(&self.grid_state_line());
+        s.push_str(&self.provider_state_line());
+        s.push_str(&self.setup_state_line());
         // Listening is GodTerm's business: a message here means it is on.
         s.push_str(&match self.pause_left() {
             Some(left) => format!("listening_paused: {left} s left\n"),
@@ -553,7 +596,7 @@ impl App {
         self.assistant
             .brain
             .as_ref()
-            .map(|b| b.account)
+            .and_then(|b| b.account)
             .or_else(|| self.assistant_account())
     }
 
@@ -711,7 +754,9 @@ impl App {
             .as_ref()
             .map(|b| {
                 (
-                    self.cfg.accounts[b.account].display().to_string(),
+                    b.account
+                        .map(|a| self.cfg.accounts[a].display().to_string())
+                        .unwrap_or_else(|| format!("{}'s own login", b.provider)),
                     b.model.clone(),
                 )
             })
@@ -817,7 +862,10 @@ impl App {
                 return;
             }
         }
-        if self.voice.preview.is_none() && self.cfg.voice.tts {
+        // Tests never start a speaker: its worker loads the real voice
+        // model, and a model still loading when the test process exits
+        // crashed it (onnxruntime against exit time destructors).
+        if self.voice.preview.is_none() && self.cfg.voice.tts && !cfg!(test) {
             let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             self.voice.preview = Some(crate::voice::tts::Speaker::start(&self.cfg.voice, flag));
         }
@@ -844,15 +892,10 @@ impl App {
                 .unwrap_or("failed")
                 .to_string()
         };
-        let a = args.to_string();
-        let a = if a == "{}" {
-            String::new()
-        } else {
-            format!(" {}", a.chars().take(80).collect::<String>())
-        };
+        // Shown as a readable chip; the raw arguments on a click.
         self.assistant.log.push(Entry {
             who: Who::Tool,
-            text: format!("{tool}{a}: {status}"),
+            text: serde_json::json!({"tool": tool, "args": args, "status": status}).to_string(),
         });
         self.trim_log();
         if let Some(c) = &self.assistant.conv {
@@ -1129,6 +1172,29 @@ impl App {
                 };
                 self.assistant.finals.clear();
                 self.assistant.current.clear();
+                // A provider's login refused (Grok's own login): back to Claude.
+                if error && self.cfg.assistant.provider != "claude" {
+                    let low = format!("{reply} {text}").to_lowercase();
+                    if [
+                        "401",
+                        "403",
+                        "unauthorized",
+                        "not logged in",
+                        "login",
+                        "authentication",
+                        "invalid_grant",
+                        "revoked",
+                    ]
+                    .iter()
+                    .any(|k| low.contains(k))
+                    {
+                        self.provider_refused(&if reply.is_empty() {
+                            text.clone()
+                        } else {
+                            reply.clone()
+                        });
+                    }
+                }
                 let (reply, error) = if crate::assistant::token_cap_hit(&reply)
                     || (error && crate::assistant::token_cap_hit(&text))
                 {
@@ -1369,7 +1435,7 @@ impl App {
             // Keep the session index warm for the sessions tool.
             self.kick_index(false);
         }
-        let Some(a) = self.assistant.brain.as_ref().map(|b| b.account) else {
+        let Some(a) = self.assistant.brain.as_ref().and_then(|b| b.account) else {
             return;
         };
         let left = self.accounts[a].effective_left();
@@ -1409,10 +1475,30 @@ impl App {
         }
         match k.code {
             KeyCode::Esc => self.assistant.show = false,
-            KeyCode::Enter => {
-                let t = std::mem::take(&mut self.assistant.input);
-                self.ask_assistant(&t);
+            KeyCode::Enter => self.send_assistant_input(),
+            KeyCode::Up => {
+                let n = self.assistant.input_hist.len();
+                if n > 0 {
+                    let i = self
+                        .assistant
+                        .hist_pos
+                        .map(|p| p.saturating_sub(1))
+                        .unwrap_or(n - 1);
+                    self.assistant.hist_pos = Some(i);
+                    self.assistant.input = self.assistant.input_hist[i].clone();
+                }
             }
+            KeyCode::Down => match self.assistant.hist_pos {
+                Some(p) if p + 1 < self.assistant.input_hist.len() => {
+                    self.assistant.hist_pos = Some(p + 1);
+                    self.assistant.input = self.assistant.input_hist[p + 1].clone();
+                }
+                Some(_) => {
+                    self.assistant.hist_pos = None;
+                    self.assistant.input.clear();
+                }
+                None => {}
+            },
             KeyCode::Backspace => {
                 self.assistant.input.pop();
             }
@@ -1420,6 +1506,24 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// Enter or Send in the panel: the typed request goes out and joins
+    /// the input history.
+    pub fn send_assistant_input(&mut self) {
+        let t = std::mem::take(&mut self.assistant.input);
+        self.assistant.hist_pos = None;
+        if t.trim().is_empty() {
+            return;
+        }
+        if self.assistant.input_hist.last() != Some(&t) {
+            self.assistant.input_hist.push(t.clone());
+            if self.assistant.input_hist.len() > 50 {
+                self.assistant.input_hist.remove(0);
+            }
+        }
+        self.assistant.show_admin = false;
+        self.ask_assistant(&t);
     }
 
     /// After a spoken reply ends, listen for the follow up (wake mode).

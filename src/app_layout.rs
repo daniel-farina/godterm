@@ -9,7 +9,12 @@ impl App {
     /// Panes in the layout, in order (hidden ones left out).
     pub fn visible_panes(&self) -> Vec<usize> {
         (0..self.panes.len())
-            .filter(|&i| !self.panes[i].hidden)
+            .filter(|&i| {
+                !self.panes[i].hidden
+                    && !self.panes[i]
+                        .account
+                        .is_some_and(|a| self.account_closed(a))
+            })
             .collect()
     }
 
@@ -27,7 +32,35 @@ impl App {
     pub fn arrange(&self, area: ratatui::layout::Rect) -> (Vec<usize>, Arranged) {
         let vis = self.visible_panes();
         let fi = vis.iter().position(|&p| p == self.focus).unwrap_or(0);
-        let a = layout::arrange(vis.len(), area, self.layout_mode(), fi, &self.ratios);
+        if self.layout_name() == "custom" {
+            if let Some(tree) = self.layout_tree() {
+                let open: Vec<Option<usize>> = vis.iter().map(|&p| self.panes[p].account).collect();
+                if let Some(rects) = crate::grid_layout::arrange(&tree, area, &open) {
+                    let a = Arranged {
+                        placed: rects
+                            .into_iter()
+                            .map(|(index, rect)| layout::Placed {
+                                index,
+                                page: 0,
+                                rect,
+                            })
+                            .collect(),
+                        pages: 1,
+                        per_page: vis.len().max(1),
+                        shape: "custom".into(),
+                        borders: vec![],
+                        empty: vec![],
+                    };
+                    return (vis, a);
+                }
+            }
+        }
+        let mode = if self.layout_name() == "custom" {
+            Mode::Auto
+        } else {
+            self.layout_mode()
+        };
+        let a = layout::arrange(vis.len(), area, mode, fi, &self.ratios);
         (vis, a)
     }
 
@@ -38,7 +71,9 @@ impl App {
     }
 
     pub fn set_layout(&mut self, name: &str) {
-        let name = if layout::MODES.contains(&name) {
+        let name = if layout::MODES.contains(&name)
+            || (name == "custom" && self.layout_tree().is_some())
+        {
             name
         } else {
             "auto"
@@ -220,7 +255,7 @@ impl App {
     }
 
     pub(crate) fn ensure_focus_visible(&mut self) {
-        if self.panes.get(self.focus).is_none_or(|s| s.hidden) {
+        if !self.visible_panes().contains(&self.focus) {
             if let Some(&p) = self.visible_panes().first() {
                 self.focus = p;
             }

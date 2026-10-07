@@ -2,9 +2,12 @@
 
 mod activity;
 mod add_account;
+mod admin;
 mod app;
+mod app_admin;
 mod app_assistant;
 mod app_followup;
+mod app_grid;
 mod app_layout;
 mod app_learned;
 mod app_loops;
@@ -13,8 +16,10 @@ mod app_mouse;
 mod app_openmic;
 mod app_pause;
 mod app_privacy;
+mod app_provider;
 mod app_sessions;
 mod app_settings;
+mod app_setup;
 mod app_speaker;
 mod app_sysprompt;
 mod app_tabgroups;
@@ -35,7 +40,11 @@ mod creds;
 mod demo;
 mod demo_agent;
 mod demo_seed;
+mod deps;
 mod fuzzy;
+mod grid_layout;
+#[cfg(test)]
+mod grid_tests;
 mod grok_logins;
 mod guard;
 mod harness;
@@ -63,6 +72,9 @@ mod picker;
 mod platform;
 mod procs;
 mod prompt;
+#[cfg(test)]
+mod provider_tests;
+mod providers;
 mod risk;
 mod sess_sort;
 mod session_index;
@@ -70,6 +82,8 @@ mod session_ops;
 mod sessions;
 mod settings;
 mod setup;
+#[cfg(test)]
+mod setup_tests;
 mod slot;
 #[cfg(test)]
 mod stale_tests;
@@ -87,6 +101,7 @@ mod test_stub;
 mod theme;
 mod trust;
 mod ui;
+mod ui_assistant;
 mod ui_chrome;
 mod ui_livemap;
 mod ui_settings;
@@ -877,8 +892,10 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         std::env::remove_var(update::EAGER_ENV);
         app.force_eager = true;
     }
+    let first_run = !crate::state::AppState::path().exists();
     app.autostart();
     app.start_update_checker();
+    app.maybe_show_setup(first_run);
     if onboarding {
         app.start_onboarding();
     } else {

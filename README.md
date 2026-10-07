@@ -57,8 +57,9 @@ your hands stay on the keyboard (or off it).
 
 ## Install
 
-GodTerm needs the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
-(`claude`) on your `PATH` (and `grok` for Grok accounts). Every release
+GodTerm runs the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
+(`claude`), and `grok` for Grok accounts. If they are missing, Settings >
+Setup installs them for you (and the optional voice pack). Every release
 ships `SHA256SUMS`.
 
 **macOS, Homebrew**
@@ -121,9 +122,10 @@ godterm          # first run asks: how many accounts, their labels and folders
 
 ## Voice in short
 
-Voice is optional, and local by default. Install `whisper-cpp` and
-`ffmpeg` (Homebrew on macOS, your package manager on Linux) and a ggml
-model, or on macOS 26 use Apple's on device recognition; replies are
+Voice is optional, and local by default. Settings > Setup installs the
+voice pack (`ffmpeg`, `whisper.cpp` and a model, the talk back voice), or
+say "install the voice pack"; on macOS 26 Apple's on device recognition
+works too; replies are
 spoken by Kokoro (run in process) or `say`. Modes: push to talk
 (`Ctrl-a space`), a wake word, or open mic with an echo reference so
 GodTerm does not hear itself.
@@ -146,7 +148,8 @@ replies use Kokoro or Grok.
 
 GodTerm has no telemetry and no account of its own. It talks to the
 network to read usage (Anthropic's usage endpoint with each account's own
-login, xAI's billing endpoint for Grok accounts). Voice is local by
+login, xAI's billing endpoint for Grok accounts), to check GitHub for
+updates, and to download what you ask Settings > Setup to install. Voice is local by
 default: audio is transcribed and replies are spoken on your machine. Only
 if you turn on Grok voice does audio (Grok recognition) or reply text
 (Grok talk back) go to xAI. Details in [Privacy](#privacy) and
@@ -1178,8 +1181,11 @@ lock, which filters only once trained; live partials stay local), and
 Grok talk back sends the reply text to xAI, signed in with `grok login`
 or an xAI API key in the Keychain, using your Grok voice credits, with the
 local engines as the fallback. Otherwise GodTerm talks to the network
-only to fetch usage: Anthropic's usage endpoint with each account's own
-login, and xAI's billing endpoint for Grok accounts. The assistant and
+only to fetch usage (Anthropic's usage endpoint with each account's own
+login, and xAI's billing endpoint for Grok accounts), to check GitHub
+Releases for updates (`[update] enabled = false` turns that off), and to
+download what you ask Settings > Setup to install (package managers, the
+official installers, or files checked against a pinned SHA-256). The assistant and
 your tabs are Claude Code (or Grok) itself, which talks to its own
 service as it always does. Privacy mode hides account emails on screen.
 

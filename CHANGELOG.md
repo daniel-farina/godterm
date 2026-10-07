@@ -7,6 +7,44 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-07
+
+### Setup
+- Setup that works out of the box: Settings > Setup shows what GodTerm
+  needs (Claude Code required, Grok Build optional, the voice pack:
+  ffmpeg, whisper.cpp with a model, espeak-ng and the Kokoro files, the
+  speaker model) and installs it for you with your package manager
+  (Homebrew, apt, dnf, pacman, winget), the official Claude Code and Grok
+  installers, or checksum verified downloads. The first click shows the
+  exact commands and sizes; the second runs them. Anything that needs
+  sudo runs in a visible tab for your password. It opens at start when
+  something required is missing; `godterm doctor` prints the same plan.
+- A tab whose program is not installed says so and offers to install it.
+
+### Assistant
+- The assistant can run on Claude or on Grok, switchable any time from
+  its title menu or by voice ("switch to Grok", "use Opus"); the recent
+  conversation carries over.
+- It can manage your accounts by voice: add MCP servers and plugins to
+  one or several accounts (with the sign in), change settings, and add,
+  log in or log out accounts. Every change is planned, shown with the
+  exact commands, needs your yes, and is logged.
+- A redesigned panel: a toolbar that never clips, the account and model in
+  the title, tool calls shown as readable chips, and a waiting question
+  that turns into "answered" in place.
+
+### Grid
+- Close an account to take it out of the grid without logging it out
+  (its tabs keep running) and open it again later, by voice ("close the
+  grok accounts", "only account 2 and 3") or from View > Closed accounts.
+- Any split layout by voice ("two columns", "big left with the rest
+  stacked"), saved across restarts.
+
+### Fixed
+- The test run could crash after all tests passed (a speaker started
+  during a test).
+
+
 ## [0.2.4] - 2026-10-07
 
 ### Self update
@@ -169,7 +207,8 @@ The first public release, under the MIT License. claudego is now GodTerm.
 
 - claudego: config, credentials, usage, sessions, PTY panes and the TUI.
 
-[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/daniel-farina/godterm/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/daniel-farina/godterm/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/daniel-farina/godterm/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/daniel-farina/godterm/compare/v0.2.1...v0.2.2

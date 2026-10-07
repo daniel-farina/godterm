@@ -534,6 +534,16 @@ pub fn doctor() -> Result<()> {
         "terminal",
         &format!("{term}, TERM={}", std::env::var("TERM").unwrap_or_default()),
     );
+    // The install plan for what is missing (the Setup screen's model).
+    let deps = crate::deps::all(&cfg, None, &crate::deps::which);
+    let missing: Vec<&crate::deps::Dep> = deps.iter().filter(|d| !d.status.ok()).collect();
+    if !missing.is_empty() {
+        println!("\nSetup (Settings > Setup installs these after a yes, or the assistant: \"install the voice pack\")");
+        for d in missing {
+            let plan: Vec<String> = d.steps.iter().map(crate::deps::Step::shown).collect();
+            r.info(d.name, &format!("{}: {}", d.status.word(), plan.join("; ")));
+        }
+    }
     println!(
         "\n{}",
         if r.problems == 0 {

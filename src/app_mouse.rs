@@ -708,6 +708,26 @@ impl App {
             UiAction::LoopJump => self.jump_to_loop(),
             UiAction::FreeNow => self.free_now(),
             UiAction::AssistantNew => self.reset_assistant(),
+            UiAction::AssistantSend => self.send_assistant_input(),
+            UiAction::SetupInstall(id) => self.setup_click(&id),
+            UiAction::SetupWhisper(m) => {
+                self.setup.whisper_choice = Some(m);
+                self.deps_changed();
+            }
+            UiAction::SetupDontShow => {
+                self.cfg.setup_dont_show = !self.cfg.setup_dont_show;
+                let _ = crate::settings::write(
+                    &crate::config::Config::path(),
+                    &crate::settings::Key::Global("setup_dont_show"),
+                    Some(toml_edit::value(self.cfg.setup_dont_show)),
+                );
+                self.config_mtime = crate::app::config_mtime();
+            }
+            UiAction::AssistantChip(i) => {
+                if !self.assistant.expanded.remove(&i) {
+                    self.assistant.expanded.insert(i);
+                }
+            }
             UiAction::AssistantHistory => self.toggle_assistant_history(),
             UiAction::MuteToggle => self.toggle_mute(),
             UiAction::SessHarness(k) => {

@@ -584,7 +584,7 @@ impl App {
         match &self.voice.engine {
             Some(v) if v.tts => v.say(&text),
             _ => {
-                if self.voice.preview.is_none() {
+                if self.voice.preview.is_none() && !cfg!(test) {
                     let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     self.voice.preview = Some(crate::voice::tts::Speaker::start(vc, flag));
                 }

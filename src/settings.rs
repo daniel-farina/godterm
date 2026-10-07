@@ -16,6 +16,7 @@ pub enum Section {
     Voice,
     Assistant,
     Memory,
+    Setup,
     Keys,
     About,
 }
@@ -27,6 +28,7 @@ pub const SECTIONS: &[(Section, &str)] = &[
     (Section::Voice, "Voice and Audio"),
     (Section::Assistant, "Assistant"),
     (Section::Memory, "Memory"),
+    (Section::Setup, "Setup"),
     (Section::Keys, "Keys"),
     (Section::About, "About"),
 ];
@@ -223,7 +225,7 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("voice_idle_stop_min", "Stop voice helpers when idle (min)", Kind::Number { min: 0, max: 240, step: 5 }, "In push to talk, stop whisper-server and Kokoro after this many idle minutes (0: keep them). The memory saver uses 5."),
             g("viz.reduced_motion", "Reduced motion (live map)", Kind::Toggle, "The live map draws 8 frames a second with fewer particles (it does with the memory saver too)."),
         ],
-        Section::Keys | Section::About => vec![],
+        Section::Keys | Section::About | Section::Setup => vec![],
     }
 }
 
@@ -992,6 +994,7 @@ fn assistant_rows(cfg: &Config, all: bool) -> Vec<Setting> {
     let why = "the assistant is on";
     let mut r = Rows::new(all);
     r.group("Assistant");
+    r.when(on, why, g("assistant.provider", "Provider", Kind::Choice(&["claude", "grok"]), "Which model provider runs the assistant: claude (on one of your Claude accounts) or grok (its own Grok login, never your Grok accounts). The conversation carries over when you switch."));
     r.add(g("assistant.mode", "Mode", Kind::Choice(&["always", "off"]), "always: the assistant understands everything you say or type (apart from the instant one word commands); off: only the instant commands work. About your sessions it only gets metadata and short snippets, never whole transcripts."));
     r.when(on, why, g("assistant.account", "Account", Kind::Pick(accts), "Whose quota it spends. best: the logged in account with the most 5 hour quota left (it moves when that one runs low)."));
     r.when(on, why, g("assistant.model", "Model", Kind::Text, "claude-haiku-4-5 (default, quickest and lightest on quota), or sonnet / opus for harder requests."));

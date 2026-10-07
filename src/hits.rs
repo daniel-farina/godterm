@@ -130,6 +130,16 @@ pub enum UiAction {
     SettingEdit(usize),
     OpenConfig,
     RunDoctor,
+    /// Settings > Setup: install an item ("voice": the voice pack).
+    SetupInstall(String),
+    /// Settings > Setup: the whisper model to offer.
+    SetupWhisper(String),
+    /// Settings > Setup: do not open it at start.
+    SetupDontShow,
+    /// The assistant panel's Send button.
+    AssistantSend,
+    /// An action chip in the assistant panel: show or hide its raw call.
+    AssistantChip(usize),
     /// Settings > About: check for a new version now.
     UpdateCheck,
     /// Settings > About: do not offer this version again.

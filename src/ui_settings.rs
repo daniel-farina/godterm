@@ -99,6 +99,7 @@ pub fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
     match app.settings_section_kind() {
         Section::Keys => draw_keys(f, right),
         Section::About => draw_about(f, app, right),
+        Section::Setup => draw_setup(f, app, right),
         sec => draw_rows(f, app, right, sec),
     }
 }
@@ -119,6 +120,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
         help_h
             + 1
             + u16::from(sec == Section::Memory || sec == Section::Accounts) * 5
+            + u16::from(sec == Section::Accounts) * (app.cfg.accounts.len() as u16 + 1).min(8)
             + u16::from(sec == Section::Voice) * 4,
     );
     let sel = app.settings_sel.min(rows.len().saturating_sub(1));
@@ -600,6 +602,25 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
             );
         }
         y += 2;
+        // What each account has (the assistant can add more by voice).
+        if y < area.y + area.height {
+            text(
+                buf,
+                area.x + 1,
+                y,
+                limit,
+                "Capabilities (MCP servers, plugins, skills)",
+                Style::default().fg(FG),
+            );
+            y += 1;
+        }
+        for l in app.caps_summary_lines().into_iter().take(7) {
+            if y >= area.y + area.height {
+                break;
+            }
+            text(buf, area.x + 2, y, limit, &l, Style::default().fg(DIM));
+            y += 1;
+        }
     }
     if sec == Section::Memory && y < area.y + area.height {
         let m = &app.mem;
@@ -855,6 +876,197 @@ fn draw_keys(f: &mut Frame, area: Rect) {
             area.height.saturating_sub(1),
         ),
     );
+}
+
+/// Settings > Setup: what is installed, what is missing, and Install.
+fn draw_setup(f: &mut Frame, app: &App, area: Rect) {
+    use crate::deps::{Group, Step};
+    let buf = f.buffer_mut();
+    let mut hits = app.hits.borrow_mut();
+    let limit = area.x + area.width;
+    let mut y = area.y + 1;
+    let deps = app.deps();
+    let line = |buf: &mut ratatui::buffer::Buffer, y: u16, t: &str, st: Style| {
+        text(buf, area.x + 1, y, limit, t, st);
+    };
+    for (g, title) in [
+        (Group::Required, "Required"),
+        (Group::Optional, "Optional"),
+        (Group::Voice, "Voice pack (local)"),
+    ] {
+        if y + 2 >= area.y + area.height {
+            break;
+        }
+        line(
+            buf,
+            y,
+            title,
+            Style::default().fg(FG).add_modifier(Modifier::BOLD),
+        );
+        if g == Group::Voice
+            && deps
+                .iter()
+                .any(|d| d.group == Group::Voice && !d.status.ok())
+        {
+            button(
+                buf,
+                &mut hits,
+                app.mouse_pos,
+                area.x + 22,
+                y,
+                limit,
+                "Install the voice pack",
+                UiAction::SetupInstall("voice".into()),
+                "Everything missing for local voice, after one confirmation (a second click)",
+                theme::SAGE,
+            );
+        }
+        y += 1;
+        for d in deps.iter().filter(|d| d.group == g) {
+            if y >= area.y + area.height {
+                break;
+            }
+            let (mark, c) = match d.status {
+                crate::deps::Status::Ok(_) => ("✓", theme::SAGE),
+                crate::deps::Status::Missing(_) => ("·", theme::SAND),
+                crate::deps::Status::Broken(_) => ("✗", theme::CLAY),
+            };
+            let mut x = text(
+                buf,
+                area.x + 2,
+                y,
+                limit,
+                &format!("{mark} {:<20}", d.name),
+                Style::default().fg(c),
+            );
+            x = text(
+                buf,
+                x,
+                y,
+                limit,
+                &format!(" {}  ", crate::sessions::snippet(d.status.detail(), 40)),
+                Style::default().fg(DIM),
+            );
+            if !d.status.ok() {
+                if d.installable() {
+                    let size = if d.download_bytes() > 0 {
+                        format!(" ({})", crate::deps::size(d.download_bytes()))
+                    } else {
+                        String::new()
+                    };
+                    let pending = app.setup.confirm.as_ref().is_some_and(|(k, _)| k == d.id);
+                    let label = if app.setup.running.iter().any(|r| r == d.id) {
+                        "installing…".to_string()
+                    } else if pending {
+                        format!("Click again to install{size}")
+                    } else {
+                        format!("Install{size}")
+                    };
+                    button(
+                        buf,
+                        &mut hits,
+                        app.mouse_pos,
+                        x,
+                        y,
+                        limit,
+                        &label,
+                        UiAction::SetupInstall(d.id.to_string()),
+                        "Shows what it runs first; a second click installs",
+                        theme::SAGE,
+                    );
+                }
+                y += 1;
+                if y < area.y + area.height {
+                    let plan = d
+                        .steps
+                        .iter()
+                        .map(Step::shown)
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    text(
+                        buf,
+                        area.x + 6,
+                        y,
+                        limit,
+                        &crate::sessions::snippet(&plan, area.width.saturating_sub(8) as usize),
+                        Style::default().fg(FAINT),
+                    );
+                }
+            }
+            y += 1;
+        }
+        y += 1;
+    }
+    if y < area.y + area.height {
+        let mut x = text(
+            buf,
+            area.x + 1,
+            y,
+            limit,
+            "Whisper model: ",
+            Style::default().fg(DIM),
+        );
+        for (id, _, _, b, _) in crate::deps::WHISPER_MODELS {
+            let on = app
+                .setup
+                .whisper_choice
+                .as_deref()
+                .unwrap_or(crate::deps::WHISPER_MODELS[0].0)
+                == *id;
+            x = button(
+                buf,
+                &mut hits,
+                app.mouse_pos,
+                x,
+                y,
+                limit,
+                &format!(
+                    "{}{id} ({})",
+                    if on { "• " } else { "" },
+                    crate::deps::size(*b)
+                ),
+                UiAction::SetupWhisper(id.to_string()),
+                "The model the voice pack downloads",
+                if on { theme::SAGE } else { theme::STONE },
+            ) + 1;
+        }
+        y += 2;
+    }
+    if y < area.y + area.height {
+        let no = if cfg!(target_os = "macos") {
+            "No install needed: Apple speech recognition and say work as they are, and Grok voice needs only a Grok login."
+        } else {
+            "No install needed: Grok voice needs only a Grok login or an xAI key."
+        };
+        line(buf, y, no, Style::default().fg(DIM));
+        y += 2;
+    }
+    if y < area.y + area.height {
+        button(
+            buf,
+            &mut hits,
+            app.mouse_pos,
+            area.x + 1,
+            y,
+            limit,
+            if app.cfg.setup_dont_show {
+                "✓ Don't show at start"
+            } else {
+                "Don't show at start"
+            },
+            UiAction::SetupDontShow,
+            "Do not open this screen at start when something is missing",
+            theme::STONE,
+        );
+        text(
+            buf,
+            area.x + 26,
+            y,
+            limit,
+            "Skip: Esc",
+            Style::default().fg(FAINT),
+        );
+    }
 }
 
 fn draw_about(f: &mut Frame, app: &App, area: Rect) {

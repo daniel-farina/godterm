@@ -2,14 +2,9 @@
 //! (`claude -p` with stream-json in and out) on the chosen account's
 //! config dir, with only godterm's MCP tools, in an empty scratch folder.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::Sender;
-
-use crate::app::AppEvent;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BrainEvent {
@@ -34,18 +29,39 @@ pub enum BrainEvent {
 }
 
 pub struct Brain {
-    child: Child,
-    stdin: ChildStdin,
-    pub account: usize,
+    inner: Box<dyn crate::providers::Backend>,
+    /// The account it spends (None: a provider with its own login).
+    pub account: Option<usize>,
     pub model: String,
+    pub provider: &'static str,
     /// Which process this is (events from an older one are ignored).
     pub gen: u64,
 }
 
 static BRAIN_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+pub fn next_gen() -> u64 {
+    BRAIN_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn dir() -> PathBuf {
     crate::config::app_home().join("assistant")
+}
+
+/// The `godterm mcp` server entry the brain gets: its command, args and
+/// environment (the brain's own token).
+pub fn mcp_server(exe: &Path) -> Value {
+    let mut v = json!({
+        "command": exe,
+        "args": ["mcp"],
+        "env": {"GODTERM_HOME": crate::config::app_home(), "GODTERM_CLIENT": "brain", "GODTERM_TOKEN": crate::control::brain_token().unwrap_or_default()},
+    });
+    // In tests the server would be the test binary: mark it, so its guard
+    // stops it before it runs the suite (see test_guard).
+    if cfg!(test) {
+        v["env"][crate::test_guard::ENV] = json!("brain-mcp");
+    }
+    v
 }
 
 /// The MCP config handing claude the `godterm mcp` server.
@@ -53,17 +69,7 @@ pub fn write_mcp_config(exe: &Path) -> Result<PathBuf> {
     let d = dir();
     std::fs::create_dir_all(&d)?;
     let p = d.join("mcp.json");
-    let cfg = json!({"mcpServers": {"godterm": {
-        "command": exe,
-        "args": ["mcp"],
-        "env": {"GODTERM_HOME": crate::config::app_home(), "GODTERM_CLIENT": "brain", "GODTERM_TOKEN": crate::control::brain_token().unwrap_or_default()},
-    }}});
-    // In tests the server would be the test binary: mark it, so its guard
-    // stops it before it runs the suite (see test_guard).
-    let mut cfg = cfg;
-    if cfg!(test) {
-        cfg["mcpServers"]["godterm"]["env"][crate::test_guard::ENV] = json!("brain-mcp");
-    }
+    let cfg = json!({"mcpServers": {"godterm": mcp_server(exe)}});
     crate::config::write_private(&p, serde_json::to_string_pretty(&cfg)?)?;
     Ok(p)
 }
@@ -83,153 +89,40 @@ pub fn system_prompt(style: &str) -> String {
 }
 
 impl Brain {
-    /// Start it on `account` (config dir `config_dir`).
+    /// Start `provider` (on `account`, or its own login).
     pub fn start(
-        claude: &str,
-        config_dir: &Path,
-        account: usize,
-        a: &crate::config::AssistantCfg,
-        pass_env: &[String],
-        events: Sender<AppEvent>,
+        provider: &'static crate::providers::Provider,
+        account: Option<usize>,
+        ctx: crate::providers::StartCtx,
     ) -> Result<Brain> {
-        let (model, style) = (a.model.as_str(), a.style.as_str());
-        let exe = crate::install::real_exe()?;
-        let mcp = write_mcp_config(&exe)?;
-        let d = dir();
-        std::fs::create_dir_all(&d)?;
-        let mut cmd = Command::new(claude);
-        cmd.args([
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--include-partial-messages",
-            "--no-session-persistence",
-            "--strict-mcp-config",
-            "--tools",
-            "",
-            "--model",
-            model,
-            "--effort",
-            &a.effort,
-            // The slot's own hooks and plugins stay out of the assistant.
-            "--setting-sources",
-            "local",
-            "--append-system-prompt",
-            // The user's learned preferences follow the built in rules.
-            &format!(
-                "{}{}",
-                system_prompt(style),
-                crate::learned::prompt_section(&crate::learned::load())
-            ),
-            "--mcp-config",
-        ])
-        .arg(&mcp)
-        .arg("--allowedTools")
-        .args(allowed_tools())
-        .current_dir(&d)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-        // Same environment hygiene as the tabs.
-        for (k, _) in std::env::vars() {
-            if crate::pane::should_scrub(&k, pass_env) {
-                cmd.env_remove(&k);
-            }
-        }
-        cmd.env("CLAUDE_CONFIG_DIR", config_dir);
-        // Quick and quiet: low effort, no thinking at low, short replies,
-        // and nothing at startup that is not needed (no updater, telemetry,
-        // error reports, surveys, auto memory or other background traffic).
-        // (--bare would also skip these but switches off the OAuth login.)
-        cmd.env("CLAUDE_EFFORT", &a.effort)
-            .env("CLAUDE_CODE_EFFORT_LEVEL", &a.effort)
-            .env(
-                "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
-                a.max_output_tokens.max(64).to_string(),
-            )
-            .env("DISABLE_AUTOUPDATER", "1")
-            .env("DISABLE_TELEMETRY", "1")
-            .env("DISABLE_ERROR_REPORTING", "1")
-            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-            .env("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY", "1")
-            .env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")
-            .env("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1");
-        if a.effort == "low" {
-            cmd.env("CLAUDE_CODE_DISABLE_THINKING", "1")
-                .env("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING", "1");
-        }
-        let gen = BRAIN_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut child = cmd.spawn().with_context(|| format!("starting {claude}"))?;
-        let stdin = child.stdin.take().context("no stdin")?;
-        let stdout = child.stdout.take().context("no stdout")?;
-        let stderr = child.stderr.take().context("no stderr")?;
-        let err_tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let et = std::sync::Arc::clone(&err_tail);
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                let mut t = et.lock().unwrap_or_else(|e| e.into_inner());
-                t.push_str(&line);
-                t.push('\n');
-                if t.len() > 4000 {
-                    let cut = t.len() - 4000;
-                    t.drain(..cut);
-                }
-            }
-        });
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                for ev in parse_line(&line) {
-                    if events.send(AppEvent::Assistant(gen, ev)).is_err() {
-                        return;
-                    }
-                }
-            }
-            let tail = err_tail.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let _ = events.send(AppEvent::Assistant(gen, BrainEvent::Exited(tail)));
-        });
+        let model = ctx.model.clone();
+        let gen = ctx.gen;
+        let inner = (provider.start)(ctx)?;
         Ok(Brain {
-            child,
-            stdin,
+            inner,
             account,
-            model: model.to_string(),
+            model,
+            provider: provider.id,
             gen,
         })
     }
 
     /// Send one user turn.
     pub fn send(&mut self, text: &str) -> Result<()> {
-        let msg = json!({"type": "user", "message": {"role": "user", "content": text}});
-        writeln!(self.stdin, "{msg}")?;
-        self.stdin.flush()?;
-        Ok(())
+        self.inner.send(text)
     }
 
-    /// Stop the current turn (claude's stream-json control request; the
-    /// turn ends with a result, in flight tool calls finish).
+    /// Stop the current turn (the turn still ends with a result).
     pub fn interrupt(&mut self) -> Result<()> {
-        let id = format!("int-{}", std::process::id());
-        let msg = json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}});
-        writeln!(self.stdin, "{msg}")?;
-        self.stdin.flush()?;
-        Ok(())
+        self.inner.interrupt()
     }
 
     pub fn pid(&self) -> u32 {
-        self.child.id()
+        self.inner.pid()
     }
 
     pub fn running(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
-    }
-}
-
-impl Drop for Brain {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.inner.running()
     }
 }
 
@@ -262,10 +155,19 @@ pub fn parse_line(line: &str) -> Vec<BrainEvent> {
                         }
                     }
                     Some("tool_use") => {
-                        let name = b["name"]
-                            .as_str()
-                            .unwrap_or("")
+                        let name = b["name"].as_str().unwrap_or("");
+                        // Grok reaches MCP tools through use_tool.
+                        if name == "use_tool" {
+                            if let Some((n, a)) =
+                                crate::providers::grok::unwrap_use_tool(&b["input"])
+                            {
+                                out.push(BrainEvent::Tool(n, a));
+                                continue;
+                            }
+                        }
+                        let name = name
                             .trim_start_matches("mcp__godterm__")
+                            .trim_start_matches("godterm__")
                             .to_string();
                         out.push(BrainEvent::Tool(name, b["input"].clone()));
                     }
@@ -472,7 +374,7 @@ mod tests {
         let p = system_prompt("concise");
         assert!(
             p.contains("confirm_token")
-                && p.contains("must not change permission")
+                && p.contains("change only through the admin tools")
                 && p.contains("list_dir")
         );
     }

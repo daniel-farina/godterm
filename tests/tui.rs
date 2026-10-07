@@ -49,7 +49,7 @@ fn make_home(tag: &str, extra: &str) -> PathBuf {
     std::fs::create_dir_all(&proj).unwrap();
     let creds = r#"{"claudeAiOauth":{"accessToken":"fake","refreshToken":"fake","expiresAt":4102444800000,"subscriptionType":"max"}}"#;
     let mut cfg = format!(
-        "claude_bin = \"{}\"\nnotifications = false\nnew_tab_base = \"{}\"\n",
+        "claude_bin = \"{}\"\nnotifications = false\nsetup_dont_show = true\nnew_tab_base = \"{}\"\n",
         fake.display(),
         home.join("tabs").display()
     );
@@ -299,7 +299,7 @@ fn tabs_overview_and_palette() {
     t.cmd(b":");
     t.send(b"in bravo type hello from the palette");
     t.send(b"\r");
-    t.wait_for("you  in bravo type hello from the palette", 5);
+    t.wait_for("you in bravo type hello from the palette", 5);
     t.send(b"\x1b");
 
     // Help overlay lists keys and voice commands.
@@ -369,7 +369,7 @@ done
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
-    t.wait_for("type here, Enter sends", 5);
+    t.wait_for("Type or speak", 5);
     t.send(b"show me the lol/botmesh sessions");
     t.send(b"\r");
     t.wait_for("Two sessions in lol/botmesh.", 20);
@@ -378,7 +378,7 @@ done
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
-    t.wait_for("type here, Enter sends", 5);
+    t.wait_for("Type or speak", 5);
     t.send(b"what was the status of that thing, I forgot to ask you");
     t.send(b"\r");
     t.wait_for("Earlier we were looking at the lol/botmesh", 20);
@@ -448,7 +448,7 @@ for line in sys.stdin:
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
-    t.wait_for("type here, Enter sends", 5);
+    t.wait_for("Type or speak", 5);
     for said in [
         "lol/bot mesh directory",
         "yeah as the folder is lol forward slash podmesh",
@@ -501,7 +501,7 @@ done
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
-    t.wait_for("type here, Enter sends", 5);
+    t.wait_for("Type or speak", 5);
     t.send(b"hold on for ten seconds");
     t.send(b"\r");
     t.wait_for("PAUSED 0:", 30);
@@ -811,12 +811,12 @@ done
     t.wait_for("fake claude in work", 15);
     // Ctrl-a . opens the panel; type a question and send it.
     t.cmd(b".");
-    t.wait_for("type here, Enter sends", 5);
+    t.wait_for("Type or speak", 5);
     t.send(b"what is going on");
     t.send(b"\r");
     t.wait_for("Both are ready.", 20);
-    t.wait_for("get_state: ok", 10);
-    t.wait_for("'s quota", 5);
+    t.wait_for("checked get state", 10);
+    t.wait_for("Assistant: Claude on", 5);
     // The stub really reached the control API through godterm mcp.
     let out = std::fs::read_to_string(home.join("mcp-out.txt")).unwrap();
     assert!(
@@ -940,7 +940,7 @@ done
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
-    t.wait_for("type here, Enter sends", 5);
+    t.wait_for("Type or speak", 5);
     t.send(b"start a new tab on account two and create a simple calculator");
     t.send(b"\r");
     t.wait_for("asked it to build", 30);
@@ -1072,7 +1072,7 @@ done
     t.send(b"\r");
     t.wait_for(" 2 ", 10);
     t.cmd(b".");
-    t.wait_for("type here, Enter sends", 5);
+    t.wait_for("Type or speak", 5);
     t.send(b"close all tabs in all accounts");
     t.send(b"\r");
     t.wait_for("Close 3 tabs across 2 accounts?", 20);
@@ -1134,7 +1134,7 @@ done
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
-    t.wait_for("type here, Enter sends", 5);
+    t.wait_for("Type or speak", 5);
     t.send(b"create a calculator");
     t.send(b"\r");
     t.wait_for("Opened calc", 30);
@@ -1224,7 +1224,7 @@ for line in sys.stdin:
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
-    t.wait_for("type here, Enter sends", 5);
+    t.wait_for("Type or speak", 5);
     for (said, want) in [
         ("create five new tabs", "Opened five tabs."),
         (
@@ -1402,7 +1402,7 @@ for line in sys.stdin:
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
-    t.wait_for("type here, Enter sends", 5);
+    t.wait_for("Type or speak", 5);
     t.send(b"create five tabs");
     t.send(b"\r");
     t.wait_for("Opened five tabs.", 40);
@@ -1499,7 +1499,7 @@ for line in sys.stdin:
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
-    t.wait_for("type here, Enter sends", 5);
+    t.wait_for("Type or speak", 5);
     t.send(b"what were my last sessions?");
     t.send(b"\r");
     t.wait_for("Claude: Fix login flow. Grok: Clock page.", 30);

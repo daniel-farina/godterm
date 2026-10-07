@@ -184,12 +184,22 @@ pub struct Config {
     /// Hide emails everywhere (screen sharing).
     #[serde(default)]
     pub privacy: bool,
+    /// Do not open the Setup screen at start when something is missing.
+    #[serde(default)]
+    pub setup_dont_show: bool,
     /// Pane layout: auto, grid, columns, rows, focus.
     #[serde(default = "default_layout")]
     pub layout: String,
     /// Explicit grid such as "3x2" (used with layout = "grid").
     #[serde(default)]
     pub grid: String,
+    /// A split tree as JSON (used with layout = "custom"): see grid_layout.
+    #[serde(default)]
+    pub layout_tree: String,
+    /// Accounts closed in the grid (by name): still configured and logged
+    /// in, their tabs still running; reopened from View > Closed accounts.
+    #[serde(default)]
+    pub closed_accounts: Vec<String>,
     /// Usage colors: gradient, bands or mono.
     #[serde(default = "default_usage_colors")]
     pub usage_colors: String,
@@ -275,6 +285,11 @@ impl Default for UpdateCfg {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AssistantCfg {
+    /// Which brain: "claude" (default) or "grok" (src/providers).
+    pub provider: String,
+    /// The model per provider other than claude (`model` is claude's):
+    /// [assistant.models] grok = "grok-4.7-build-fast".
+    pub models: std::collections::BTreeMap<String, String>,
     /// "always" (default): the assistant interprets everything said or
     /// typed, apart from the instant one word commands; "off". The old
     /// "fallback" reads as "always".
@@ -326,6 +341,8 @@ pub struct AssistantCfg {
 impl Default for AssistantCfg {
     fn default() -> Self {
         AssistantCfg {
+            provider: "claude".into(),
+            models: Default::default(),
             mode: "always".into(),
             account: "best".into(),
             model: "claude-haiku-4-5".into(),
@@ -737,8 +754,11 @@ impl Default for Config {
             show_email: true,
             show_path: true,
             privacy: false,
+            setup_dont_show: false,
             layout: default_layout(),
             grid: String::new(),
+            layout_tree: String::new(),
+            closed_accounts: vec![],
             usage_colors: default_usage_colors(),
             suggest_move_below: default_suggest_move(),
             background_scrollback_lines: default_bg_scrollback(),

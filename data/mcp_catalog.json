@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "about": "Well known MCP servers and connectors the assistant may install by name. kind: plugin (a Claude Code plugin from the official marketplace, which brings the MCP server with its OAuth client), http or sse (a remote MCP server), stdio (a local command), connector (a claude.ai connector, enabled on the web for the whole Claude login). auth: oauth (a browser sign in after install), token (needs an API token from the user, as an env var), none. Check endpoints with each provider when in doubt.",
+  "entries": [
+    {"id": "slack", "name": "Slack", "aliases": ["slack connector"], "plugin": "slack@claude-plugins-official", "url": "https://mcp.slack.com/mcp", "transport": "http", "auth": "oauth", "oauth": {"client_id": "1601185624273.8899143856786", "callback_port": 3118}, "note": "Slack only accepts its registered OAuth client: on Claude the plugin carries it."},
+    {"id": "github", "name": "GitHub", "aliases": ["git hub"], "plugin": "github@claude-plugins-official", "url": "https://api.githubcopilot.com/mcp/", "transport": "http", "auth": "token", "env": ["GITHUB_PERSONAL_ACCESS_TOKEN"], "note": "Needs a GitHub personal access token in GITHUB_PERSONAL_ACCESS_TOKEN."},
+    {"id": "linear", "name": "Linear", "plugin": "linear@claude-plugins-official", "url": "https://mcp.linear.app/mcp", "transport": "http", "auth": "oauth"},
+    {"id": "notion", "name": "Notion", "plugin": "notion@claude-plugins-official", "url": "https://mcp.notion.com/mcp", "transport": "http", "auth": "oauth"},
+    {"id": "sentry", "name": "Sentry", "plugin": "sentry@claude-plugins-official", "url": "https://mcp.sentry.dev/mcp", "transport": "http", "auth": "oauth"},
+    {"id": "stripe", "name": "Stripe", "plugin": "stripe@claude-plugins-official", "url": "https://mcp.stripe.com", "transport": "http", "auth": "oauth"},
+    {"id": "figma", "name": "Figma", "plugin": "figma@claude-plugins-official", "url": "https://mcp.figma.com/mcp", "transport": "http", "auth": "oauth"},
+    {"id": "atlassian", "name": "Atlassian (Jira, Confluence)", "aliases": ["jira", "confluence"], "plugin": "atlassian@claude-plugins-official", "url": "https://mcp.atlassian.com/v1/sse", "transport": "sse", "auth": "oauth"},
+    {"id": "asana", "name": "Asana", "plugin": "asana@claude-plugins-official", "url": "https://mcp.asana.com/sse", "transport": "sse", "auth": "oauth"},
+    {"id": "vercel", "name": "Vercel", "plugin": "vercel@claude-plugins-official", "url": "https://mcp.vercel.com", "transport": "http", "auth": "oauth"},
+    {"id": "supabase", "name": "Supabase", "plugin": "supabase@claude-plugins-official", "url": "https://mcp.supabase.com/mcp", "transport": "http", "auth": "oauth"},
+    {"id": "context7", "name": "Context7 (library docs)", "aliases": ["context 7"], "plugin": "context7@claude-plugins-official", "url": "https://mcp.context7.com/mcp", "transport": "http", "auth": "none"},
+    {"id": "playwright", "name": "Playwright (browser)", "aliases": ["browser"], "plugin": "playwright@claude-plugins-official", "command": ["npx", "@playwright/mcp@latest"], "transport": "stdio", "auth": "none"},
+    {"id": "filesystem", "name": "Filesystem", "aliases": ["files"], "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "{folder}"], "transport": "stdio", "auth": "none", "note": "Needs a folder: replace {folder}."},
+    {"id": "google-drive", "name": "Google Drive", "aliases": ["drive", "gdrive"], "transport": "connector", "auth": "oauth", "connector_url": "https://claude.ai/settings/connectors", "note": "A claude.ai connector: enable it on the web while signed in to that account; it then shows in every Claude Code login of that account."},
+    {"id": "gmail", "name": "Gmail", "transport": "connector", "auth": "oauth", "connector_url": "https://claude.ai/settings/connectors", "note": "A claude.ai connector (see Google Drive)."},
+    {"id": "google-calendar", "name": "Google Calendar", "aliases": ["calendar"], "transport": "connector", "auth": "oauth", "connector_url": "https://claude.ai/settings/connectors", "note": "A claude.ai connector (see Google Drive)."}
+  ]
+}

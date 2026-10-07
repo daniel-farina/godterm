@@ -477,6 +477,10 @@ pub struct App {
     pub quit: bool,
     /// Self update: the checker, the chip, restart to update.
     pub update: crate::app_update::UpdateUi,
+    /// The assistant's admin flows (installs, logins) and their log.
+    pub admin: crate::app_admin::AdminState,
+    /// What is installed and the installs running (Settings > Setup).
+    pub setup: crate::app_setup::SetupState,
     /// Restore every tab at once this start (after a restart to update).
     pub force_eager: bool,
     pub pane_rects: Vec<Rect>,
@@ -638,6 +642,8 @@ impl App {
             flash: None,
             quit: false,
             update: Default::default(),
+            admin: Default::default(),
+            setup: Default::default(),
             force_eager: false,
             pane_rects: vec![],
             term_rects: vec![],
@@ -1532,6 +1538,7 @@ impl App {
         self.memory_tick();
         self.assistant_tick();
         self.update_tick();
+        self.admin_tick();
         self.control_tick();
         self.refresh_paths();
         for st in &mut self.accounts {
@@ -2241,6 +2248,16 @@ impl App {
 
     pub(crate) fn on_grid_key(&mut self, k: KeyEvent) {
         let account = self.panes[self.focus].account;
+        // Its program is not installed: I installs it.
+        if matches!(k.code, KeyCode::Char('I') | KeyCode::Char('i'))
+            && self.panes[self.focus].cur().state != PaneState::Running
+        {
+            if let Some(id) = self.agent_missing(account) {
+                self.open_setup();
+                self.setup_click(id);
+                return;
+            }
+        }
         let pane = self.panes[self.focus].cur_mut();
         match pane.state {
             PaneState::Running => {
@@ -2435,6 +2452,12 @@ impl App {
             (_, Some('q')) => self.modal = Modal::ConfirmQuit,
             (_, Some('Q')) => self.quit = true,
             (_, Some('N')) => self.restart_to_update(false),
+            (_, Some('C')) => {
+                if let Some(a) = self.panes.get(self.focus).and_then(|p| p.account) {
+                    let say = self.close_accounts(&[a]);
+                    self.flash(say);
+                }
+            }
             _ => {}
         }
     }

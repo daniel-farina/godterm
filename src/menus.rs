@@ -29,6 +29,10 @@ pub enum MenuId {
     Permissions,
     /// Tabs ▾ > Sort tabs ▸ (the focused pane's list).
     SortTabs,
+    /// The assistant panel's ⋯ menu.
+    AssistantMore,
+    /// View ▾ > Closed accounts ▸.
+    ClosedAccounts,
 }
 
 impl MenuId {
@@ -51,6 +55,18 @@ pub enum Cmd {
     TabHistory,
     SessGroup(u8),
     AssistantAccount(Option<usize>),
+    /// The assistant's model (alias or name).
+    AssistantModel(String),
+    AssistantProvider(String),
+    OpenSetup,
+    AssistantLogin,
+    /// Open closed accounts (None: all of them).
+    OpenAccount(Option<usize>),
+    AssistantRules,
+    AssistantPrompt,
+    AssistantAdmin,
+    AssistantDetails,
+    AssistantSettings,
     ShowPath,
     Permission(u8),
     TrainWake,
@@ -269,6 +285,33 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
             ),
             sep(),
             sub("Layout", MenuId::Layout),
+            {
+                let a = app.panes.get(app.focus).and_then(|p| p.account);
+                let mut e = item(
+                    match a {
+                        Some(a) => {
+                            format!("Close {} (stays logged in)", app.cfg.accounts[a].display())
+                        }
+                        None => "Close this account".into(),
+                    },
+                    "C-a C",
+                    UiAction::Key('C'),
+                );
+                if a.is_none() {
+                    e.disabled = Some("no account in this pane".into());
+                }
+                e
+            },
+            {
+                let n = (0..app.cfg.accounts.len())
+                    .filter(|a| app.account_closed(*a))
+                    .count();
+                let mut e = sub(&format!("Closed accounts ({n})"), MenuId::ClosedAccounts);
+                if n == 0 {
+                    e.disabled = Some("no account is closed".into());
+                }
+                e
+            },
             item("Live map", "C-a G", UiAction::Key('G')),
             Entry {
                 check: Some(app.zoom),
@@ -363,7 +406,52 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
         }
         MenuId::AssistantAccount => {
             let cur = app.cfg.assistant.account.clone();
-            let mut v = vec![Entry {
+            let prov = crate::providers::by_id(&app.cfg.assistant.provider);
+            let mut v: Vec<Entry> = crate::providers::PROVIDERS
+                .iter()
+                .map(|p| Entry {
+                    radio: true,
+                    check: Some(p.id == prov.id),
+                    ..item(
+                        p.name,
+                        "",
+                        UiAction::Menu(Cmd::AssistantProvider(p.id.to_string())),
+                    )
+                })
+                .collect();
+            v.push(sep());
+            if let Some(home) = prov.own_home {
+                if !crate::harness::grok::logged_in(&home()) {
+                    v.push(item(
+                        format!("Log in the assistant's {}...", prov.name),
+                        "",
+                        UiAction::Menu(Cmd::AssistantLogin),
+                    ));
+                } else {
+                    v.push(Entry {
+                        disabled: Some("its own login, not one of your accounts".into()),
+                        ..item(
+                            format!("{} (its own login)", prov.name),
+                            "",
+                            UiAction::Menu(Cmd::AssistantLogin),
+                        )
+                    });
+                }
+                v.push(sep());
+                for (m, label) in prov.models {
+                    v.push(Entry {
+                        radio: true,
+                        check: Some(crate::providers::model_for(prov, &app.cfg.assistant) == *m),
+                        ..item(
+                            *label,
+                            "",
+                            UiAction::Menu(Cmd::AssistantModel(m.to_string())),
+                        )
+                    });
+                }
+                return v;
+            }
+            v.push(Entry {
                 radio: true,
                 check: Some(cur == "best" || cur.is_empty()),
                 ..item(
@@ -371,7 +459,7 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                     "",
                     UiAction::Menu(Cmd::AssistantAccount(None)),
                 )
-            }];
+            });
             for (i, a) in app.cfg.accounts.iter().enumerate() {
                 let mut e = Entry {
                     radio: true,
@@ -389,8 +477,69 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 }
                 v.push(e);
             }
+            v.push(sep());
+            let model = crate::providers::model_for(prov, &app.cfg.assistant);
+            for &(m, label) in prov.models {
+                v.push(Entry {
+                    radio: true,
+                    check: Some(model == m || (m == "claude-haiku-4-5" && model == "haiku")),
+                    ..item(
+                        label,
+                        "",
+                        UiAction::Menu(Cmd::AssistantModel(m.to_string())),
+                    )
+                });
+            }
             v
         }
+        MenuId::ClosedAccounts => {
+            let mut v: Vec<Entry> = (0..app.cfg.accounts.len())
+                .filter(|a| app.account_closed(*a))
+                .map(|a| {
+                    item(
+                        format!("Open {}", app.cfg.accounts[a].display()),
+                        "",
+                        UiAction::Menu(Cmd::OpenAccount(Some(a))),
+                    )
+                })
+                .collect();
+            if v.len() > 1 {
+                v.push(sep());
+                v.push(item("Open all", "", UiAction::Menu(Cmd::OpenAccount(None))));
+            }
+            v
+        }
+        MenuId::AssistantMore => vec![
+            item("New conversation", "", UiAction::AssistantNew),
+            item(
+                if app.assistant.history.is_some() {
+                    "Back to the chat"
+                } else {
+                    "History"
+                },
+                "",
+                UiAction::AssistantHistory,
+            ),
+            sub("Account and model", MenuId::AssistantAccount),
+            sep(),
+            item("Learned rules", "", UiAction::Menu(Cmd::AssistantRules)),
+            item("System prompt", "", UiAction::Menu(Cmd::AssistantPrompt)),
+            Entry {
+                check: Some(app.assistant.show_admin),
+                ..item("Admin actions", "", UiAction::Menu(Cmd::AssistantAdmin))
+            },
+            Entry {
+                check: Some(app.assistant.show_details),
+                ..item("Timing details", "", UiAction::Menu(Cmd::AssistantDetails))
+            },
+            sep(),
+            item(
+                "Assistant settings",
+                "",
+                UiAction::Menu(Cmd::AssistantSettings),
+            ),
+            item("Close", "C-a .", UiAction::Key('.')),
+        ],
         MenuId::Settings => vec![
             item("Settings...", "C-a ,", UiAction::Key(',')),
             sep(),
@@ -412,6 +561,7 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
             },
             no_acct(sub("Permissions", MenuId::Permissions)),
             sep(),
+            item("Setup", "", UiAction::Menu(Cmd::OpenSetup)),
             item("Doctor", "", UiAction::RunDoctor),
             if app.update.ready().is_some() {
                 item("Restart to update", "C-a N", UiAction::Key('N'))
@@ -580,6 +730,41 @@ impl App {
                 self.set_layout(m);
             }
             Cmd::AssistantAccount(a) => self.set_assistant_account(a),
+            Cmd::AssistantModel(m) => match self.switch_assistant(None, None, Some(&m)) {
+                Ok(say) | Err(say) => self.flash(say),
+            },
+            Cmd::AssistantProvider(p) => match self.switch_assistant(Some(&p), None, None) {
+                Ok(say) | Err(say) => self.flash(say),
+            },
+            Cmd::OpenSetup => self.open_setup(),
+            Cmd::AssistantLogin => match self.assistant_grok_login() {
+                Ok(say) | Err(say) => self.flash(say),
+            },
+            Cmd::OpenAccount(a) => {
+                let list: Vec<usize> = match a {
+                    Some(a) => vec![a],
+                    None => (0..self.cfg.accounts.len())
+                        .filter(|a| self.account_closed(*a))
+                        .collect(),
+                };
+                let say = self.open_accounts(&list, false);
+                self.flash(say);
+            }
+            Cmd::AssistantRules => self.open_learned_view(),
+            Cmd::AssistantPrompt => self.open_prompt_view(),
+            Cmd::AssistantAdmin => {
+                self.assistant.show_admin = !self.assistant.show_admin;
+                self.assistant.history = None;
+            }
+            Cmd::AssistantDetails => self.assistant.show_details = !self.assistant.show_details,
+            Cmd::AssistantSettings => {
+                self.view = crate::app::View::Settings;
+                self.settings_section = crate::settings::SECTIONS
+                    .iter()
+                    .position(|(s, _)| *s == crate::settings::Section::Assistant)
+                    .unwrap_or(0);
+                self.settings_sel = 0;
+            }
             Cmd::ShowPath => {
                 self.cfg.show_path = !self.cfg.show_path;
                 let _ = crate::settings::write(

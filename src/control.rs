@@ -40,23 +40,23 @@ const TAB_DOC: &str = "Tab id from get_state (\"t12\"), or \"current\" (focused)
 const ACCOUNT_DOC: &str =
     "Account number (1 based), label or name, or \"best\" (most 5 hour quota left).";
 
-fn props(extra: Value, required: &[&str]) -> Value {
+pub(crate) fn props(extra: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": extra, "required": required})
 }
 
-fn tab_prop() -> Value {
+pub(crate) fn tab_prop() -> Value {
     json!({"description": TAB_DOC, "type": ["string", "array"], "items": {"type": "string"}})
 }
 
-fn account_prop() -> Value {
+pub(crate) fn account_prop() -> Value {
     json!({"description": ACCOUNT_DOC, "type": ["integer", "string"]})
 }
 
-fn token_prop() -> Value {
+pub(crate) fn token_prop() -> Value {
     json!({"type": "string", "description": "Token from a needs_confirmation reply; send it alone, only after the user clearly said yes in a later message"})
 }
 
-fn reissue_prop() -> Value {
+pub(crate) fn reissue_prop() -> Value {
     json!({"type": "string", "description": "An expired token: asks the very same question again (same plan, same text), never a rebuilt one"})
 }
 
@@ -90,6 +90,126 @@ pub const TOOLS: &[Tool] = &[
         name: "restart_to_update",
         description: "Install the downloaded GodTerm update and restart into it once this answer ends; every tab resumes its session. Only when the state shows update_ready and the user asked (\"update now\"). If tabs are working it returns needs_confirmation: ask the user, then call again with confirm true.",
         schema: || props(json!({"confirm": {"type": "boolean"}}), &[]),
+    },
+    Tool {
+        name: "account_capabilities",
+        description: "What each account has: harness, login, plan, usage, permission mode, MCP servers (name, transport, scope, status connected / needs-auth / failed / unknown), plugins (enabled or not, and the servers they bring), marketplaces, skills and hooks. account: one, a list or \"all\" (default all). refresh true re-checks server statuses (claude mcp list) in the background.",
+        schema: || props(json!({"account": {"description": "Account(s): number, label, a list, or \"all\"", "type": ["integer", "string", "array"]}, "refresh": {"type": "boolean"}}), &[]),
+    },
+    Tool {
+        name: "mcp_catalog",
+        description: "The built in catalog of well known MCP servers and connectors (Slack, GitHub, Linear, Notion, Sentry, Stripe, Figma, Atlassian, Asana, Vercel, Supabase, Context7, Playwright, filesystem, Google Drive...): id, transport, auth, plugin, url or command, needed env. query filters.",
+        schema: || props(json!({"query": {"type": "string"}}), &[]),
+    },
+    Tool {
+        name: "install_mcp",
+        description: "Install an MCP server on one or more accounts (one confirmation for all). source: a catalog name (\"slack\"), an https URL (with transport http or sse) or command (an argv list for a local stdio server; give name). On Claude a catalog entry with a plugin installs the plugin (via \"mcp\" adds the server directly). env: variables the server needs (values only from the user's words). It verifies with mcp list, then (connect, default true) opens the OAuth sign in in the browser and waits, saying each step. Unknown sources say so in the question.",
+        schema: || props(json!({"account": {"description": "Account(s): number, label, a list, or \"all\"", "type": ["integer", "string", "array"]}, "source": {"type": "string"}, "name": {"type": "string"}, "transport": {"type": "string", "enum": ["http", "sse"]}, "command": {"type": "array", "items": {"type": "string"}}, "env": {"type": "object"}, "via": {"type": "string", "enum": ["plugin", "mcp"]}, "connect": {"type": "boolean"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "connect_mcp",
+        description: "Sign in to an installed remote MCP server that needs auth (name as account_capabilities shows it, e.g. plugin:slack:slack): opens the browser sign in and waits until it is connected.",
+        schema: || props(json!({"account": {"description": "Account(s)", "type": ["integer", "string", "array"]}, "name": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &["name"]),
+    },
+    Tool {
+        name: "remove_mcp",
+        description: "Remove an MCP server (user scope) from one or more accounts; verifies it is gone.",
+        schema: || props(json!({"account": {"description": "Account(s)", "type": ["integer", "string", "array"]}, "name": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "install_plugin",
+        description: "Install a plugin (name@marketplace) on one or more accounts; marketplace (owner/repo, git URL or path) is added first when the account does not know it. Plugins from outside the official marketplace say so in the question.",
+        schema: || props(json!({"account": {"description": "Account(s)", "type": ["integer", "string", "array"]}, "plugin": {"type": "string"}, "marketplace": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "remove_plugin",
+        description: "Uninstall a plugin from one or more accounts.",
+        schema: || props(json!({"account": {"description": "Account(s)", "type": ["integer", "string", "array"]}, "plugin": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "enable_plugin",
+        description: "Turn an installed plugin on, on one or more accounts.",
+        schema: || props(json!({"account": {"description": "Account(s)", "type": ["integer", "string", "array"]}, "plugin": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "disable_plugin",
+        description: "Turn an installed plugin off, on one or more accounts.",
+        schema: || props(json!({"account": {"description": "Account(s)", "type": ["integer", "string", "array"]}, "plugin": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "list_settings",
+        description: "GodTerm's settings by the Settings screen's schema: key, label, value (secrets only as saved / not set), kind and allowed values, help. query searches label, key and help; section filters (General, Layout, Accounts, Voice, Assistant, Memory).",
+        schema: || props(json!({"query": {"type": "string"}, "section": {"type": "string"}}), &[]),
+    },
+    Tool {
+        name: "get_setting",
+        description: "One setting's value and allowed values; account for a per account setting.",
+        schema: || props(json!({"key": {"type": "string"}, "account": account_prop()}), &["key"]),
+    },
+    Tool {
+        name: "set_setting",
+        description: "Change any setting (validated against its kind, written to config.toml keeping comments, applied at once). account for per account keys. Risky changes (bypass permissions, update checks or signatures off, privacy off, pass_env, claude_bin / grok_bin) need a second yes that names the risk. A secret (an API key) only from the user's own dictated words; never read back.",
+        schema: || props(json!({"key": {"type": "string"}, "value": {"type": ["string", "number", "boolean"]}, "account": account_prop(), "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "add_account",
+        description: "Add a Claude or Grok account (label, harness claude|grok, optional color and folder), then start its login in a pane and guide it by voice: opens the login page, says when to sign in and approve, waits for a code (the user copies it and says \"paste it\": login_paste_code), and says when the account is configured or the login failed.",
+        schema: || props(json!({"label": {"type": "string"}, "harness": {"type": "string", "enum": ["claude", "grok"]}, "color": {"type": "string"}, "folder": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "relogin_account",
+        description: "Start the login of an existing account again (expired or failed), guided like add_account.",
+        schema: || props(json!({"account": account_prop(), "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "logout_account",
+        description: "Log out of an account (its tabs stop).",
+        schema: || props(json!({"account": account_prop(), "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "login_paste_code",
+        description: "Paste the login code from the clipboard into the login waiting for one. Only when the user just said to paste it; the code is never shown, spoken or logged.",
+        schema: || props(json!({"account": account_prop()}), &[]),
+    },
+    Tool {
+        name: "admin_history",
+        description: "The admin actions taken lately (installs, settings, accounts), newest last.",
+        schema: || props(json!({}), &[]),
+    },
+    Tool {
+        name: "switch_assistant",
+        description: "Change your own provider, account and model at once (\"switch the assistant to Grok\", \"use Opus\", \"run on account 2\"); each is optional. The conversation carries over. get_state's providers lists them. Runs at once; say the result.",
+        schema: || props(json!({"provider": {"type": "string"}, "account": account_prop(), "model": {"type": "string"}}), &[]),
+    },
+    Tool {
+        name: "assistant_login",
+        description: "Sign in a provider that has its own login for you (the assistant's Grok, in its own home: the user's Grok accounts are never used). Opens the sign in in the browser and waits.",
+        schema: || props(json!({"provider": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "setup_status",
+        description: "What GodTerm needs and what is installed: Claude Code (required), Grok Build (optional), the local voice pack (ffmpeg, whisper.cpp and a model, espeak-ng and the Kokoro files, the speaker model), each with its status, the exact install plan here, the download size and whether it needs sudo; the no install paths.",
+        schema: || props(json!({}), &[]),
+    },
+    Tool {
+        name: "install_dependency",
+        description: "Install what is missing: targets \"voice pack\", \"claude\", \"grok\", \"missing\", or item ids. One confirmation shows the exact commands and sizes; it runs in the background with spoken progress and is picked up live (sudo steps run in a visible tab for the user's password). whisper_model: large-v3-turbo (recommended, 1.6 GB) or small.en.",
+        schema: || props(json!({"targets": {"type": "string"}, "whisper_model": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "close_accounts",
+        description: "Close accounts in the grid: they leave the view but stay configured and logged in, and their tabs keep running (this is NOT a log out). accounts: numbers, labels, a list, \"all\", or a harness (\"grok\", \"claude\"); except: ones to keep open. Runs at once (reversible); say the result.",
+        schema: || props(json!({"accounts": {"type": ["integer", "string", "array"]}, "except": {"type": ["integer", "string", "array"]}}), &["accounts"]),
+    },
+    Tool {
+        name: "open_accounts",
+        description: "Open closed accounts in the grid again, in place. only true: show only these and close the rest (\"only account 2 and 3\").",
+        schema: || props(json!({"accounts": {"type": ["integer", "string", "array"]}, "except": {"type": ["integer", "string", "array"]}, "only": {"type": "boolean"}}), &["accounts"]),
+    },
+    Tool {
+        name: "set_layout",
+        description: "Arrange the grid. mode: auto, grid (with grid like \"2x2\"), columns, rows, focus. Or tree, any split: {\"split\": \"columns\"|\"rows\", \"sizes\": [2, 1], \"children\": [...]}, leaves {\"account\": N} or {\"rest\": true} (every other open account, stacked across). \"account 1 big on the left, the rest stacked on the right\" = {\"split\": \"columns\", \"sizes\": [2, 1], \"children\": [{\"account\": 1}, {\"rest\": true}]}; \"just account 2\" = {\"account\": 2}. Too small to fit falls back to auto. Runs at once.",
+        schema: || props(json!({"mode": {"type": "string"}, "grid": {"type": "string"}, "tree": {"type": "object"}}), &[]),
     },
     Tool {
         name: "stop_waiting",
@@ -1418,7 +1538,7 @@ impl App {
     /// it needs a yes; with the token (from the user's next turn) run the
     /// plan that was asked about. A confirmation never covers more than
     /// the user heard: new arguments must resolve to the same plan.
-    fn planned(&mut self, tool: &str, args: &Value) -> Result<Value, String> {
+    pub(crate) fn planned(&mut self, tool: &str, args: &Value) -> Result<Value, String> {
         let turn = self.assistant_turn;
         self.pending_confirms.retain(|p| p.age() < KEEP_PLANS);
         let ask = |p: &Pending| {
@@ -1526,6 +1646,18 @@ impl App {
         if !needs {
             return self.run_plan(tool, &plan);
         }
+        Ok(self.ask_question(tool, plan, question))
+    }
+
+    /// Put `question` about `plan` to the user (a token to confirm with).
+    pub(crate) fn ask_question(&mut self, tool: &str, plan: Value, question: String) -> Value {
+        let turn = self.assistant_turn;
+        let ask = |p: &Pending| {
+            json!({
+                "ok": false, "needs_confirmation": true, "token": p.token, "question": p.summary,
+                "next": format!("Ask the user exactly once, as one short question: \"{}\" Then stop. Only after a clear yes in a later message, call {} again with only confirm_token; that runs the whole set at once.", p.summary, p.tool)
+            })
+        };
         let token = crate::session_ops::new_uuid()[..8].to_string();
         // A new question for the same tool replaces the old one: the brain
         // is told, and the old token says so if it comes back.
@@ -1558,7 +1690,7 @@ impl App {
             reply["next"] = json!(format!("This replaces your earlier question (\"{}\"): put everything in this one, ask only this, once: \"{}\" Then stop.", r.summary, p.summary));
         }
         self.pending_confirms.push(p);
-        Ok(reply)
+        reply
     }
 
     /// The no-confirmation tier for closing: a single tab, idle (nothing
@@ -1586,6 +1718,9 @@ impl App {
 
     /// (plan, question, needs a yes) for a batch tool's arguments.
     fn plan_for(&mut self, tool: &str, args: &Value) -> Result<(Value, String, bool), String> {
+        if let Some(r) = self.admin_plan_for(tool, args) {
+            return r;
+        }
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
         let listy = |k: &[&str]| {
             matches!(args.get("tab"), Some(Value::Array(_)))
@@ -1900,6 +2035,9 @@ impl App {
 
     /// Run a (confirmed or harmless) plan. Results carry what happened.
     fn run_plan(&mut self, tool: &str, plan: &Value) -> Result<Value, String> {
+        if let Some(r) = self.admin_run_plan(tool, plan) {
+            return r;
+        }
         let uids: Vec<u64> = plan["uids"]
             .as_array()
             .into_iter()
@@ -2431,6 +2569,20 @@ impl App {
     }
 
     fn control_inner(&mut self, tool: &str, args: &Value) -> Result<Value, String> {
+        if let Some(r) = self.admin_tool(tool, args) {
+            return r;
+        }
+        if let Some(r) = self.grid_tool(tool, args) {
+            return r;
+        }
+        if tool == "switch_assistant" {
+            let say = self.switch_assistant(
+                args["provider"].as_str(),
+                args.get("account"),
+                args["model"].as_str(),
+            )?;
+            return Ok(json!({"ok": true, "result": {"say": say}}));
+        }
         if let Some(r) = self.learned_tool(tool, args) {
             return r;
         }
@@ -3993,6 +4145,7 @@ impl App {
         json!({
             "modes": self.modes_line().trim(),
             "pending_answers": self.pending_answers_json(),
+            "providers": self.providers_json(),
             "listening_paused": self.voice.paused.as_ref().map(|p| json!({"seconds_left": self.pause_left(), "reason": p.reason, "announcements_held": p.queued.len()})),
             "closed": self.closed.iter().rev().take(10).enumerate().map(|(i, c)| json!({"index": i, "tab": c.label, "account": c.account, "cwd": c.cwd, "loops": c.loops.len()})).collect::<Vec<_>>(),
             "accounts": (0..self.cfg.accounts.len()).map(|a| json!({
@@ -4020,7 +4173,7 @@ impl App {
                     && self.accounts[a].effective_left().is_none_or(|e| e >= 2.0),
                 "next_reset_that_unblocks": self.accounts[a].binding().filter(|b| b.0 < 2.0).and_then(|b| b.2).map(|t| t.with_timezone(&chrono::Local).format("%a %b %-d %H:%M").to_string()),
                 "tabs": self.panes.iter().filter(|p| p.account == Some(a)).map(|p| p.tabs.len()).sum::<usize>(),
-                "assistant_runs_here": self.assistant.brain.as_ref().map(|b| b.account) == Some(a),
+                "assistant_runs_here": self.assistant.brain.as_ref().and_then(|b| b.account) == Some(a),
             })).collect::<Vec<_>>(),
             "tabs": self.all_tabs().into_iter().map(|(s, t)| self.tab_json(s, t)).collect::<Vec<_>>(),
             "loops": self.loops.iter().map(|r| json!({
@@ -4405,6 +4558,12 @@ pub fn test_control() -> bool {
 /// against the per turn limit.
 pub const READ_ONLY: &[&str] = &[
     "get_state",
+    "account_capabilities",
+    "mcp_catalog",
+    "get_setting",
+    "list_settings",
+    "admin_history",
+    "setup_status",
     "read_tab",
     "recent_turns",
     "list_dir",

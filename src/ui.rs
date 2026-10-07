@@ -98,6 +98,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     draw_pane(f, app, i, *r);
                 }
             }
+            if app.visible_panes().is_empty() && grid_area.height > 2 {
+                let msg = if app.cfg.accounts.is_empty() {
+                    "No accounts yet: Ctrl-a A adds one."
+                } else {
+                    "Every account is closed (still logged in). Say \"open all accounts\", or View ▾ > Closed accounts."
+                };
+                f.render_widget(
+                    Paragraph::new(Line::styled(msg, Style::default().fg(DIM)))
+                        .alignment(Alignment::Center)
+                        .wrap(Wrap { trim: true }),
+                    Rect::new(
+                        grid_area.x,
+                        grid_area.y + grid_area.height / 2,
+                        grid_area.width,
+                        2,
+                    ),
+                );
+            }
             // Free cells of a grid: a card to start something there.
             if !app.zoom {
                 let empty = app
@@ -152,7 +170,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.assistant.show && main.width >= 50 {
         let w = (main.width / 2).clamp(44, 76);
-        draw_assistant(
+        crate::ui_assistant::draw(
             f,
             app,
             Rect::new(main.x + main.width - w, main.y, w, main.height),
@@ -919,7 +937,20 @@ fn draw_idle(f: &mut Frame, app: &App, i: usize, area: Rect) {
                 Style::default().fg(DIM),
             ));
             lines.push(Line::raw(""));
-            if let PaneState::Failed(e) = &pane.state {
+            if let Some(id) = app.agent_missing(Some(a)) {
+                let (name, key) = if id == "grok" {
+                    ("Grok Build", "grok_bin")
+                } else {
+                    ("Claude Code", "claude_bin")
+                };
+                lines.push(Line::styled(
+                    format!(
+                        "{name} isn't installed. Press I to install it, or set {key} in Settings."
+                    ),
+                    Style::default().fg(theme::SAND),
+                ));
+                lines.push(Line::raw(""));
+            } else if let PaneState::Failed(e) = &pane.state {
                 lines.push(Line::styled(
                     format!("Failed to start: {e}"),
                     Style::default().fg(theme::CLAY),
@@ -1757,7 +1788,7 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
             .assistant
             .brain
             .as_ref()
-            .map(|b| b.account)
+            .and_then(|b| b.account)
             .or_else(|| app.assistant_account())
         {
             let left = match app.accounts[a].binding() {
@@ -1772,6 +1803,15 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
                 hint: "The assistant and the account it spends: click to open it",
             });
         }
+    }
+    let missing = app.required_missing();
+    if !missing.is_empty() {
+        v.push(Chip {
+            text: format!("SETUP: {} MISSING", missing.join(", ").to_uppercase()),
+            bg: theme::SAND,
+            action: UiAction::Menu(crate::menus::Cmd::OpenSetup),
+            hint: "Something GodTerm needs is not installed: click for Setup",
+        });
     }
     if let Some(text) = app.update_chip() {
         v.push(Chip {
@@ -3777,238 +3817,14 @@ fn draw_loops(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// The assistant drawer: account and usage, the conversation with its
-/// actions, and an input box.
-fn draw_assistant(f: &mut Frame, app: &App, area: Rect) {
-    use crate::app_assistant::Who;
-    use crate::hits::UiAction;
-    f.render_widget(Clear, area);
-    let acct = app
-        .assistant
-        .brain
-        .as_ref()
-        .map(|b| b.account)
-        .or_else(|| app.assistant_account());
-    let title = match acct {
-        Some(a) => {
-            let left = app.accounts[a]
-                .effective_left()
-                .map(|l| format!(" {l:.0}% left"))
-                .unwrap_or_default();
-            let model = app
-                .assistant
-                .brain
-                .as_ref()
-                .map(|b| b.model.clone())
-                .unwrap_or_else(|| app.cfg.assistant.model.clone());
-            format!(
-                " assistant · {}{left} · {model} ",
-                app.account_cfg(a).display()
-            )
-        }
-        None => " assistant · no logged in account ".into(),
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::MAUVE))
-        .title(Span::styled(title, Style::default().fg(FG)))
-        .style(Style::default().bg(BAR_BG));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    if inner.height < 4 {
-        return;
-    }
-    // Header: whose quota it spends, buttons.
-    {
-        let buf = f.buffer_mut();
-        let limit = inner.x + inner.width;
-        let mut note = match acct {
-            Some(a) => format!("spends {}'s quota", app.account_cfg(a).display()),
-            None => "log in an account to use it".into(),
-        };
-        let days = app.cfg.assistant.memory_days;
-        if let Some((_, n)) = app.assistant.memory_count.filter(|_| days > 0) {
-            note.push_str(&format!(
-                " · memory: {} in {days} day{}",
-                crate::control::plural(n, "conversation"),
-                if days == 1 { "" } else { "s" }
-            ));
-        }
-        let mut x = crate::hits::text(
-            buf,
-            inner.x,
-            inner.y,
-            limit,
-            &note,
-            Style::default().fg(FAINT).bg(BAR_BG),
-        );
-        let mut hits = app.hits.borrow_mut();
-        x = crate::hits::button(
-            buf,
-            &mut hits,
-            app.mouse_pos,
-            x + 2,
-            inner.y,
-            limit,
-            "New",
-            UiAction::AssistantNew,
-            "New conversation (\"forget that\")",
-            theme::SLATE,
-        );
-        let hl = if app.assistant.history.is_some() {
-            "Chat"
-        } else {
-            "History"
-        };
-        x = crate::hits::button(
-            buf,
-            &mut hits,
-            app.mouse_pos,
-            x + 1,
-            inner.y,
-            limit,
-            hl,
-            UiAction::AssistantHistory,
-            "Saved conversations: read, search, resume, delete",
-            theme::SLATE,
-        );
-        let _ = crate::hits::button(
-            buf,
-            &mut hits,
-            app.mouse_pos,
-            x + 1,
-            inner.y,
-            limit,
-            "×",
-            UiAction::Key('.'),
-            "Close (Esc, Ctrl-a .)",
-            theme::CLAY,
-        );
-    }
-    if let Some(h) = &app.assistant.history {
-        draw_history(
-            f,
-            app,
-            h,
-            Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1),
-        );
-        return;
-    }
-    // The last turn's latency.
-    if let Some(t) = &app.assistant.last_timing {
-        let buf = f.buffer_mut();
-        crate::hits::text(
-            buf,
-            inner.x,
-            inner.y + 1,
-            inner.x + inner.width,
-            &crate::sessions::snippet(t, inner.width as usize),
-            Style::default().fg(FAINT).bg(BAR_BG),
-        );
-    }
-    // Conversation, newest at the bottom.
-    let top = if app.assistant.last_timing.is_some() {
-        2
-    } else {
-        1
-    };
-    let body = Rect::new(
-        inner.x,
-        inner.y + top,
-        inner.width,
-        inner.height.saturating_sub(2 + top),
-    );
-    let mut lines: Vec<Line> = vec![];
-    for e in &app.assistant.log {
-        let (prefix, st) = match e.who {
-            Who::User => ("you  ", Style::default().fg(theme::SAND)),
-            Who::Reply => ("     ", Style::default().fg(FG)),
-            Who::Tool => ("  ·  ", Style::default().fg(FAINT)),
-            Who::Note => ("  !  ", Style::default().fg(DIM)),
-            Who::Preamble => (
-                "     ",
-                Style::default().fg(FAINT).add_modifier(Modifier::ITALIC),
-            ),
-        };
-        lines.push(Line::from(vec![
-            Span::styled(prefix, st),
-            Span::styled(e.text.clone(), st),
-        ]));
-    }
-    for d in app.deliveries.iter().filter(|d| !d.done()) {
-        let (st, _) = d.status();
-        let to = app
-            .find_tab(d.uid)
-            .map(|(s, t)| format!("{} tab {}", app.describe_tab(s), t + 1))
-            .unwrap_or_default();
-        lines.push(Line::styled(
-            format!(
-                "  ⧗  {st} to {to}: {}",
-                crate::sessions::snippet(&d.text, 60)
-            ),
-            Style::default().fg(theme::SAND),
-        ));
-    }
-    if app.assistant.busy {
-        let partial = if app.assistant.current.is_empty() {
-            "thinking...".to_string()
-        } else {
-            app.assistant.current.clone()
-        };
-        lines.push(Line::from(vec![
-            Span::styled("     ", Style::default()),
-            Span::styled(
-                partial,
-                Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-    }
-    if lines.is_empty() {
-        lines.push(Line::styled(
-            "Ask anything about your sessions, by voice or typed below: \"what's everyone working on?\", \"approve the one in account two if it's just tests\", \"open a tab on the best account and fix the failing tests\".",
-            Style::default().fg(DIM),
-        ));
-    }
-    // Wrap, then keep the bottom.
-    let w = body.width.max(1) as usize;
-    let total: u16 = lines
-        .iter()
-        .map(|l| (l.width().max(1).div_ceil(w)) as u16)
-        .sum();
-    let scroll = total.saturating_sub(body.height);
-    f.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0)),
-        body,
-    );
-    // Input.
-    let iy = inner.y + inner.height - 1;
-    let buf = f.buffer_mut();
-    let limit = inner.x + inner.width;
-    for x in inner.x..limit {
-        if let Some(c) = buf.cell_mut((x, iy)) {
-            c.set_char(' ');
-            c.set_style(Style::default().bg(SEL_BG));
-        }
-    }
-    let shown = if app.assistant.input.is_empty() {
-        "type here, Enter sends".to_string()
-    } else {
-        format!("{}▏", app.assistant.input)
-    };
-    let st = if app.assistant.input.is_empty() {
-        Style::default().fg(FAINT).bg(SEL_BG)
-    } else {
-        Style::default().fg(FG).bg(SEL_BG)
-    };
-    crate::hits::text(buf, inner.x, iy, limit, &format!("› {shown}"), st);
-}
-
 /// The assistant panel's History tab: a searchable list of saved
 /// conversations, or one of them to read, resume or delete.
-fn draw_history(f: &mut Frame, app: &App, h: &crate::assistant_history::HistoryUi, area: Rect) {
+pub(crate) fn draw_history(
+    f: &mut Frame,
+    app: &App,
+    h: &crate::assistant_history::HistoryUi,
+    area: Rect,
+) {
     use crate::hits::UiAction;
     if area.height < 3 {
         return;
@@ -4075,13 +3891,15 @@ fn draw_history(f: &mut Frame, app: &App, h: &crate::assistant_history::HistoryU
                 }
                 Some("reply") => ("      ".to_string(), Style::default().fg(FG), text),
                 Some("tool") => (
-                    "   ·  ".to_string(),
+                    "   ".to_string(),
                     Style::default().fg(FAINT),
-                    format!(
-                        "{} {}",
+                    crate::ui_assistant::chip(
+                        app,
                         e["name"].as_str().unwrap_or(""),
-                        crate::sessions::snippet(&e["args"].to_string(), 60)
-                    ),
+                        &e["args"],
+                        "",
+                    )
+                    .0,
                 ),
                 Some("note") => ("   !  ".to_string(), Style::default().fg(DIM), text),
                 _ => continue,
@@ -4631,6 +4449,10 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("Ctrl-a t", "new tab: pick a directory or resume a session"),
     ("Ctrl-a w", "close the current tab"),
+    (
+        "Ctrl-a C",
+        "close this pane's account in the grid (stays logged in; View > Closed accounts reopens)",
+    ),
     (
         "Ctrl-a N",
         "restart into a downloaded update (tabs resume); checks for one otherwise",
@@ -7354,7 +7176,7 @@ mod tests {
             vec!["jarvis".to_string(), "computer".to_string()]
         );
         // Keys and About render.
-        for sec in [6, 7] {
+        for sec in [7, 8] {
             click_on(
                 &mut app,
                 &mut term,
@@ -8549,9 +8371,13 @@ mod tests {
                 ["needs_confirmation"],
             json!(true)
         );
+        // Settings change only through the planned admin tools (a yes
+        // each, two for risky ones); reading them is read only.
         assert!(crate::control::TOOLS
             .iter()
-            .all(|t| !t.name.contains("permission") && !t.name.contains("setting")));
+            .filter(|t| t.name.contains("permission") || t.name.contains("setting"))
+            .all(|t| crate::app_admin::WRITE_TOOLS.contains(&t.name)
+                || crate::control::READ_ONLY.contains(&t.name)));
         // A runaway turn is cut off (actions count; looking does not).
         app.assistant_calls = 0;
         for _ in 0..app.cfg.assistant.max_tool_calls {
@@ -9320,12 +9146,17 @@ mod tests {
             cost: None,
             error: false,
         });
-        let tools: Vec<&str> = app
+        let tools: Vec<String> = app
             .assistant
             .log
             .iter()
             .filter(|e| e.who == Who::Tool)
-            .map(|e| e.text.split(' ').next().unwrap_or(""))
+            .map(|e| {
+                serde_json::from_str::<serde_json::Value>(&e.text).unwrap()["tool"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()
+            })
             .collect();
         assert_eq!(tools, vec!["send_prompt"], "{tools:?}");
         assert_eq!(app.assistant.turn_reads, 0);
@@ -9662,6 +9493,602 @@ mod tests {
         assert!(
             last.text.contains("longer than my reply limit") && !last.text.contains("API Error")
         );
+        app.assistant.brain = None;
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Run admin ticks until `done` or 20 s.
+    fn admin_until(app: &mut crate::app::App, done: impl Fn(&crate::app::App) -> bool) {
+        let t0 = std::time::Instant::now();
+        while !done(app) && t0.elapsed() < std::time::Duration::from_secs(20) {
+            app.admin_tick();
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+        app.admin_tick();
+    }
+
+    fn brain_args(v: serde_json::Value) -> serde_json::Value {
+        let mut v = v;
+        v["_client"] = serde_json::json!("brain");
+        v
+    }
+
+    fn user_says(app: &mut crate::app::App, said: &str) {
+        app.assistant_turn += 1;
+        app.assistant.last_user = said.into();
+        app.assistant.turn_reads = 0;
+    }
+
+    /// One confirmation installs a remote MCP server on two accounts, checks
+    /// it with mcp list, opens each sign in, waits, and says it connected.
+    #[test]
+    fn admin_installs_an_mcp_on_two_accounts_and_signs_in() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use serde_json::json;
+        let (mut app, home) = test_app("adminmcp");
+        let stub = crate::test_stub::claude(
+            &home.join("bin"),
+            &[("fake_admin", "1".into()), ("login_delay_ms", "150".into())],
+        );
+        app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
+        crate::admin::OPENED.lock().unwrap().clear();
+        user_says(&mut app, "add linear to accounts one and two");
+        let v = app.control_call(
+            "install_mcp",
+            &brain_args(json!({"account": [1, 2], "source": "linear", "via": "mcp"})),
+        );
+        let q = v["question"].as_str().unwrap_or_default().to_string();
+        assert!(
+            q.contains("Install Linear on Account 1 and Account 2")
+                && q.contains("claude mcp add --transport http --scope user linear https://mcp.linear.app/mcp")
+                && q.contains("sign in to Linear in the browser"),
+            "{v}"
+        );
+        let dir1 = app.cfg.accounts[0].config_dir();
+        assert!(
+            !dir1.join("fake-admin.txt").exists(),
+            "nothing ran before the yes"
+        );
+        let tok = v["token"].as_str().unwrap().to_string();
+        user_says(&mut app, "yes");
+        let r = app.control_call("install_mcp", &brain_args(json!({"confirm_token": tok})));
+        assert_eq!(r["result"]["started"], json!(true), "{r}");
+        admin_until(&mut app, |a| a.admin.jobs == 0);
+        let said = app.admin.said.join(" | ");
+        assert!(
+            said.contains("Opening the Linear sign in for Account 1")
+                && said.contains("Linear connected on Account 1")
+                && said.contains("Linear connected on Account 2")
+                && said.contains("Done: Linear on Account 1, Account 2."),
+            "{said}"
+        );
+        // Exactly one browser open per sign in: claude's own (GodTerm opens none).
+        assert_eq!(
+            crate::admin::OPENED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter(|u| u.contains("auth.example.test"))
+                .count(),
+            0
+        );
+        for a in 0..2 {
+            let opens =
+                std::fs::read_to_string(app.cfg.accounts[a].config_dir().join("browser-opens.txt"))
+                    .unwrap_or_default();
+            assert_eq!(opens.lines().count(), 1, "account {}: {opens}", a + 1);
+        }
+        // The inventory knows, per account.
+        let c = app.control_call("account_capabilities", &json!({"account": 2}));
+        let servers = c["result"]["accounts"][0]["mcp_servers"].to_string();
+        assert!(
+            servers.contains("linear") && servers.contains("connected"),
+            "{c}"
+        );
+        assert!(app
+            .state_preamble()
+            .contains("capabilities: mcp linear (connected)"));
+        assert!(app
+            .state_preamble()
+            .contains("a3 Account 3 capabilities: no MCP servers or plugins"));
+        assert!(app
+            .admin
+            .history
+            .iter()
+            .any(|h| h.contains("install Linear on Account 1, Account 2")));
+        // claude could not open a browser: GodTerm opens the page, once.
+        let stub = crate::test_stub::claude(
+            &home.join("bin3"),
+            &[
+                ("fake_admin", "1".into()),
+                ("browser_fails", "1".into()),
+                ("login_delay_ms", "100".into()),
+            ],
+        );
+        app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
+        user_says(&mut app, "add notion to account four");
+        let v = app.control_call(
+            "install_mcp",
+            &brain_args(json!({"account": 4, "source": "notion", "via": "mcp"})),
+        );
+        let tok = v["token"].as_str().unwrap().to_string();
+        user_says(&mut app, "yes");
+        app.control_call("install_mcp", &brain_args(json!({"confirm_token": tok})));
+        admin_until(&mut app, |a| a.admin.jobs == 0);
+        assert_eq!(
+            crate::admin::OPENED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter(|u| u.contains("server=notion"))
+                .count(),
+            1
+        );
+        assert!(!app.cfg.accounts[3]
+            .config_dir()
+            .join("browser-opens.txt")
+            .exists());
+        // A failed sign in says so.
+        let stub = crate::test_stub::claude(
+            &home.join("bin2"),
+            &[("fake_admin", "1".into()), ("login_fail", "1".into())],
+        );
+        app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
+        user_says(&mut app, "add sentry to account three");
+        let v = app.control_call(
+            "install_mcp",
+            &brain_args(json!({"account": 3, "source": "sentry", "via": "mcp"})),
+        );
+        let tok = v["token"].as_str().unwrap().to_string();
+        user_says(&mut app, "yes");
+        app.control_call("install_mcp", &brain_args(json!({"confirm_token": tok})));
+        admin_until(&mut app, |a| a.admin.jobs == 0);
+        assert!(
+            app.admin
+                .said
+                .last()
+                .unwrap()
+                .contains("Sentry failed: Account 3: sign in failed"),
+            "{:?}",
+            app.admin.said
+        );
+        // Remove verifies it is gone.
+        user_says(&mut app, "remove linear from account one");
+        let v = app.control_call(
+            "remove_mcp",
+            &brain_args(json!({"account": 1, "name": "linear"})),
+        );
+        assert!(
+            v["question"]
+                .as_str()
+                .unwrap()
+                .contains("claude mcp remove --scope user linear"),
+            "{v}"
+        );
+        let tok = v["token"].as_str().unwrap().to_string();
+        user_says(&mut app, "yes");
+        app.control_call("remove_mcp", &brain_args(json!({"confirm_token": tok})));
+        admin_until(&mut app, |a| a.admin.jobs == 0);
+        assert!(
+            app.admin
+                .said
+                .last()
+                .unwrap()
+                .contains("Done: linear on Account 1"),
+            "{:?}",
+            app.admin.said
+        );
+        // A plugin from the catalog brings its server (Slack).
+        user_says(&mut app, "add the slack connector to account two");
+        let v = app.control_call(
+            "install_mcp",
+            &brain_args(json!({"account": 2, "source": "slack", "connect": false})),
+        );
+        let q = v["question"].as_str().unwrap().to_string();
+        assert!(q.contains("claude plugin marketplace add anthropics/claude-plugins-official; claude plugin install slack@claude-plugins-official"), "{q}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// set_setting validates, applies, and asks twice for a risky change;
+    /// secrets only from the user's words.
+    #[test]
+    fn admin_settings_validate_and_risky_ones_ask_twice() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use serde_json::json;
+        let (mut app, home) = test_app("adminset");
+        user_says(&mut app, "make the follow up window 20 seconds");
+        let bad = app.control_call(
+            "set_setting",
+            &brain_args(json!({"key": "assistant.follow_up_s", "value": "999"})),
+        );
+        assert!(
+            bad["error"].as_str().unwrap().contains("between 0 and 60"),
+            "{bad}"
+        );
+        let nope = app.control_call(
+            "set_setting",
+            &brain_args(json!({"key": "assistant.follow_up_window", "value": "20"})),
+        );
+        assert!(
+            nope["error"]
+                .as_str()
+                .unwrap()
+                .contains("did you mean assistant.follow_up_s"),
+            "{nope}"
+        );
+        let v = app.control_call(
+            "set_setting",
+            &brain_args(json!({"key": "assistant.follow_up_s", "value": 20})),
+        );
+        assert!(
+            v["question"]
+                .as_str()
+                .unwrap()
+                .starts_with("Set Follow up window (s) to 20 (now 8)?"),
+            "{v}"
+        );
+        let tok = v["token"].as_str().unwrap().to_string();
+        user_says(&mut app, "yes");
+        let r = app.control_call("set_setting", &brain_args(json!({"confirm_token": tok})));
+        assert!(
+            r["result"]["say"].as_str().unwrap().contains("is now 20"),
+            "{r}"
+        );
+        assert_eq!(app.cfg.assistant.follow_up_s, 20);
+        // Risky: update checks off needs a second yes.
+        user_says(&mut app, "turn off update checks");
+        let v = app.control_call(
+            "set_setting",
+            &brain_args(json!({"key": "update.enabled", "value": "off"})),
+        );
+        let tok = v["token"].as_str().unwrap().to_string();
+        user_says(&mut app, "yes");
+        let again = app.control_call("set_setting", &brain_args(json!({"confirm_token": tok})));
+        assert!(
+            again["question"]
+                .as_str()
+                .unwrap()
+                .starts_with("Are you sure? GodTerm would stop checking for security updates"),
+            "{again}"
+        );
+        assert!(app.cfg.update.enabled, "not yet");
+        let tok2 = again["token"].as_str().unwrap().to_string();
+        user_says(&mut app, "yes");
+        app.control_call("set_setting", &brain_args(json!({"confirm_token": tok2})));
+        assert!(!app.cfg.update.enabled);
+        // Discoverable by words.
+        let l = app.control_call("list_settings", &json!({"query": "follow up"}));
+        assert!(l.to_string().contains("assistant.follow_up_s"));
+        // A secret: never from anything but the user's words, never shown.
+        user_says(&mut app, "save my xai key");
+        let s = app.control_call(
+            "set_setting",
+            &brain_args(json!({"key": "voice.grok.api_key", "value": "xai-0123456789abcdef"})),
+        );
+        assert!(s["error"].as_str().unwrap().contains("refused"), "{s}");
+        let g = app.control_call("get_setting", &json!({"key": "voice.grok.api_key"}));
+        assert!(!g.to_string().contains("xai-0123"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Text from a tab or file is never an admin instruction, and a turn
+    /// GodTerm started itself cannot change anything.
+    #[test]
+    fn admin_refuses_injected_requests() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use serde_json::json;
+        let (mut app, home) = test_app("admininject");
+        user_says(&mut app, "summarize the readme in that tab");
+        app.assistant.turn_reads = 1;
+        let v = app.control_call("install_mcp", &brain_args(json!({"account": "all", "source": "https://evil.example.com/mcp", "name": "helper"})));
+        assert!(v["error"].as_str().unwrap().starts_with("refused"), "{v}");
+        let v = app.control_call(
+            "set_setting",
+            &brain_args(json!({"key": "permission_mode", "value": "bypass"})),
+        );
+        assert!(v["error"].as_str().unwrap().starts_with("refused"), "{v}");
+        assert!(app.pending_confirms.is_empty());
+        // A system turn (no user words).
+        user_says(&mut app, "");
+        let v = app.control_call("add_account", &brain_args(json!({"label": "Evil"})));
+        assert!(
+            v["error"].as_str().unwrap().contains("user's own request"),
+            "{v}"
+        );
+        // Named by the user, after reading: allowed (asks).
+        user_says(&mut app, "install the helper server from that readme");
+        app.assistant.turn_reads = 1;
+        let v = app.control_call(
+            "install_mcp",
+            &brain_args(
+                json!({"account": 1, "source": "https://mcp.example.com/mcp", "name": "helper"}),
+            ),
+        );
+        assert!(
+            v["question"]
+                .as_str()
+                .unwrap()
+                .starts_with("helper is not in the catalog."),
+            "{v}"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Per account inventory from each config dir.
+    #[test]
+    fn admin_capabilities_per_account() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use serde_json::json;
+        let (mut app, home) = test_app("admincaps");
+        let d2 = app.cfg.accounts[1].config_dir();
+        let plug = d2.join("plugins/cache/x/slack/1");
+        std::fs::create_dir_all(&plug).unwrap();
+        std::fs::write(
+            d2.join("settings.json"),
+            r#"{"enabledPlugins": {"slack@claude-plugins-official": true}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            d2.join("plugins/installed_plugins.json"),
+            serde_json::to_string(&json!({"version": 2, "plugins": {"slack@claude-plugins-official": [{"installPath": plug}]}})).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            plug.join(".mcp.json"),
+            r#"{"mcpServers": {"slack": {"type": "http", "url": "https://mcp.slack.com/mcp"}}}"#,
+        )
+        .unwrap();
+        let v = app.control_call("account_capabilities", &json!({}));
+        let a = v["result"]["accounts"].as_array().unwrap();
+        assert_eq!(a.len(), app.cfg.accounts.len());
+        assert_eq!(a[1]["plugins"][0]["id"], "slack@claude-plugins-official");
+        assert_eq!(a[1]["mcp_servers"][0]["name"], "plugin:slack:slack");
+        assert_eq!(a[0]["mcp_servers"].as_array().unwrap().len(), 0);
+        let st = app.state_preamble();
+        assert!(
+            st.contains("a2 Account 2 capabilities: mcp slack; plugins slack"),
+            "{st}"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// add_account guides the login: opens the (wrapped) URL, asks for the
+    /// code, pastes the clipboard only on "paste it", reports a bad code
+    /// and then success.
+    #[test]
+    fn admin_add_account_hand_holds_the_login() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use serde_json::json;
+        let (mut app, home) = test_app("adminlogin");
+        // Pane output flows only while someone listens for its events.
+        let (tx, _events) = std::sync::mpsc::channel();
+        app.tx = tx;
+        let stub = crate::test_stub::claude(
+            &home.join("bin"),
+            &[
+                ("fake_login", "1".into()),
+                ("login_code", "CODE-1234".into()),
+            ],
+        );
+        app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
+        crate::admin::OPENED.lock().unwrap().clear();
+        user_says(&mut app, "add a new claude account called Work");
+        let v = app.control_call("add_account", &brain_args(json!({"label": "Work"})));
+        assert_eq!(
+            v["question"],
+            json!("Add a Claude account called Work and start its login?"),
+            "{v}"
+        );
+        let tok = v["token"].as_str().unwrap().to_string();
+        user_says(&mut app, "yes");
+        let r = app.control_call("add_account", &brain_args(json!({"confirm_token": tok})));
+        assert!(
+            r["result"]["say"].as_str().unwrap().contains("Added Work"),
+            "{r}"
+        );
+        let a = app.cfg.accounts.len() - 1;
+        assert_eq!(app.cfg.accounts[a].display(), "Work");
+        admin_until(&mut app, |x| {
+            x.admin.said.iter().any(|s| s.contains("say paste it"))
+        });
+        let said = app.admin.said.join(" | ");
+        let dump = |app: &crate::app::App| -> String {
+            app.panes
+                .iter()
+                .flat_map(|p| p.tabs.iter())
+                .map(|t| {
+                    t.parser
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .screen()
+                        .contents()
+                })
+                .filter(|c| c.contains("oauth"))
+                .collect::<Vec<_>>()
+                .join("\n----\n")
+        };
+        assert!(
+            said.contains("say paste it"),
+            "{said}\n{}\n{:?}",
+            dump(&app),
+            app.admin.logins
+        );
+        assert_eq!(
+            crate::admin::OPENED.lock().unwrap().last().unwrap(),
+            "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&state=abc123"
+        );
+        // Not without the user's words.
+        user_says(&mut app, "what now");
+        let v = app.control_call("login_paste_code", &brain_args(json!({})));
+        assert!(v["error"].as_str().unwrap().starts_with("refused"), "{v}");
+        // A wrong code: the failure is said.
+        *crate::admin::TEST_CLIPBOARD.lock().unwrap() = Some("WRONG-9".into());
+        user_says(&mut app, "paste it");
+        let v = app.control_call("login_paste_code", &brain_args(json!({})));
+        assert_eq!(v["ok"], json!(true), "{v}");
+        admin_until(&mut app, |x| {
+            x.admin.said.iter().any(|s| s.starts_with("Login failed"))
+        });
+        let screens: Vec<String> = app
+            .panes
+            .iter()
+            .flat_map(|p| p.tabs.iter())
+            .map(|t| {
+                t.parser
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .screen()
+                    .contents()
+            })
+            .filter(|c| c.contains("oauth"))
+            .collect();
+        assert!(
+            app.admin
+                .said
+                .iter()
+                .any(|s| s.contains("Login failed: OAuth error: Invalid code")),
+            "{:?}\n{}",
+            app.admin.said,
+            screens.join("\n----\n")
+        );
+        // Retry with the right one.
+        app.admin.logins[0].stage = crate::app_admin::LoginStage::Code;
+        *crate::admin::TEST_CLIPBOARD.lock().unwrap() = Some("CODE-1234".into());
+        user_says(&mut app, "ok paste it again");
+        app.control_call("login_paste_code", &brain_args(json!({})));
+        admin_until(&mut app, |x| {
+            x.admin
+                .said
+                .iter()
+                .any(|s| s.starts_with("Account configured"))
+        });
+        assert!(
+            app.admin
+                .said
+                .iter()
+                .any(|s| s == "Account configured: Work is signed in."),
+            "{:?}",
+            app.admin.said
+        );
+        // The code never reached the log.
+        let log = std::fs::read_to_string(crate::log::path()).unwrap_or_default();
+        assert!(!log.contains("CODE-1234") && !log.contains("WRONG-9"));
+        *crate::admin::TEST_CLIPBOARD.lock().unwrap() = None;
+        for p in &mut app.panes {
+            p.kill_all();
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The panel at 60, 90 and 140 columns: the toolbar never clips (⋯
+    /// holds the rest), tool calls are chips (no JSON unless opened), a
+    /// delivery joins its chip, and a waiting answer resolves in place.
+    #[test]
+    fn assistant_panel_fits_and_shows_chips() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::app_assistant::{Entry, Who};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (mut app, home) = test_app("panel");
+        app.panes[0].tabs[0].custom_name = Some("hyper".into());
+        let uid = app.panes[0].tabs[0].uid;
+        let tid = format!("t{uid}");
+        let q = "Check whether you now have Slack tools available";
+        app.assistant.show = true;
+        app.assistant.log = vec![
+            Entry { who: Who::User, text: "ask hyper if slack works now".into() },
+            Entry { who: Who::Tool, text: serde_json::json!({"tool": "send_prompt", "args": {"tab": tid, "text": q, "expect_reply": true}, "status": "ok"}).to_string() },
+            Entry { who: Who::Note, text: format!("Prompt to {tid}: delivered") },
+            Entry { who: Who::Reply, text: "Asked hyper. I'll tell you when it answers. It may take a minute while it checks the tools.".into() },
+        ];
+        app.register_follow_up(uid, q);
+        for width in [60u16, 90, 140] {
+            let mut term = Terminal::new(TestBackend::new(width, 40)).unwrap();
+            term.draw(|f| draw(f, &mut app)).unwrap();
+            let t = buffer_text(term.backend().buffer());
+            let bar = t
+                .lines()
+                .find(|l| l.contains(" ⋯ "))
+                .unwrap_or_else(|| panic!("{width}: no ⋯\n{t}"));
+            // Every toolbar word is whole.
+            let pw = (width / 2).clamp(44, 76) as usize;
+            let panel: String = bar.chars().skip(width as usize - pw).collect();
+            for w in panel
+                .split_whitespace()
+                .map(|w| w.trim_matches(|c| "│─╮╭┐┌".contains(c)))
+                .filter(|w| !w.is_empty())
+            {
+                assert!(
+                    [
+                        "New", "History", "Rules", "Prompt", "Admin", "⋯", "×", "│", "╮", "╭"
+                    ]
+                    .contains(&w)
+                        || w.chars().all(|c| "│─╮╭┐┌".contains(c)),
+                    "{width}: clipped toolbar word {w:?} in {bar:?}"
+                );
+            }
+            assert!(t.contains("Send") && t.contains("Type or speak"), "{width}");
+            assert!(
+                !t.contains("{\"") && !t.contains("expect_reply"),
+                "{width}: raw JSON shown\n{t}"
+            );
+            assert!(t.contains("→ asked") && t.contains("hyper"), "{width}\n{t}");
+            assert!(
+                t.contains("delivered") && !t.contains("Prompt to"),
+                "{width}: the delivery joins its chip\n{t}"
+            );
+            assert!(t.contains("waiting for hyper"), "{width}\n{t}");
+            assert!(
+                t.contains("more ›"),
+                "{width}: the unspoken part is set apart"
+            );
+        }
+        // The answer arrives: the chip resolves in place.
+        app.assistant.follow_ups[0].state = crate::app_followup::FuState::Answered {
+            text: "yes".into(),
+            at: chrono::Local::now(),
+        };
+        let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let t = buffer_text(term.backend().buffer());
+        assert!(
+            t.contains("✓ answered") && !t.contains("⧗ waiting for hyper"),
+            "{t}"
+        );
+        // A click opens the raw call; ⋯ opens the menu.
+        click_on(
+            &mut app,
+            &mut term,
+            &crate::hits::UiAction::AssistantChip(1),
+        );
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(buffer_text(term.backend().buffer()).contains("expect_reply"));
+        click_on(
+            &mut app,
+            &mut term,
+            &crate::hits::UiAction::MenuOpen(crate::menus::MenuId::AssistantMore),
+        );
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let t = buffer_text(term.backend().buffer());
+        assert!(
+            t.contains("Learned rules")
+                && t.contains("Timing details")
+                && t.contains("Admin actions"),
+            "{t}"
+        );
+        // ↑ brings back what was typed.
+        app.assistant.input = "what is running".into();
+        app.send_assistant_input();
+        app.on_brain(crate::assistant::BrainEvent::Done {
+            text: String::new(),
+            cost: None,
+            error: false,
+        });
+        app.on_assistant_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.assistant.input, "what is running");
         app.assistant.brain = None;
         let _ = std::fs::remove_dir_all(&home);
     }
