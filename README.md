@@ -18,7 +18,7 @@
 <p align="center">
   <a href="https://godterm.com/#demo"><img src="docs/media/demo-poster.jpg" width="820" alt="GodTerm demo: click to watch"></a>
   <br>
-  <sub><a href="https://godterm.com/#demo">Watch the demo</a> · <a href="https://github.com/daniel-farina/godterm/releases/download/v0.2.0/godterm-demo.mp4">download the MP4</a></sub>
+  <sub><a href="https://godterm.com/#demo">Watch the 2 minute demo</a> · <a href="https://github.com/daniel-farina/godterm/releases/download/v0.2.0/godterm-demo.mp4">or download the MP4 (1080p)</a></sub>
 </p>
 
 GodTerm is a terminal app for people who run Claude Code (and Grok Build)
