@@ -86,11 +86,11 @@ impl App {
             let m = p
                 .models
                 .iter()
-                .find(|(id, label)| {
+                .find(|(id, label, _)| {
                     id.eq_ignore_ascii_case(m)
                         || label.to_lowercase().starts_with(&m.to_lowercase())
                 })
-                .map(|(id, _)| id.to_string())
+                .map(|(id, _, _)| id.to_string())
                 .unwrap_or_else(|| m.to_string());
             if p.id == "claude" {
                 write("assistant.model", &m);
@@ -187,7 +187,7 @@ impl App {
                     "provider": p.id,
                     "name": p.name,
                     "active": self.cfg.assistant.provider == p.id,
-                    "models": p.models.iter().map(|(id, l)| json!({"id": id, "label": l})).collect::<Vec<_>>(),
+                    "models": p.models.iter().map(|(id, l, d)| json!({"id": id, "label": l, "about": d})).collect::<Vec<_>>(),
                     "model": providers::model_for(p, &self.cfg.assistant),
                     "accounts": accounts,
                     "persistent_process": p.caps.persistent,
@@ -228,5 +228,116 @@ impl App {
         self.admin_record("login started for the assistant's Grok");
         self.start_cmd_login(bin, vec!["login".into()], home, "the assistant's Grok");
         Ok("Starting the assistant's Grok login; sign in in your browser.".into())
+    }
+}
+
+/// One piece of a usage line: its text and tone (0 dim, 1 the binding
+/// bucket, 2 a warning).
+pub type Part = (String, u8);
+
+/// "Tue 08:00" in local time.
+pub fn reset_word(t: chrono::DateTime<chrono::Utc>) -> String {
+    t.with_timezone(&chrono::Local)
+        .format("%a %H:%M")
+        .to_string()
+}
+
+/// The buckets as parts: "5h 89% · wk 3%", the binding one marked (a
+/// warning when low).
+pub fn bucket_parts(b: &[providers::Bucket]) -> Vec<Part> {
+    let mut v: Vec<Part> = vec![];
+    for (i, k) in b.iter().enumerate() {
+        if i > 0 {
+            v.push((" · ".into(), 0));
+        }
+        let tone = match (k.binding, k.left_pct < providers::LOW_PCT) {
+            (true, true) => 2,
+            (true, false) => 1,
+            _ => 0,
+        };
+        v.push((providers::bucket_text(k), tone));
+    }
+    v
+}
+
+impl App {
+    /// An account's usage buckets, by its provider's reading of the last
+    /// fetched usage (None: nothing fetched yet).
+    pub fn account_buckets(&self, a: usize) -> Option<Vec<providers::Bucket>> {
+        let p = providers::for_harness(self.cfg.accounts.get(a)?.harness())?;
+        let u = self.accounts.get(a)?.usage.as_ref()?;
+        Some((p.usage)(u))
+    }
+
+    /// A provider's own login's buckets (Grok's), from its last fetch.
+    pub fn own_buckets(&self, p: &providers::Provider) -> Option<Vec<providers::Bucket>> {
+        let u = self.own_usage.get(p.id)?.as_ref().ok()?;
+        Some((p.usage)(u))
+    }
+
+    /// The buckets of what the assistant runs on now.
+    pub fn assistant_buckets(&self) -> Option<Vec<providers::Bucket>> {
+        let p = providers::by_id(&self.cfg.assistant.provider);
+        match p.own_home {
+            Some(_) => self.own_buckets(p),
+            None => {
+                let a = self
+                    .assistant
+                    .brain
+                    .as_ref()
+                    .and_then(|b| b.account)
+                    .or_else(|| self.assistant_account())?;
+                self.account_buckets(a)
+            }
+        }
+    }
+
+    /// Why an account cannot run the assistant now, if it cannot.
+    pub fn account_unusable(&self, a: usize, p: &providers::Provider) -> Option<String> {
+        let c = &self.cfg.accounts[a];
+        if p.harness != Some(c.harness()) {
+            let h = c.harness().name();
+            let mut n = h.chars();
+            let name = n
+                .next()
+                .map(|f| f.to_uppercase().collect::<String>() + n.as_str())
+                .unwrap_or_default();
+            return Some(format!("{name} account"));
+        }
+        if !self.accounts[a].login.logged_in() {
+            return Some("logged out".into());
+        }
+        let b = self.account_buckets(a)?;
+        let k = providers::binding(&b)?;
+        if k.left_pct < 2.0 {
+            return Some(match k.resets_at {
+                Some(t) => format!("out of usage until {}", reset_word(t)),
+                None => "out of usage".into(),
+            });
+        }
+        None
+    }
+
+    /// The assistant's own Grok login's usage, on the usage cadence
+    /// (only while Grok runs the assistant and is signed in).
+    pub fn maybe_fetch_own_usage(&mut self) {
+        let p = providers::by_id(&self.cfg.assistant.provider);
+        let Some(home) = p.own_home else {
+            return;
+        };
+        let every = std::time::Duration::from_secs(self.cfg.refresh_secs.max(60));
+        if cfg!(test)
+            || self.own_usage_at.is_some_and(|t| t.elapsed() < every)
+            || !crate::harness::grok::logged_in(&home())
+        {
+            return;
+        }
+        self.own_usage_at = Some(std::time::Instant::now());
+        let tx = self.tx.clone();
+        let id = p.id;
+        std::thread::spawn(move || {
+            let r = crate::harness::grok::fetch_usage(&home()).map_err(|e| e.short());
+            let _ = tx.send(crate::app::AppEvent::OwnUsage(id, Box::new(r)));
+        });
     }
 }

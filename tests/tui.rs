@@ -192,6 +192,16 @@ impl Tui {
         std::thread::sleep(Duration::from_millis(120));
     }
 
+    /// Type to the assistant and send: Enter only once the text shows in
+    /// its input box, so it is read as a key of its own, never as part of
+    /// a burst (a paste, where Enter is a new line).
+    fn ask(&mut self, text: &str) {
+        self.send(text.as_bytes());
+        let shown: String = text.chars().take(30).collect();
+        self.wait_for(&format!("› {shown}"), 10);
+        self.send(b"\r");
+    }
+
     /// Ctrl-a then a key.
     fn cmd(&mut self, key: &[u8]) {
         self.send(b"\x01");
@@ -372,8 +382,7 @@ done
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
-    t.send(b"show me the lol/botmesh sessions");
-    t.send(b"\r");
+    t.ask("show me the lol/botmesh sessions");
     t.wait_for("Two sessions in lol/botmesh.", 20);
     t.quit_keep();
     // GodTerm starts again: a new brain.
@@ -381,8 +390,7 @@ done
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
-    t.send(b"what was the status of that thing, I forgot to ask you");
-    t.send(b"\r");
+    t.ask("what was the status of that thing, I forgot to ask you");
     t.wait_for("Earlier we were looking at the lol/botmesh", 20);
     let sent = std::fs::read_to_string(home.join("brain-in.txt")).unwrap();
     assert!(
@@ -456,8 +464,7 @@ for line in sys.stdin:
         "yeah as the folder is lol forward slash podmesh",
         "yeah no the lol slash pod mesh, that's the one",
     ] {
-        t.send(said.as_bytes());
-        t.send(b"\r");
+        t.ask(said);
         std::thread::sleep(Duration::from_millis(300));
     }
     t.wait_for("lol/botmesh", 40);
@@ -504,8 +511,7 @@ done
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
-    t.send(b"hold on for ten seconds");
-    t.send(b"\r");
+    t.ask("hold on for ten seconds");
     t.wait_for("PAUSED 0:", 30);
     let out = std::fs::read_to_string(home.join("pause-out.txt")).unwrap();
     assert!(out.contains("paused_s") && out.contains("10"), "{out}");
@@ -814,8 +820,7 @@ done
     // Ctrl-a . opens the panel; type a question and send it.
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
-    t.send(b"what is going on");
-    t.send(b"\r");
+    t.ask("what is going on");
     t.wait_for("Both are ready.", 20);
     t.wait_for("checked get state", 10);
     t.wait_for("Assistant: Claude on", 5);
@@ -943,11 +948,10 @@ done
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
-    t.send(b"start a new tab on account two and create a simple calculator");
-    t.send(b"\r");
+    t.ask("start a new tab on account two and create a simple calculator");
     t.wait_for("asked it to build", 30);
     assert!(home.join("tabs/calculator").is_dir(), "task folder");
-    t.send(b"\x1b"); // close the panel to see the tab
+    t.send(b"\x01."); // close the panel to see the tab
     t.wait_for("fake claude in calculator", 10);
     // One prompt, both lines, submitted once.
     t.wait_for(
@@ -1075,20 +1079,17 @@ done
     t.wait_for(" 2 ", 10);
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
-    t.send(b"close all tabs in all accounts");
-    t.send(b"\r");
+    t.ask("close all tabs in all accounts");
     t.wait_for("Close 3 tabs across 2 accounts?", 20);
     let ask = std::fs::read_to_string(home.join("ask.txt")).unwrap();
     assert!(ask.contains("needs_confirmation"), "{ask}");
     // A question back is not a yes: nothing closes, it asks again.
-    t.send(b"Do you close them?");
-    t.send(b"\r");
+    t.ask("Do you close them?");
     t.wait_for("Want me to close all three? Say yes.", 20);
     assert!(std::fs::read_to_string(home.join("done.txt"))
         .unwrap()
         .contains("not_confirmed"));
-    t.send(b"yes");
-    t.send(b"\r");
+    t.ask("yes");
     t.wait_for("Closed all three tabs.", 20);
     let done = std::fs::read_to_string(home.join("done.txt")).unwrap();
     assert!(done.contains("\\\"closed\\\":3"), "{done}");
@@ -1137,11 +1138,9 @@ done
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
-    t.send(b"create a calculator");
-    t.send(b"\r");
+    t.ask("create a calculator");
     t.wait_for("Opened calc", 30);
-    t.send(b"make it blue");
-    t.send(b"\r");
+    t.ask("make it blue");
     t.wait_for("Asked calc to make it blue.", 30);
     // It went to the last tab: delivered at once, or (a slow machine,
     // where the tab is still busy with its first prompt) queued for it.
@@ -1240,8 +1239,7 @@ for line in sys.stdin:
         ("did you do it", "I am waiting for your yes."),
         ("oh yeah I said yes", "Claude started on it in 5 tabs."),
     ] {
-        t.send(said.as_bytes());
-        t.send(b"\r");
+        t.ask(said);
         t.wait_for(want, 40);
     }
     let calls = std::fs::read_to_string(home.join("calls.jsonl")).unwrap();
@@ -1405,8 +1403,7 @@ for line in sys.stdin:
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
-    t.send(b"create five tabs");
-    t.send(b"\r");
+    t.ask("create five tabs");
     t.wait_for("Opened five tabs.", 40);
     let sites: Vec<PathBuf> = std::fs::read_dir(home.join("tabs"))
         .unwrap()
@@ -1418,8 +1415,7 @@ for line in sys.stdin:
     for d in &sites {
         std::fs::write(d.join("index.html"), "<p>hi</p>").unwrap();
     }
-    t.send(b"okay open all the html files");
-    t.send(b"\r");
+    t.ask("okay open all the html files");
     t.wait_for("Opened 5 items.", 30);
     let calls = std::fs::read_to_string(home.join("calls.jsonl")).unwrap();
     let opens: Vec<&str> = calls
@@ -1502,8 +1498,7 @@ for line in sys.stdin:
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
-    t.send(b"what were my last sessions?");
-    t.send(b"\r");
+    t.ask("what were my last sessions?");
     t.wait_for("Claude: Fix login flow. Grok: Clock page.", 30);
     let r = std::fs::read_to_string(home.join("sessions-reply.json")).unwrap();
     assert!(!r.contains("agent-a"), "subagents left out: {r}");

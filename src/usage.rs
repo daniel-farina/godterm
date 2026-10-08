@@ -115,7 +115,7 @@ impl UsageError {
         match self {
             UsageError::NotLoggedIn => "not logged in".into(),
             UsageError::Unauthorized => "token expired".into(),
-            UsageError::RateLimited(_) => "rate limited".into(),
+            UsageError::RateLimited(_) => "slowed down".into(),
             UsageError::Http(c) => format!("HTTP {c}"),
             UsageError::Network(_) => "offline".into(),
             UsageError::Parse(_) => "bad response".into(),
@@ -131,10 +131,9 @@ impl std::fmt::Display for UsageError {
                 f,
                 "token expired or revoked, open this account's session to refresh it"
             ),
-            UsageError::RateLimited(Some(s)) => {
-                write!(f, "usage API rate limited (retry after {s}s)")
+            UsageError::RateLimited(_) => {
+                write!(f, "the usage service asked us to slow down")
             }
-            UsageError::RateLimited(None) => write!(f, "usage API rate limited"),
             UsageError::Http(c) => write!(f, "usage API returned HTTP {c}"),
             UsageError::Network(e) => write!(f, "network error: {e}"),
             UsageError::Parse(e) => write!(f, "unexpected response: {e}"),
@@ -304,14 +303,19 @@ pub fn fixture_for(account: &str) -> Option<Result<Usage, UsageError>> {
     })
 }
 
-pub fn fetch_usage(access_token: &str) -> Result<Usage, UsageError> {
+/// One request: the status, Retry-After (seconds, or an HTTP date) and
+/// the body, whatever the status.
+pub fn fetch_usage_raw(
+    url: &str,
+    access_token: &str,
+) -> Result<crate::usage_share::Raw, UsageError> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
         .http_status_as_error(false)
         .build()
         .into();
     let mut resp = agent
-        .get(USAGE_URL)
+        .get(url)
         .header("Authorization", &format!("Bearer {access_token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("Accept", "application/json")
@@ -319,25 +323,33 @@ pub fn fetch_usage(access_token: &str) -> Result<Usage, UsageError> {
         .call()
         .map_err(|e| UsageError::Network(e.to_string()))?;
     let status = resp.status().as_u16();
-    if status == 401 || status == 403 {
-        return Err(UsageError::Unauthorized);
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(retry_secs);
+    let body = if (200..300).contains(&status) {
+        resp.body_mut()
+            .read_to_string()
+            .map_err(|e| UsageError::Network(e.to_string()))?
+    } else {
+        String::new()
+    };
+    Ok(crate::usage_share::Raw {
+        status,
+        retry_after,
+        body,
+    })
+}
+
+/// Retry-After as seconds: "120", or an HTTP date.
+pub fn retry_secs(v: &str) -> Option<u64> {
+    let v = v.trim();
+    if let Ok(n) = v.parse::<u64>() {
+        return Some(n);
     }
-    if status == 429 {
-        let retry = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.trim().parse::<u64>().ok());
-        return Err(UsageError::RateLimited(retry));
-    }
-    if !(200..300).contains(&status) {
-        return Err(UsageError::Http(status));
-    }
-    let body = resp
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| UsageError::Network(e.to_string()))?;
-    parse_usage(&body)
+    let t = DateTime::parse_from_rfc2822(v).ok()?;
+    Some((t.with_timezone(&Utc) - Utc::now()).num_seconds().max(0) as u64)
 }
 
 /// "2h 14m", "3d 4h", "now".
@@ -353,6 +365,18 @@ pub fn countdown(to: DateTime<Utc>, now: DateTime<Utc>) -> String {
         format!("{h}h {m:02}m")
     } else {
         format!("{}m", m.max(1))
+    }
+}
+
+/// "under a minute", "3 min", "2 h", "3 days": how long ago, in words.
+pub fn ago_words(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let secs = (now - then).num_seconds().max(0);
+    match secs {
+        0..=59 => "under a minute".into(),
+        60..=3599 => format!("{} min", secs / 60),
+        3600..=86_399 => format!("{} h", secs / 3600),
+        s if s < 2 * 86_400 => "a day".into(),
+        s => format!("{} days", s / 86_400),
     }
 }
 

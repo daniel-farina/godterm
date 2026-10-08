@@ -361,6 +361,61 @@ impl App {
         }
     }
 
+    /// The speaker mute: nothing is said out loud (answers still show as
+    /// text); what is being said stops at once. Kept in config.toml.
+    pub fn set_speaker_muted(&mut self, on: bool) {
+        if on {
+            if let Some(v) = &self.voice.engine {
+                v.stop_speaking();
+            }
+            if let Some(p) = &self.voice.preview {
+                p.stop();
+            }
+        }
+        if self.cfg.voice.speaker_muted != on {
+            let _ = crate::settings::write(
+                &crate::config::Config::path(),
+                &crate::settings::Key::Global("voice.speaker_muted"),
+                Some(toml_edit::value(on)),
+            );
+            self.config_mtime = crate::app::config_mtime();
+            self.cfg.voice.speaker_muted = on;
+        }
+        crate::log::info(&format!("speaker muted: {on}"));
+        self.flash(if on {
+            "Speaker muted: answers show as text (Ctrl-a O talks again)"
+        } else {
+            "Speaker on"
+        });
+    }
+
+    pub fn toggle_speaker(&mut self) {
+        let on = !self.cfg.voice.speaker_muted;
+        self.set_speaker_muted(on);
+    }
+
+    /// The talk back volume (0 to 1), kept in config.toml.
+    pub fn set_tts_volume(&mut self, v: f32) {
+        let v = (v.clamp(0.0, 1.0) * 100.0).round() / 100.0;
+        let _ = crate::settings::write(
+            &crate::config::Config::path(),
+            &crate::settings::Key::Global("voice.tts_volume"),
+            Some(toml_edit::value(v as f64)),
+        );
+        self.config_mtime = crate::app::config_mtime();
+        self.cfg.voice.tts_volume = v;
+        if let Some(e) = self.voice.engine.as_mut() {
+            e.configure_tts(&self.cfg.voice);
+        }
+        self.voice.preview = None;
+        self.flash(format!("Volume {}%", (v * 100.0).round() as u32));
+    }
+
+    pub fn nudge_volume(&mut self, by: f32) {
+        let v = self.cfg.voice.tts_volume + by;
+        self.set_tts_volume(v);
+    }
+
     pub fn toggle_mute(&mut self) {
         let on = !self.voice.muted;
         self.set_muted(on);
@@ -1041,6 +1096,9 @@ impl App {
 
     pub fn speak_as(&self, kind: Kind, text: &str) {
         let vc = &self.cfg.voice;
+        if vc.speaker_muted {
+            return;
+        }
         let on = match kind {
             Kind::Confirm => vc.speak_confirm,
             Kind::Announce => vc.announce,

@@ -36,6 +36,8 @@ pub struct AssistantState {
     pub current: String,
     pub busy: bool,
     pub show: bool,
+    /// Typing goes to the panel (it has the focus); false: to the grid.
+    pub focused: bool,
     pub input: String,
     /// Streamed deltas this turn (so whole text blocks are not repeated).
     got_delta: bool,
@@ -57,6 +59,8 @@ pub struct AssistantState {
     pub warm_tried: Option<Instant>,
     /// "stop": say nothing more of the current reply.
     pub muted: bool,
+    /// The current (or last user) turn came in by voice.
+    pub turn_spoken: bool,
     /// When its last reply ended.
     pub asked_at: Option<Instant>,
     /// The text block being streamed, and whether a tool came this turn.
@@ -130,6 +134,9 @@ pub struct AssistantState {
     /// Requests typed in the panel, oldest first (↑/↓ walk them).
     pub input_hist: Vec<String>,
     pub hist_pos: Option<usize>,
+    /// When the last character was typed into the input (a key burst
+    /// with an Enter in it is a paste, not a send).
+    pub last_key_at: Option<Instant>,
     /// Tool chips opened to show their raw arguments (log indices).
     pub expanded: std::collections::HashSet<usize>,
     /// Remote Control, while on (it belongs to the current brain process).
@@ -229,7 +236,7 @@ impl App {
         self.note(text);
     }
 
-    fn note(&mut self, text: impl Into<String>) {
+    pub(crate) fn note(&mut self, text: impl Into<String>) {
         let text = text.into();
         if let Some(c) = &self.assistant.conv {
             c.write("note", serde_json::json!({"text": text}));
@@ -513,6 +520,8 @@ impl App {
         s.push_str(&self.admin_state_lines());
         s.push_str(&self.grid_state_line());
         s.push_str(&self.provider_state_line());
+        s.push_str(&self.speaker_state_line());
+        s.push_str(&self.failover_state_line());
         s.push_str(&self.setup_state_line());
         s.push_str(&self.remote_state_line());
         // Listening is GodTerm's business: a message here means it is on.
@@ -702,6 +711,11 @@ impl App {
         ));
         self.assistant.unsaid = None;
         self.assistant.system_turn = system.is_some();
+        // Spoken in, spoken out; a turn of our own (a tab finished...)
+        // follows how the user last talked to it.
+        if system.is_none() {
+            self.assistant.turn_spoken = heard.is_some();
+        }
         self.assistant.log.push(match system {
             Some(note) => Entry {
                 who: Who::Note,
@@ -859,6 +873,13 @@ impl App {
         self.flash(format!("Assistant uses {label} from now on"));
     }
 
+    /// Whether this turn's answer is said out loud: not while the speaker
+    /// is muted; a typed message only with assistant.speak_typed.
+    pub fn reply_spoken(&self) -> bool {
+        !self.cfg.voice.speaker_muted
+            && (self.assistant.turn_spoken || self.cfg.assistant.speak_typed)
+    }
+
     /// Whether replies are spoken at all.
     pub fn tts_on(&self) -> bool {
         self.voice.engine.as_ref().is_some_and(|v| v.tts) || self.cfg.voice.tts
@@ -867,6 +888,9 @@ impl App {
     /// Speak a line of the assistant's reply (queued after what is being
     /// said, unlike confirmations which cut in).
     pub fn speak_assistant(&mut self, text: &str) {
+        if self.cfg.voice.speaker_muted {
+            return;
+        }
         self.assistant
             .timing
             .first_audio
@@ -931,6 +955,7 @@ impl App {
         if !self.assistant.muted
             && !self.assistant.ignored_turn
             && !self.assistant.turn_remote
+            && self.reply_spoken()
             && !t.trim().is_empty()
         {
             self.assistant.spoken.push(t.trim().to_string());
@@ -1490,21 +1515,52 @@ impl App {
         }
     }
 
+    /// Ctrl-a .: open the panel (with the keys), give it the keys back
+    /// when it is open without them, close it when it has them.
     pub fn toggle_assistant_panel(&mut self) {
-        self.assistant.show = !self.assistant.show;
+        if !self.assistant.show {
+            self.assistant.show = true;
+            self.assistant.focused = true;
+        } else if !self.assistant.focused {
+            self.assistant.focused = true;
+        } else {
+            self.assistant.show = false;
+            self.assistant.focused = false;
+        }
+    }
+
+    /// The panel is open and typing goes to it.
+    pub fn assistant_has_focus(&self) -> bool {
+        self.assistant.show && self.assistant.focused
     }
 
     /// Keys while the panel is open: typing goes to its input.
     pub fn on_assistant_key(&mut self, k: KeyEvent) -> bool {
-        if !self.assistant.show || k.modifiers.contains(KeyModifiers::CONTROL) {
+        if !self.assistant_has_focus() || k.modifiers.contains(KeyModifiers::CONTROL) {
             return false;
         }
         if self.assistant.history.is_some() {
             return self.on_history_key(k);
         }
         match k.code {
-            KeyCode::Esc => self.assistant.show = false,
+            // Esc gives the keys back to the grid; the panel stays open.
+            KeyCode::Esc => self.assistant.focused = false,
+            // Shift or Alt+Enter, or an Enter inside a burst of keys (a
+            // paste the terminal typed out): a new line, not a send.
+            KeyCode::Enter
+                if k.modifiers
+                    .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
+                    || self.key_burst.unwrap_or_else(|| {
+                        self.assistant
+                            .last_key_at
+                            .is_some_and(|t| t.elapsed() < Duration::from_millis(15))
+                    }) =>
+            {
+                self.assistant.input.push('\n');
+                self.assistant.last_key_at = Some(Instant::now());
+            }
             KeyCode::Enter => self.send_assistant_input(),
+            KeyCode::Tab => self.assistant.input.push_str("    "),
             KeyCode::Up => {
                 let n = self.assistant.input_hist.len();
                 if n > 0 {
@@ -1531,10 +1587,42 @@ impl App {
             KeyCode::Backspace => {
                 self.assistant.input.pop();
             }
-            KeyCode::Char(c) => self.assistant.input.push(c),
+            KeyCode::Char(c) => {
+                self.assistant.input.push(c);
+                self.assistant.last_key_at = Some(Instant::now());
+                self.assistant.hist_pos = None;
+            }
             _ => return false,
         }
         true
+    }
+
+    /// A paste into the panel's input: line ends kept (as \n), other
+    /// control characters dropped, at most PASTE_MAX characters.
+    pub fn assistant_paste(&mut self, text: &str) {
+        const PASTE_MAX: usize = 16_000;
+        let norm = text
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\t', "    ");
+        let clean: String = norm
+            .chars()
+            .filter(|c| *c == '\n' || !c.is_control())
+            .collect();
+        let have = self.assistant.input.chars().count();
+        let room = PASTE_MAX.saturating_sub(have);
+        let n = clean.chars().count();
+        let take: String = clean.chars().take(room).collect();
+        self.assistant.input.push_str(&take);
+        self.assistant.hist_pos = None;
+        if n > room {
+            self.flash(format!(
+                "Pasted the first {} KB of {} KB (the input holds {} KB)",
+                room / 1000,
+                n.div_ceil(1000),
+                PASTE_MAX / 1000
+            ));
+        }
     }
 
     /// Enter or Send in the panel: the typed request goes out and joins

@@ -147,7 +147,11 @@ replies use Kokoro or Grok.
 
 ## Privacy in short
 
-GodTerm has no telemetry and no account of its own. It talks to the
+GodTerm has no telemetry and no account of its own: the app never reports
+anything about you or how you use it. The only count is at install time:
+`install.sh` sends one anonymous ping with your OS, CPU architecture and the
+GodTerm version (skip it with `GODTERM_NO_TELEMETRY=1` or `DO_NOT_TRACK=1`).
+It talks to the
 network to read usage (Anthropic's usage endpoint with each account's own
 login, xAI's billing endpoint for Grok accounts), to check GitHub for
 updates, and to download what you ask Settings > Setup to install. Voice is local by
@@ -1171,7 +1175,18 @@ Nothing is ever approved without you asking.
 
 ## Privacy
 
-GodTerm has no telemetry and no account of its own. Everything it keeps
+GodTerm has no telemetry and no account of its own: the app never reports
+anything about you or how you use it. The only count is at install time:
+`install.sh` sends one anonymous ping to godterm.com with your OS, CPU
+architecture and the GodTerm version (for example `macos, arm64, 0.2.6`),
+and the download buttons on godterm.com send the file name when clicked, so
+we can see real install numbers. No IP address, cookie, ID or anything
+personal is stored, only daily totals. To skip it, install with
+`curl -fsSL https://godterm.com/install.sh | GODTERM_NO_TELEMETRY=1 sh`
+(`DO_NOT_TRACK=1` works too); the site skips its count when your browser
+sends Do Not Track or Global Privacy Control.
+
+Everything GodTerm keeps
 stays in `~/.godterm` (owner only, files 0600): settings, open tabs, the
 session index, assistant conversations and the log. By default audio is
 captured and transcribed on your machine (whisper.cpp or Apple speech)

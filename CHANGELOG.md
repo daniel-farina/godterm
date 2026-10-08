@@ -7,6 +7,39 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-10-08
+
+### Usage
+- Failover offers: when a tab's account is about to run out (under
+  `usage.failover_pct`, 5% by default) or the tab hits a usage limit, the
+  status bar offers to move that session to the account of the same
+  provider with the most left. `Ctrl-a F`, a click, or "move it" to the
+  assistant moves it; "not now" stops offering. `usage.auto_failover`
+  can move idle tabs by itself (ask, auto or off). Grok accounts now show
+  their usage buckets too.
+- One usage request per account, shared by every GodTerm you have open,
+  with a real backoff when the usage service asks to slow down; the
+  rate limit note only appears once the numbers shown are getting old.
+
+### Assistant
+- Pasting into the assistant's input works (it used to go to the pane
+  behind it).
+- A typed Enter always sends, even on a busy machine (before, a fast
+  Enter could become a new line and the request never went).
+- Speaker mute separate from the mic (`Ctrl-a O`, "be quiet"), volume
+  with `Ctrl-a +` and `-`, and replies to typed messages in text only
+  unless `assistant.speak_typed` is on.
+- The panel can float over the panes or dock beside them
+  (`assistant.panel`: docked, overlay, auto), shows clearly when it has
+  the keys, and shows usage per provider in its title and account menu.
+- Asking for a session in a folder that does not exist yet creates it
+  (inside your home folder) and opens the session there.
+
+### Fixed
+- One terminal cursor: it no longer flashes across the screen while
+  GodTerm draws, and the grey band left by select mode is cleared.
+
+
 ## [0.2.6] - 2026-10-08
 
 ### Assistant
@@ -225,7 +258,8 @@ The first public release, under the MIT License. claudego is now GodTerm.
 
 - claudego: config, credentials, usage, sessions, PTY panes and the TUI.
 
-[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/daniel-farina/godterm/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/daniel-farina/godterm/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/daniel-farina/godterm/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/daniel-farina/godterm/compare/v0.2.3...v0.2.4

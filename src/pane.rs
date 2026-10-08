@@ -605,6 +605,12 @@ impl Pane {
         }
     }
 
+    /// The PTY's size (rows, cols).
+    #[cfg(test)]
+    pub fn pty_size(&self) -> (u16, u16) {
+        self.size
+    }
+
     /// Resize the PTY and the virtual screen to the pane's inner area.
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let (rows, cols) = (rows.max(2), cols.max(10));

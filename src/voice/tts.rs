@@ -253,6 +253,27 @@ pub struct Speaker {
 }
 
 impl Speaker {
+    /// A speaker with no worker (tests: no model ever loads); what it
+    /// is told to say is dropped, stop() works as usual.
+    #[cfg(test)]
+    pub fn idle() -> Speaker {
+        let (tx, _rx) = mpsc::channel();
+        Speaker {
+            tx,
+            gen: Arc::new(AtomicU64::new(0)),
+            player: Arc::new(Mutex::new(None)),
+            flush: Arc::new(AtomicBool::new(false)),
+            engine: Arc::new(Mutex::new("idle".into())),
+            speaking_flag: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    /// How many times it was cut off (each stop starts a new generation).
+    #[cfg(test)]
+    pub fn stops(&self) -> u64 {
+        self.gen.load(Ordering::SeqCst)
+    }
+
     /// `speaking` is shared with the capture side, which stops listening
     /// while it is set (so we never hear ourselves).
     pub fn start(cfg: &VoiceCfg, speaking: Arc<AtomicBool>) -> Speaker {

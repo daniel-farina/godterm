@@ -159,7 +159,7 @@ impl App {
         if self.hold_announcement(text) {
             return;
         }
-        if !self.assistant.muted && self.tts_on() {
+        if !self.assistant.muted && self.tts_on() && self.reply_spoken() {
             self.speak_assistant(text);
         }
     }

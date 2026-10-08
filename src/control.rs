@@ -293,10 +293,10 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "open_tab",
-        description: "Open a new claude tab on an account and, with prompt, give its claude that task. name: a short task name; the tab gets a new folder of that name. dir: an existing folder (path or recent project name) instead. Waits until the tab is ready and the prompt is accepted; returns the tab id and the delivery status.",
+        description: "Open a new claude tab on an account and, with prompt, give its claude that task. name: a short task name; the tab gets a new folder of that name. dir: a folder (path or recent project name) instead; a path that does not exist yet is created when its parent folder exists under the home folder (its say: \"Created ~/x and opened a session there on Account 4.\"); when the parent is missing too it returns an error naming it: ask the user once, and on yes call again with create true. Waits until the tab is ready and the prompt is accepted; returns the tab id and the delivery status.",
         schema: || {
             props(
-                json!({"account": account_prop(), "name": {"type": "string"}, "dir": {"type": "string"}, "prompt": {"type": "string"}, "count": {"type": "integer", "description": "Open this many such tabs at once (1 to 10), each in its own folder name-1, name-2..."}}),
+                json!({"account": account_prop(), "name": {"type": "string"}, "dir": {"type": "string"}, "create": {"type": "boolean", "description": "The user said yes to creating dir and its missing parents"}, "prompt": {"type": "string"}, "count": {"type": "integer", "description": "Open this many such tabs at once (1 to 10), each in its own folder name-1, name-2..."}}),
                 &[],
             )
         },
@@ -383,6 +383,26 @@ pub const TOOLS: &[Tool] = &[
             props(
                 json!({"seconds": {"type": "integer"}, "reason": {"type": "string"}}),
                 &[],
+            )
+        },
+    },
+    Tool {
+        name: "speaker",
+        description: "Your voice, at once (no yes needed): muted true when the user wants you silent (\"mute your voice\", \"be quiet\", \"stop talking to me\", \"text only\"), false to talk again (\"speak again\", \"you can talk\"); while muted your answers show as text and nothing is said, and the mic keeps listening. volume: 0 to 100 (\"volume 50%\", \"louder\" = current + 20). speak_typed: whether replies to typed messages are spoken too (\"don't talk when I type\" = false). Not pause_listening: that stops hearing, this stops talking.",
+        schema: || {
+            props(
+                json!({"muted": {"type": "boolean"}, "volume": {"type": ["number", "string"]}, "speak_typed": {"type": "boolean"}}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "assistant_panel",
+        description: "How your panel sits, at once: docked (beside the panes, they make room: \"dock the panel\"), overlay (floats over the right side, the panes keep their size: \"make the panel float\"), auto (docked while every pane keeps about 80 columns).",
+        schema: || {
+            props(
+                json!({"mode": {"type": "string", "enum": ["docked", "overlay", "auto"]}}),
+                &["mode"],
             )
         },
     },
@@ -2579,6 +2599,9 @@ impl App {
     }
 
     fn control_inner(&mut self, tool: &str, args: &Value) -> Result<Value, String> {
+        if let Some(r) = self.speaker_tool(tool, args) {
+            return r;
+        }
         if let Some(r) = self.admin_tool(tool, args) {
             return r;
         }
@@ -2872,6 +2895,7 @@ impl App {
                         self.cfg.accounts[acct].display()
                     ));
                 }
+                let mut created: Option<PathBuf> = None;
                 let folder = match s("dir")
                     .map(|d| crate::fuzzy::spoken_punctuation(&d))
                     .filter(|d| !d.trim().is_empty())
@@ -2883,7 +2907,15 @@ impl App {
                     {
                         let p = crate::config::expand_tilde(&d);
                         if !p.is_dir() {
-                            return Err(format!("{d} is not a folder"));
+                            // New work in a folder that is not there yet:
+                            // made (under the home folder, never a system
+                            // or private place), then opened.
+                            let create = args["create"].as_bool() == Some(true);
+                            match new_folder(&p, create, &self.workspaces()) {
+                                // Said as the user named it.
+                                Ok(_) => created = Some(p.clone()),
+                                Err(e) => return Err(e),
+                            }
                         }
                         // Never system folders or private ones; the home
                         // folder itself only after the user says yes.
@@ -3014,6 +3046,14 @@ impl App {
                     v["folder"] = opened[0]["folder"].clone();
                 } else {
                     v["opened"] = json!(opened);
+                }
+                if let Some(c) = &created {
+                    let f = crate::config::tilde(c);
+                    v["created"] = json!(f);
+                    v["say"] = json!(format!(
+                        "Created {f} and opened a session there on {}.",
+                        self.cfg.accounts[acct].display()
+                    ));
                 }
                 v
             }
@@ -3786,6 +3826,15 @@ impl App {
             }
             "speak" => {
                 let text = s("text").ok_or("text is required")?;
+                if !self.reply_spoken() {
+                    self.assistant.log.push(crate::app_assistant::Entry {
+                        who: crate::app_assistant::Who::Reply,
+                        text: text.clone(),
+                    });
+                    return Ok(ok(json!(
+                        "shown as text, not said: the speaker is muted or the message was typed"
+                    )));
+                }
                 self.speak_assistant(&text);
                 ok(json!("spoken"))
             }
@@ -4724,4 +4773,62 @@ mod tests {
         let names: std::collections::HashSet<_> = TOOLS.iter().map(|t| t.name).collect();
         assert_eq!(names.len(), TOOLS.len());
     }
+}
+
+/// Where new folders may be made: the home folder (tests: the temp
+/// folder, never the real home).
+fn new_folder_root() -> PathBuf {
+    if cfg!(test) {
+        std::env::temp_dir()
+    } else {
+        crate::config::home_dir()
+    }
+}
+
+/// Make `p` for a new tab: when its parent exists (or `deep`, after the
+/// user's yes, any missing parents), only under the home folder, never a
+/// system or private place. Err says why, or asks.
+pub fn new_folder(p: &std::path::Path, deep: bool, allowed: &[PathBuf]) -> Result<PathBuf, String> {
+    let shown = crate::config::tilde(p);
+    if p.exists() {
+        return Err(format!("{shown} is a file, not a folder"));
+    }
+    let root = std::fs::canonicalize(new_folder_root()).unwrap_or_else(|_| new_folder_root());
+    // The nearest folder that exists, and what is missing below it.
+    let mut base = p.to_path_buf();
+    let mut missing: Vec<std::ffi::OsString> = vec![];
+    while !base.is_dir() {
+        match (base.file_name(), base.parent()) {
+            (Some(n), Some(up)) => {
+                missing.push(n.to_os_string());
+                base = up.to_path_buf();
+            }
+            _ => return Err(format!("{shown} is not a folder")),
+        }
+    }
+    let mut full = std::fs::canonicalize(&base).map_err(|e| format!("{shown}: {e}"))?;
+    for n in missing.iter().rev() {
+        if n == ".." || n == "." {
+            return Err(format!("{shown} is not a folder"));
+        }
+        full.push(n);
+    }
+    if !full.starts_with(&root) || full == root {
+        return Err(format!(
+            "{shown} does not exist, and new folders are only made inside the home folder"
+        ));
+    }
+    crate::guard::tab_folder(&full, allowed).map_err(|why| format!("refused: {why}"))?;
+    if missing.len() > 1 && !deep {
+        let parent = full.parent().map(crate::config::tilde).unwrap_or_default();
+        return Err(format!(
+            "{shown} does not exist and neither does {parent}: ask the user once whether to create it, then call again with create true"
+        ));
+    }
+    std::fs::create_dir_all(&full).map_err(|e| format!("could not create {shown}: {e}"))?;
+    crate::log::info(&format!(
+        "control: created {} for a new tab",
+        full.display()
+    ));
+    Ok(full)
 }

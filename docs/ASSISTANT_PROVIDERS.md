@@ -18,7 +18,8 @@ All of that is GodTerm's, not the provider's.
 - **`Provider`:** an id, a name, and a few other fields:
   - `harness`: which GodTerm accounts can run it. None means it has its own login, in `own_home`.
   - `caps`: persistent process or one per turn, streaming, effort levels.
-  - `models`: the first one is the default.
+  - `models`: id, name and a short description each ("quickest"); the first one is the default.
+  - `usage`: reads a fetched usage reply into buckets (label, percent left, reset time, which one binds). Claude has 5h and wk; Grok has wk and its products (Build). A provider that reports nothing returns none. The panel title and the account menu show them with no provider-specific code.
   - `bin`: the program to run.
   - `start`.
 - **`PROVIDERS`:** the registry. The menus, `switch_assistant`, get_state's `providers` and the state block all read it.

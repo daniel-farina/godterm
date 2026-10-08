@@ -206,6 +206,8 @@ pub fn chip(app: &App, tool: &str, args: &Value, status: &str) -> (String, Color
         "show" => ("▣ changed the view".to_string(), FAINT),
         "pause_listening" => ("❚❚ paused listening".to_string(), theme::SAND),
         "speak" => ("♪ said something".to_string(), FAINT),
+        "speaker" => ("♪ speaker".to_string(), FAINT),
+        "assistant_panel" => ("▣ panel".to_string(), FAINT),
         t => (format!("· {}", t.replace('_', " ")), FAINT),
     };
     let st = match status {
@@ -523,6 +525,118 @@ pub fn status_line(app: &App) -> String {
     parts.join(" · ")
 }
 
+/// What the assistant is doing, for the title: listening, thinking or
+/// speaking.
+pub fn state_chip(app: &App) -> Option<&'static str> {
+    let speaking = app.voice.engine.as_ref().is_some_and(|v| v.speaking())
+        || app.voice.preview.as_ref().is_some_and(|p| p.speaking());
+    if speaking {
+        Some("▶ speaking")
+    } else if app.assistant.busy {
+        Some("◌ thinking")
+    } else if app.voice.status == crate::voice::VoiceStatus::Listening {
+        Some("● listening")
+    } else {
+        None
+    }
+}
+
+/// The input as rows of at most `w` cells: its own lines, wrapped.
+pub fn input_lines(text: &str, w: usize) -> Vec<String> {
+    let mut out = vec![];
+    for line in text.split('\n') {
+        let mut cur = String::new();
+        let mut n = 0;
+        for ch in line.chars() {
+            let cw = ch.width().unwrap_or(0);
+            if n + cw > w && !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+                n = 0;
+            }
+            cur.push(ch);
+            n += cw;
+        }
+        out.push(cur);
+    }
+    out
+}
+
+/// The title: "assistant · Claude · Account 2 · 5h 89% · wk 3% · haiku ▾",
+/// as parts (tone 2: the binding bucket when it is low). Narrow, whole
+/// pieces go: the other buckets, then "assistant", then the provider and
+/// the account; the binding bucket and the model stay.
+pub fn title_parts(app: &App, room: usize) -> Vec<(String, u8)> {
+    let p = crate::providers::by_id(&app.cfg.assistant.provider);
+    let model = app
+        .assistant
+        .brain
+        .as_ref()
+        .map(|b| b.model.clone())
+        .unwrap_or_else(|| crate::providers::model_for(p, &app.cfg.assistant));
+    let short_model = if p.id == "claude" {
+        model
+            .trim_start_matches("claude-")
+            .split('-')
+            .next()
+            .unwrap_or(&model)
+            .to_string()
+    } else {
+        model.clone()
+    };
+    // (text, tone, drop order: 0 never, lower first).
+    let mut segs: Vec<(String, u8, u8)> = vec![("assistant".into(), 0, 2), (p.name.into(), 0, 3)];
+    let acct = app
+        .assistant
+        .brain
+        .as_ref()
+        .and_then(|b| b.account)
+        .or_else(|| app.assistant_account());
+    match (p.own_home, acct) {
+        (Some(_), _) => {}
+        (None, Some(a)) => segs.push((app.account_cfg(a).display().to_string(), 0, 4)),
+        (None, None) => segs.push(("no logged in account".into(), 0, 0)),
+    }
+    if let Some(b) = app.assistant_buckets() {
+        for k in &b {
+            let low = k.binding && k.left_pct < crate::providers::LOW_PCT;
+            segs.push((
+                crate::providers::bucket_text(k),
+                if low { 2 } else { 0 },
+                if k.binding { 0 } else { 1 },
+            ));
+        }
+    }
+    segs.push((format!("{short_model} ▾"), 0, 0));
+    if app.assistant.remote.is_some() {
+        segs.push(("RC".into(), 0, 0));
+    }
+    let width = |segs: &[(String, u8, u8)]| -> usize {
+        segs.iter().map(|s| cells(&s.0) as usize).sum::<usize>()
+            + 3 * segs.len().saturating_sub(1)
+            + 2
+    };
+    for rank in 1..=4u8 {
+        // The rightmost of a rank goes first.
+        while width(&segs) > room {
+            match segs.iter().rposition(|s| s.2 == rank) {
+                Some(i) => {
+                    segs.remove(i);
+                }
+                None => break,
+            }
+        }
+    }
+    let mut out: Vec<(String, u8)> = vec![(" ".into(), 0)];
+    for (i, (t, tone, _)) in segs.into_iter().enumerate() {
+        if i > 0 {
+            out.push((" · ".into(), 0));
+        }
+        out.push((t, tone));
+    }
+    out.push((" ".into(), 0));
+    out
+}
+
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     let acct = app
@@ -531,58 +645,19 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .as_ref()
         .and_then(|b| b.account)
         .or_else(|| app.assistant_account());
-    let model = app
-        .assistant
-        .brain
-        .as_ref()
-        .map(|b| b.model.clone())
-        .unwrap_or_else(|| app.cfg.assistant.model.clone());
-    let short_model = model
-        .trim_start_matches("claude-")
-        .split('-')
-        .next()
-        .unwrap_or(&model)
-        .to_string();
     let room = area.width.saturating_sub(6) as usize;
-    let title = match acct {
-        Some(a) => {
-            let name = app.account_cfg(a).display().to_string();
-            let left = app.accounts[a]
-                .effective_left()
-                .map(|l| format!(" · {l:.0}% left"))
-                .unwrap_or_default();
-            let full = format!(" assistant · {name}{left} · {short_model} ▾ ");
-            // Narrow: the usage goes first, then the word "assistant".
-            if cells(&full) as usize <= room {
-                full
-            } else if cells(&format!(" assistant · {name} · {short_model} ▾ ")) as usize <= room
-            {
-                format!(" assistant · {name} · {short_model} ▾ ")
-            } else {
-                format!(" {name} · {short_model} ▾ ")
-            }
-        }
-        None => {
-            let p = crate::providers::by_id(&app.cfg.assistant.provider);
-            match p.own_home {
-                Some(_) => format!(
-                    " assistant · {} · {} ▾ ",
-                    p.name,
-                    crate::providers::model_for(p, &app.cfg.assistant)
-                ),
-                None => " assistant · no logged in account ▾ ".into(),
-            }
-        }
-    };
-    let title = if app.assistant.remote.is_some() {
-        format!("{}RC ", title.trim_end_matches(' ').to_string() + " · ")
-    } else {
-        title
-    };
+    let title = title_parts(app, room);
+    // With the keys, a calm blue border; without, a dim one.
+    let focused = app.assistant_has_focus();
+    let border = if focused { theme::SLATE } else { FAINT };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::MAUVE))
+        .border_type(if focused {
+            BorderType::Thick
+        } else {
+            BorderType::Rounded
+        })
+        .border_style(Style::default().fg(border))
         .style(Style::default().bg(BAR_BG));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -593,15 +668,41 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let buf = f.buffer_mut();
     let mut hits = app.hits.borrow_mut();
     // The title, on the border: a click opens account and model.
-    let tw = cells(&title).min(inner.width.saturating_sub(2));
-    crate::hits::text(
-        buf,
-        area.x + 2,
-        area.y,
-        area.x + 2 + tw,
-        &title,
-        Style::default().fg(FG).bg(BAR_BG),
+    // Anywhere in the panel: it takes the keys (its own buttons win).
+    hits.add(
+        area,
+        UiAction::AssistantFocus,
+        "Type to the assistant here (Esc gives the keys back)",
     );
+    let tw = (title.iter().map(|(t, _)| cells(t)).sum::<u16>()).min(inner.width.saturating_sub(2));
+    let title_st = if focused {
+        Style::default()
+            .fg(FG)
+            .bg(BAR_BG)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(DIM).bg(BAR_BG)
+    };
+    let mut tx = area.x + 2;
+    for (t, tone) in &title {
+        let st = match tone {
+            2 => title_st.fg(theme::SAND),
+            _ => title_st,
+        };
+        tx = crate::hits::text(buf, tx, area.y, area.x + 2 + tw, t, st);
+    }
+    // What it is doing, in the same calm accent.
+    if let Some(chip) = state_chip(app) {
+        tx = crate::hits::text(
+            buf,
+            tx + 1,
+            area.y,
+            area.x + area.width.saturating_sub(2),
+            &format!(" {chip} "),
+            Style::default().fg(BAR_BG).bg(theme::SLATE),
+        );
+    }
+    let _ = tx;
     hits.add(
         Rect::new(area.x + 2, area.y, tw, 1),
         UiAction::MenuOpen(crate::menus::MenuId::AssistantAccount),
@@ -701,7 +802,36 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let mut hits = app.hits.borrow_mut();
     // The input box takes the last row.
     let iy = inner.y + inner.height - 1;
-    let body_h = iy.saturating_sub(top + 1);
+    // The input box grows with what is in it (up to 6 rows, its end shown).
+    let send_w = cells(" Send ");
+    let mic_label = if app.voice.muted {
+        "● muted"
+    } else {
+        match app.voice_mode() {
+            0 => "mic off",
+            1 => "push to talk",
+            2 => "wake word",
+            _ => "● open mic",
+        }
+    };
+    let mic_w = cells(mic_label) + 1;
+    // The speaker: a click (or Ctrl-a O) mutes what it says out loud.
+    let spk_label = if app.cfg.voice.speaker_muted {
+        "● silent"
+    } else {
+        "sound on"
+    };
+    let spk_w = cells(spk_label) + 2;
+    let right = limit.saturating_sub(send_w + mic_w + spk_w);
+    let in_lines = input_lines(
+        &app.assistant.input,
+        right.saturating_sub(inner.x + 2).max(4) as usize,
+    );
+    let in_h = (in_lines.len() as u16)
+        .clamp(1, 6)
+        .min(inner.height.saturating_sub(4).max(1));
+    let iy0 = iy + 1 - in_h;
+    let body_h = iy0.saturating_sub(top + 1);
     let rows: Vec<Row> = if app.assistant.show_admin {
         let mut v = vec![row(vec![(
             "Admin actions".into(),
@@ -747,50 +877,90 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     // Input: the text (or the hint), the mic state, Send.
-    for cx in inner.x..limit {
-        if let Some(c) = buf.cell_mut((cx, iy)) {
-            c.set_char(' ');
-            c.set_style(Style::default().bg(SEL_BG));
+    for y in iy0..=iy {
+        for cx in inner.x..limit {
+            if let Some(c) = buf.cell_mut((cx, y)) {
+                c.set_char(' ');
+                c.set_style(Style::default().bg(SEL_BG));
+            }
         }
     }
-    let mic = if app.voice.muted {
-        "● muted"
-    } else {
-        match app.voice_mode() {
-            0 => "mic off",
-            1 => "push to talk",
-            2 => "wake word",
-            _ => "● open mic",
+    let mic = mic_label;
+    if app.assistant.input.is_empty() {
+        let hint = if focused {
+            "› Type or speak…"
+        } else {
+            "› click or Ctrl-a . to type"
+        };
+        crate::hits::text(
+            buf,
+            inner.x,
+            iy,
+            right,
+            hint,
+            Style::default().fg(FAINT).bg(SEL_BG),
+        );
+        if focused {
+            app.want_cursor.set(Some((inner.x + 2, iy)));
         }
-    };
-    let send_w = cells(" Send ");
-    let mic_w = cells(mic) + 1;
-    let right = limit.saturating_sub(send_w + mic_w);
-    let shown = if app.assistant.input.is_empty() {
-        "Type or speak…".to_string()
     } else {
-        // The end of a long input stays visible.
-        let room = right.saturating_sub(inner.x + 3) as usize;
-        let n = app.assistant.input.chars().count();
-        let tail: String = app
-            .assistant
-            .input
-            .chars()
-            .skip(n.saturating_sub(room.saturating_sub(1)))
-            .collect();
-        format!("{tail}▏")
-    };
-    let st = if app.assistant.input.is_empty() {
-        Style::default().fg(FAINT).bg(SEL_BG)
+        let shown = &in_lines[in_lines.len() - in_h as usize..];
+        for (k, l) in shown.iter().enumerate() {
+            let y = iy0 + k as u16;
+            let lead = if k == 0 && in_lines.len() <= in_h as usize {
+                "› "
+            } else {
+                "  "
+            };
+            // The caret is the terminal's own cursor, at the end.
+            let end = crate::hits::text(
+                buf,
+                inner.x,
+                y,
+                right,
+                &format!("{lead}{l}"),
+                Style::default().fg(FG).bg(SEL_BG),
+            );
+            if k + 1 == shown.len() && focused {
+                app.want_cursor
+                    .set(Some((end.min(right.saturating_sub(1)), y)));
+            }
+        }
+    }
+    let spk_style = if app.cfg.voice.speaker_muted {
+        Style::default().fg(theme::SAND).bg(SEL_BG)
     } else {
-        Style::default().fg(FG).bg(SEL_BG)
+        Style::default().fg(DIM).bg(SEL_BG)
     };
-    crate::hits::text(buf, inner.x, iy, right, &format!("› {shown}"), st);
+    let spk_hover = app
+        .mouse_pos
+        .is_some_and(|(mx, my)| my == iy && mx >= right && mx < right + spk_w - 1);
     crate::hits::text(
         buf,
         right,
         iy,
-        right + mic_w,
+        right + spk_w,
+        spk_label,
+        if spk_hover {
+            spk_style.add_modifier(Modifier::UNDERLINED)
+        } else {
+            spk_style
+        },
+    );
+    hits.add(
+        Rect::new(right, iy, spk_w - 1, 1),
+        UiAction::SpeakerToggle,
+        if app.cfg.voice.speaker_muted {
+            "The speaker is muted: answers show as text only. Click (or Ctrl-a O) to talk again"
+        } else {
+            "Mute what it says out loud (Ctrl-a O); the mic keeps listening"
+        },
+    );
+    crate::hits::text(
+        buf,
+        right + spk_w,
+        iy,
+        right + spk_w + mic_w,
         mic,
         Style::default().fg(DIM).bg(SEL_BG),
     );

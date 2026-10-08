@@ -30,6 +30,12 @@ pub enum AppEvent {
     Status(usize, Box<StatusSnapshot>),
     /// The main ~/.grok's usage (the Grok login picker).
     MainGrokUsage(Box<Result<crate::usage::Usage, String>>),
+    /// A key as the input thread read it: `burst` when it came right
+    /// after the previous key (a paste the terminal typed out), timed
+    /// when read, not when handled (a busy frame bunches keys up).
+    KeyRead(crossterm::event::KeyEvent, bool),
+    /// A provider's own login's usage (the assistant's Grok).
+    OwnUsage(&'static str, Box<Result<crate::usage::Usage, String>>),
     Sessions(usize, Vec<SessionInfo>),
     Voice(crate::voice::VoiceEvent),
     /// The window's current bounds (from the terminal app).
@@ -119,7 +125,6 @@ pub fn min_fetch_interval() -> Duration {
         MIN_FETCH_INTERVAL
     }
 }
-const MAX_BACKOFF: Duration = Duration::from_secs(15 * 60);
 
 impl AccountState {
     /// Percent left in the 5 hour window, from the last good reply.
@@ -151,6 +156,43 @@ impl AccountState {
         match (f, w) {
             (Some(a), Some(b)) => Some(if b.0 < a.0 { b } else { a }),
             (a, b) => a.or(b),
+        }
+    }
+
+    /// What to say about the last fetch failing, if anything: a 429 is
+    /// only worth a word once the numbers shown are old (twice the fetch
+    /// interval), and then calmly.
+    pub fn usage_problem(&self, interval: Duration, now: DateTime<Utc>) -> Option<String> {
+        self.usage_problem_as(interval, now, false)
+    }
+
+    /// `short`: for a pane's footer ("usage from 3 min ago").
+    pub fn usage_problem_as(
+        &self,
+        interval: Duration,
+        now: DateTime<Utc>,
+        short: bool,
+    ) -> Option<String> {
+        let e = self.usage_err.as_ref()?;
+        let ago = self.usage_good_at.map(|t| crate::usage::ago_words(t, now));
+        match e {
+            UsageError::RateLimited(_) => {
+                let t = self.usage_good_at?;
+                let stale = (now - t).to_std().unwrap_or_default() > interval * 2;
+                let ago = ago.unwrap_or_default();
+                stale.then(|| match short {
+                    true => format!("usage from {ago} ago"),
+                    false => format!("usage from {ago} ago ({e})"),
+                })
+            }
+            _ if short => Some(match ago {
+                Some(a) => format!("{}, values from {a} ago", e.short()),
+                None => e.short(),
+            }),
+            _ => Some(match ago {
+                Some(a) => format!("{e}, showing data from {a} ago"),
+                None => e.to_string(),
+            }),
         }
     }
 
@@ -191,17 +233,18 @@ impl AccountState {
                 self.usage_good_at = Some(Utc::now());
                 self.usage_err = None;
                 self.backoff = 0;
-                base
+                crate::usage_share::jitter(base)
             }
             Err(e) => {
                 let d = match &e {
                     UsageError::RateLimited(retry) => {
                         self.backoff = (self.backoff + 1).min(8);
-                        let exp = MIN_FETCH_INTERVAL * 2u32.pow(self.backoff);
-                        exp.max(Duration::from_secs(retry.unwrap_or(0)))
-                            .min(MAX_BACKOFF)
+                        crate::usage_share::jitter(crate::usage_share::backoff(
+                            self.backoff,
+                            *retry,
+                        ))
                     }
-                    _ => base,
+                    _ => crate::usage_share::jitter(base),
                 };
                 self.usage_err = Some(e);
                 d
@@ -451,6 +494,9 @@ pub struct App {
     pub forced_stops: Vec<String>,
     /// The main ~/.grok's usage, fetched for the Grok login picker.
     pub main_grok_usage: Option<Result<crate::usage::Usage, String>>,
+    /// Usage of the providers with a login of their own, by provider id.
+    pub own_usage: std::collections::HashMap<&'static str, Result<crate::usage::Usage, String>>,
+    pub own_usage_at: Option<Instant>,
     /// Background work per tab (uid): when looked, what runs (2 s cache).
     pub bg_cache: std::cell::RefCell<std::collections::HashMap<u64, (Instant, Option<String>)>>,
     /// A tab being dragged in its list: (pane, tab, moved yet).
@@ -475,6 +521,9 @@ pub struct App {
     pub recents: Vec<crate::picker::RecentDir>,
     pub flash: Option<(String, Instant)>,
     pub quit: bool,
+    /// Where the terminal cursor goes this frame (one place at most: the
+    /// focused text input); set while drawing, applied at the end.
+    pub want_cursor: std::cell::Cell<Option<(u16, u16)>>,
     /// Self update: the checker, the chip, restart to update.
     pub update: crate::app_update::UpdateUi,
     /// The assistant's admin flows (installs, logins) and their log.
@@ -486,6 +535,14 @@ pub struct App {
     pub pane_rects: Vec<Rect>,
     /// Terminal area of each pane (inside the border, above the footer).
     pub term_rects: Vec<Rect>,
+    /// The assistant panel floats over the panes this frame.
+    pub panel_overlay: std::cell::Cell<bool>,
+    /// Moves on offer for tabs whose account runs out (app_failover).
+    pub failover: Vec<crate::app_failover::Offer>,
+    /// (tab uid, account) the user said no to.
+    pub failover_declined: Vec<(u64, usize)>,
+    /// The key being handled came in a burst (see AppEvent::KeyRead).
+    pub key_burst: Option<bool>,
     /// Clickable regions being registered by the frame being drawn.
     pub hits: std::cell::RefCell<crate::hits::Hits>,
     /// Index in `hits` where the open modal's regions begin.
@@ -627,6 +684,8 @@ impl App {
             tab_drag: None,
             bg_cache: Default::default(),
             main_grok_usage: None,
+            own_usage: Default::default(),
+            own_usage_at: None,
             forced_stops: vec![],
             undo_toast: None,
             tab_list_width: None,
@@ -641,12 +700,17 @@ impl App {
             last_window_check: Instant::now(),
             flash: None,
             quit: false,
+            want_cursor: Default::default(),
             update: Default::default(),
             admin: Default::default(),
             setup: Default::default(),
             force_eager: false,
             pane_rects: vec![],
             term_rects: vec![],
+            panel_overlay: Default::default(),
+            key_burst: None,
+            failover: vec![],
+            failover_declined: vec![],
             hits: Default::default(),
             modal_from: Default::default(),
             inline_rename: Default::default(),
@@ -683,6 +747,12 @@ impl App {
         for i in 0..app.accounts.len() {
             let snap = snapshot_of(&app.cfg.accounts[i], false);
             app.apply_status(i, snap);
+        }
+        // The first usage requests a few seconds apart, not all at once.
+        if !cfg!(test) && !crate::demo::active() {
+            for (i, st) in app.accounts.iter_mut().enumerate().skip(1) {
+                st.next_fetch = Some(Instant::now() + Duration::from_secs(3 * i as u64));
+            }
         }
         app
     }
@@ -1678,6 +1748,8 @@ impl App {
         }
         if status_due {
             self.last_status = Instant::now();
+            self.maybe_fetch_own_usage();
+            self.failover_scan();
         }
         if let Some((_, t)) = &self.flash {
             if t.elapsed() > Duration::from_secs(5) {
@@ -1697,6 +1769,11 @@ impl App {
 
     pub fn handle(&mut self, ev: AppEvent) {
         match ev {
+            AppEvent::KeyRead(k, burst) => {
+                self.key_burst = Some(burst);
+                self.handle(AppEvent::Input(Event::Key(k)));
+                self.key_burst = None;
+            }
             AppEvent::Input(Event::Key(k)) => {
                 if self.hold_to_talk_key(&k) {
                     return;
@@ -1706,7 +1783,13 @@ impl App {
                 }
             }
             AppEvent::Input(Event::Paste(text)) => {
-                if self.view == View::Grid && self.modal == Modal::None {
+                // The assistant panel's input, while it has the keys.
+                if self.assistant_has_focus()
+                    && self.assistant.history.is_none()
+                    && self.modal == Modal::None
+                {
+                    self.assistant_paste(&text);
+                } else if self.view == View::Grid && self.modal == Modal::None {
                     let p = self.panes[self.focus].cur_mut();
                     let b = keys::encode_paste(&text, p.bracketed_paste());
                     p.reset_scroll();
@@ -1783,6 +1866,9 @@ impl App {
             }
             AppEvent::Status(idx, snap) => self.apply_status(idx, *snap),
             AppEvent::MainGrokUsage(r) => self.main_grok_usage = Some(*r),
+            AppEvent::OwnUsage(id, r) => {
+                self.own_usage.insert(id, *r);
+            }
             AppEvent::Voice(ev) => self.on_voice(ev),
             AppEvent::Mem(m) => self.mem = m,
             AppEvent::Window(w) => {
@@ -2431,6 +2517,14 @@ impl App {
             (_, Some('G')) => self.open_livemap(),
             (_, Some('Z')) => self.toggle_memory_saver(),
             (_, Some('X')) => self.toggle_mute(),
+            (_, Some('O')) => self.toggle_speaker(),
+            (_, Some('F')) => {
+                if self.accept_failover(None, false).is_none() {
+                    self.flash("No move on offer");
+                }
+            }
+            (_, Some('+')) | (_, Some('=')) => self.nudge_volume(0.1),
+            (_, Some('-')) => self.nudge_volume(-0.1),
             (_, Some('.')) => self.toggle_assistant_panel(),
             (_, Some('M')) => {
                 self.mouse_capture = !self.mouse_capture;
@@ -3153,6 +3247,7 @@ impl App {
             }
             if self.assistant_on() {
                 self.assistant.show = true;
+                self.assistant.focused = true;
                 self.ask_assistant(&text);
             } else {
                 self.flash("No action matches, and the assistant is off (Settings > Assistant)");
@@ -3416,7 +3511,10 @@ pub fn snapshot(dir: &std::path::Path, with_usage: bool) -> StatusSnapshot {
             (Some((c, _)), None) if c.is_expired(Utc::now().timestamp_millis()) => {
                 Err(UsageError::Unauthorized)
             }
-            (Some((c, _)), None) => usage::fetch_usage(&c.access_token),
+            // One request per account across every GodTerm process.
+            (Some((c, _)), None) => crate::usage_share::fetch(&name, min_fetch_interval(), || {
+                usage::fetch_usage_raw(usage::USAGE_URL, &c.access_token)
+            }),
         })
     };
     StatusSnapshot {

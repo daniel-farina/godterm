@@ -604,7 +604,10 @@ impl App {
             UiAction::FocusPane(i) => {
                 self.focus = i;
                 self.view = View::Grid;
+                // A click in a pane gives it the keys.
+                self.assistant.focused = false;
             }
+            UiAction::AssistantFocus => self.assistant.focused = true,
             UiAction::PaneHeader(i) => {
                 self.focus = i;
                 self.view = View::Grid;
@@ -730,6 +733,11 @@ impl App {
             }
             UiAction::AssistantHistory => self.toggle_assistant_history(),
             UiAction::MuteToggle => self.toggle_mute(),
+            UiAction::SpeakerToggle => self.toggle_speaker(),
+            UiAction::FailoverMove => {
+                self.accept_failover(None, false);
+            }
+            UiAction::FailoverDismiss => self.decline_failover(),
             UiAction::SessHarness(k) => {
                 self.sess_harness = if self.sess_harness == Some(k) {
                     None

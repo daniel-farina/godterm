@@ -248,6 +248,9 @@ pub struct Config {
     pub voice: VoiceCfg,
     #[serde(default)]
     pub assistant: AssistantCfg,
+    /// `[usage]`: moving work off an account that runs out.
+    #[serde(default)]
+    pub usage: UsageCfg,
     /// `[viz]`: the live map.
     #[serde(default)]
     pub viz: crate::livemap::VizCfg,
@@ -283,6 +286,28 @@ impl Default for UpdateCfg {
             auto_download: true,
             require_signature: true,
             check_hours: 6,
+        }
+    }
+}
+
+/// `[usage]`: when an account runs low, offer to move its tabs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UsageCfg {
+    /// Offer a move when an account has less than this percent left (the
+    /// binding limit), or when a tab says it hit its limit.
+    pub failover_pct: f64,
+    /// "ask" (default): a notice offers the move, one yes does it;
+    /// "auto": idle tabs move by themselves (and it says so), busy ones
+    /// are offered; "off": no offers.
+    pub auto_failover: String,
+}
+
+impl Default for UsageCfg {
+    fn default() -> Self {
+        UsageCfg {
+            failover_pct: 5.0,
+            auto_failover: "ask".into(),
         }
     }
 }
@@ -343,6 +368,13 @@ pub struct AssistantCfg {
     /// Watch for the answer to a question delegated to a tab this many
     /// minutes, then stop waiting.
     pub answer_wait_min: u64,
+    /// Speak replies to typed messages too (spoken ones are always
+    /// spoken unless the speaker is muted).
+    pub speak_typed: bool,
+    /// The panel: "docked" (beside the panes, which shrink), "overlay"
+    /// (floats over the right side; the panes keep their size) or "auto"
+    /// (docked while every pane keeps about 80 columns).
+    pub panel: String,
 }
 
 impl Default for AssistantCfg {
@@ -366,6 +398,8 @@ impl Default for AssistantCfg {
             memory_days: 2,
             spoken_sentences: 2,
             answer_wait_min: 15,
+            speak_typed: false,
+            panel: "docked".into(),
         }
     }
 }
@@ -450,6 +484,9 @@ pub struct VoiceCfg {
     pub pause_max_s: u32,
     /// Talk back at all (confirmations, read backs, announcements).
     pub tts: bool,
+    /// The speaker mute: nothing is said (answers still show as text).
+    /// Separate from the mic mute.
+    pub speaker_muted: bool,
     /// "kokoro" (neural, in process), "say", "grok" (xAI cloud), "off".
     /// When it fails or times out, `tts_fallback` is tried in order.
     pub tts_engine: String,
@@ -571,6 +608,7 @@ impl Default for VoiceCfg {
             whisper_threads: 0,
             wake_sensitivity: 0.75,
             tts: true,
+            speaker_muted: false,
             tts_engine: "kokoro".into(),
             tts_voice: None,
             kokoro_voice: "af_heart".into(),
@@ -804,6 +842,7 @@ impl Default for Config {
             viz: Default::default(),
             update: Default::default(),
             assistant: AssistantCfg::default(),
+            usage: UsageCfg::default(),
         }
     }
 }

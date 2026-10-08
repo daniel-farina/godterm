@@ -177,6 +177,8 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("privacy", "Privacy mode", Kind::Toggle, "Hide emails everywhere, doctor included, for screen sharing (Ctrl-a E)."),
             g("suggest_move_below", "Suggest moving tabs below (% 5h left)", Kind::Float { min: 0.0, max: 50.0, step: 5.0 }, "When a tab's account has less than this left, its header offers a one click move to the account with the most left. 0 turns it off."),
             g("refresh_secs", "Usage refresh (seconds)", Kind::Number { min: 60, max: 3600, step: 30 }, "How often usage is fetched per account (never more than once a minute)."),
+            g("usage.auto_failover", "When an account runs out", Kind::Choice(&["ask", "auto", "off"]), "ask: a notice offers to move the tab to the account of the same provider with the most left, one yes (Ctrl-a F, a click, or \"move it\") moves it; auto: idle tabs move by themselves and it says so, busy ones are offered; off: nothing."),
+            g("usage.failover_pct", "Runs out below (% left)", Kind::Float { min: 0.0, max: 50.0, step: 1.0 }, "An account counts as running out under this much left (its binding limit, 5 hour or weekly), or when a tab says it hit its limit."),
         ],
         Section::Layout => vec![
             g("confirm_close", "Confirm closing a tab", Kind::Choice(&["busy", "always", "never"]), "busy: ask when the tab is working, waiting for an answer or has loops; always: whenever it runs; never. Closed tabs can be reopened (Ctrl-a W)."),
@@ -897,6 +899,18 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
 
     r.group("Talk back behavior");
     r.add(g(
+        "voice.speaker_muted",
+        "Speaker mute",
+        Kind::Toggle,
+        "Nothing is said out loud; answers still show as text. Separate from the mic mute (Ctrl-a O, or say \"be quiet\").",
+    ));
+    r.add(g(
+        "assistant.speak_typed",
+        "Speak replies to typed messages",
+        Kind::Toggle,
+        "off: a typed message gets a text answer only; a spoken one is answered out loud (unless the speaker is muted).",
+    ));
+    r.add(g(
         "voice.speak_confirm",
         "Confirmations",
         Kind::Toggle,
@@ -997,6 +1011,18 @@ fn assistant_rows(cfg: &Config, all: bool) -> Vec<Setting> {
     let mut r = Rows::new(all);
     r.group("Assistant");
     r.when(on, why, g("assistant.provider", "Provider", Kind::Choice(&["claude", "grok"]), "Which model provider runs the assistant: claude (on one of your Claude accounts) or grok (its own Grok login, never your Grok accounts). The conversation carries over when you switch."));
+    r.when(on, why, g("assistant.panel", "Panel", Kind::Choice(&["docked", "overlay", "auto"]), "docked: beside the panes, which make room; overlay: floats over the right side and the panes keep their size; auto: docked while every pane keeps about 80 columns, otherwise overlay."));
+    r.when(on, why, g("assistant.speak_typed", "Speak replies to typed messages", Kind::Toggle, "off: a typed message gets a text answer only; a spoken one is answered out loud (unless the speaker is muted)."));
+    r.when(
+        on,
+        why,
+        g(
+            "voice.speaker_muted",
+            "Speaker mute",
+            Kind::Toggle,
+            "Nothing is said out loud; answers still show as text. Separate from the mic mute.",
+        ),
+    );
     r.add(g("assistant.mode", "Mode", Kind::Choice(&["always", "off"]), "always: the assistant understands everything you say or type (apart from the instant one word commands); off: only the instant commands work. About your sessions it only gets metadata and short snippets, never whole transcripts."));
     r.when(on, why, g("assistant.account", "Account", Kind::Pick(accts), "Whose quota it spends. best: the logged in account with the most 5 hour quota left (it moves when that one runs low)."));
     r.when(on, why, g("assistant.model", "Model", Kind::Text, "claude-haiku-4-5 (default, quickest and lightest on quota), or sonnet / opus for harder requests."));

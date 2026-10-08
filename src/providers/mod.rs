@@ -62,8 +62,12 @@ pub struct Provider {
     /// Accounts of this harness can run it (None: it has its own login).
     pub harness: Option<Harness>,
     pub caps: Caps,
-    /// Models offered in the menu (the first is the default).
-    pub models: &'static [(&'static str, &'static str)],
+    /// Models offered in the menu (the first is the default): id, name,
+    /// a two word description ("quickest").
+    pub models: &'static [(&'static str, &'static str, &'static str)],
+    /// Its usage limits from a fetched usage reply, as buckets (none:
+    /// it reports no usage). The binding one is marked.
+    pub usage: fn(&crate::usage::Usage) -> Vec<Bucket>,
     /// The program to run.
     pub bin: fn(&crate::config::Config) -> String,
     /// Its own home and whether it is logged in (providers with no
@@ -73,6 +77,82 @@ pub struct Provider {
 }
 
 pub const PROVIDERS: &[Provider] = &[claude::PROVIDER, grok::PROVIDER];
+
+/// One usage limit of an account, whatever the provider calls it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bucket {
+    /// Short: "5h", "wk", "Build".
+    pub label: String,
+    /// A word for speech and hints: "5 hour", "weekly".
+    pub long: String,
+    pub left_pct: f64,
+    pub resets_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The lowest of the ones that limit it: what it can really do.
+    pub binding: bool,
+}
+
+/// Low enough to warn about (percent left of the binding bucket).
+pub const LOW_PCT: f64 = 20.0;
+
+/// The buckets for `keys` (window key, short, long) that the reply has,
+/// in that order, the lowest marked binding (a reset that passed reads
+/// as full, like AccountState::binding).
+pub fn buckets_of(u: &crate::usage::Usage, keys: &[(&str, &str, &str)]) -> Vec<Bucket> {
+    let mut v: Vec<Bucket> = vec![];
+    for (key, short, long) in keys {
+        if let Some(prefix) = key.strip_suffix('*') {
+            for w in u.windows.iter().filter(|w| w.key.starts_with(prefix)) {
+                v.push(Bucket {
+                    label: w.short.clone(),
+                    long: w.label.clone(),
+                    left_pct: w.left_now(),
+                    resets_at: w.resets_at,
+                    binding: false,
+                });
+            }
+        } else if let Some(w) = u.get(key) {
+            v.push(Bucket {
+                label: short.to_string(),
+                long: long.to_string(),
+                left_pct: w.left_now(),
+                resets_at: w.resets_at,
+                binding: false,
+            });
+        }
+    }
+    let low = v
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            a.1.left_pct
+                .partial_cmp(&b.1.left_pct)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i);
+    if let Some(i) = low {
+        v[i].binding = true;
+    }
+    v
+}
+
+/// The provider that reads the usage of accounts of harness `h` (Grok
+/// accounts are read like the assistant's own Grok login).
+pub fn for_harness(h: Harness) -> Option<&'static Provider> {
+    PROVIDERS
+        .iter()
+        .find(|p| p.harness == Some(h))
+        .or_else(|| PROVIDERS.iter().find(|p| p.id == h.name()))
+}
+
+/// The binding bucket.
+pub fn binding(b: &[Bucket]) -> Option<&Bucket> {
+    b.iter().find(|b| b.binding)
+}
+
+/// "5h 89%".
+pub fn bucket_text(b: &Bucket) -> String {
+    format!("{} {:.0}%", b.label, b.left_pct.floor())
+}
 
 pub fn by_id(id: &str) -> &'static Provider {
     PROVIDERS

@@ -136,6 +136,8 @@ pub enum UiAction {
     SetupWhisper(String),
     /// Settings > Setup: do not open it at start.
     SetupDontShow,
+    /// The assistant panel's input (or anywhere in it): give it the keys.
+    AssistantFocus,
     /// The assistant panel's Send button.
     AssistantSend,
     /// An action chip in the assistant panel: show or hide its raw call.
@@ -234,6 +236,11 @@ pub enum UiAction {
     TakeOverDo(u8),
     /// The red mute button (menu bar), Ctrl-a X.
     MuteToggle,
+    /// The speaker mute (talk back), separate from the mic.
+    SpeakerToggle,
+    /// The failover notice: move the tab (Ctrl-a F), or not now.
+    FailoverMove,
+    FailoverDismiss,
     /// A menu bar title, a row of an open menu, a menu only command.
     MenuOpen(crate::menus::MenuId),
     MenuRow(crate::menus::MenuId, usize),

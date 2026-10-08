@@ -15,9 +15,10 @@ use crate::pane::{Activity, LaunchKind, Pane, PaneState};
 use crate::picker::Picker;
 use crate::sessions::{fmt_tokens, snippet};
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
-use crate::usage::{self, countdown, Window};
+use crate::usage::{countdown, Window};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    app.want_cursor.set(None);
     app.hits.borrow_mut().clear();
     app.modal_from.set(None);
     app.inline_rename.set(false);
@@ -51,6 +52,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if hud_h > 0 {
         draw_voice_hud(f, app, chunks[1]);
+    }
+    // The assistant panel: docked, the panes make room (their PTYs
+    // resize); overlay, it floats over them and they keep their size.
+    let full_main = main;
+    let panel_w = crate::app_talkback::panel_width(app, main);
+    let docked = panel_w > 0 && app.panel_docked(main, panel_w);
+    app.panel_overlay.set(panel_w > 0 && !docked);
+    if docked {
+        main = Rect::new(main.x, main.y, main.width - panel_w, main.height);
     }
 
     // Panes are always laid out (and resized) so PTYs keep a sane size even
@@ -168,13 +178,26 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::Learned => crate::app_learned::draw(f, app, main),
         View::Prompt => crate::app_sysprompt::draw(f, app, main),
     }
-    if app.assistant.show && main.width >= 50 {
-        let w = (main.width / 2).clamp(44, 76);
-        crate::ui_assistant::draw(
-            f,
-            app,
-            Rect::new(main.x + main.width - w, main.y, w, main.height),
+    if panel_w > 0 {
+        let w = panel_w;
+        let r = Rect::new(
+            full_main.x + full_main.width - w,
+            full_main.y,
+            w,
+            full_main.height,
         );
+        if !docked {
+            crate::app_talkback::draw_overlay_edge(f, r, full_main);
+        }
+        crate::ui_assistant::draw(f, app, r);
+        // Floating: no pane cursor shows through it (nor its gap).
+        if !docked && !app.assistant_has_focus() {
+            if let Some((cx, cy)) = app.want_cursor.get() {
+                if cx + 1 >= r.x && cy >= r.y && cy < r.y + r.height {
+                    app.want_cursor.set(None);
+                }
+            }
+        }
     }
     draw_status(f, app, chunks[2]);
 
@@ -580,6 +603,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // What was drawn is what can be clicked.
     app.last_hits = app.hits.take();
     app.last_modal_from = app.modal_from.get();
+    // The terminal cursor: only at the focused input, decided once, after
+    // everything is drawn (else it stays hidden this frame).
+    if let Some(p) = app.want_cursor.get() {
+        f.set_cursor_position(p);
+    }
 }
 
 /// Rows given to the usage footer for a pane interior of this height.
@@ -732,7 +760,8 @@ fn state_label(p: &Pane) -> (String, Color) {
 fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
     let slot = &app.panes[i];
     let pane = slot.cur();
-    let focused = i == app.focus;
+    // A focused assistant panel has the keys: no pane looks focused.
+    let focused = i == app.focus && !app.assistant_has_focus();
     let color = app.account_color(slot.account);
     let state = state_label(pane);
     let border = if focused { color } else { FAINT };
@@ -791,7 +820,7 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
             {
                 let (r, c) = screen.cursor_position();
                 if r < inner.height && c < inner.width {
-                    f.set_cursor_position((inner.x + c, inner.y + r));
+                    app.want_cursor.set(Some((inner.x + c, inner.y + r)));
                 }
             }
             drop(parser);
@@ -1744,6 +1773,30 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
             hint: "Voice mode: click to change",
         });
     }
+    // An account running out: the move on offer (one yes moves it).
+    if let Some(o) = app.failover_offer() {
+        v.push(Chip {
+            text: format!("{} [C-a F]", app.failover_text(o)),
+            bg: theme::SAND,
+            action: UiAction::FailoverMove,
+            hint: "Move this session there (Ctrl-a F, or say \"move it\"); its conversation continues",
+        });
+        v.push(Chip {
+            text: "not now".into(),
+            bg: theme::STONE,
+            action: UiAction::FailoverDismiss,
+            hint: "Keep it on this account; no more offers for this tab",
+        });
+    }
+    // The speaker mute, beside the mic's state: it hears, it does not talk.
+    if app.cfg.voice.speaker_muted {
+        v.push(Chip {
+            text: "SILENT".into(),
+            bg: theme::STONE,
+            action: UiAction::SpeakerToggle,
+            hint: "The speaker is muted: answers show as text. Click (or Ctrl-a O) to talk again",
+        });
+    }
     // Paused listening: a calm amber countdown; a click resumes.
     if let Some(left) = app.pause_left() {
         v.push(Chip {
@@ -2267,15 +2320,9 @@ fn other_buckets_row(
     if let Some(n) = &st.usage_note {
         spans.push(Span::styled(format!("({n}) "), Style::default().fg(FAINT)));
     }
-    if let Some(e) = &st.usage_err {
-        let age = st
-            .usage_good_at
-            .map(|t| format!(", values from {} ago", usage::age(t, now)))
-            .unwrap_or_default();
-        spans.push(Span::styled(
-            format!("{}{age}", e.short()),
-            Style::default().fg(theme::SAND),
-        ));
+    let interval = crate::app::MIN_FETCH_INTERVAL;
+    if let Some(p) = st.usage_problem_as(interval, now, true) {
+        spans.push(Span::styled(p, Style::default().fg(theme::SAND)));
     }
     if items.is_empty() {
         if spans.len() == 1 {
@@ -2398,15 +2445,9 @@ fn usage_breakdown(st: &AccountState, now: DateTime<Utc>) -> Vec<Line<'static>> 
         }
         None => {}
     }
-    if let Some(e) = &st.usage_err {
-        let age = st
-            .usage_good_at
-            .map(|t| format!(", showing data from {} ago", usage::age(t, now)))
-            .unwrap_or_default();
-        lines.push(Line::styled(
-            format!("{e}{age}"),
-            Style::default().fg(theme::SAND),
-        ));
+    let interval = crate::app::MIN_FETCH_INTERVAL;
+    if let Some(p) = st.usage_problem(interval, now) {
+        lines.push(Line::styled(p, Style::default().fg(theme::SAND)));
     }
     if let Some(t) = st.usage_at {
         let local: DateTime<Local> = t.into();
@@ -4035,6 +4076,13 @@ fn draw_menu_box(
     let buf = f.buffer_mut();
     let mut hits = app.hits.borrow_mut();
     let inner_w = r.width.saturating_sub(2);
+    // The info column starts after the longest name.
+    let label_w = es
+        .iter()
+        .filter(|e| !e.sep)
+        .map(|e| unicode_width::UnicodeWidthStr::width(e.label.as_str()))
+        .max()
+        .unwrap_or(0) as u16;
     for (i, e) in es.iter().enumerate() {
         let y = r.y + 1 + i as u16;
         if y + 1 >= r.y + r.height {
@@ -4087,6 +4135,21 @@ fn draw_menu_box(
             e.key.to_string()
         };
         let rw = right.chars().count() as u16;
+        if !e.info.is_empty() {
+            let ix = row.x + 1 + 2 + label_w + 2;
+            let end = row.x + row.width - if rw > 0 { rw + 2 } else { 1 };
+            let parts = fit_parts(&e.info, end.saturating_sub(ix) as usize);
+            let mut cx = ix;
+            for (t, tone) in parts {
+                let fg = match (e.disabled.is_some(), tone) {
+                    (true, _) => FAINT,
+                    (_, 2) => theme::SAND,
+                    (_, 1) => FG,
+                    _ => DIM,
+                };
+                cx = crate::hits::text(buf, cx, y, end, &t, st.fg(fg));
+            }
+        }
         if rw > 0 && row.width > rw + 1 {
             crate::hits::text(
                 buf,
@@ -4105,6 +4168,39 @@ fn draw_menu_box(
         hits.add(row, UiAction::MenuRow(id, i), &hint);
     }
     r
+}
+
+/// Parts cut to `w` cells, the last one ending in … when cut (whole
+/// parts first: a part that does not fit is dropped or cut, never the
+/// row's name before it).
+pub fn fit_parts(parts: &[(String, u8)], w: usize) -> Vec<(String, u8)> {
+    use unicode_width::UnicodeWidthChar;
+    let total: usize = parts
+        .iter()
+        .map(|(t, _)| unicode_width::UnicodeWidthStr::width(t.as_str()))
+        .sum();
+    if total <= w {
+        return parts.to_vec();
+    }
+    let mut out = vec![];
+    let mut used = 0;
+    for (t, tone) in parts {
+        let mut s = String::new();
+        for c in t.chars() {
+            let cw = c.width().unwrap_or(0);
+            if used + cw + 1 > w {
+                s.push('…');
+                if !s.trim_end_matches('…').trim().is_empty() || !out.is_empty() {
+                    out.push((s, *tone));
+                }
+                return out;
+            }
+            used += cw;
+            s.push(c);
+        }
+        out.push((s, *tone));
+    }
+    out
 }
 
 /// A small menu under the button that opened it (or under the status
@@ -4500,6 +4596,11 @@ pub const HELP: &[(&str, &str)] = &[
         "loops (scheduled prompts) / memory saver on or off",
     ),
     ("Ctrl-a X", "mute or unmute the microphone (the Mic button)"),
+    (
+        "Ctrl-a O",
+        "mute or unmute the speaker (it stops talking, still hears)",
+    ),
+    ("Ctrl-a + / -", "talk back volume up or down"),
     (
         "Sessions: B",
         "bring a session running in another terminal here (◉)",
@@ -5096,7 +5197,11 @@ mod tests {
                 .into()
         )));
         assert!(dash.contains("Extra usage"));
-        assert!(dash.contains("rate limited"));
+        assert!(
+            dash.contains("usage from 4 min ago (the usage service asked us to slow down)"),
+            "{dash}"
+        );
+        assert!(!dash.contains("retry after"));
         assert!(dash.contains("logged in"));
         assert!(dash.contains("not logged in"));
 
@@ -5153,10 +5258,7 @@ mod tests {
         let b2 = (r2.y + r2.height - 1) as usize;
         assert!(seg(b2 - 3).contains("8% left"));
         let third = seg(b2 - 1);
-        assert!(
-            third.contains("rate limited, values from 4m ago"),
-            "{third}"
-        );
+        assert!(third.contains("usage from 4 min ago"), "{third}");
         assert!(third.contains("Opus 20% left"));
         assert!(
             third.contains("more (C-a d)"),
@@ -8987,6 +9089,8 @@ mod tests {
         use crate::assistant::BrainEvent as B;
         let (mut app, home) = test_app("narration");
         app.cfg.assistant.spoken_sentences = 2;
+        // A spoken request: its answer is said.
+        app.assistant.turn_spoken = true;
         // The live log of 14:38: text between tool calls was read aloud.
         app.assistant.busy = true;
         app.on_brain(B::Tool("read_tab".into(), serde_json::json!({})));
@@ -9013,7 +9117,7 @@ mod tests {
         ));
         // The same reply block: narration first, then the answer.
         app.assistant.spoken.clear();
-        app.ask_assistant("what about the pauses");
+        app.ask_assistant_from("what about the pauses", Some("what about the pauses"));
         let said = "Let me check\u{2026} Let me get the session detail\u{2026} Let me look at the PLAN\u{2026} The pause fix landed on Tuesday. Marcus now answers within a second. He also talks a bit faster.";
         app.on_brain(B::Delta(said.into()));
         app.on_brain(B::Text(said.into()));
@@ -9995,6 +10099,7 @@ mod tests {
         let tid = format!("t{uid}");
         let q = "Check whether you now have Slack tools available";
         app.assistant.show = true;
+        app.assistant.focused = true;
         app.assistant.log = vec![
             Entry { who: Who::User, text: "ask hyper if slack works now".into() },
             Entry { who: Who::Tool, text: serde_json::json!({"tool": "send_prompt", "args": {"tab": tid, "text": q, "expect_reply": true}, "status": "ok"}).to_string() },
@@ -10015,7 +10120,7 @@ mod tests {
             let panel: String = bar.chars().skip(width as usize - pw).collect();
             for w in panel
                 .split_whitespace()
-                .map(|w| w.trim_matches(|c| "│─╮╭┐┌".contains(c)))
+                .map(|w| w.trim_matches(|c| "│─╮╭┐┌┃━┏┓".contains(c)))
                 .filter(|w| !w.is_empty())
             {
                 assert!(
@@ -10023,7 +10128,7 @@ mod tests {
                         "New", "History", "Rules", "Prompt", "Admin", "⋯", "×", "│", "╮", "╭"
                     ]
                     .contains(&w)
-                        || w.chars().all(|c| "│─╮╭┐┌".contains(c)),
+                        || w.chars().all(|c| "│─╮╭┐┌┃━┏┓".contains(c)),
                     "{width}: clipped toolbar word {w:?} in {bar:?}"
                 );
             }
@@ -10090,6 +10195,174 @@ mod tests {
         ));
         assert_eq!(app.assistant.input, "what is running");
         app.assistant.brain = None;
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Pasting into the assistant panel's input: a bracketed paste goes
+    /// there (not to the pane) with its lines, a key burst with an Enter
+    /// in it does not send, a huge paste is capped and said, the box
+    /// grows; with the panel closed the pane gets it as before.
+    #[test]
+    fn assistant_input_takes_pastes() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::app::AppEvent;
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (mut app, home) = test_app("paste");
+        let (tx, _events) = std::sync::mpsc::channel();
+        app.tx = tx;
+        let rec = home.join("pane-in.txt");
+        let stub = crate::test_stub::claude(
+            &home.join("pane"),
+            &[
+                ("stdin_to", rec.display().to_string()),
+                ("stdin_append", "1".into()),
+            ],
+        );
+        app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
+        app.launch_tab(0, 0, crate::pane::LaunchKind::Normal);
+        app.assistant.show = true;
+        app.assistant.focused = true;
+        // Bracketed paste: CRLF kept as lines, control characters gone.
+        app.handle(AppEvent::Input(Event::Paste(
+            "first line\r\nsecond\x07 line\rthird".into(),
+        )));
+        assert_eq!(app.assistant.input, "first line\nsecond line\nthird");
+        assert!(!app.assistant.busy, "nothing sent");
+        let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let t = buffer_text(term.backend().buffer());
+        assert!(
+            t.contains("› first line") && t.contains("second line") && t.contains("third"),
+            "{t}"
+        );
+        // Typed keys that panes would take go to the box; Enter sends.
+        app.assistant.input.clear();
+        for c in "q z".chars() {
+            app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(app.assistant.input, "q z");
+        // Cmd-V typed out as a burst of keys: the Enter inside it is a new line.
+        app.assistant.input.clear();
+        for c in "ab".chars() {
+            app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert_eq!(app.assistant.input, "ab\nc");
+        assert!(!app.assistant.busy);
+        // A huge paste: capped, and said.
+        app.assistant.input.clear();
+        app.handle(AppEvent::Input(Event::Paste("x".repeat(40_000))));
+        assert_eq!(app.assistant.input.chars().count(), 16_000);
+        assert!(app
+            .flash
+            .as_ref()
+            .unwrap()
+            .0
+            .contains("Pasted the first 16 KB of 40 KB"));
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        // A pause, then Enter: it sends.
+        app.assistant.input = "what is running".into();
+        app.assistant.last_key_at = None;
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            app.assistant.input.is_empty()
+                && app.assistant.input_hist.last().map(String::as_str) == Some("what is running")
+        );
+        app.assistant.brain = None;
+        app.assistant.busy = false;
+        // Panel closed: the pane gets the paste.
+        app.assistant.show = false;
+        app.handle(AppEvent::Input(Event::Paste("to the pane\n".into())));
+        assert!(app.assistant.input.is_empty());
+        let t0 = std::time::Instant::now();
+        while !std::fs::read_to_string(&rec)
+            .unwrap_or_default()
+            .contains("to the pane")
+            && t0.elapsed() < std::time::Duration::from_secs(5)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(std::fs::read_to_string(&rec)
+            .unwrap_or_default()
+            .contains("to the pane"));
+        for p in &mut app.panes {
+            p.kill_all();
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// One terminal cursor at most: at the focused input. Hidden in the
+    /// Dashboard and for unfocused panes, at the assistant's caret while it
+    /// has the keys (its border then the accent, the panes' dim), back to
+    /// the pane after Esc; hover highlights never cross the panel.
+    #[test]
+    fn one_cursor_at_the_focused_input() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (mut app, home) = test_app("cursor");
+        let (tx, _events) = std::sync::mpsc::channel();
+        app.tx = tx;
+        let stub = crate::test_stub::claude(&home.join("pane"), &[("sleep_s", "20".into())]);
+        app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
+        app.launch_tab(0, 0, crate::pane::LaunchKind::Normal);
+        app.focus = 0;
+        let mut term = Terminal::new(TestBackend::new(160, 44)).unwrap();
+        // The grid, a running focused pane: its cursor, inside it.
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let (x, y) = app.want_cursor.get().expect("the pane's cursor");
+        let r = app.pane_rects[0];
+        assert!(x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
+        // The Dashboard: none.
+        app.view = crate::app::View::Dashboard;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(app.want_cursor.get(), None);
+        // The assistant with the keys: only at its caret, its border blue.
+        app.view = crate::app::View::Grid;
+        app.toggle_assistant_panel();
+        assert!(app.assistant_has_focus());
+        app.assistant.input = "hello".into();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let w = (160u16 / 2).clamp(44, 76);
+        let px = 160 - w;
+        let (cx, cy) = app.want_cursor.get().expect("the input's caret");
+        assert!(cx > px && cy == 44 - 2 - 1, "caret at ({cx},{cy})");
+        let b = term.backend().buffer().clone();
+        assert_eq!(b[(px, 2)].fg, theme::SLATE, "accent border while focused");
+        // Esc: the keys go back to the pane, the panel stays and says how.
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.assistant.show && !app.assistant.focused);
+        app.assistant.input.clear();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let t = buffer_text(term.backend().buffer());
+        assert!(t.contains("click or Ctrl-a . to type"), "{t}");
+        let (x, _) = app.want_cursor.get().expect("the pane's cursor again");
+        assert!(x < px);
+        assert_ne!(term.backend().buffer()[(px, 2)].fg, theme::SLATE);
+        // A click in the panel gives it the keys back.
+        click_on(&mut app, &mut term, &crate::hits::UiAction::AssistantFocus);
+        assert!(app.assistant_has_focus());
+        // Hover on the Dashboard: no highlight crosses into the panel.
+        app.view = crate::app::View::Dashboard;
+        for row in 3..40u16 {
+            app.mouse_pos = Some((10, row));
+            term.draw(|f| draw(f, &mut app)).unwrap();
+            let b = term.backend().buffer();
+            for x in px + 1..159 {
+                let bg = b[(x, row)].bg;
+                assert!(
+                    bg == theme::BAR_BG || bg == Color::Reset || row >= 44 - 8,
+                    "row {row} col {x}: {bg:?} crosses the panel"
+                );
+            }
+        }
+        for p in &mut app.panes {
+            p.kill_all();
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 

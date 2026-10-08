@@ -312,6 +312,7 @@ impl App {
         self.assistant.conv = Some(c);
         self.assistant.history = None;
         self.assistant.show = true;
+        self.assistant.focused = true;
         self.assistant.log.push(Entry {
             who: Who::Note,
             text: format!("Continuing the conversation from {started}."),

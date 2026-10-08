@@ -6,6 +6,7 @@ mod admin;
 mod app;
 mod app_admin;
 mod app_assistant;
+mod app_failover;
 mod app_followup;
 mod app_grid;
 mod app_layout;
@@ -26,6 +27,7 @@ mod app_sysprompt;
 mod app_tabgroups;
 mod app_tabhist;
 mod app_tabmove;
+mod app_talkback;
 mod app_update;
 mod app_voice;
 mod app_wake;
@@ -42,6 +44,8 @@ mod demo;
 mod demo_agent;
 mod demo_seed;
 mod deps;
+#[cfg(test)]
+mod failover_tests;
 mod fuzzy;
 mod grid_layout;
 #[cfg(test)]
@@ -65,6 +69,8 @@ mod mcp;
 mod menus;
 mod migrate;
 mod migrate_accounts;
+#[cfg(test)]
+mod newfolder_tests;
 mod notify;
 mod palette;
 mod pane;
@@ -99,6 +105,8 @@ mod tab_history;
 #[cfg(test)]
 mod tabgroup_tests;
 mod takeover;
+#[cfg(test)]
+mod talkback_tests;
 mod test_guard;
 #[cfg(test)]
 mod test_stub;
@@ -111,6 +119,7 @@ mod ui_livemap;
 mod ui_settings;
 mod update;
 mod usage;
+mod usage_share;
 mod voice;
 #[cfg(test)]
 mod wake_tests;
@@ -867,8 +876,18 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     std::thread::Builder::new()
         .name("input".into())
         .spawn(move || {
+            let mut last_key: Option<Instant> = None;
             while let Ok(ev) = event::read() {
-                if itx.send(AppEvent::Input(ev)).is_err() {
+                let ev = match ev {
+                    event::Event::Key(k) => {
+                        let burst =
+                            last_key.is_some_and(|t| t.elapsed() < Duration::from_millis(15));
+                        last_key = Some(Instant::now());
+                        AppEvent::KeyRead(k, burst)
+                    }
+                    ev => AppEvent::Input(ev),
+                };
+                if itx.send(ev).is_err() {
                     return;
                 }
             }
@@ -1003,6 +1022,12 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             } else {
                 execute!(out, DisableMouseCapture)
             };
+            // Back from select mode: a full redraw drops the terminal's
+            // own selection highlight (a full width band otherwise stays
+            // over everything, the assistant panel included).
+            if mouse_on {
+                let _ = terminal.clear();
+            }
             dirty = true;
         }
         // Under a steady stream of output 30 frames a second are plenty;
@@ -1013,7 +1038,17 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             frame_budget
         };
         if dirty && last_draw.elapsed() >= budget {
-            match terminal.draw(|f| ui::draw(f, &mut app)) {
+            // One frame at once (terminals that support it), with the
+            // cursor hidden while cells are written: no cursor flashing
+            // across the screen. The frame shows it again at the input.
+            let _ = crossterm::queue!(
+                io::stdout(),
+                crossterm::terminal::BeginSynchronizedUpdate,
+                crossterm::cursor::Hide
+            );
+            let drawn = terminal.draw(|f| ui::draw(f, &mut app));
+            let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EndSynchronizedUpdate);
+            match drawn {
                 Ok(f) if demo::active() => demo::capture(f.buffer),
                 Ok(_) => {}
                 Err(e) => break Err(e.into()),

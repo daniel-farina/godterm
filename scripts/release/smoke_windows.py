@@ -111,7 +111,9 @@ Set-Content -Encoding ASCII "$h\tour_done" "1"
 """)
 
     print("==> run the TUI in a console (ConPTY over ssh -tt)")
-    launch = (f"$env:GODTERM_HOME='{HOME}'; $env:GODTERM_NO_AUDIO='1'; $env:GODTERM_NO_MIC='1'; "
+    # our own test runs must never show up in godterm.com's install counts
+    launch = (f"$env:GODTERM_HOME='{HOME}'; $env:GODTERM_NO_TELEMETRY='1'; $env:DO_NOT_TRACK='1'; "
+              f"$env:GODTERM_NO_AUDIO='1'; $env:GODTERM_NO_MIC='1'; "
               f"$env:GODTERM_NO_OPEN='1'; & '{exe_path}'; \"GODTERM_EXIT=$LASTEXITCODE\"")
     b64 = base64.b64encode(launch.encode("utf-16-le")).decode()
     pid, fd = pty.fork()

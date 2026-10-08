@@ -22,10 +22,16 @@ pub const PROVIDER: Provider = Provider {
         remote_control: true,
     },
     models: &[
-        ("claude-haiku-4-5", "Haiku (quickest)"),
-        ("sonnet", "Sonnet"),
-        ("opus", "Opus"),
+        ("claude-haiku-4-5", "Haiku", "quickest"),
+        ("sonnet", "Sonnet", "balanced"),
+        ("opus", "Opus", "most capable"),
     ],
+    usage: |u| {
+        super::buckets_of(
+            u,
+            &[("five_hour", "5h", "5 hour"), ("seven_day", "wk", "weekly")],
+        )
+    },
     bin: |c| c.claude_bin(),
     own_home: None,
     start,

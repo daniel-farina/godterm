@@ -67,6 +67,9 @@ pub enum Cmd {
     AssistantPrompt,
     AssistantAdmin,
     AssistantDetails,
+    /// The panel: docked, overlay, auto (app_talkback::PANEL_MODES).
+    PanelMode(u8),
+    SpeakTyped,
     AssistantSettings,
     ShowPath,
     Permission(u8),
@@ -87,6 +90,9 @@ pub struct Entry {
     pub disabled: Option<String>,
     pub sub: Option<MenuId>,
     pub sep: bool,
+    /// More about the row, dim after its name (tone 1: stands out, 2: a
+    /// warning); cut with … first when the menu is too narrow.
+    pub info: Vec<(String, u8)>,
 }
 
 fn item(label: impl Into<String>, key: &'static str, action: UiAction) -> Entry {
@@ -380,6 +386,10 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 check: Some(app.voice.muted),
                 ..item("Mute the mic", "C-a X", UiAction::MuteToggle)
             });
+            v.push(Entry {
+                check: Some(app.cfg.voice.speaker_muted),
+                ..item("Mute the speaker", "C-a O", UiAction::SpeakerToggle)
+            });
             v.push(sub("Pause listening", MenuId::PauseListening));
             {
                 let mut e = item("Resume listening", "", UiAction::Menu(Cmd::Pause(0)));
@@ -406,22 +416,68 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
             v
         }
         MenuId::AssistantAccount => {
+            use crate::app_provider::bucket_parts;
             let cur = app.cfg.assistant.account.clone();
             let prov = crate::providers::by_id(&app.cfg.assistant.provider);
+            let dim = |t: String| vec![(t, 0u8)];
             let mut v: Vec<Entry> = crate::providers::PROVIDERS
                 .iter()
-                .map(|p| Entry {
-                    radio: true,
-                    check: Some(p.id == prov.id),
-                    ..item(
-                        p.name,
-                        "",
-                        UiAction::Menu(Cmd::AssistantProvider(p.id.to_string())),
-                    )
+                .map(|p| {
+                    let info = match (p.harness, p.own_home) {
+                        (Some(h), _) => {
+                            let n = app.cfg.accounts.iter().filter(|a| a.harness() == h).count();
+                            let mut t = format!("{n} account{}", if n == 1 { "" } else { "s" });
+                            if let Some((b, l)) = app.best_account() {
+                                if app.cfg.accounts[b].harness() == h {
+                                    t.push_str(&format!(
+                                        " · best: {} ({l:.0}%)",
+                                        app.cfg.accounts[b].display()
+                                    ));
+                                }
+                            }
+                            dim(t)
+                        }
+                        (None, Some(home)) => dim(if crate::harness::grok::logged_in(&home()) {
+                            "own login · signed in".into()
+                        } else {
+                            "own login · not signed in".into()
+                        }),
+                        (None, None) => vec![],
+                    };
+                    Entry {
+                        radio: true,
+                        check: Some(p.id == prov.id),
+                        info,
+                        ..item(
+                            p.name,
+                            "",
+                            UiAction::Menu(Cmd::AssistantProvider(p.id.to_string())),
+                        )
+                    }
                 })
                 .collect();
             v.push(sep());
+            let model = crate::providers::model_for(prov, &app.cfg.assistant);
+            let models = |v: &mut Vec<Entry>| {
+                for &(m, label, about) in prov.models {
+                    v.push(Entry {
+                        radio: true,
+                        check: Some(model == m || (m == "claude-haiku-4-5" && model == "haiku")),
+                        info: dim(about.to_string()),
+                        ..item(
+                            label,
+                            "",
+                            UiAction::Menu(Cmd::AssistantModel(m.to_string())),
+                        )
+                    });
+                }
+            };
             if let Some(home) = prov.own_home {
+                let usage = match app.own_buckets(prov) {
+                    Some(b) if !b.is_empty() => bucket_parts(&b),
+                    Some(_) => dim("usage not reported".into()),
+                    None => vec![],
+                };
                 if !crate::harness::grok::logged_in(&home()) {
                     v.push(item(
                         format!("Log in the assistant's {}...", prov.name),
@@ -431,6 +487,7 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 } else {
                     v.push(Entry {
                         disabled: Some("its own login, not one of your accounts".into()),
+                        info: usage,
                         ..item(
                             format!("{} (its own login)", prov.name),
                             "",
@@ -439,22 +496,45 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                     });
                 }
                 v.push(sep());
-                for (m, label) in prov.models {
-                    v.push(Entry {
-                        radio: true,
-                        check: Some(crate::providers::model_for(prov, &app.cfg.assistant) == *m),
-                        ..item(
-                            *label,
-                            "",
-                            UiAction::Menu(Cmd::AssistantModel(m.to_string())),
-                        )
-                    });
-                }
+                models(&mut v);
                 return v;
             }
+            let usage_of = |a: usize| -> Vec<(String, u8)> {
+                match app.account_buckets(a) {
+                    Some(b) if b.is_empty() => dim("usage not reported".into()),
+                    Some(b) => {
+                        let mut parts = bucket_parts(&b);
+                        if let Some(k) = crate::providers::binding(&b)
+                            .filter(|k| k.left_pct < crate::providers::LOW_PCT)
+                        {
+                            if let Some(t) = k.resets_at {
+                                parts.push((
+                                    format!(
+                                        "  ⚠ {} resets {}",
+                                        k.long,
+                                        crate::app_provider::reset_word(t)
+                                    ),
+                                    2,
+                                ));
+                            }
+                        }
+                        parts
+                    }
+                    None => vec![],
+                }
+            };
+            let best = app.best_account();
             v.push(Entry {
                 radio: true,
                 check: Some(cur == "best" || cur.is_empty()),
+                info: match best {
+                    Some((b, _)) => {
+                        let mut p = dim(format!("now {} · ", app.cfg.accounts[b].display()));
+                        p.extend(usage_of(b));
+                        p
+                    }
+                    None => dim("none has usage left".into()),
+                },
                 ..item(
                     "The one with the most left",
                     "",
@@ -462,35 +542,25 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 )
             });
             for (i, a) in app.cfg.accounts.iter().enumerate() {
-                let mut e = Entry {
+                let why = app.account_unusable(i, prov);
+                let info = match &why {
+                    Some(w) => dim(w.clone()),
+                    None => usage_of(i),
+                };
+                v.push(Entry {
                     radio: true,
                     check: Some(cur == a.name),
+                    info,
+                    disabled: why,
                     ..item(
                         a.display(),
                         "",
                         UiAction::Menu(Cmd::AssistantAccount(Some(i))),
                     )
-                };
-                if a.harness() != crate::harness::Harness::Claude {
-                    e.disabled = Some("the assistant runs on Claude Code accounts".into());
-                } else if !app.accounts[i].login.logged_in() {
-                    e.disabled = Some("not logged in".into());
-                }
-                v.push(e);
-            }
-            v.push(sep());
-            let model = crate::providers::model_for(prov, &app.cfg.assistant);
-            for &(m, label) in prov.models {
-                v.push(Entry {
-                    radio: true,
-                    check: Some(model == m || (m == "claude-haiku-4-5" && model == "haiku")),
-                    ..item(
-                        label,
-                        "",
-                        UiAction::Menu(Cmd::AssistantModel(m.to_string())),
-                    )
                 });
             }
+            v.push(sep());
+            models(&mut v);
             v
         }
         MenuId::ClosedAccounts => {
@@ -542,6 +612,31 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
             Entry {
                 check: Some(app.assistant.show_details),
                 ..item("Timing details", "", UiAction::Menu(Cmd::AssistantDetails))
+            },
+            sep(),
+            Entry {
+                check: Some(app.cfg.voice.speaker_muted),
+                ..item("Mute the speaker", "C-a O", UiAction::SpeakerToggle)
+            },
+            Entry {
+                check: Some(app.cfg.assistant.speak_typed),
+                ..item(
+                    "Speak replies to typed messages",
+                    "",
+                    UiAction::Menu(Cmd::SpeakTyped),
+                )
+            },
+            Entry {
+                check: Some(app.cfg.assistant.panel == "docked"),
+                ..item("Panel: docked", "", UiAction::Menu(Cmd::PanelMode(0)))
+            },
+            Entry {
+                check: Some(app.cfg.assistant.panel == "overlay"),
+                ..item("Panel: floating", "", UiAction::Menu(Cmd::PanelMode(1)))
+            },
+            Entry {
+                check: Some(app.cfg.assistant.panel == "auto"),
+                ..item("Panel: auto", "", UiAction::Menu(Cmd::PanelMode(2)))
             },
             sep(),
             item(
@@ -652,7 +747,17 @@ pub fn width(es: &[Entry]) -> u16 {
         .max()
         .unwrap_or(4);
     let kw = es.iter().map(|e| e.key.chars().count()).max().unwrap_or(0);
-    (lw + kw + 8) as u16
+    let iw = es.iter().map(info_width).max().unwrap_or(0);
+    let iw = if iw > 0 { iw + 2 } else { 0 };
+    (lw + iw + kw + 8) as u16
+}
+
+/// The info column's width of a row.
+pub fn info_width(e: &Entry) -> usize {
+    e.info
+        .iter()
+        .map(|(t, _)| unicode_width::UnicodeWidthStr::width(t.as_str()))
+        .sum()
 }
 
 impl App {
@@ -786,6 +891,22 @@ impl App {
                 self.assistant.history = None;
             }
             Cmd::AssistantDetails => self.assistant.show_details = !self.assistant.show_details,
+            Cmd::PanelMode(i) => {
+                let m = crate::app_talkback::PANEL_MODES
+                    .get(i as usize)
+                    .copied()
+                    .unwrap_or("docked");
+                let _ = self.set_panel_mode(m);
+            }
+            Cmd::SpeakTyped => {
+                let on = !self.cfg.assistant.speak_typed;
+                self.set_speak_typed(on);
+                self.flash(if on {
+                    "Replies to typed messages are spoken too"
+                } else {
+                    "Typed messages get a text answer only"
+                });
+            }
             Cmd::AssistantSettings => {
                 self.view = crate::app::View::Settings;
                 self.settings_section = crate::settings::SECTIONS

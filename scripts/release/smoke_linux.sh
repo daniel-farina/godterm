@@ -10,6 +10,8 @@
 #
 # Needs root for deb/rpm (apt/dnf), and tmux (installed if missing).
 set -euo pipefail
+# our own test runs must never show up in godterm.com's install counts
+export GODTERM_NO_TELEMETRY=1 DO_NOT_TRACK=1
 kind="$1"; pkg="$(readlink -f "$2")"
 pass=0; fail=0
 ok() { echo "  ok   $*"; pass=$((pass + 1)); }
@@ -60,7 +62,7 @@ echo 1 > "$H/tour_done"
 S=godterm-smoke
 tmux kill-session -t $S 2>/dev/null || true
 tmux new-session -d -s $S -x 140 -y 40 \
-  "GODTERM_HOME='$H' GODTERM_NO_AUDIO=1 GODTERM_NO_MIC=1 GODTERM_NO_OPEN=1 TERM=xterm-256color $BIN; echo GODTERM_EXIT=\$?; sleep 30"
+  "GODTERM_HOME='$H' GODTERM_NO_TELEMETRY=1 DO_NOT_TRACK=1 GODTERM_NO_AUDIO=1 GODTERM_NO_MIC=1 GODTERM_NO_OPEN=1 TERM=xterm-256color $BIN; echo GODTERM_EXIT=\$?; sleep 30"
 screen() { tmux capture-pane -p -t $S; }
 wait_for() { local t=0; while (( t < $2 * 4 )); do screen | grep -qF -- "$1" && return 0; sleep 0.25; t=$((t + 1)); done; return 1; }
 
