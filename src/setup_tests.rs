@@ -27,6 +27,11 @@ fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     app.cfg.voice.espeak = "espeak-ng".into();
     app.cfg.claude_bin = Some("claude".into());
     app.cfg.grok_bin = Some("grok".into());
+    // Nothing of the host counts: no PATH (only the test's bin folder),
+    // its own cache folder, and the platform the test says.
+    app.setup.bin_dir = Some(home.join("empty-bin"));
+    app.setup.cache_dir = Some(c);
+    app.setup.os = Some(crate::deps::Os::Mac);
     (app, home)
 }
 
@@ -70,7 +75,7 @@ fn status_plans_and_a_confirmed_install() {
     let (mut app, home) = test_app("plan");
     let bin = home.join("bin");
     let rec = home.join("installs.txt");
-    // A Mac (or Linux) with Homebrew and a shell, nothing else.
+    // A Mac with Homebrew and a shell, nothing else.
     fake(&bin, "brew", &rec);
     fake(&bin, "sh", &rec);
     app.setup.bin_dir = Some(bin.clone());
@@ -79,13 +84,16 @@ fn status_plans_and_a_confirmed_install() {
     let get = |id: &str| items.iter().find(|i| i["id"] == id).unwrap().clone();
     assert_eq!(get("claude")["status"], "missing");
     assert_eq!(get("claude")["group"], "Required");
-    if !cfg!(windows) {
-        assert_eq!(
-            get("claude")["plan"][0],
-            "curl -fsSL https://claude.ai/install.sh | bash"
-        );
-        assert_eq!(get("ffmpeg")["plan"][0], "brew install ffmpeg");
-    }
+    assert_eq!(
+        get("claude")["plan"][0],
+        "curl -fsSL https://claude.ai/install.sh | bash"
+    );
+    assert_eq!(get("ffmpeg")["plan"][0], "brew install ffmpeg");
+    assert_eq!(
+        get("speaker")["status"],
+        "missing",
+        "the host's cache is not read"
+    );
     assert_eq!(get("whisper-model")["download"], "1.6 GB");
     assert!(app.state_preamble().contains("missing: claude (required)"));
     assert!(app.required_missing().contains(&"Claude Code"));
@@ -98,7 +106,7 @@ fn status_plans_and_a_confirmed_install() {
     let q = v["question"].as_str().unwrap_or_default().to_string();
     assert!(
         q.contains("ggml-small.en.bin")
-            && q.contains("Downloads 842 MB in all")
+            && q.contains("Downloads 868 MB in all")
             && q.contains("brew install ffmpeg"),
         "{v}"
     );
@@ -131,12 +139,10 @@ fn status_plans_and_a_confirmed_install() {
     );
     until_idle(&mut app);
     let ran = std::fs::read_to_string(&rec).unwrap_or_default();
-    if !cfg!(windows) {
-        assert!(
-            ran.contains("-c curl -fsSL https://claude.ai/install.sh | bash"),
-            "{ran}"
-        );
-    }
+    assert!(
+        ran.contains("-c curl -fsSL https://claude.ai/install.sh | bash"),
+        "{ran}"
+    );
     assert!(
         app.admin.said.iter().any(|s| s == "Installed Claude Code."),
         "{:?}",
@@ -159,9 +165,7 @@ fn status_plans_and_a_confirmed_install() {
     app.setup_click("ffmpeg");
     until_idle(&mut app);
     let ran = std::fs::read_to_string(&rec).unwrap_or_default();
-    if !cfg!(windows) {
-        assert!(ran.contains("install ffmpeg"), "{ran}");
-    }
+    assert!(ran.contains("install ffmpeg"), "{ran}");
     let _ = std::fs::remove_dir_all(home);
 }
 
@@ -173,6 +177,7 @@ fn checksum_mismatch_is_refused_and_sudo_goes_to_a_tab() {
     let rec = home.join("installs.txt");
     fake(&bin, "apt-get", &rec);
     app.setup.bin_dir = Some(bin);
+    app.setup.os = Some(crate::deps::Os::Linux);
     // The mock server serves the wrong bytes for the model.
     let srv = crate::update::tests::mock_routes(
         |_| vec![("/ggml-large-v3-turbo.bin".into(), b"not the model".to_vec())],
@@ -195,25 +200,23 @@ fn checksum_mismatch_is_refused_and_sudo_goes_to_a_tab() {
         "nothing left behind"
     );
     // apt needs sudo: it runs in a visible tab, never in the background.
-    if !cfg!(windows) {
-        app.setup_click("ffmpeg");
-        app.setup_click("ffmpeg");
-        assert_eq!(app.admin.jobs, 0);
-        assert!(
-            app.setup
-                .tab_runs
-                .iter()
-                .any(|t| t.contains("sudo apt-get install -y ffmpeg")),
-            "{:?}",
-            app.setup.tab_runs
-        );
-        assert!(!rec.exists(), "not run by GodTerm");
-        assert!(app
-            .admin
-            .said
+    app.setup_click("ffmpeg");
+    app.setup_click("ffmpeg");
+    assert_eq!(app.admin.jobs, 0);
+    assert!(
+        app.setup
+            .tab_runs
             .iter()
-            .any(|s| s.contains("type your password there")));
-    }
+            .any(|t| t.contains("sudo apt-get install -y ffmpeg")),
+        "{:?}",
+        app.setup.tab_runs
+    );
+    assert!(!rec.exists(), "not run by GodTerm");
+    assert!(app
+        .admin
+        .said
+        .iter()
+        .any(|s| s.contains("type your password there")));
     let _ = std::fs::remove_dir_all(home);
 }
 

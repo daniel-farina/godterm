@@ -29,14 +29,23 @@ pub struct SetupState {
     pub url_base: Option<String>,
     /// Tests: the commands sudo tabs would have run.
     pub tab_runs: Vec<String>,
+    /// Tests: the platform the plans are for, and the cache folder.
+    pub os: Option<deps::Os>,
+    pub cache_dir: Option<PathBuf>,
+}
+
+/// `name` (or `name.exe`) in `dir`.
+fn in_dir(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+    [dir.join(name), dir.join(format!("{name}.exe"))]
+        .into_iter()
+        .find(|p| p.is_file())
 }
 
 impl App {
     fn setup_which(&self) -> impl Fn(&str) -> Option<PathBuf> + '_ {
         move |b: &str| {
             if let Some(d) = &self.setup.bin_dir {
-                let p = d.join(b);
-                return p.is_file().then_some(p);
+                return in_dir(d, b);
             }
             deps::which(b)
         }
@@ -50,7 +59,14 @@ impl App {
             }
         }
         let w = self.setup_which();
-        let mut v = deps::all(&self.cfg, self.setup.whisper_choice.as_deref(), &w);
+        let mut probe = deps::Probe::host(&w);
+        if let Some(os) = self.setup.os {
+            probe.os = os;
+        }
+        if let Some(c) = &self.setup.cache_dir {
+            probe.cache = c.clone();
+        }
+        let mut v = deps::all(&self.cfg, self.setup.whisper_choice.as_deref(), &probe);
         if let Some(base) = &self.setup.url_base {
             for d in &mut v {
                 for s in &mut d.steps {
@@ -286,8 +302,7 @@ impl App {
                         Step::Run { program, args, .. } => {
                             let prog = bin_dir
                                 .as_ref()
-                                .map(|d| d.join(program))
-                                .filter(|p| p.is_file())
+                                .and_then(|d| in_dir(d, program))
                                 .map(|p| p.display().to_string())
                                 .unwrap_or_else(|| program.clone());
                             run_cmd(&prog, args)
@@ -295,8 +310,7 @@ impl App {
                         Step::Script { shell, line } => {
                             let sh = bin_dir
                                 .as_ref()
-                                .map(|d| d.join(shell))
-                                .filter(|p| p.is_file())
+                                .and_then(|d| in_dir(d, shell))
                                 .map(|p| p.display().to_string())
                                 .unwrap_or_else(|| shell.clone());
                             let flag = if shell == "powershell" {

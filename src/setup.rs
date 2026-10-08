@@ -535,7 +535,7 @@ pub fn doctor() -> Result<()> {
         &format!("{term}, TERM={}", std::env::var("TERM").unwrap_or_default()),
     );
     // The install plan for what is missing (the Setup screen's model).
-    let deps = crate::deps::all(&cfg, None, &crate::deps::which);
+    let deps = crate::deps::all(&cfg, None, &crate::deps::Probe::host(&crate::deps::which));
     let missing: Vec<&crate::deps::Dep> = deps.iter().filter(|d| !d.status.ok()).collect();
     if !missing.is_empty() {
         println!("\nSetup (Settings > Setup installs these after a yes, or the assistant: \"install the voice pack\")");

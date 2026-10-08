@@ -147,8 +147,47 @@ pub enum Pm {
     None,
 }
 
-pub fn package_manager(which: &dyn Fn(&str) -> Option<PathBuf>) -> Pm {
-    if cfg!(windows) {
+/// The operating system a plan is for (the host, or one a test picks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Mac,
+    Linux,
+    Windows,
+}
+
+impl Os {
+    pub fn host() -> Os {
+        if cfg!(windows) {
+            Os::Windows
+        } else if cfg!(target_os = "macos") {
+            Os::Mac
+        } else {
+            Os::Linux
+        }
+    }
+}
+
+/// What the status checks look at: programs (`which`), the platform and
+/// the cache folder for the models. The host's, or a test's.
+pub struct Probe<'a> {
+    pub which: &'a dyn Fn(&str) -> Option<PathBuf>,
+    pub os: Os,
+    /// ~/.cache (whisper-models, kokoro-onnx, godterm-models live here).
+    pub cache: PathBuf,
+}
+
+impl<'a> Probe<'a> {
+    pub fn host(which: &'a dyn Fn(&str) -> Option<PathBuf>) -> Probe<'a> {
+        Probe {
+            which,
+            os: Os::host(),
+            cache: crate::config::home_dir().join(".cache"),
+        }
+    }
+}
+
+pub fn package_manager(which: &dyn Fn(&str) -> Option<PathBuf>, os: Os) -> Pm {
+    if os == Os::Windows {
         return if which("winget").is_some() {
             Pm::Winget
         } else {
@@ -164,7 +203,7 @@ pub fn package_manager(which: &dyn Fn(&str) -> Option<PathBuf>) -> Pm {
         if which(b).is_some() {
             // Linux with Homebrew too: the system manager is preferred.
             if p == Pm::Brew
-                && cfg!(target_os = "linux")
+                && os == Os::Linux
                 && which("apt-get").or_else(|| which("dnf")).is_some()
             {
                 continue;
@@ -211,8 +250,8 @@ fn pkg(pm: Pm, names: [Option<&str>; 5]) -> Option<Step> {
     })
 }
 
-fn script(unix: &str, windows: &str) -> Step {
-    if cfg!(windows) {
+fn script(os: Os, unix: &str, windows: &str) -> Step {
+    if os == Os::Windows {
         Step::Script {
             shell: "powershell".into(),
             line: windows.into(),
@@ -261,12 +300,10 @@ pub const KOKORO_FILES: &[(&str, &str, u64)] = &[
 
 /// Everything, with its status and plan. `whisper_choice` picks the
 /// model to offer (default: the recommended one).
-pub fn all(
-    cfg: &crate::config::Config,
-    whisper_choice: Option<&str>,
-    which: &dyn Fn(&str) -> Option<PathBuf>,
-) -> Vec<Dep> {
-    let pm = package_manager(which);
+pub fn all(cfg: &crate::config::Config, whisper_choice: Option<&str>, probe: &Probe) -> Vec<Dep> {
+    let which = probe.which;
+    let os = probe.os;
+    let pm = package_manager(which, os);
     let vc = &cfg.voice;
     let have = |b: &str| which(b).map(|p| p.display().to_string());
     let mut v = vec![];
@@ -282,6 +319,7 @@ pub fn all(
             None => Status::Missing(format!("{claude} not found")),
         },
         steps: vec![script(
+            os,
             "curl -fsSL https://claude.ai/install.sh | bash",
             "irm https://claude.ai/install.ps1 | iex",
         )],
@@ -298,6 +336,7 @@ pub fn all(
             None => Status::Missing("not installed".into()),
         },
         steps: vec![script(
+            os,
             "curl -fsSL https://x.ai/cli/install.sh | bash",
             "irm https://x.ai/cli/install.ps1 | iex",
         )],
@@ -352,7 +391,7 @@ pub fn all(
     let dir = model_path
         .parent()
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| crate::config::home_dir().join(".cache/whisper-models"));
+        .unwrap_or_else(|| probe.cache.join("whisper-models"));
     v.push(Dep {
         id: "whisper-model",
         name: "Whisper model",
@@ -403,7 +442,7 @@ pub fn all(
     let kdir = crate::config::expand_tilde(&vc.kokoro_model)
         .parent()
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| crate::config::home_dir().join(".cache/kokoro-onnx"));
+        .unwrap_or_else(|| probe.cache.join("kokoro-onnx"));
     let kmissing: Vec<&str> = [
         crate::config::expand_tilde(&vc.kokoro_model),
         crate::config::expand_tilde(&vc.kokoro_voices),
@@ -436,7 +475,7 @@ pub fn all(
         why: "the natural local talk back voice",
     });
     let sm = &crate::voice::speaker::MODELS[0];
-    let sp = crate::voice::speaker::models_dir().join(sm.file);
+    let sp = probe.cache.join("godterm-models").join(sm.file);
     v.push(Dep {
         id: "speaker",
         name: "Speaker model",
@@ -660,45 +699,70 @@ pub fn download(d: &Download, local_ok: bool, progress: &dyn Fn(u64, u64)) -> Re
 mod tests {
     use super::*;
 
+    /// Every plan from what a test sets: the platform, the programs on
+    /// its PATH and its cache folder; nothing of the host's.
+    fn hermetic(os: Os, tools: &'static [&'static str], tag: &str) -> Vec<Dep> {
+        let home = std::env::temp_dir().join(format!("godterm-deps-{tag}-{}", std::process::id()));
+        let mut cfg = crate::config::Config::default();
+        cfg.claude_bin = Some("claude".into());
+        cfg.grok_bin = Some("grok".into());
+        cfg.voice.ffmpeg = "ffmpeg".into();
+        cfg.voice.whisper_server = "whisper-server".into();
+        cfg.voice.whisper_cli = "whisper-cli".into();
+        cfg.voice.espeak = "espeak-ng".into();
+        cfg.voice.model = home
+            .join("cache/whisper-models/ggml-large-v3-turbo.bin")
+            .display()
+            .to_string();
+        cfg.voice.kokoro_model = home
+            .join("cache/kokoro-onnx/kokoro-v1.0.onnx")
+            .display()
+            .to_string();
+        cfg.voice.kokoro_voices = home
+            .join("cache/kokoro-onnx/voices-v1.0.bin")
+            .display()
+            .to_string();
+        let which = move |b: &str| {
+            tools
+                .contains(&b)
+                .then(|| PathBuf::from(format!("/fake/bin/{b}")))
+        };
+        let probe = Probe {
+            which: &which,
+            os,
+            cache: home.join("cache"),
+        };
+        all(&cfg, Some("small.en"), &probe)
+    }
+
+    fn plan(d: &[Dep], id: &str) -> Vec<String> {
+        d.iter()
+            .find(|x| x.id == id)
+            .unwrap()
+            .steps
+            .iter()
+            .map(Step::shown)
+            .collect()
+    }
+
     #[test]
-    fn plans_per_platform() {
+    fn package_managers_by_platform() {
         let w = |set: &'static [&'static str]| {
             move |b: &str| set.contains(&b).then(|| PathBuf::from(format!("/bin/{b}")))
         };
+        assert_eq!(package_manager(&w(&["brew"]), Os::Mac), Pm::Brew);
+        assert_eq!(package_manager(&w(&["brew"]), Os::Windows), Pm::None);
+        assert_eq!(package_manager(&w(&["winget"]), Os::Windows), Pm::Winget);
         assert_eq!(
-            package_manager(&w(&["brew"])),
-            if cfg!(windows) { Pm::None } else { Pm::Brew }
+            package_manager(&w(&["brew", "apt-get"]), Os::Linux),
+            Pm::Apt
         );
-        if cfg!(target_os = "linux") {
-            assert_eq!(package_manager(&w(&["brew", "apt-get"])), Pm::Apt);
-        }
+        assert_eq!(package_manager(&w(&["dnf"]), Os::Linux), Pm::Dnf);
+        assert_eq!(package_manager(&w(&[]), Os::Linux), Pm::None);
         let s = pkg(Pm::Apt, [Some("ffmpeg"), Some("ffmpeg"), None, None, None]).unwrap();
         assert!(s.needs_sudo());
         assert_eq!(s.shown(), "sudo apt-get install -y ffmpeg");
-        assert_eq!(
-            pkg(Pm::Brew, [Some("whisper-cpp"), None, None, None, None])
-                .unwrap()
-                .shown(),
-            "brew install whisper-cpp"
-        );
         assert!(pkg(Pm::Dnf, [None, None, None, None, None]).is_none());
-        let cfg = crate::config::Config::default();
-        let none = |_: &str| None::<PathBuf>;
-        let deps = all(&cfg, Some("small.en"), &none);
-        let claude = deps.iter().find(|d| d.id == "claude").unwrap();
-        assert!(!claude.status.ok() && claude.group == Group::Required);
-        if !cfg!(windows) {
-            assert_eq!(
-                claude.steps[0].shown(),
-                "curl -fsSL https://claude.ai/install.sh | bash"
-            );
-        }
-        let m = deps.iter().find(|d| d.id == "whisper-model").unwrap();
-        assert!(
-            m.steps[0].shown().contains("ggml-small.en.bin") && m.download_bytes() == 487_614_201
-        );
-        assert_eq!(resolve("voice pack", &deps).len(), 6);
-        assert_eq!(resolve("claude", &deps), vec!["claude"]);
         assert!(
             host_ok("https://huggingface.co/x", false)
                 && host_ok("https://cdn-lfs.huggingface.co/x", false)
@@ -706,5 +770,75 @@ mod tests {
         assert!(
             !host_ok("http://huggingface.co/x", false) && !host_ok("https://evil.com/x", false)
         );
+    }
+
+    #[test]
+    fn plans_on_a_mac_with_brew() {
+        let d = hermetic(Os::Mac, &["brew"], "mac");
+        assert!(
+            d.iter().all(|x| !x.status.ok()),
+            "nothing of the host's counts"
+        );
+        assert_eq!(
+            plan(&d, "claude"),
+            vec!["curl -fsSL https://claude.ai/install.sh | bash"]
+        );
+        assert_eq!(
+            plan(&d, "grok"),
+            vec!["curl -fsSL https://x.ai/cli/install.sh | bash"]
+        );
+        assert_eq!(plan(&d, "ffmpeg"), vec!["brew install ffmpeg"]);
+        assert_eq!(plan(&d, "whisper"), vec!["brew install whisper-cpp"]);
+        assert_eq!(plan(&d, "espeak"), vec!["brew install espeak-ng"]);
+        let m = d.iter().find(|x| x.id == "whisper-model").unwrap();
+        assert!(
+            m.steps[0].shown().contains("ggml-small.en.bin") && m.download_bytes() == 487_614_201
+        );
+        assert_eq!(resolve("voice pack", &d).len(), 6);
+        assert_eq!(resolve("claude", &d), vec!["claude"]);
+        let voice: u64 = d
+            .iter()
+            .filter(|x| x.group == Group::Voice)
+            .map(Dep::download_bytes)
+            .sum();
+        assert_eq!(size(voice), "868 MB");
+        // A tool on the injected PATH is found, nothing else.
+        let ok = hermetic(Os::Mac, &["brew", "ffmpeg", "claude"], "mac2");
+        assert!(ok.iter().find(|x| x.id == "ffmpeg").unwrap().status.ok());
+        assert!(ok.iter().find(|x| x.id == "claude").unwrap().status.ok());
+    }
+
+    #[test]
+    fn plans_on_linux_with_apt() {
+        let d = hermetic(Os::Linux, &["apt-get"], "apt");
+        assert_eq!(plan(&d, "ffmpeg"), vec!["sudo apt-get install -y ffmpeg"]);
+        assert_eq!(
+            plan(&d, "espeak"),
+            vec!["sudo apt-get install -y espeak-ng"]
+        );
+        let w = d.iter().find(|x| x.id == "whisper").unwrap();
+        assert!(!w.installable() && plan(&d, "whisper")[0].starts_with("build whisper.cpp"));
+        assert_eq!(
+            plan(&d, "claude"),
+            vec!["curl -fsSL https://claude.ai/install.sh | bash"]
+        );
+    }
+
+    #[test]
+    fn plans_on_windows_with_winget() {
+        let d = hermetic(Os::Windows, &["winget"], "win");
+        assert_eq!(
+            plan(&d, "claude"),
+            vec!["irm https://claude.ai/install.ps1 | iex"]
+        );
+        assert_eq!(
+            plan(&d, "grok"),
+            vec!["irm https://x.ai/cli/install.ps1 | iex"]
+        );
+        assert_eq!(
+            plan(&d, "ffmpeg"),
+            vec!["winget install -e --id Gyan.FFmpeg"]
+        );
+        assert!(!d.iter().find(|x| x.id == "espeak").unwrap().installable());
     }
 }
