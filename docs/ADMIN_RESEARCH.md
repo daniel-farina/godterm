@@ -78,3 +78,19 @@ Google Drive, Gmail, Calendar and similar are enabled on the web at claude.ai/se
   - claude_bin and grok_bin
 
   Secrets are only taken from the user's own dictated words and are never read back.
+
+## Remote Control for the assistant (Claude Code 2.1.293)
+
+These findings come from the CLI help (run with a scratch config dir and a timeout) and from reading the `claude` binary. No Remote Control session was started on a real account.
+
+- **Interactive:** `claude --remote-control [name]` (with `--remote-control-session-name-prefix`) starts an interactive session with Remote Control on. The `claude remote-control` subcommand needs a claude.ai subscription login: without one it prints "You must be logged in to use Remote Control." With one, it keeps running.
+- **Headless (the assistant's brain):** `claude -p --input-format stream-json` accepts a control request:
+
+  ```json
+  {"type": "control_request", "request_id": "…", "request": {"subtype": "remote_control", "enabled": true, "name": "…"}}
+  ```
+
+  It also takes `reattach_session_id`, `keep_session_on_exit` and `work_secret`. Its `control_response.response` is `{session_url, connect_url, environment_id, bridge_epoch, bridge_session_id}`. `enabled: false` turns it off. It is refused inside a session that is itself remote. No slash command or env var is needed.
+- **Lifetime:** it belongs to the process. When the brain restarts (a switch of account, provider or model, a long conversation reset, a crash), Remote Control ends. `keep_session_on_exit` and `reattach_session_id` exist, but a new process on another account is a new login, so GodTerm asks again instead of reattaching.
+- **Messages from claude.ai/code or the app:** these enter the same conversation. With `--replay-user-messages`, user messages are echoed on stdout. GodTerm drops the echoes of what it sent itself; any other user message starts a turn marked "via Remote Control".
+- **Grok:** Grok Build has no Remote Control. Providers declare it with `caps.remote_control`.

@@ -109,6 +109,10 @@ impl App {
             }
         }
         self.config_mtime = crate::app::config_mtime();
+        let had_remote = self.assistant.remote.clone();
+        if had_remote.is_some() {
+            self.remote_lost("the assistant switched");
+        }
         // The conversation goes along.
         if let Some(c) = self.conversation_carry() {
             self.assistant.carry = Some(c);
@@ -130,6 +134,13 @@ impl App {
             p.name
         ));
         let mut say = format!("Switched to {} ({whom}, {model}).", p.name);
+        if had_remote.is_some() {
+            say.push_str(if p.caps.remote_control {
+                " Remote Control ended with the switch; say turn on remote control to start it again."
+            } else {
+                " Remote Control ended with the switch (it works only on Claude)."
+            });
+        }
         if let Some(home) = p.own_home {
             if !crate::harness::grok::logged_in(&home()) {
                 say.push_str(&format!(

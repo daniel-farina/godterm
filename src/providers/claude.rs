@@ -19,6 +19,7 @@ pub const PROVIDER: Provider = Provider {
         persistent: true,
         partial: true,
         efforts: &["low", "medium", "high"],
+        remote_control: true,
     },
     models: &[
         ("claude-haiku-4-5", "Haiku (quickest)"),
@@ -58,6 +59,8 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         "stream-json",
         "--verbose",
         "--include-partial-messages",
+        // Messages from Remote Control show up in the stream.
+        "--replay-user-messages",
         "--no-session-persistence",
         "--strict-mcp-config",
         "--tools",
@@ -156,6 +159,18 @@ impl Backend for ClaudeBackend {
         writeln!(self.stdin, "{msg}")?;
         self.stdin.flush()?;
         Ok(())
+    }
+
+    fn control(&mut self, request: serde_json::Value) -> Result<String> {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = format!(
+            "ctl-{}",
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let msg = json!({"type": "control_request", "request_id": id, "request": request});
+        writeln!(self.stdin, "{msg}")?;
+        self.stdin.flush()?;
+        Ok(id)
     }
 
     fn pid(&self) -> u32 {

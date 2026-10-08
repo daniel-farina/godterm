@@ -574,6 +574,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             }
         }
     };
+    let title = if app.assistant.remote.is_some() {
+        format!("{}RC ", title.trim_end_matches(' ').to_string() + " · ")
+    } else {
+        title
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

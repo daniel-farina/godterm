@@ -114,6 +114,8 @@ impl Tui {
         cmd.env("GODTERM_NO_MIC", "1");
         // Never open files or browsers on the user's screen.
         cmd.env("GODTERM_NO_OPEN", "1");
+        // Never the start up splash (the fresh homes would show it).
+        cmd.env("GODTERM_NO_SPLASH", "1");
         // The main installs are fixtures here, never the user's own.
         cmd.env("GODTERM_MAIN_DIR", home.join("main-claude"));
         cmd.env("GODTERM_MAIN_GROK_DIR", home.join("main-grok"));

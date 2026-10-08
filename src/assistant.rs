@@ -26,6 +26,12 @@ pub enum BrainEvent {
     },
     /// The process ended (with the tail of stderr).
     Exited(String),
+    /// A control request answered: (request id, response or error).
+    Control(String, Result<Value, String>),
+    /// A user message in the conversation (echoed with
+    /// --replay-user-messages; one GodTerm did not send came through
+    /// Remote Control).
+    UserText(String),
 }
 
 pub struct Brain {
@@ -124,6 +130,11 @@ impl Brain {
     pub fn running(&mut self) -> bool {
         self.inner.running()
     }
+
+    /// A control request (remote control); returns its request id.
+    pub fn control(&mut self, request: Value) -> Result<String> {
+        self.inner.control(request)
+    }
 }
 
 /// Events in one stream-json line.
@@ -175,7 +186,34 @@ pub fn parse_line(line: &str) -> Vec<BrainEvent> {
                 }
             }
         }
+        Some("control_response") => {
+            let r = &v["response"];
+            let id = r["request_id"].as_str().unwrap_or("").to_string();
+            out.push(BrainEvent::Control(
+                id,
+                if r["subtype"] == "error" {
+                    Err(r["error"].as_str().unwrap_or("it failed").to_string())
+                } else {
+                    Ok(r["response"].clone())
+                },
+            ));
+        }
         Some("user") => {
+            if let Some(t) = v["message"]["content"].as_str() {
+                out.push(BrainEvent::UserText(t.to_string()));
+            }
+            let texts: Vec<&str> = v["message"]["content"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter(|b| b["type"] == "text")
+                        .filter_map(|b| b["text"].as_str())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !texts.is_empty() {
+                out.push(BrainEvent::UserText(texts.join("\n")));
+            }
             for b in v["message"]["content"].as_array().into_iter().flatten() {
                 if b["type"] == "tool_result" {
                     let text = match &b["content"] {

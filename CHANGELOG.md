@@ -7,6 +7,24 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-10-08
+
+### Assistant
+- Remote Control: say "turn on remote control" and you can drive the
+  assistant from claude.ai or the Claude app on your phone (it asks once
+  first, since anyone on that claude.ai login can then use the assistant
+  and its admin tools). The panel shows the session link; turn it off by
+  voice or from the ⋯ menu. It works when the assistant runs on Claude,
+  not on Grok, and it ends whenever the assistant restarts (switching
+  account, provider or model, a reset); GodTerm says so when that
+  happens.
+
+### Look
+- A start up splash, the glass crystal and the GodTerm wordmark, shown
+  once on a new install and once after an update ("updated to vX").
+  Settings > General: "Show splash at start" and "Splash animation".
+
+
 ## [0.2.5] - 2026-10-07
 
 ### Setup
@@ -207,7 +225,8 @@ The first public release, under the MIT License. claudego is now GodTerm.
 
 - claudego: config, credentials, usage, sessions, PTY panes and the TUI.
 
-[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/daniel-farina/godterm/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/daniel-farina/godterm/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/daniel-farina/godterm/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/daniel-farina/godterm/compare/v0.2.2...v0.2.3

@@ -156,6 +156,8 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("new_tab_create_folder", "Create the new tab folder", Kind::Toggle, "Create the dated folder; off means it must already exist."),
             g("recent_paths_limit", "Recent folders kept", Kind::Number { min: 1, max: 50, step: 1 }, "Recent folders listed in the New Tab dialog."),
             g("remember_window", "Remember window position", Kind::Toggle, "Reopen the window (from GodTerm.app) where it was; moves to the main screen if that monitor is gone."),
+            g("splash", "Show splash at start", Kind::Choice(&["once", "never"]), "once: the GodTerm splash plays on the first launch and once after an update (any key skips it). never: skip it. godterm splash shows it any time."),
+            g("splash_motion", "Splash animation", Kind::Choice(&["on", "auto", "off"]), "on: always animate; auto: a still frame when macOS Reduce Motion is on; off: always a still frame."),
             g("restore", "Restore tabs", Kind::Choice(&["eager", "lazy"]), "eager starts every restored tab at launch; lazy when it is first shown."),
             g("auto_restart", "Auto restart crashed tabs", Kind::Toggle, "Restart a tab (resuming its session) when it exits with an error."),
             g("notifications", "Desktop notifications", Kind::Toggle, "Notify when a background tab needs approval or finishes, while the terminal is not in front."),

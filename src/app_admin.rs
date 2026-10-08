@@ -33,6 +33,7 @@ pub const WRITE_TOOLS: &[&str] = &[
     "logout_account",
     "assistant_login",
     "install_dependency",
+    "enable_remote_control",
 ];
 
 pub enum AdminEvent {
@@ -165,6 +166,12 @@ impl App {
 
     /// Log an admin action (the panel, the log, ~/.godterm/assistant/admin.jsonl).
     pub fn admin_record(&mut self, text: &str) {
+        let via = if self.assistant.turn_remote {
+            " (via Remote Control)"
+        } else {
+            ""
+        };
+        let text = &format!("{text}{via}");
         crate::log::info(&format!("admin: {text}"));
         let line = format!("{} {text}", chrono::Local::now().format("%H:%M"));
         self.admin.history.push(line);
@@ -190,7 +197,7 @@ impl App {
             let _ = writeln!(
                 f,
                 "{}",
-                json!({"at": chrono::Local::now().to_rfc3339(), "action": text})
+                json!({"at": chrono::Local::now().to_rfc3339(), "action": text, "source": if via.is_empty() { "local" } else { "remote" }})
             );
         }
     }
@@ -354,6 +361,7 @@ impl App {
                     "install_dependency" => {
                         format!("install {}", args["targets"].as_str().unwrap_or(""))
                     }
+                    "enable_remote_control" => "remote control".into(),
                     _ => format!(
                         "{} {}",
                         args["name"].as_str().unwrap_or(""),
@@ -870,6 +878,19 @@ impl App {
                     true,
                 ))
             }
+            "enable_remote_control" => {
+                self.remote_supported()?;
+                if let Some(r) = &self.assistant.remote {
+                    return Err(format!("Remote Control is already on as '{}'", r.name));
+                }
+                let name = s("name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| self.remote_default_name());
+                let whom = self.assistant_account().map(|a| self.cfg.accounts[a].display().to_string()).unwrap_or_default();
+                Ok((
+                    json!({"name": name}),
+                    format!("Turn on Remote Control as '{name}'? Anyone signed in to {whom}'s claude.ai account can then talk to me from claude.ai/code or the Claude app, with my admin tools. It ends if you switch account or provider."),
+                    true,
+                ))
+            }
             "install_dependency" => {
                 if let Some(m) = s("whisper_model") {
                     if !crate::deps::WHISPER_MODELS.iter().any(|w| w.0 == m) {
@@ -938,6 +959,11 @@ impl App {
                 Ok(ok(
                     json!({"account": a + 1, "say": format!("Added {}. Starting its login.", spec.label)}),
                 ))
+            }
+            "enable_remote_control" => {
+                let say =
+                    self.enable_remote(plan["name"].as_str().unwrap_or("GodTerm assistant"))?;
+                Ok(ok(json!({"say": say})))
             }
             "install_dependency" => {
                 let ids: Vec<String> =

@@ -17,6 +17,7 @@ mod app_openmic;
 mod app_pause;
 mod app_privacy;
 mod app_provider;
+mod app_remote;
 mod app_sessions;
 mod app_settings;
 mod app_setup;
@@ -75,6 +76,8 @@ mod prompt;
 #[cfg(test)]
 mod provider_tests;
 mod providers;
+#[cfg(test)]
+mod remote_tests;
 mod risk;
 mod sess_sort;
 mod session_index;
@@ -85,6 +88,7 @@ mod setup;
 #[cfg(test)]
 mod setup_tests;
 mod slot;
+mod splash;
 #[cfg(test)]
 mod stale_tests;
 mod state;
@@ -220,6 +224,10 @@ fn main() -> Result<()> {
             1
         };
         std::process::exit(code);
+    }
+    // The first launch splash on its own, to preview it (hidden).
+    if arg.as_deref() == Some("splash") {
+        return splash::run(&args[1..]);
     }
     // claudego -> GodTerm, once, only when the app itself starts (the TUI
     // or setup). Every other command leaves it alone and says it is due.
@@ -795,6 +803,10 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     } else {
         Config::load_or_init()?
     };
+    // The splash, once on a new home (before Setup) and once per update.
+    if !opts.setup {
+        splash::at_start(&cfg);
+    }
     let mut onboarding = false;
     if opts.setup || ((first_run || cfg.accounts.is_empty()) && setup::stdin_is_tty()) {
         cfg = setup::interactive_setup(cfg)?;

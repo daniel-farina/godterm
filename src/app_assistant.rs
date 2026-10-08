@@ -132,6 +132,15 @@ pub struct AssistantState {
     pub hist_pos: Option<usize>,
     /// Tool chips opened to show their raw arguments (log indices).
     pub expanded: std::collections::HashSet<usize>,
+    /// Remote Control, while on (it belongs to the current brain process).
+    pub remote: Option<crate::app_remote::Remote>,
+    pub remote_pending: Option<crate::app_remote::RemotePending>,
+    /// Messages GodTerm sent (their echoes are not Remote Control).
+    pub sent: std::collections::VecDeque<String>,
+    /// This turn came through Remote Control.
+    pub turn_remote: bool,
+    /// The menu's Remote Control waits for its second pick.
+    pub remote_armed: Option<Instant>,
     /// Questions sent to tabs whose answers are reported back.
     pub follow_ups: Vec<crate::app_followup::FollowUp>,
     pub follow_seq: u64,
@@ -287,6 +296,7 @@ impl App {
             }
         }
         self.assistant.brain = None;
+        self.remote_lost("the assistant restarted");
         let (account, home, label) = match provider.own_home {
             Some(home) => (None, home(), format!("{}'s own login", provider.name)),
             None => {
@@ -504,6 +514,7 @@ impl App {
         s.push_str(&self.grid_state_line());
         s.push_str(&self.provider_state_line());
         s.push_str(&self.setup_state_line());
+        s.push_str(&self.remote_state_line());
         // Listening is GodTerm's business: a message here means it is on.
         s.push_str(&match self.pause_left() {
             Some(left) => format!("listening_paused: {left} s left\n"),
@@ -786,6 +797,11 @@ impl App {
         // Spoken requests are marked: speech recognition mishears names.
         let spoken = if heard.is_some() { "(spoken) " } else { "" };
         let msg = format!("{earlier}{spoken}{text}\n\n{}", self.state_preamble());
+        self.assistant.turn_remote = false;
+        self.assistant.sent.push_back(msg.clone());
+        if self.assistant.sent.len() > 20 {
+            self.assistant.sent.pop_front();
+        }
         let sent = self.assistant.brain.as_mut().map(|b| b.send(&msg));
         if let Some(Err(e)) = sent {
             self.assistant.busy = false;
@@ -911,7 +927,12 @@ impl App {
     /// Speak a piece of the answer unless "stop" was said (or the model
     /// chose to ignore what it heard).
     fn say_part(&mut self, t: &str) {
-        if !self.assistant.muted && !self.assistant.ignored_turn && !t.trim().is_empty() {
+        // A turn from Remote Control is answered there, not out loud here.
+        if !self.assistant.muted
+            && !self.assistant.ignored_turn
+            && !self.assistant.turn_remote
+            && !t.trim().is_empty()
+        {
             self.assistant.spoken.push(t.trim().to_string());
             let n = self.assistant.spoken.len();
             if n > 20 {
@@ -1094,6 +1115,11 @@ impl App {
 
     pub fn on_brain(&mut self, ev: BrainEvent) {
         self.assistant.last_event = Some(Instant::now());
+        match ev {
+            BrainEvent::Control(id, r) => return self.on_remote_response(&id, r),
+            BrainEvent::UserText(t) => return self.on_user_text(&t),
+            _ => {}
+        }
         // A cut off turn: drop its output; its end frees the next one.
         if self.assistant.stale > 0 && !matches!(ev, BrainEvent::Exited(_)) {
             if let BrainEvent::Done { text, .. } = &ev {
@@ -1247,6 +1273,7 @@ impl App {
                 }
                 self.assistant.busy = false;
                 self.assistant.system_turn = false;
+                self.assistant.turn_remote = false;
                 self.assistant.asked_at = Some(Instant::now());
                 self.assistant.last_cost = cost;
                 let ep = self.cfg.assistant.endpoint_ms;
@@ -1267,7 +1294,9 @@ impl App {
                     self.set_assistant_account(a);
                 }
             }
+            BrainEvent::Control(..) | BrainEvent::UserText(_) => {}
             BrainEvent::Exited(tail) => {
+                self.remote_lost("the assistant stopped");
                 if self.assistant.brain.is_some() {
                     let why = tail
                         .lines()

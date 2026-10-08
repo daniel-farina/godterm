@@ -40,6 +40,7 @@ echo "$creds" > "$H/accounts/one/.credentials.json"; echo "$creds" > "$H/account
 cat > "$H/config.toml" <<EOF
 claude_bin = "$H/fake-claude"
 notifications = false
+setup_dont_show = true
 new_tab_base = "$H/tabs"
 [[account]]
 name = "one"

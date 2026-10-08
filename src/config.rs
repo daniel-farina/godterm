@@ -187,6 +187,13 @@ pub struct Config {
     /// Do not open the Setup screen at start when something is missing.
     #[serde(default)]
     pub setup_dont_show: bool,
+    /// The start up splash: "once" (first launch, and once after an
+    /// update) or "never".
+    #[serde(default = "default_splash")]
+    pub splash: String,
+    /// Splash animation: "on", "auto" (still when Reduce Motion is on), "off".
+    #[serde(default = "default_splash_motion")]
+    pub splash_motion: String,
     /// Pane layout: auto, grid, columns, rows, focus.
     #[serde(default = "default_layout")]
     pub layout: String,
@@ -675,6 +682,12 @@ fn default_name_pattern() -> String {
 fn default_recent_limit() -> usize {
     10
 }
+fn default_splash() -> String {
+    "once".into()
+}
+fn default_splash_motion() -> String {
+    "on".into()
+}
 fn default_restore() -> String {
     "eager".into()
 }
@@ -755,6 +768,8 @@ impl Default for Config {
             show_path: true,
             privacy: false,
             setup_dont_show: false,
+            splash: default_splash(),
+            splash_motion: default_splash_motion(),
             layout: default_layout(),
             grid: String::new(),
             layout_tree: String::new(),
@@ -1233,10 +1248,12 @@ impl Config {
     }
 
     pub fn claude_bin(&self) -> String {
+        // Tests never reach the real claude on PATH (a config reloaded
+        // from disk in a test has no claude_bin).
         self.claude_bin
             .as_deref()
             .map(|s| expand_tilde(s).to_string_lossy().into_owned())
-            .unwrap_or_else(|| "claude".into())
+            .unwrap_or_else(|| crate::harness::Harness::Claude.bin(None))
     }
 }
 

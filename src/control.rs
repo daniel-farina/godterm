@@ -179,7 +179,17 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "switch_assistant",
         description: "Change your own provider, account and model at once (\"switch the assistant to Grok\", \"use Opus\", \"run on account 2\"); each is optional. The conversation carries over. get_state's providers lists them. Runs at once; say the result.",
-        schema: || props(json!({"provider": {"type": "string"}, "account": account_prop(), "model": {"type": "string"}}), &[]),
+        schema: || props(json!({"provider": {"type": "string"}, "account": account_prop(), "model": {"type": "string"}, "end_remote_control": {"type": "boolean", "description": "true once the user knows the switch ends Remote Control"}}), &[]),
+    },
+    Tool {
+        name: "enable_remote_control",
+        description: "Turn on Claude Code Remote Control for yourself: then claude.ai/code and the Claude app (signed in to the same claude.ai account) can talk to you, with your admin tools. Only on Claude. One confirmation. It ends when you switch account, provider or model. name: the session name shown there.",
+        schema: || props(json!({"name": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "disable_remote_control",
+        description: "Turn Remote Control off.",
+        schema: || props(json!({}), &[]),
     },
     Tool {
         name: "assistant_login",
@@ -2575,7 +2585,16 @@ impl App {
         if let Some(r) = self.grid_tool(tool, args) {
             return r;
         }
+        if tool == "disable_remote_control" {
+            let say = self.disable_remote()?;
+            return Ok(json!({"ok": true, "result": {"say": say}}));
+        }
         if tool == "switch_assistant" {
+            if let Some(r) = &self.assistant.remote {
+                if args["end_remote_control"].as_bool() != Some(true) {
+                    return Err(format!("switching ends Remote Control ('{}'): tell the user (\"Switching ends Remote Control; I can turn it back on after\") and call again with end_remote_control true if they still want it", r.name));
+                }
+            }
             let say = self.switch_assistant(
                 args["provider"].as_str(),
                 args.get("account"),
@@ -4146,6 +4165,7 @@ impl App {
             "modes": self.modes_line().trim(),
             "pending_answers": self.pending_answers_json(),
             "providers": self.providers_json(),
+            "remote_control": self.remote_json(),
             "listening_paused": self.voice.paused.as_ref().map(|p| json!({"seconds_left": self.pause_left(), "reason": p.reason, "announcements_held": p.queued.len()})),
             "closed": self.closed.iter().rev().take(10).enumerate().map(|(i, c)| json!({"index": i, "tab": c.label, "account": c.account, "cwd": c.cwd, "loops": c.loops.len()})).collect::<Vec<_>>(),
             "accounts": (0..self.cfg.accounts.len()).map(|a| json!({

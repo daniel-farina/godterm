@@ -75,8 +75,8 @@ class Godterm < Formula
 
   def caveats
     <<~TEXT
-      GodTerm runs Claude Code: install it too (npm install -g @anthropic-ai/claude-code).
-      Voice is optional: brew install ffmpeg whisper-cpp, then run godterm doctor.
+      Voice and setup: run godterm and open Settings > Setup, or say "install the voice pack".
+      Setup also installs Claude Code if it is missing.
     TEXT
   end
 
@@ -106,7 +106,8 @@ cask "godterm" do
   zap trash: "~/.godterm"
 
   caveats <<~TEXT
-    GodTerm runs Claude Code: install it too (npm install -g @anthropic-ai/claude-code).
+    Voice and setup: run godterm and open Settings > Setup, or say "install the voice pack".
+    Setup also installs Claude Code if it is missing.
   TEXT
 end
 EOF

@@ -26,6 +26,7 @@ pub const PROVIDER: Provider = Provider {
         persistent: false,
         partial: true,
         efforts: &["none", "low", "medium", "high"],
+        remote_control: false,
     },
     models: &[
         ("grok-4.7-build-fast", "Grok 4.7 fast (quickest)"),

@@ -24,6 +24,10 @@ pub trait Backend: Send {
     fn pid(&self) -> u32;
     /// Still usable for the next turn.
     fn running(&mut self) -> bool;
+    /// A control request (Remote Control); returns its request id.
+    fn control(&mut self, _request: serde_json::Value) -> Result<String> {
+        anyhow::bail!("this provider takes no control requests")
+    }
 }
 
 /// What a provider can do.
@@ -34,6 +38,8 @@ pub struct Caps {
     /// Text streams as it is written.
     pub partial: bool,
     pub efforts: &'static [&'static str],
+    /// Claude Code Remote Control (claude.ai/code and the app).
+    pub remote_control: bool,
 }
 
 /// Everything a backend needs to start.

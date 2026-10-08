@@ -91,6 +91,7 @@ Set-Content -Encoding ASCII "$h\accounts\two\.credentials.json" $creds
 $cfg = @"
 claude_bin = '$h\fake-claude.cmd'
 notifications = false
+setup_dont_show = true
 new_tab_base = '$h\tabs'
 [[account]]
 name = "one"

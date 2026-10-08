@@ -59,6 +59,7 @@ pub enum Cmd {
     AssistantModel(String),
     AssistantProvider(String),
     OpenSetup,
+    AssistantRemote,
     AssistantLogin,
     /// Open closed accounts (None: all of them).
     OpenAccount(Option<usize>),
@@ -521,6 +522,16 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 UiAction::AssistantHistory,
             ),
             sub("Account and model", MenuId::AssistantAccount),
+            {
+                let mut e = Entry {
+                    check: Some(app.assistant.remote.is_some()),
+                    ..item("Remote Control", "", UiAction::Menu(Cmd::AssistantRemote))
+                };
+                if let Err(why) = app.remote_supported() {
+                    e.disabled = Some(why);
+                }
+                e
+            },
             sep(),
             item("Learned rules", "", UiAction::Menu(Cmd::AssistantRules)),
             item("System prompt", "", UiAction::Menu(Cmd::AssistantPrompt)),
@@ -737,6 +748,24 @@ impl App {
                 Ok(say) | Err(say) => self.flash(say),
             },
             Cmd::OpenSetup => self.open_setup(),
+            Cmd::AssistantRemote => {
+                // A click is the user's own request; turning it on still
+                // asks once (the panel's question), off is immediate.
+                let r = if self.assistant.remote.is_some() {
+                    self.disable_remote()
+                } else if self.remote_click_armed() {
+                    let name = self.remote_default_name();
+                    self.enable_remote(&name)
+                } else {
+                    Ok(format!(
+                        "Remote Control lets anyone signed in to this claude.ai account talk to the assistant, with its admin tools. Pick Remote Control again within 15 s to turn it on as '{}'.",
+                        self.remote_default_name()
+                    ))
+                };
+                match r {
+                    Ok(s) | Err(s) => self.flash(s),
+                }
+            }
             Cmd::AssistantLogin => match self.assistant_grok_login() {
                 Ok(say) | Err(say) => self.flash(say),
             },

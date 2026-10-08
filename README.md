@@ -46,6 +46,7 @@ your hands stay on the keyboard (or off it).
 - **An assistant that operates GodTerm.** Ask in plain words: "open a tab
   on account two in the api folder and tell it to run the tests". It plans,
   asks once before anything destructive, and reports what really happened.
+  With Remote Control on, you can drive it from claude.ai or the Claude app.
 - **Approvals queue** across every account, notifications for background
   tabs that need you, scheduled loops, a command palette and broadcast.
 - **Sessions browser** across every account and the main `~/.claude`:
