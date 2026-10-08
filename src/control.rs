@@ -674,12 +674,14 @@ fn err(msg: impl Into<String>) -> Value {
 pub enum Stage {
     /// Waiting for the tab to be ready.
     Queued,
-    /// Pasted; Enter follows a moment later.
+    /// Pasted; Enter follows once the tab shows the text in its input.
     Pasted(Instant),
-    /// Enter sent (again, when `retried`).
+    /// Enter sent (again, when `retried`); `echoed`: the text was seen
+    /// in the input box before it.
     Submitted {
         at: Instant,
         retried: bool,
+        echoed: bool,
     },
     Delivered,
     Failed(String),
@@ -795,12 +797,35 @@ const CONFIRM_TTL: Duration = Duration::from_secs(120);
 /// Plans are kept this long so they can be asked again unchanged.
 const KEEP_PLANS: Duration = Duration::from_secs(600);
 
-/// Seconds a delivery may take: Enter goes this long after the paste...
-const SUBMIT_AFTER: Duration = Duration::from_millis(80);
-/// ...is pressed once more if claude has not taken it after this...
-const RETRY_AFTER: Duration = Duration::from_millis(1000);
-/// ...and fails after this.
-const FAIL_AFTER: Duration = Duration::from_millis(3500);
+/// A delivery: paste, then Enter as a write of its own once the tab
+/// shows the text in its input box (so the two never reach claude in one
+/// read, where the CR would be a new line), at the latest after this...
+const ECHO_WAIT: Duration = Duration::from_millis(2500);
+/// ...Enter is pressed once more if claude has not taken it after this...
+const RETRY_AFTER: Duration = Duration::from_millis(1500);
+/// ...and it fails after this.
+const FAIL_AFTER: Duration = Duration::from_millis(6000);
+
+/// The start of a prompt as the tab's input box shows it, to look for:
+/// its first line's first words (long pastes show as "[Pasted text").
+fn echo_head(text: &str) -> String {
+    let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    first
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(20)
+        .collect()
+}
+
+/// Whether a tab's screen shows the pasted prompt (claude draws it, or a
+/// "[Pasted text #1 +3 lines]" stand in for a long one).
+pub fn shows_prompt(screen: &str, text: &str) -> bool {
+    let head = echo_head(text);
+    let flat = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!head.is_empty() && flat.contains(&head)) || flat.contains("[Pasted text")
+}
 
 impl App {
     /// A new folder for an assistant made tab: `<new_tab_base>/<name>` (or
@@ -858,15 +883,24 @@ impl App {
         id
     }
 
-    /// Paste now, Enter a moment later (a separate write, as claude itself
-    /// does it: a CR in the same burst as the paste reads as a newline).
+    /// Paste now; Enter is a step of its own (deliveries_tick), never on a
+    /// timer: a CR in the same read as the paste reads as a new line, and
+    /// a busy machine bunches timed writes together.
     fn paste_prompt(&mut self, s: usize, t: usize, text: &str) {
         let tab = &mut self.panes[s].tabs[t];
         tab.reset_scroll();
         // Always bracketed: claude reads ESC [200~ even before it turns the
         // mode on, and a multi line prompt then stays one prompt.
         tab.write(&crate::keys::encode_paste(text, true));
-        tab.write_later(b"\r", SUBMIT_AFTER);
+    }
+
+    fn tab_screen(&self, s: usize, t: usize) -> String {
+        self.panes[s].tabs[t]
+            .parser
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .screen()
+            .contents()
     }
 
     /// The last prompt the user (or we) gave claude in a tab, from its transcript.
@@ -875,14 +909,17 @@ impl App {
         crate::sessions::last_user_text(&p)
     }
 
-    /// True once claude has taken the prompt: its transcript has it, or the
-    /// tab left the ready state after Enter.
-    fn accepted(&self, d: &Delivery, s: usize, t: usize, since: Instant) -> bool {
+    /// True once claude has taken the prompt: it works on it, its
+    /// transcript has it, or the text it showed left its input box.
+    fn accepted(&self, d: &Delivery, s: usize, t: usize, echoed: bool) -> bool {
         let tab = &self.panes[s].tabs[t];
         if matches!(tab.activity, Activity::Working | Activity::Permission) {
             return true;
         }
-        if tab.activity_since > since && tab.activity != Activity::Exited {
+        if echoed
+            && tab.activity != Activity::Exited
+            && !shows_prompt(&self.tab_screen(s, t), &d.text)
+        {
             return true;
         }
         let head: String = d
@@ -950,12 +987,29 @@ impl App {
                     }
                 }
                 Stage::Pasted(at) => {
-                    if at.elapsed() >= SUBMIT_AFTER {
-                        d.stage = Stage::Submitted { at, retried: false };
+                    // Enter once the text is in claude's input box.
+                    let echoed = shows_prompt(&self.tab_screen(s, t), &d.text);
+                    if echoed || at.elapsed() >= ECHO_WAIT {
+                        if !echoed {
+                            crate::log::info(&format!(
+                                "deliver: {} shows no echo of the paste, pressing Enter anyway",
+                                tab_id(d.uid)
+                            ));
+                        }
+                        self.panes[s].tabs[t].write(b"\r");
+                        d.stage = Stage::Submitted {
+                            at: Instant::now(),
+                            retried: false,
+                            echoed,
+                        };
                     }
                 }
-                Stage::Submitted { at, retried } => {
-                    if self.accepted(d, s, t, at + SUBMIT_AFTER) {
+                Stage::Submitted {
+                    at,
+                    retried,
+                    echoed,
+                } => {
+                    if self.accepted(d, s, t, echoed) {
                         crate::log::info(&format!(
                             "deliver: {} accepted the prompt",
                             tab_id(d.uid)
@@ -968,7 +1022,11 @@ impl App {
                             tab_id(d.uid)
                         ));
                         self.panes[s].tabs[t].write(b"\r");
-                        d.stage = Stage::Submitted { at, retried: true };
+                        d.stage = Stage::Submitted {
+                            at,
+                            retried: true,
+                            echoed,
+                        };
                     } else if at.elapsed() >= FAIL_AFTER {
                         crate::log::info(&format!(
                             "deliver: {} never started on the prompt",
@@ -4680,6 +4738,21 @@ pub fn call(tool: &str, args: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    /// Enter waits for the paste to show in claude's input box: its
+    /// first words (however the box wraps spaces), or a long paste's
+    /// stand in.
+    #[test]
+    fn a_paste_shows_in_the_input_box() {
+        let p = "Create a simple calculator app.\nKeep it tiny.";
+        assert!(super::shows_prompt(
+            "> Create a simple calculator app. NL Keep",
+            p
+        ));
+        assert!(super::shows_prompt("> Create a\n  simple calculator", p));
+        assert!(super::shows_prompt("> [Pasted text #1 +40 lines]", p));
+        assert!(!super::shows_prompt("> \n? for shortcuts", p));
+    }
+
     use super::*;
 
     #[test]

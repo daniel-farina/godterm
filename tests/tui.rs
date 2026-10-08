@@ -208,6 +208,24 @@ impl Tui {
         self.send(key);
     }
 
+    /// Wait until a file has `needle` (what a stub wrote: no screen
+    /// wrapping, no timing).
+    fn wait_file(&self, path: &Path, needle: &str, secs: u64) {
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_secs(secs) {
+            if std::fs::read_to_string(path).is_ok_and(|t| t.contains(needle)) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!(
+            "timed out waiting for {needle:?} in {}: {:?}; screen:\n{}",
+            path.display(),
+            std::fs::read_to_string(path).unwrap_or_default(),
+            self.text()
+        );
+    }
+
     fn wait_for(&self, needle: &str, secs: u64) {
         let t0 = Instant::now();
         while t0.elapsed() < Duration::from_secs(secs) {
@@ -854,7 +872,7 @@ done
 /// a prompt sit in the box), and submits only on a CR of its own. A
 /// submitted prompt shows a spinner for a moment, as claude does.
 const FAKE_TAB: &str = r#"#!/usr/bin/env python3
-import os, sys, tty, time
+import os, sys, tty, time, signal
 cwd = os.path.basename(os.getcwd())
 log = []
 buf = ""
@@ -867,6 +885,7 @@ def draw(working=False):
     sys.stdout.write(out); sys.stdout.flush()
 sys.stdout.write("\x1b[?2004h")
 tty.setraw(0)
+signal.signal(signal.SIGWINCH, lambda *a: draw())
 draw()
 paste = False
 while True:
@@ -945,25 +964,46 @@ done
         ),
     );
     let mut t = Tui::start(home.clone(), &[]);
-    t.wait_for("fake claude in work", 15);
+    // Generous waits (conditions, not sleeps): CI runners are slow.
+    t.wait_for("fake claude in work", 60);
     t.cmd(b".");
-    t.wait_for("Type or speak", 5);
+    t.wait_for("Type or speak", 20);
     t.ask("start a new tab on account two and create a simple calculator");
-    t.wait_for("asked it to build", 30);
+    t.wait_for("asked it to build", 60);
     assert!(home.join("tabs/calculator").is_dir(), "task folder");
     t.send(b"\x01."); // close the panel to see the tab
-    t.wait_for("fake claude in calculator", 10);
-    // One prompt, both lines, submitted once.
+    t.wait_gone("assistant · Claude", 30);
+    t.wait_for("fake claude in calculator", 30);
+    // One prompt, both lines, submitted once: what the stub received (its
+    // screen may have wrapped it while the docked panel made it narrow).
+    let submitted = home.join("tabs/calculator/submitted.txt");
+    t.wait_file(
+        &submitted,
+        "Create a simple calculator app.\nKeep it tiny.\n",
+        30,
+    );
+    // On screen too, once the closed panel gave the pane its width back
+    // (the stub redraws on the resize).
     t.wait_for(
         "SUBMITTED: Create a simple calculator app. NL Keep it tiny.",
-        10,
+        30,
     );
     let out = std::fs::read_to_string(home.join("mcp-out.txt")).unwrap();
     assert!(out.contains("\\\"status\\\":\\\"delivered\\\""), "{out}");
-    // The user's own Enter still submits in that tab afterwards.
+    assert_eq!(
+        std::fs::read_to_string(&submitted)
+            .unwrap()
+            .matches("Create a simple")
+            .count(),
+        1,
+        "submitted once"
+    );
+    // The user's own Enter still submits in that tab afterwards: once
+    // the text shows in its input, Enter of its own.
     t.send(b"next step");
+    t.wait_for("> next step", 10);
     t.send(b"\r");
-    t.wait_for("SUBMITTED: next step", 10);
+    t.wait_file(&submitted, "next step\n", 10);
     assert_eq!(t.quit(), 0);
 }
 
