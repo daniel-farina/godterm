@@ -1,6 +1,6 @@
 {
  "config": {
-  "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "start": "2026-10-02T14:16:44.739224+00:00", "end": "2026-10-09T14:16:44.739224+00:00"},
+  "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "start": "2099-10-02T14:16:44.739224+00:00", "end": "2099-10-09T14:16:44.739224+00:00"},
   "creditUsagePercent": 100.0,
   "onDemandCap": {"val": 0},
   "onDemandUsed": {"val": 0},
@@ -13,7 +13,7 @@
   ],
   "isUnifiedBillingUser": true,
   "prepaidBalance": {"val": 0},
-  "billingPeriodStart": "2026-10-02T14:16:44.739224+00:00",
-  "billingPeriodEnd": "2026-10-09T14:16:44.739224+00:00"
+  "billingPeriodStart": "2099-10-02T14:16:44.739224+00:00",
+  "billingPeriodEnd": "2099-10-09T14:16:44.739224+00:00"
  }
 }

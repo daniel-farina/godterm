@@ -791,7 +791,7 @@ mod tests {
         assert_eq!((w.label.as_str(), w.left()), ("Weekly", 0.0));
         assert_eq!(
             w.resets_at.unwrap().to_rfc3339(),
-            "2026-10-09T14:16:44.739224+00:00"
+            "2099-10-09T14:16:44.739224+00:00"
         );
         assert_eq!(u.get("product:GrokBuild").unwrap().left(), 74.0);
         assert!(u.get("product:GrokChat").is_none(), "no percent, no bucket");
