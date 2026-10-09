@@ -1422,6 +1422,11 @@ fn prune(l: &Layout, keep: &[String]) {
 
 static RESTART: std::sync::Mutex<Option<Next>> = std::sync::Mutex::new(None);
 
+/// A restart into a new version is waiting for the TUI to end.
+pub fn restart_pending() -> bool {
+    RESTART.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
 /// Ask main() to run `next` once the TUI has shut down.
 pub fn request_restart(next: Next) {
     *RESTART.lock().unwrap_or_else(|e| e.into_inner()) = Some(next);

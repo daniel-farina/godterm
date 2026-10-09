@@ -262,10 +262,8 @@ impl App {
         let quiet = cfg!(test) || crate::demo::active();
         if !quiet {
             if crate::procs::osc52_wanted() {
-                use std::io::Write;
-                let mut out = std::io::stdout();
-                let _ = out.write_all(select::osc52(&text).as_bytes());
-                let _ = out.flush();
+                // Through the terminal writer: never waits on the terminal.
+                crate::tty_out::write_raw(select::osc52(&text).into_bytes());
             }
             crate::procs::copy_to_clipboard(text.clone());
         }

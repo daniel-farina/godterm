@@ -124,6 +124,7 @@ mod test_guard;
 mod test_stub;
 mod theme;
 mod trust;
+mod tty_out;
 mod ui;
 mod ui_assistant;
 mod ui_chrome;
@@ -145,13 +146,10 @@ use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
     LeaveAlternateScreen,
 };
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -788,6 +786,17 @@ fn voice_test(
 /// The TUI, then (after a restart to update) the new version in its place.
 fn run_tui(opts: TuiOpts) -> Result<()> {
     let r = run_tui_inner(opts);
+    if TTY_STUCK.load(std::sync::atomic::Ordering::Relaxed) {
+        // A new version started into a terminal that is not reading would
+        // freeze on its first write; and any error message would block.
+        if update::restart_pending() {
+            log::error("update: not restarting, the terminal is not reading");
+        }
+        if let Err(e) = &r {
+            log::error(&format!("exit: {e:#}"));
+        }
+        std::process::exit(if r.is_ok() { 0 } else { 1 });
+    }
     if r.is_ok() {
         update::relaunch_if_requested();
     }
@@ -840,51 +849,74 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     theme::detect_truecolor();
 
     enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(
-        stdout,
+    // Everything for the terminal goes through one writer thread: a
+    // terminal that stops reading stalls that thread, never the UI.
+    let out = tty_out::Out::spawn("tty-out", io::stdout())?;
+    tty_out::install(out.clone());
+    let mut setup_bytes = Vec::new();
+    let _ = crossterm::queue!(
+        setup_bytes,
         EnterAlternateScreen,
         EnableMouseCapture,
         EnableBracketedPaste,
         crossterm::event::EnableFocusChange
-    )?;
+    );
+    out.send(setup_bytes);
     // Lets Shift+Enter and friends be told apart, where the terminal allows.
-    let enhanced = matches!(supports_keyboard_enhancement(), Ok(true));
+    // The query writes to stdout itself, so only once the writer is through.
+    let enhanced = out.wait_idle(Duration::from_secs(2))
+        && matches!(supports_keyboard_enhancement(), Ok(true));
     if enhanced {
-        let _ = execute!(
-            stdout,
+        let mut v = Vec::new();
+        let _ = crossterm::queue!(
+            v,
             // Event types give key release, which makes hold to talk work.
             PushKeyboardEnhancementFlags(
                 KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                     | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
             )
         );
+        out.send(v);
     }
-    let restore = move || {
-        let mut out = io::stdout();
+    // Restoring the terminal waits at most this long on a stuck writer.
+    const RESTORE_BOUND: Duration = Duration::from_millis(1500);
+    let restore_out = out.clone();
+    let restore = move || -> bool {
+        let mut v = Vec::new();
         if enhanced {
-            let _ = execute!(out, PopKeyboardEnhancementFlags);
+            let _ = crossterm::queue!(v, PopKeyboardEnhancementFlags);
         }
-        let _ = execute!(
-            out,
+        let _ = crossterm::queue!(
+            v,
+            crossterm::terminal::EndSynchronizedUpdate,
             crossterm::event::DisableFocusChange,
             DisableBracketedPaste,
             DisableMouseCapture,
-            LeaveAlternateScreen
+            LeaveAlternateScreen,
+            crossterm::cursor::Show
         );
+        let done = restore_out.finish(v, RESTORE_BOUND);
         let _ = disable_raw_mode();
-        let _ = out.flush();
+        if !done {
+            log::error("terminal output still stuck at exit; left without restoring it");
+        }
+        done
     };
+    let restore = std::sync::Arc::new(restore);
+    let panic_restore = std::sync::Arc::clone(&restore);
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        restore();
+        let restored = (*panic_restore)();
         voice::kill_helpers();
         log::error(&format!("panic: {info}"));
+        if !restored {
+            // The message would go to a terminal that is not reading.
+            std::process::exit(101);
+        }
         default_hook(info);
     }));
 
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    terminal.clear()?;
+    let mut screen = tty_out::Screen::new(out.clone())?;
 
     // Input thread feeds the same channel as PTY readers.
     let itx = tx.clone();
@@ -932,7 +964,7 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         }
     };
     // Size the panes before the first spawn so claude starts at the right size.
-    terminal.draw(|f| ui::draw(f, &mut app))?;
+    screen.draw(|f| ui::draw(f, &mut app), |_| ())?;
     // Restarted into a new version: every tab comes back at once.
     if std::env::var_os(update::EAGER_ENV).is_some() {
         std::env::remove_var(update::EAGER_ENV);
@@ -988,13 +1020,19 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         if anim.is_some_and(|d| last_draw.elapsed() >= d) {
             dirty = true;
         }
-        let timeout = if dirty {
+        let mut timeout = if dirty {
             frame_budget.saturating_sub(last_draw.elapsed())
         } else if let Some(d) = anim {
             d.saturating_sub(last_draw.elapsed())
         } else {
             Duration::from_millis(200)
         };
+        // A frame waiting on the writer: look again shortly (more slowly
+        // once it is stuck), instead of spinning.
+        if dirty && !screen.ready() {
+            let wait = if screen.stalled() { 50 } else { 4 };
+            timeout = timeout.max(Duration::from_millis(wait));
+        }
         match rx.recv_timeout(timeout) {
             Ok(ev) => {
                 app.handle(ev);
@@ -1031,17 +1069,16 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         // Ctrl-a m releases the mouse so the terminal can select text.
         if app.mouse_capture != mouse_on {
             mouse_on = app.mouse_capture;
-            let mut out = io::stdout();
-            let _ = if mouse_on {
-                execute!(out, EnableMouseCapture)
+            if mouse_on {
+                screen.command(EnableMouseCapture);
             } else {
-                execute!(out, DisableMouseCapture)
-            };
+                screen.command(DisableMouseCapture);
+            }
             // Back from select mode: a full redraw drops the terminal's
             // own selection highlight (a full width band otherwise stays
             // over everything, the assistant panel included).
             if mouse_on {
-                let _ = terminal.clear();
+                screen.clear_next();
             }
             dirty = true;
         }
@@ -1052,31 +1089,53 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         } else {
             frame_budget
         };
-        if dirty && last_draw.elapsed() >= budget {
-            // One frame at once (terminals that support it), with the
-            // cursor hidden while cells are written: no cursor flashing
-            // across the screen. The frame shows it again at the input.
-            let _ = crossterm::queue!(
-                io::stdout(),
-                crossterm::terminal::BeginSynchronizedUpdate,
-                crossterm::cursor::Hide
+        match screen.check() {
+            Some(tty_out::Health::Stalled) => log::error(&format!(
+                "terminal output stalled: nothing written for {} s (the terminal is not reading); frames wait",
+                tty_out::STALL.as_secs()
+            )),
+            Some(tty_out::Health::Recovered(d)) => {
+                log::info(&format!(
+                    "terminal output resumed after {:.1} s; redrawing in full",
+                    d.as_secs_f32()
+                ));
+                dirty = true;
+            }
+            None => {}
+        }
+        // While the writer still has a frame out, hold the next one back
+        // (dirty stays set): the latest state is drawn once it is free.
+        if dirty && last_draw.elapsed() >= budget && screen.ready() {
+            let drawn = screen.draw(
+                |f| ui::draw(f, &mut app),
+                |b| {
+                    if demo::active() {
+                        demo::capture(b);
+                    }
+                },
             );
-            let drawn = terminal.draw(|f| ui::draw(f, &mut app));
-            let _ = crossterm::execute!(io::stdout(), crossterm::terminal::EndSynchronizedUpdate);
             match drawn {
-                Ok(f) if demo::active() => demo::capture(f.buffer),
-                Ok(_) => {}
+                Ok(()) => {
+                    last_draw = Instant::now();
+                    dirty = false;
+                }
+                Err(e) if tty_out::transient(&e) => last_draw = Instant::now(),
                 Err(e) => break Err(e.into()),
             }
-            last_draw = Instant::now();
-            dirty = false;
         }
     };
 
+    // State saved and children stopped before any terminal write that
+    // could wait on a stuck terminal.
     app.shutdown();
     if let Some(t) = &ctl_token {
         control::cleanup(t);
     }
-    restore();
+    if !(*restore)() {
+        TTY_STUCK.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     result
 }
+
+/// The terminal stopped reading and was left as it was at exit.
+static TTY_STUCK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
