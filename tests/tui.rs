@@ -202,6 +202,49 @@ impl Tui {
         self.send(b"\r");
     }
 
+    /// Where `needle` is on screen (0-based column, row), the last match.
+    fn find(&self, needle: &str) -> Option<(u16, u16)> {
+        let screen = self.screen.lock().unwrap();
+        let sc = screen.screen();
+        let (rows, cols) = sc.size();
+        let mut found = None;
+        for r in 0..rows {
+            let line: String = (0..cols)
+                .map(|c| {
+                    sc.cell(r, c)
+                        .map(|x| {
+                            let s = x.contents();
+                            if s.is_empty() {
+                                " ".to_string()
+                            } else {
+                                s.to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| " ".into())
+                })
+                .collect();
+            if let Some(i) = line.find(needle) {
+                let col = line[..i].chars().count() as u16;
+                found = Some((col, r));
+            }
+        }
+        found
+    }
+
+    /// A left click (SGR mouse, as a terminal sends it) at a cell.
+    fn click_at(&mut self, col: u16, row: u16) {
+        self.send(format!("\x1b[<0;{};{}M", col + 1, row + 1).as_bytes());
+        self.send(format!("\x1b[<0;{};{}m", col + 1, row + 1).as_bytes());
+    }
+
+    /// Click the middle of a label on screen.
+    fn click(&mut self, label: &str) {
+        let (c, r) = self
+            .find(label)
+            .unwrap_or_else(|| panic!("{label:?} not on screen:\n{}", self.text()));
+        self.click_at(c + label.chars().count() as u16 / 2, r);
+    }
+
     /// Ctrl-a then a key.
     fn cmd(&mut self, key: &[u8]) {
         self.send(b"\x01");
@@ -1678,4 +1721,41 @@ fn voice_file_commands() {
     t.wait_for("now on", 60);
     t.wait_for("asleep until", 30);
     assert_eq!(t.quit(), 0);
+}
+
+/// The move picker's buttons work with a real mouse (SGR clicks through
+/// the terminal), with the assistant panel closed and open.
+#[test]
+fn move_confirmation_buttons_click() {
+    let home = make_home("moveclick", "");
+    let mut t = Tui::start(home.clone(), &[]);
+    t.wait_for("fake claude in work", 15);
+    for panel in [false, true] {
+        if panel {
+            t.cmd(b".");
+            t.wait_for("Type or speak", 5);
+            t.send(b"\x1b"); // the keys back to the grid
+        }
+        // Cancel closes it, nothing moves.
+        t.cmd(b"m");
+        t.wait_for("keep the same folder", 5);
+        t.click(" Cancel ");
+        t.wait_gone("keep the same folder", 5);
+        // Move moves it.
+        t.cmd(b"m");
+        t.wait_for("keep the same folder", 5);
+        let (_, row) = t.find(" Cancel ").unwrap();
+        let (c, r) = t
+            .find(" Move ")
+            .filter(|(_, r)| *r == row)
+            .expect("the Move button beside Cancel");
+        t.click_at(c + 3, r);
+        t.wait_gone("keep the same folder", 5);
+        if panel {
+            // Back onto Alpha: its idle tab runs the session now.
+            t.wait_gone("Press Enter to start claude", 10);
+        } else {
+            t.wait_for("tabs 2 ●", 10);
+        }
+    }
 }

@@ -438,39 +438,74 @@ pub fn wrap(r: &Row, w: u16) -> Vec<Vec<(String, Style)>> {
 }
 
 /// The toolbar's items, in order of importance.
-fn toolbar(app: &App) -> Vec<(&'static str, UiAction, &'static str)> {
+/// The toolbar, in order: in a view other than the conversation, the way
+/// back comes first (and is never dropped), then New, then the views.
+fn toolbar(app: &App) -> Vec<(String, UiAction, &'static str)> {
     use crate::menus::Cmd;
-    vec![
+    use crate::panel_views::PanelView;
+    let view = app.panel_view();
+    let mut v: Vec<(String, UiAction, &'static str)> = vec![];
+    if view != PanelView::Conversation {
+        v.push((
+            back_label(app, 3),
+            UiAction::AssistantConversation,
+            "Back to the conversation going on (Esc)",
+        ));
+    }
+    v.push((
+        "New".into(),
+        UiAction::AssistantNew,
+        "New conversation (\"forget that\")",
+    ));
+    for (pv, label, action, hint) in [
         (
-            "New",
-            UiAction::AssistantNew,
-            "New conversation (\"forget that\")",
-        ),
-        (
-            if app.assistant.history.is_some() {
-                "Chat"
-            } else {
-                "History"
-            },
+            PanelView::History,
+            "History",
             UiAction::AssistantHistory,
             "Saved conversations: read, search, resume, delete",
         ),
         (
+            PanelView::Rules,
             "Rules",
             UiAction::Menu(Cmd::AssistantRules),
             "Rules it learned from your corrections",
         ),
         (
+            PanelView::Prompt,
             "Prompt",
             UiAction::Menu(Cmd::AssistantPrompt),
             "Its system prompt (view and edit)",
         ),
         (
+            PanelView::Admin,
             "Admin",
             UiAction::Menu(Cmd::AssistantAdmin),
             "Admin actions: installs, settings and accounts it changed",
         ),
-    ]
+    ] {
+        // The view you are in is not a button to itself.
+        if pv != view {
+            v.push((label.into(), action, hint));
+        }
+    }
+    v
+}
+
+/// "‹ Conversation", with "● 2" when replies came while away; `size` 3
+/// is the full label, 2 "‹ Chat", 1 "‹" (narrow panels keep it whole).
+pub fn back_label(app: &App, size: u8) -> String {
+    let unread = app.unread_replies();
+    let dot = match unread {
+        0 => String::new(),
+        1 => " ●".into(),
+        n => format!(" ● {n}"),
+    };
+    let word = match size {
+        3 => "‹ Conversation",
+        2 => "‹ Chat",
+        _ => "‹",
+    };
+    format!("{word}{dot}")
 }
 
 fn cells(s: &str) -> u16 {
@@ -584,7 +619,13 @@ pub fn title_parts(app: &App, room: usize) -> Vec<(String, u8)> {
         model.clone()
     };
     // (text, tone, drop order: 0 never, lower first).
-    let mut segs: Vec<(String, u8, u8)> = vec![("assistant".into(), 0, 2), (p.name.into(), 0, 3)];
+    let mut segs: Vec<(String, u8, u8)> = vec![("assistant".into(), 0, 2)];
+    // Not in the conversation: say where you are (kept on narrow panels).
+    let view = app.panel_view();
+    if view != crate::panel_views::PanelView::Conversation {
+        segs.push((view.name().into(), 1, 0));
+    }
+    segs.push((p.name.into(), 0, 3));
     let acct = app
         .assistant
         .brain
@@ -687,6 +728,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     for (t, tone) in &title {
         let st = match tone {
             2 => title_st.fg(theme::SAND),
+            1 => title_st.fg(theme::SLATE).add_modifier(Modifier::BOLD),
             _ => title_st,
         };
         tx = crate::hits::text(buf, tx, area.y, area.x + 2 + tw, t, st);
@@ -712,9 +754,18 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let y = inner.y;
     let tail = cells(" ⋯ ") + 1 + cells(" × ");
     let mut x = inner.x;
-    for (l, a, hint) in toolbar(app) {
+    for (k, (mut l, a, hint)) in toolbar(app).into_iter().enumerate() {
+        // The way back always fits: shorter, never pushed out.
+        if k == 0 && a == UiAction::AssistantConversation {
+            for size in [3, 2, 1] {
+                l = back_label(app, size);
+                if x + cells(&format!(" {l} ")) + 1 + tail <= limit {
+                    break;
+                }
+            }
+        }
         let w = cells(&format!(" {l} "));
-        if x + w + 1 + tail > limit {
+        if x + w + 1 + tail > limit && !(k == 0 && a == UiAction::AssistantConversation) {
             break;
         }
         x = crate::hits::button(
@@ -724,7 +775,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             x,
             y,
             limit,
-            l,
+            &l,
             a,
             hint,
             theme::SLATE,
@@ -831,7 +882,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .clamp(1, 6)
         .min(inner.height.saturating_sub(4).max(1));
     let iy0 = iy + 1 - in_h;
-    let body_h = iy0.saturating_sub(top + 1);
+    // A question waiting for the user's yes: Yes / No buttons above the
+    // input (a click answers, as typing "yes" would).
+    let asking = !app.pending_confirms.is_empty() && !app.assistant.show_admin;
+    let ask_y = iy0.saturating_sub(1);
+    let body_h = (if asking { ask_y } else { iy0 }).saturating_sub(top + 1);
     let rows: Vec<Row> = if app.assistant.show_admin {
         let mut v = vec![row(vec![(
             "Admin actions".into(),
@@ -853,6 +908,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
         v
     } else {
+        // On screen: what came in is seen.
+        app.mark_replies_seen();
         rows(app, inner.width)
     };
     let mut physical: Vec<(u16, Vec<(String, Style)>, Option<UiAction>)> = vec![];
@@ -862,12 +919,17 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     let skip = physical.len().saturating_sub(body_h as usize);
+    // What is drawn, for selecting it with the mouse.
+    let mut shown: Vec<String> = vec![];
     for (k, (indent, l, action)) in physical.into_iter().skip(skip).enumerate() {
         let ly = top + k as u16;
         let mut cx = inner.x + indent;
+        let mut text = " ".repeat(indent as usize);
         for (s, stl) in l {
+            text.push_str(&s);
             cx = crate::hits::text(buf, cx, ly, limit, &s, stl.bg(BAR_BG));
         }
+        shown.push(text);
         if let Some(a) = action {
             hits.add(
                 Rect::new(inner.x, ly, inner.width, 1),
@@ -876,6 +938,74 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             );
         }
     }
+    if asking {
+        for cx in inner.x..limit {
+            if let Some(c) = buf.cell_mut((cx, ask_y)) {
+                c.set_char(' ');
+                c.set_style(Style::default().bg(BAR_BG));
+            }
+        }
+        let yes_w = cells(" Yes ") + 1 + cells(" No ") + 1;
+        let q = app
+            .pending_confirms
+            .last()
+            .map(|p| p.summary.clone())
+            .unwrap_or_default();
+        let q = format!("? {q}");
+        let qx = crate::hits::text(
+            buf,
+            inner.x,
+            ask_y,
+            limit.saturating_sub(yes_w),
+            &crate::sessions::snippet(&q, limit.saturating_sub(yes_w + inner.x + 1) as usize),
+            Style::default().fg(theme::SAND).bg(BAR_BG),
+        );
+        let bx = qx.max(inner.x).min(limit.saturating_sub(yes_w)) + 1;
+        let nx = crate::hits::button(
+            buf,
+            &mut hits,
+            app.mouse_pos,
+            bx,
+            ask_y,
+            limit,
+            "Yes",
+            UiAction::AssistantAnswer(true),
+            "Yes, go ahead (or type yes)",
+            theme::SAGE,
+        );
+        crate::hits::button(
+            buf,
+            &mut hits,
+            app.mouse_pos,
+            nx + 1,
+            ask_y,
+            limit,
+            "No",
+            UiAction::AssistantAnswer(false),
+            "No, leave it (or type no)",
+            theme::STONE,
+        );
+    }
+    let body = Rect::new(inner.x, top, inner.width, body_h);
+    if let Some(sel) = app
+        .selection
+        .as_ref()
+        .filter(|s| s.visible() && s.target == crate::select::Target::Assistant)
+    {
+        let span = crate::select::span(&mut crate::select::TextLines(&shown), sel);
+        for r in 0..body.height {
+            for c in 0..body.width {
+                let at = crate::select::Pos {
+                    line: r as usize,
+                    col: c,
+                };
+                if crate::select::contains(span, at) {
+                    crate::ui::select_cell(buf, body.x + c, body.y + r);
+                }
+            }
+        }
+    }
+    *app.assistant_text.borrow_mut() = Some((body, shown));
     // Input: the text (or the hint), the mic state, Send.
     for y in iy0..=iy {
         for cx in inner.x..limit {

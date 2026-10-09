@@ -7,6 +7,56 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-10-08
+
+### Panes
+- Select text inside a pane: drag over it, double click a word, triple
+  click a line. The selection stays in that pane and holds while the view
+  scrolls; dragging past the top or bottom edge scrolls the history.
+  Letting go copies it (with OSC 52 over SSH or when there is no
+  clipboard program) and says how many characters were copied. Trailing
+  spaces are dropped and wrapped lines join back. Tabs that ask for the
+  mouse still get it; hold Shift (or Option) while dragging to select
+  there. `Ctrl-a c` copies the selection again. The assistant's
+  conversation selects the same way.
+
+### Updates
+- A calm chip at the right of the menu bar says when a new version is
+  out or ready ("↑ v0.2.8", "↑ Update ready"); it shows in the status
+  bar when the menu bar is hidden, and stays still with `splash_motion`
+  off or Reduce Motion.
+- A click on it, or `Ctrl-a D`, opens Updates: this version, the latest,
+  and what's new in every newer version. Download (with the usual
+  signature and checksum checks), Restart to update (asks first; every
+  tab comes back and resumes its conversation), Release page and Later.
+  Homebrew and system installs get their upgrade command instead.
+- The assistant can answer "is there an update?" and "what's new?", and
+  restarting to update always takes one yes.
+
+### Assistant
+- History, Admin, Rules and Prompt have a "‹ Conversation" button (and
+  Esc) back to the conversation going on, with a dot or a count for
+  replies that came while you were away. History pins the current
+  conversation at the top.
+- Questions that need your yes (a move, a close) show Yes and No
+  buttons. Every dialog's default button, what Enter does, is marked.
+- A click outside the assistant panel gives the keys to what was
+  clicked: a tab, a pane header, the menu bar. Clicks on the floating
+  panel or a dialog never reach the tab behind it.
+- The Grok assistant answers faster (a plain reply or a tool call takes
+  about 30% less time) and keeps GodTerm's instructions from the first
+  turn.
+
+### Splash
+- In Terminal.app the start up crystal is drawn with whole cells, so it
+  shows without gaps between the rows.
+
+### Fixed
+- Prompt delivery presses Enter only once the tab shows the paste, so a
+  prompt sent to a busy tab is submitted instead of left in its input.
+- Voice "send to tab" and pasting a login code do the same: Enter goes
+  once the tab shows the paste.
+
 ## [0.2.7] - 2026-10-08
 
 ### Usage
@@ -258,7 +308,8 @@ The first public release, under the MIT License. claudego is now GodTerm.
 
 - claudego: config, credentials, usage, sessions, PTY panes and the TUI.
 
-[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/daniel-farina/godterm/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/daniel-farina/godterm/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/daniel-farina/godterm/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/daniel-farina/godterm/compare/v0.2.4...v0.2.5

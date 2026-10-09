@@ -571,7 +571,9 @@ impl App {
                 }
             }
             Modal::MoveBusy(_) => match k.code {
-                KeyCode::Char('w') | KeyCode::Enter => self.move_busy_choice(false),
+                KeyCode::Char('w') | KeyCode::Char('y') | KeyCode::Enter => {
+                    self.move_busy_choice(false)
+                }
                 KeyCode::Char('i') => self.move_busy_choice(true),
                 _ => self.modal = Modal::None,
             },

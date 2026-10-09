@@ -20,6 +20,7 @@ use crate::usage::{countdown, Window};
 pub fn draw(f: &mut Frame, app: &mut App) {
     app.want_cursor.set(None);
     app.hits.borrow_mut().clear();
+    *app.assistant_text.borrow_mut() = None;
     app.modal_from.set(None);
     app.inline_rename.set(false);
     let area = f.area();
@@ -41,6 +42,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .split(area);
     let menu = chunks[0];
     let chunks = [chunks[1], chunks[2], chunks[3]];
+    app.menu_shown.set(menu_h > 0);
     if menu_h > 0 {
         crate::ui_chrome::draw_menu_bar(f, app, menu);
     }
@@ -211,6 +213,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         Modal::Tour(step) => crate::ui_chrome::draw_tour(f, area, app, step, menu),
         Modal::ConfirmQuit => draw_confirm(f, area, app),
+        Modal::Updates(top) => crate::ui_updates::draw(f, area, app, top),
+        Modal::UpdateRestart => crate::ui_updates::draw_restart_confirm(f, area, app),
         Modal::AddAccount(form) => crate::add_account::draw(f.buffer_mut(), area, app, &form),
         Modal::ColorPick(t, sel) => crate::color_pick::draw(f.buffer_mut(), area, app, t, sel),
         Modal::ConfirmClose => draw_confirm_close(f, area, app),
@@ -824,6 +828,7 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
                 }
             }
             drop(parser);
+            draw_selection(f.buffer_mut(), app, i, pane, inner);
             if let PaneState::Exited(_) = pane.state {
                 let msg = match (&pane.state, &pane.session_id) {
                     (PaneState::Exited(Some(c)), Some(_)) if *c != 0 => {
@@ -851,6 +856,46 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
                 );
             }
         }
+    }
+}
+
+/// The selected text of a pane, over what render_screen drew.
+fn draw_selection(buf: &mut Buffer, app: &App, i: usize, pane: &Pane, area: Rect) {
+    use crate::select::{Pos, Target};
+    let Some(sel) = app.selection.as_ref().filter(|s| {
+        s.visible()
+            && s.target
+                == Target::Pane {
+                    slot: i,
+                    uid: pane.uid,
+                }
+    }) else {
+        return;
+    };
+    let mut p = pane.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let s = p.screen_mut();
+    let (rows, cols) = s.size();
+    let top = crate::select::line_of_row(s, 0);
+    let span = crate::select::span(&mut crate::select::ScreenLines(s), sel);
+    for r in 0..rows.min(area.height) {
+        for c in 0..cols.min(area.width) {
+            let at = Pos {
+                line: top + r as usize,
+                col: c,
+            };
+            if crate::select::contains(span, at) {
+                select_cell(buf, area.x + c, area.y + r);
+            }
+        }
+    }
+}
+
+/// One cell drawn as selected: calm slate under the usual text color.
+pub fn select_cell(buf: &mut Buffer, x: u16, y: u16) {
+    if let Some(cell) = buf.cell_mut((x, y)) {
+        cell.set_bg(theme::SELECT_BG);
+        cell.set_fg(FG);
+        cell.modifier.remove(Modifier::REVERSED);
     }
 }
 
@@ -1866,12 +1911,13 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
             hint: "Something GodTerm needs is not installed: click for Setup",
         });
     }
-    if let Some(text) = app.update_chip() {
+    // The new version chip: in the menu bar; here only when it is hidden.
+    if let Some(text) = app.update_badge().filter(|_| !app.menu_shown.get()) {
         v.push(Chip {
             text,
-            bg: theme::SAGE,
-            action: UiAction::Key('N'),
-            hint: "A new GodTerm version: click (or Ctrl-a N) to restart into it; tabs resume",
+            bg: theme::SAND,
+            action: UiAction::OpenUpdates,
+            hint: "A new GodTerm version: what's new, download, restart (Ctrl-a D)",
         });
     }
     if app.undo_move_live() {
@@ -3983,6 +4029,39 @@ pub(crate) fn draw_history(
                 .bg(BAR_BG),
         );
     }
+    // The conversation going on, pinned on top: a click opens it live.
+    {
+        let buf = f.buffer_mut();
+        let mut hits = app.hits.borrow_mut();
+        let y = area.y + 1;
+        let (turns, first) = app.current_conversation();
+        let line = match first {
+            Some(f) => format!(
+                "● current  {turns:>2} turn{}  {f}",
+                if turns == 1 { "" } else { "s" }
+            ),
+            None => "● current  a new conversation".to_string(),
+        };
+        let hover = app
+            .mouse_pos
+            .is_some_and(|(mx, my)| my == y && mx >= area.x && mx < limit);
+        crate::hits::text(
+            buf,
+            area.x,
+            y,
+            limit,
+            &crate::sessions::snippet(&line, area.width as usize),
+            Style::default()
+                .fg(theme::SAGE)
+                .bg(if hover { SEL_BG } else { BAR_BG })
+                .add_modifier(Modifier::BOLD),
+        );
+        hits.add(
+            Rect::new(area.x, y, area.width, 1),
+            UiAction::AssistantConversation,
+            "Back to the conversation going on",
+        );
+    }
     if shown.is_empty() {
         let msg = if h.items.is_empty() {
             "No saved conversations yet."
@@ -4560,6 +4639,10 @@ pub const HELP: &[(&str, &str)] = &[
     ("Ctrl-a S", "tab list position: left, right, top"),
     ("Ctrl-a o", "overview of every account and tab"),
     ("Ctrl-a y", "approvals queue: every tab waiting"),
+    (
+        "Ctrl-a c",
+        "copy the selected text again (drag in a pane to select)",
+    ),
     ("Ctrl-a z", "zoom the focused pane (toggle)"),
     ("Ctrl-a r / x", "restart / stop claude in the current tab"),
     ("Ctrl-a I", "log in the focused pane's account"),
@@ -4601,6 +4684,10 @@ pub const HELP: &[(&str, &str)] = &[
         "mute or unmute the speaker (it stops talking, still hears)",
     ),
     ("Ctrl-a + / -", "talk back volume up or down"),
+    (
+        "Ctrl-a D",
+        "updates: what's new in every newer version, download, restart",
+    ),
     (
         "Sessions: B",
         "bring a session running in another terminal here (◉)",
@@ -4683,11 +4770,11 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(DIM),
     ));
     lines.push(Line::styled(
-        "  footer and the Approve / Always / Deny buttons are all clickable. To select text, hold",
+        "  footer and the Approve / Always / Deny buttons are clickable. Drag in a pane to copy its text:",
         Style::default().fg(DIM),
     ));
     lines.push(Line::styled(
-        "  Option while dragging (iTerm2), or Ctrl-a M to release the mouse. Right click a tab for its menu.",
+        "  double click a word, triple a line, Shift drag where a tab uses the mouse. Right click a tab: its menu.",
         Style::default().fg(DIM),
     ));
     let mut voice: Vec<Line> = vec![Line::styled(
@@ -9466,7 +9553,7 @@ mod tests {
         // The chip and Settings > About.
         let mut term = Terminal::new(TestBackend::new(200, 50)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
-        assert!(buffer_text(term.backend().buffer()).contains("UPDATE v9.9.9 · RESTART"));
+        assert!(buffer_text(term.backend().buffer()).contains("↑ Update ready"));
         app.view = crate::app::View::Settings;
         app.settings_section = crate::settings::SECTIONS
             .iter()
@@ -10619,6 +10706,19 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("Nothing is working."));
+        // The one going on is pinned, not in the list: delete it from a
+        // new conversation.
+        app.toggle_assistant_history();
+        assert!(app
+            .assistant
+            .history
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .all(|s| s.id != id));
+        app.toggle_assistant_history();
+        app.reset_assistant();
         app.toggle_assistant_history();
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('d'));

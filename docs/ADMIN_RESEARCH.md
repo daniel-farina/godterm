@@ -59,6 +59,8 @@ Google Drive, Gmail, Calendar and similar are enabled on the web at claude.ai/se
   - `grok plugin list [--json] | uninstall <name> --confirm | enable | disable | details`.
   - Plugins are off until listed in `[plugins].enabled`. Installs live in `$GROK_HOME/installed-plugins/`.
 - **Login:** `grok login` (GodTerm already uses it for Grok slots). Logout: `grok logout`.
+- **Folder trust:** project `.grok/config.toml` MCP servers load only in a trusted folder. `--trust` trusts it and records that in `$GROK_HOME/trusted_folders.toml`. The assistant's own MCP server is in its home's `config.toml`, so it needs no trust.
+- **Leader (1.0.45):** `--leader-socket <path>` and `grok leader list | info | kill` manage a shared leader process for interactive clients (`[cli] use_leader`, off by default). `grok leader kill` stops every leader it finds, so GodTerm never runs it. Headless `grok -p` does not use a leader.
 
 ## What GodTerm does with it
 

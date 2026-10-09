@@ -357,6 +357,12 @@ pub struct Cache {
     pub backoff_until: Option<i64>,
     pub skipped: Option<String>,
     pub last_error: Option<String>,
+    /// The releases newer than this build, newest first, with their notes
+    /// (fetched once per new latest release: `notes_for`).
+    #[serde(default)]
+    pub between: Vec<Release>,
+    #[serde(default)]
+    pub notes_for: Option<String>,
 }
 
 impl Cache {
@@ -451,6 +457,98 @@ pub fn check(src: &Source, cache: &mut Cache, channel: &str) -> Result<Option<Re
         }
         c => bail!("GitHub answered {c}"),
     }
+}
+
+/// Every release newer than `cur` up to `latest`, newest first, each with
+/// its notes: one request for the release list, made once per new latest
+/// release (cached in `cache.between`), not on every check. An empty body
+/// falls back to that version's section of the release's CHANGELOG.md.
+pub fn notes_between(
+    src: &Source,
+    cache: &mut Cache,
+    latest: &Release,
+    cur: &Version,
+) -> Vec<Release> {
+    if cache.notes_for.as_deref() == Some(latest.tag.as_str()) && !cache.between.is_empty() {
+        return cache.between.clone();
+    }
+    let url = format!("{}/repos/{}/releases?per_page=30", src.api, src.repo);
+    let h = [
+        ("Accept", "application/vnd.github+json".to_string()),
+        ("X-GitHub-Api-Version", "2022-11-28".to_string()),
+    ];
+    let list: Vec<Release> = get(src, &url, &h, Duration::from_secs(20))
+        .ok()
+        .filter(|r| r.status().as_u16() == 200)
+        .and_then(|mut r| {
+            r.body_mut()
+                .with_config()
+                .limit(4 * 1024 * 1024)
+                .read_to_string()
+                .ok()
+        })
+        .and_then(|b| serde_json::from_str::<Value>(&b).ok())
+        .and_then(|v| {
+            v.as_array()
+                .map(|a| a.iter().filter_map(Release::from_json).collect())
+        })
+        .unwrap_or_default();
+    let top = latest.version();
+    let mut v: Vec<Release> = list
+        .into_iter()
+        .filter(|r| r.version() > *cur && r.version() <= top)
+        .filter(|r| !r.prerelease || latest.prerelease)
+        .collect();
+    if !v.iter().any(|r| r.tag == latest.tag) {
+        v.push(latest.clone());
+    }
+    v.sort_by(|a, b| b.version().cmp(&a.version()));
+    v.dedup_by(|a, b| a.tag == b.tag);
+    // Empty notes: the release's CHANGELOG.md, one download for all.
+    if v.iter().any(|r| r.body.trim().is_empty()) {
+        let log = v
+            .iter()
+            .find_map(|r| r.asset("CHANGELOG.md"))
+            .and_then(|a| small(src, &a.url).ok())
+            .map(|b| String::from_utf8_lossy(&b).into_owned());
+        if let Some(log) = log {
+            for r in v.iter_mut().filter(|r| r.body.trim().is_empty()) {
+                if let Some(sec) = changelog_section(&log, &r.version()) {
+                    r.body = sec;
+                }
+            }
+        }
+    }
+    cache.between = v.clone();
+    cache.notes_for = Some(latest.tag.clone());
+    v
+}
+
+/// One version's section of a CHANGELOG.md ("## [0.2.8] ...", "## v0.2.8",
+/// "## 0.2.8 (date)"), without its heading.
+pub fn changelog_section(log: &str, v: &Version) -> Option<String> {
+    let mut out: Vec<&str> = vec![];
+    let mut inside = false;
+    for l in log.lines() {
+        if let Some(h) = l.strip_prefix("## ") {
+            if inside {
+                break;
+            }
+            let word = h
+                .trim()
+                .trim_start_matches('[')
+                .split(|c: char| c == ']' || c.is_whitespace())
+                .next()
+                .unwrap_or("");
+            inside = Version::parse(word).is_some_and(|x| x == *v);
+            continue;
+        }
+        if inside {
+            out.push(l);
+        }
+    }
+    let s = out.join("\n").trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 // ---------- install methods ----------

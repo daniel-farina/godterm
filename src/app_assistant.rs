@@ -75,6 +75,10 @@ pub struct AssistantState {
     pub conv: Option<crate::assistant_history::ConvLog>,
     /// The History tab of the panel.
     pub history: Option<crate::assistant_history::HistoryUi>,
+    /// Replies trimmed off the log (so counts keep going up).
+    pub trimmed_replies: usize,
+    /// Replies the user has seen (the conversation was on screen).
+    pub seen_replies: std::cell::Cell<usize>,
     /// Switch to this saved conversation when the turn ends.
     pub resume_after: Option<String>,
     /// Start a new conversation when the turn ends.
@@ -251,6 +255,10 @@ impl App {
     fn trim_log(&mut self) {
         if self.assistant.log.len() > 200 {
             let cut = self.assistant.log.len() - 200;
+            self.assistant.trimmed_replies += self.assistant.log[..cut]
+                .iter()
+                .filter(|e| e.who == Who::Reply)
+                .count();
             self.assistant.log.drain(..cut);
         }
     }
@@ -1543,7 +1551,11 @@ impl App {
             return self.on_history_key(k);
         }
         match k.code {
-            // Esc gives the keys back to the grid; the panel stays open.
+            // Esc in another view: back to the conversation. In it, Esc
+            // gives the keys back to the grid; the panel stays open.
+            KeyCode::Esc if self.panel_view() != crate::panel_views::PanelView::Conversation => {
+                self.back_to_conversation()
+            }
             KeyCode::Esc => self.assistant.focused = false,
             // Shift or Alt+Enter, or an Enter inside a burst of keys (a
             // paste the terminal typed out): a new line, not a send.

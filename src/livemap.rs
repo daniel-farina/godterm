@@ -1262,6 +1262,10 @@ impl App {
         if self.meter_live() {
             return Some(Duration::from_millis(40));
         }
+        // The new version chip's slow shimmer (10 frames a second).
+        if self.update_badge().is_some() && crate::ui_updates::motion(self) {
+            return Some(Duration::from_millis(100));
+        }
         // A spinner on screen (a visible tab working, waiting or running
         // background jobs): 8 frames a second; nothing when all is idle.
         self.spinner_on_screen()

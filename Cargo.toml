@@ -1,6 +1,6 @@
 [package]
 name = "godterm"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 description = "Run many Claude Code sessions side by side, each on its own account"
 license = "MIT"

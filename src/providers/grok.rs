@@ -6,13 +6,21 @@
 //! user's ~/.claude and ~/.cursor plugins, hooks and MCP servers (which
 //! Grok would import) stay out. Every built in tool is removed and the
 //! shell denied: it acts only through godterm's MCP tools.
+//!
+//! Speed (docs/ASSISTANT_PROVIDERS.md has the numbers): a turn is almost
+//! all model time; starting grok costs about 0.25 s. Turns run at the
+//! assistant's effort (low by default, the quickest), and each session is
+//! opened with a primer so GodTerm's prompt holds from the first turn.
+//! A persistent leader does not help: headless grok never uses one.
 
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use super::{Backend, Caps, Provider, StartCtx};
 use crate::app::AppEvent;
@@ -25,7 +33,7 @@ pub const PROVIDER: Provider = Provider {
     caps: Caps {
         persistent: false,
         partial: true,
-        efforts: &["none", "low", "medium", "high"],
+        efforts: &["low", "medium", "high"],
         remote_control: false,
     },
     models: &[
@@ -67,6 +75,8 @@ pub const BUILTIN_TOOLS: &[&str] = &[
     "reference_to_video",
     "write",
     "Agent",
+    // The shell's own id: "run_terminal_command" alone leaves it in.
+    "run_terminal_cmd",
 ];
 
 /// The assistant's own Grok home (its login, sessions and MCP config).
@@ -130,17 +140,68 @@ pub fn tools_note() -> String {
     )
 }
 
+/// The first command of every session: a local slash command that makes
+/// the session without a model call (about 0.25 s). Grok 1.0.45 applies
+/// --system-prompt-override only when a session is resumed, so a session
+/// opened by the user's first turn would answer it with Grok's own coding
+/// agent prompt; opened by this, every real turn is a resume and gets
+/// GodTerm's prompt.
+pub const PRIMER: &str = "/session-info";
+
+/// How long the primer may take before the turn goes on without it.
+const PRIMER_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 15 });
+
+/// Grok's reasoning effort for the assistant's setting: low unless the
+/// setting names one grok has (it has no "none"). Low is the quickest:
+/// about half the reasoning tokens of grok's default.
+pub fn effort_for(effort: &str) -> &'static str {
+    match effort {
+        "medium" => "medium",
+        "high" => "high",
+        "xhigh" => "xhigh",
+        _ => "low",
+    }
+}
+
 pub struct GrokBackend {
-    bin: String,
-    home: PathBuf,
+    launch: Launch,
     model: String,
+    effort: &'static str,
     prompt: String,
     session: String,
     started: bool,
-    pass_env: Vec<String>,
     events: std::sync::mpsc::Sender<AppEvent>,
     gen: u64,
     child: Arc<Mutex<Option<Child>>>,
+    /// Set by interrupt: a turn still priming does not start.
+    stop: Arc<AtomicBool>,
+}
+
+/// How a grok process is started: the binary, its home (HOME and
+/// GROK_HOME), and the environment it must not see.
+#[derive(Clone)]
+struct Launch {
+    bin: String,
+    home: PathBuf,
+    pass_env: Vec<String>,
+}
+
+impl Launch {
+    fn command(&self, args: &[String]) -> Command {
+        let mut c = Command::new(&self.bin);
+        c.args(args)
+            .current_dir(self.home.join("work"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (k, _) in std::env::vars() {
+            if crate::pane::should_scrub(&k, &self.pass_env) || crate::harness::scrub_grok(&k) {
+                c.env_remove(&k);
+            }
+        }
+        c.env("GROK_HOME", &self.home).env("HOME", &self.home);
+        c
+    }
 }
 
 fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
@@ -154,23 +215,59 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         "assistant: grok brain in {} (HOME and GROK_HOME isolated there; no ~/.claude or ~/.cursor imports; built in tools removed, shell denied)",
         home.display()
     ));
-    Ok(Box::new(GrokBackend {
-        bin: ctx.bin,
-        home,
-        model: ctx.model,
-        prompt: format!("{}{}", ctx.system_prompt, tools_note()),
-        session: crate::session_ops::new_uuid(),
-        started: false,
-        pass_env: ctx.pass_env.to_vec(),
-        events: ctx.events,
-        gen: ctx.gen,
-        child: Arc::new(Mutex::new(None)),
-    }))
+    Ok(Box::new(GrokBackend::new(
+        Launch {
+            bin: ctx.bin,
+            home,
+            pass_env: ctx.pass_env.to_vec(),
+        },
+        ctx.model,
+        effort_for(&ctx.cfg.effort),
+        format!("{}{}", ctx.system_prompt, tools_note()),
+        ctx.events,
+        ctx.gen,
+    )))
+}
+
+impl GrokBackend {
+    fn new(
+        launch: Launch,
+        model: String,
+        effort: &'static str,
+        prompt: String,
+        events: std::sync::mpsc::Sender<AppEvent>,
+        gen: u64,
+    ) -> GrokBackend {
+        GrokBackend {
+            launch,
+            model,
+            effort,
+            prompt,
+            session: crate::session_ops::new_uuid(),
+            started: false,
+            events,
+            gen,
+            child: Arc::new(Mutex::new(None)),
+            stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn args(&self, resume: bool, text: &str) -> Vec<String> {
+        turn_args(
+            &self.model,
+            self.effort,
+            &self.prompt,
+            &self.session,
+            resume,
+            text,
+        )
+    }
 }
 
 /// The argv for one turn.
 pub fn turn_args(
     model: &str,
+    effort: &str,
     prompt: &str,
     session: &str,
     resume: bool,
@@ -181,6 +278,8 @@ pub fn turn_args(
         text.into(),
         "-m".into(),
         model.into(),
+        "--reasoning-effort".into(),
+        effort.into(),
         "--output-format".into(),
         "streaming-messages-json".into(),
         "--include-partial-messages".into(),
@@ -202,98 +301,188 @@ pub fn turn_args(
     a
 }
 
-impl Backend for GrokBackend {
-    fn send(&mut self, text: &str) -> Result<()> {
-        let args = turn_args(&self.model, &self.prompt, &self.session, self.started, text);
-        self.started = true;
-        let mut c = Command::new(&self.bin);
-        c.args(&args)
-            .current_dir(self.home.join("work"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (k, _) in std::env::vars() {
-            if crate::pane::should_scrub(&k, &self.pass_env) || crate::harness::scrub_grok(&k) {
-                c.env_remove(&k);
+fn lock(slot: &Mutex<Option<Child>>) -> std::sync::MutexGuard<'_, Option<Child>> {
+    slot.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Opens the session with the primer: true once grok answered it. Its
+/// output is not the conversation's, so none of it reaches the app; the
+/// process finishes exiting on its own (grok takes a second or so after
+/// its result) while the turn starts.
+fn prime(launch: &Launch, args: &[String], slot: &Arc<Mutex<Option<Child>>>) -> Result<()> {
+    let mut child = launch
+        .command(args)
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("starting {}", launch.bin))?;
+    let out = child.stdout.take().context("no stdout")?;
+    let id = child.id();
+    *lock(slot) = Some(child);
+    // A primer that hangs (a login prompt, the network) is stopped.
+    let (watch, done) = (slot.clone(), Arc::new(AtomicBool::new(false)));
+    let d2 = done.clone();
+    std::thread::spawn(move || {
+        let t0 = Instant::now();
+        while t0.elapsed() < PRIMER_TIMEOUT {
+            if d2.load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if let Some(c) = lock(&watch).as_mut().filter(|c| c.id() == id) {
+            let _ = c.kill();
+        }
+    });
+    let mut lines = BufReader::new(out).lines();
+    let mut ok = false;
+    for line in lines.by_ref().map_while(Result::ok) {
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            if v["type"] == "result" {
+                ok = v["is_error"] != true;
+                break;
             }
         }
-        c.env("GROK_HOME", &self.home).env("HOME", &self.home);
-        let mut child = c
-            .spawn()
-            .with_context(|| format!("starting {}", self.bin))?;
-        let out = child.stdout.take().context("no stdout")?;
-        let err = child.stderr.take().context("no stderr")?;
-        *self.child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
-        let tail = Arc::new(Mutex::new(String::new()));
-        let t2 = tail.clone();
-        std::thread::spawn(move || {
-            for l in BufReader::new(err).lines().map_while(Result::ok) {
-                let mut t = t2.lock().unwrap_or_else(|e| e.into_inner());
-                t.push_str(&l);
-                t.push('\n');
-                if t.len() > 4000 {
-                    let cut = t.len() - 4000;
-                    t.drain(..cut);
-                }
+    }
+    done.store(true, Ordering::SeqCst);
+    let child = lock(slot).take_if(|c| c.id() == id);
+    std::thread::spawn(move || {
+        lines.for_each(drop);
+        if let Some(mut c) = child {
+            let _ = c.wait();
+        }
+    });
+    if ok {
+        Ok(())
+    } else {
+        anyhow::bail!("grok did not open the session")
+    }
+}
+
+/// One turn: its output to the app as events, ending with a Done.
+fn run_turn(
+    launch: &Launch,
+    args: &[String],
+    events: &std::sync::mpsc::Sender<AppEvent>,
+    gen: u64,
+    slot: &Arc<Mutex<Option<Child>>>,
+) {
+    let fail = |text: String| {
+        let _ = events.send(AppEvent::Assistant(
+            gen,
+            BrainEvent::Done {
+                text,
+                cost: None,
+                error: true,
+            },
+        ));
+    };
+    let mut child = match launch.command(args).spawn() {
+        Ok(c) => c,
+        Err(e) => return fail(format!("starting {}: {e}", launch.bin)),
+    };
+    let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
+        return fail("grok has no output".into());
+    };
+    *lock(slot) = Some(child);
+    let tail = Arc::new(Mutex::new(String::new()));
+    let t2 = tail.clone();
+    std::thread::spawn(move || {
+        for l in BufReader::new(err).lines().map_while(Result::ok) {
+            let mut t = t2.lock().unwrap_or_else(|e| e.into_inner());
+            t.push_str(&l);
+            t.push('\n');
+            if t.len() > 4000 {
+                let cut = t.len() - 4000;
+                t.drain(..cut);
             }
-        });
-        let (events, gen, slot) = (self.events.clone(), self.gen, self.child.clone());
+        }
+    });
+    let mut done = false;
+    for line in BufReader::new(out).lines().map_while(Result::ok) {
+        for ev in parse_line(&line) {
+            done |= matches!(ev, BrainEvent::Done { .. });
+            if events.send(AppEvent::Assistant(gen, ev)).is_err() {
+                return;
+            }
+        }
+    }
+    if let Some(mut c) = lock(slot).take() {
+        let _ = c.wait();
+    }
+    // Ended without a result: the turn failed (say why).
+    if !done {
+        std::thread::sleep(Duration::from_millis(30));
+        let t = tail.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let why = t
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("grok ended without an answer")
+            .to_string();
+        fail(why);
+    }
+}
+
+impl Backend for GrokBackend {
+    /// The first turn opens the session with the primer, then every turn
+    /// resumes it. If the primer fails the turn opens the session itself.
+    fn send(&mut self, text: &str) -> Result<()> {
+        let first = !self.started;
+        self.started = true;
+        self.stop.store(false, Ordering::SeqCst);
+        let primer = first.then(|| self.args(false, PRIMER));
+        let (resume, open) = (self.args(true, text), self.args(false, text));
+        let launch = self.launch.clone();
+        let (events, gen, slot, stop) = (
+            self.events.clone(),
+            self.gen,
+            self.child.clone(),
+            self.stop.clone(),
+        );
         std::thread::spawn(move || {
-            let mut done = false;
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                for ev in parse_line(&line) {
-                    done |= matches!(ev, BrainEvent::Done { .. });
-                    if events.send(AppEvent::Assistant(gen, ev)).is_err() {
-                        return;
+            let mut args = resume;
+            if let Some(p) = primer {
+                let t0 = Instant::now();
+                match prime(&launch, &p, &slot) {
+                    Ok(()) => crate::log::info(&format!(
+                        "assistant: grok session opened in {} ms",
+                        t0.elapsed().as_millis()
+                    )),
+                    Err(e) => {
+                        crate::log::info(&format!(
+                            "assistant: grok primer failed ({e:#}); the turn opens the session"
+                        ));
+                        args = open;
                     }
                 }
+                if stop.load(Ordering::SeqCst) {
+                    let _ = events.send(AppEvent::Assistant(
+                        gen,
+                        BrainEvent::Done {
+                            text: "stopped".into(),
+                            cost: None,
+                            error: true,
+                        },
+                    ));
+                    return;
+                }
             }
-            if let Some(mut c) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                let _ = c.wait();
-            }
-            // Ended without a result: the turn failed (say why).
-            if !done {
-                std::thread::sleep(std::time::Duration::from_millis(30));
-                let t = tail.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let why = t
-                    .lines()
-                    .rev()
-                    .find(|l| !l.trim().is_empty())
-                    .unwrap_or("grok ended without an answer")
-                    .to_string();
-                let _ = events.send(AppEvent::Assistant(
-                    gen,
-                    BrainEvent::Done {
-                        text: why,
-                        cost: None,
-                        error: true,
-                    },
-                ));
-            }
+            run_turn(&launch, &args, &events, gen, &slot);
         });
         Ok(())
     }
 
     /// The turn's process is stopped; its end is reported as a Done.
     fn interrupt(&mut self) -> Result<()> {
-        if let Some(c) = self
-            .child
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-        {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(c) = lock(&self.child).as_ref() {
             crate::procs::interrupt(c.id());
         }
         Ok(())
     }
 
     fn pid(&self) -> u32 {
-        self.child
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|c| c.id())
-            .unwrap_or(0)
+        lock(&self.child).as_ref().map(|c| c.id()).unwrap_or(0)
     }
 
     /// A process per turn: always ready for the next one.
@@ -304,7 +493,8 @@ impl Backend for GrokBackend {
 
 impl Drop for GrokBackend {
     fn drop(&mut self) {
-        if let Some(mut c) = self.child.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(mut c) = lock(&self.child).take() {
             let _ = c.kill();
             let _ = c.wait();
         }
@@ -333,3 +523,7 @@ pub fn unwrap_use_tool(input: &Value) -> Option<(String, Value)> {
     };
     Some((name.trim_start_matches("godterm__").to_string(), args))
 }
+
+#[cfg(test)]
+#[path = "grok_tests.rs"]
+mod tests;

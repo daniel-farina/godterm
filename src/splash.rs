@@ -11,7 +11,9 @@
 //!
 //! Drawn through ratatui, so only the cells that change are sent. The
 //! scene is half block pixels (two per cell, supersampled), or whole cells
-//! in Terminal.app, whose block glyphs do not split a cell evenly. The
+//! in Terminal.app, whose block glyphs do not split a cell evenly; those
+//! are drawn for the cell grid (flat faces, a pale rim, one cell lines;
+//! see `render_cells`), never averaged down. The
 //! wordmark is always whole cells in solid colors: crisp anywhere. Calm
 //! blues and slate, no glow. NO_COLOR gets a plain drawing; `splash_motion`
 //! = "off" (or "auto" with Reduce Motion on) a still frame.
@@ -751,30 +753,43 @@ fn render(l: &Layout, t: f32) -> Scene {
     }
 }
 
-fn crystal(cv: &mut Canvas, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
-    let w = cv.w as f32;
-    let held = (t - END).max(0.0);
-    let energy = ease_out(seg(t, 0.9, 1.5));
+/// The light around the crystal at time `t`, in half block pixels: the
+/// beam in from the left and the fan of rays out to the right.
+struct Beams {
+    p_in: (f32, f32),
+    p_out: (f32, f32),
+    /// The beam: from, head, and how far it has grown.
+    beam: Option<((f32, f32), (f32, f32), f32)>,
+    /// The rays: head, color, place in the fan (0 top, 1 bottom), how far
+    /// out they are.
+    rays: Vec<((f32, f32), Rgb, f32)>,
+    fan: f32,
+    /// Seconds into the hold.
+    held: f32,
+    /// The light inside, 0 to 1.
+    energy: f32,
+}
 
-    // The beam in from the left, and the fan out to the right.
+fn beams(l: &Layout, t: f32, (w, h): (f32, f32), (cx, cy, r): (f32, f32, f32)) -> Beams {
     let p_in = (cx - 0.80 * r, cy - 0.10 * r);
     let p_out = (cx + 0.80 * r, cy + 0.10 * r);
     let start = (0.0, cy - 0.10 * r - (cx * 0.10).min(0.45 * r));
     let grow = ease_out(seg(t, 0.15, 0.95));
-    if grow > 0.0 {
+    let beam = (grow > 0.0).then(|| {
         let head = (
             start.0 + (p_in.0 - start.0) * grow,
             start.1 + (p_in.1 - start.1) * grow,
         );
-        cv.line(start, head, 0.9, BEAM, |s| 0.15 + 0.8 * s * grow);
-    }
+        (start, head, grow)
+    });
     let fan = ease_out(seg(t, 1.25, 2.15));
+    let mut rays = vec![];
     if fan > 0.0 {
         // Spread so the lowest ray ends above the wordmark.
         let floor = l
             .wordmark
             .map(|w| w.1 as f32 * 2.0 - 3.0)
-            .unwrap_or(cv.h as f32 - 2.0);
+            .unwrap_or(h - 2.0);
         let run = (w - p_out.0).max(1.0);
         let lo = ((floor - p_out.1) / run).clamp(0.02, 0.21);
         for (i, c) in RAYS.iter().enumerate() {
@@ -785,19 +800,38 @@ fn crystal(cv: &mut Canvas, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
                 p_out.0 + (end.0 - p_out.0) * fan,
                 p_out.1 + (end.1 - p_out.1) * fan,
             );
-            // In the hold, a soft pulse runs out along each ray now and then.
-            let pulse_at = ((held * 0.32 + k * 0.17) % 1.6) - 0.2;
-            let pulse = held.min(1.0);
-            cv.line(p_out, head, 1.05, *c, |s| {
-                let s = s * fan;
-                let base = 0.9 - 0.5 * s;
-                let p = (-((s - pulse_at) / 0.07).powi(2)).exp() * 0.35 * pulse;
-                base + p
-            });
+            rays.push((head, *c, k));
         }
     }
+    Beams {
+        p_in,
+        p_out,
+        beam,
+        rays,
+        fan,
+        held: (t - END).max(0.0),
+        energy: ease_out(seg(t, 0.9, 1.5)),
+    }
+}
 
-    // The crystal itself.
+/// Where the pulse of the hold is along a ray (0 at the crystal, 1 at the
+/// edge), and how strong it is.
+fn pulse(held: f32, k: f32) -> (f32, f32) {
+    (((held * 0.32 + k * 0.17) % 1.6) - 0.2, held.min(1.0))
+}
+
+/// One face of the crystal, projected.
+struct Facet {
+    pts: [(f32, f32); 3],
+    /// Its normal: z > 0 faces the viewer.
+    n: V3,
+    z: f32,
+    /// How far it has flown in, 0 to 1.
+    a: f32,
+}
+
+/// The crystal's faces at `t`, back to front.
+fn facets(t: f32, (cx, cy, r): (f32, f32, f32)) -> Vec<Facet> {
     let (verts, faces) = icosahedron();
     let spin = 0.6 + 2.6 * ease_out(seg(t, 0.0, 2.4)) + 0.21 * t;
     let tilt = 0.30 + 0.03 * (t * 0.5).sin() * seg(t, END, END + 2.0);
@@ -806,22 +840,13 @@ fn crystal(cv: &mut Canvas, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
         .iter()
         .map(|&v| pose([v[0], v[1] * YS, v[2]]))
         .collect();
-    let light = norm([-0.45, 0.65, 0.62]);
-    let half = norm([light[0], light[1], light[2] + 1.0]);
     let grow_in = ease_out(seg(t, 0.25, 1.1));
     let size = r * (0.82 + 0.18 * grow_in);
     let proj = |v: V3| {
         let p = 3.4 / (3.4 - v[2]);
         (cx + v[0] * size * p, cy - v[1] * size * p)
     };
-
-    struct F {
-        pts: [(f32, f32); 3],
-        n: V3,
-        z: f32,
-        a: f32,
-    }
-    let mut fs: Vec<F> = faces
+    let mut fs: Vec<Facet> = faces
         .iter()
         .enumerate()
         .map(|(i, f)| {
@@ -836,7 +861,7 @@ fn crystal(cv: &mut Canvas, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
             let p = ease_out(seg(t, delay, delay + 0.75));
             let off = scale(norm(mid), (1.0 - p) * 1.6);
             let pts = [a, b, c].map(|v| proj(add3(v, off)));
-            F {
+            Facet {
                 pts,
                 n,
                 z: mid[2],
@@ -845,8 +870,34 @@ fn crystal(cv: &mut Canvas, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
         })
         .collect();
     fs.sort_by(|a, b| a.z.total_cmp(&b.z));
+    fs
+}
 
-    let glow = 0.62 + 0.38 * energy;
+fn light_dir() -> V3 {
+    norm([-0.45, 0.65, 0.62])
+}
+
+fn crystal(cv: &mut Canvas, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
+    let b = beams(l, t, (cv.w as f32, cv.h as f32), (cx, cy, r));
+    if let Some((start, head, grow)) = b.beam {
+        cv.line(start, head, 0.9, BEAM, |s| 0.15 + 0.8 * s * grow);
+    }
+    for &(head, c, k) in &b.rays {
+        // In the hold, a soft pulse runs out along each ray now and then.
+        let (at, strength) = pulse(b.held, k);
+        let fan = b.fan;
+        cv.line(b.p_out, head, 1.05, c, |s| {
+            let s = s * fan;
+            let base = 0.9 - 0.5 * s;
+            base + (-((s - at) / 0.07).powi(2)).exp() * 0.35 * strength
+        });
+    }
+
+    // The crystal itself.
+    let fs = facets(t, (cx, cy, r));
+    let light = light_dir();
+    let half = norm([light[0], light[1], light[2] + 1.0]);
+    let glow = 0.62 + 0.38 * b.energy;
     let edge_w = (r / 20.0).clamp(0.6, 1.0);
     let mut back_edges = cv.mask();
     let mut front_edges = cv.mask();
@@ -865,8 +916,8 @@ fn crystal(cv: &mut Canvas, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
     cv.composite(&back_edges, |_, _| (EDGE_BACK, 0.45 * glow));
 
     // The light inside.
-    if energy > 0.0 {
-        cv.line(p_in, p_out, 0.9, ICE, |_| 0.35 * energy);
+    if b.energy > 0.0 {
+        cv.line(b.p_in, b.p_out, 0.9, ICE, |_| 0.35 * b.energy);
     }
     for f in fs.iter().filter(|f| f.n[2] > 0.0) {
         let d = dot(f.n, light).max(0.0);
@@ -883,6 +934,289 @@ fn crystal(cv: &mut Canvas, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
 
 fn add3(a: V3, b: V3) -> V3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+// ---------------------------------------------------------------- whole cells
+
+// Terminal.app draws block glyphs short of the cell: in Menlo and SF Mono
+// the half block ▀ fills about 44% of it and the full block █ about 86%,
+// the wedges ◢ ◣ are small centered shapes (or missing), and ╱ ╲ are thin
+// strokes. So the whole cell scene uses no glyph at all: every cell is a
+// space with one flat color, taken at its center and never blended with
+// its neighbours. The crystal is drawn like pixel art: each face one solid
+// tone, a pale rim, and the beam and rays one cell lines in a few solid
+// steps.
+
+/// The faces: three blues, lit to unlit.
+const CELL_LIGHT: Rgb = [128.0, 164.0, 218.0];
+const CELL_MID: Rgb = [70.0, 108.0, 174.0];
+const CELL_DEEP: Rgb = [36.0, 62.0, 118.0];
+/// The rim and the lit face once the light is in.
+const CELL_EDGE: Rgb = EDGE_FRONT;
+/// What the beam and rays fade toward, one solid step at a time.
+const CELL_FADE_TO: Rgb = [14.0, 20.0, 36.0];
+
+/// The scene as one color per cell.
+fn render_cells(l: &Layout, t: f32) -> Vec<Rgb> {
+    let (cols, rows) = (l.cols as usize, l.rows as usize);
+    // Positions are in half block pixels, as for the other path: a cell
+    // is one pixel wide and two tall, its center at (x + 0.5, 2y + 1).
+    let (w, h) = (cols as f32, rows as f32 * 2.0);
+    let (ccx, ccy, cr) = l.crystal.unwrap_or((w / 2.0, h / 3.0, 0.0));
+    let fade = ease_out(seg(t, 0.0, 0.6));
+    let mut px = vec![[0.0; 3]; cols * rows];
+    for y in 0..rows {
+        for x in 0..cols {
+            let dx = (x as f32 + 0.5 - ccx) / w;
+            let dy = (y as f32 * 2.0 + 1.0 - ccy) / h * 0.9;
+            let d = (dx * dx + dy * dy).sqrt();
+            px[y * cols + x] = scale(mix(BG_IN, BG_OUT, ease_in_out(d / 0.62)), fade);
+        }
+    }
+    if cr > 0.0 {
+        let mut g = Cells { px, cols, rows };
+        crystal_cells(&mut g, l, t, (ccx, ccy, cr));
+        px = g.px;
+    }
+    px
+}
+
+struct Cells {
+    px: Vec<Rgb>,
+    cols: usize,
+    rows: usize,
+}
+
+impl Cells {
+    fn set(&mut self, x: i32, y: i32, c: Rgb) {
+        if x >= 0 && y >= 0 && (x as usize) < self.cols && (y as usize) < self.rows {
+            self.px[y as usize * self.cols + x as usize] = c;
+        }
+    }
+
+    /// A line one cell thick from `a` to `b` (half block pixels, mostly
+    /// level): a cell per column, its row where the line crosses the
+    /// column's middle. `color(s)` gives each cell's color, s from 0 at
+    /// `a` to 1 at `b`.
+    fn line(&mut self, a: (f32, f32), b: (f32, f32), color: impl Fn(f32) -> Rgb) {
+        let (x0, x1) = (a.0.min(b.0), a.0.max(b.0));
+        let dx = b.0 - a.0;
+        if dx.abs() < 1e-3 {
+            return;
+        }
+        for x in x0.floor() as i32..x1.ceil() as i32 {
+            let xc = x as f32 + 0.5;
+            if xc < x0 || xc > x1 {
+                continue;
+            }
+            let s = (xc - a.0) / dx;
+            let y = a.1 + (b.1 - a.1) * s;
+            self.set(x, (y / 2.0).floor() as i32, color(s));
+        }
+    }
+
+    /// Paints the cells whose centers fall inside the triangle.
+    fn tri(&mut self, p: [(f32, f32); 3], c: Rgb) -> Vec<usize> {
+        let mut hit = vec![];
+        let area = (p[1].0 - p[0].0) * (p[2].1 - p[0].1) - (p[1].1 - p[0].1) * (p[2].0 - p[0].0);
+        if area.abs() < 1e-3 {
+            return hit;
+        }
+        let minx = p
+            .iter()
+            .map(|q| q.0)
+            .fold(f32::MAX, f32::min)
+            .floor()
+            .max(0.0) as usize;
+        let maxx = p
+            .iter()
+            .map(|q| q.0)
+            .fold(f32::MIN, f32::max)
+            .ceil()
+            .max(0.0) as usize;
+        let miny = p.iter().map(|q| q.1).fold(f32::MAX, f32::min).max(0.0) as usize / 2;
+        let maxy = p.iter().map(|q| q.1).fold(f32::MIN, f32::max).max(0.0) as usize / 2 + 1;
+        for y in miny..maxy.min(self.rows) {
+            for x in minx..maxx.min(self.cols) {
+                let (px, py) = (x as f32 + 0.5, y as f32 * 2.0 + 1.0);
+                let inside = (0..3).all(|k| {
+                    let (a0, a1) = (p[k], p[(k + 1) % 3]);
+                    let e = (a1.0 - a0.0) * (py - a0.1) - (a1.1 - a0.1) * (px - a0.0);
+                    e * area.signum() >= 0.0
+                });
+                if inside {
+                    self.px[y * self.cols + x] = c;
+                    hit.push(y * self.cols + x);
+                }
+            }
+        }
+        hit
+    }
+}
+
+/// A solid step of a fading line: strong near its source, then two
+/// dimmer steps.
+fn step_fade(c: Rgb, s: f32) -> Rgb {
+    let k = if s < 0.45 {
+        0.92
+    } else if s < 0.75 {
+        0.66
+    } else {
+        0.42
+    };
+    mix(CELL_FADE_TO, c, k)
+}
+
+fn crystal_cells(g: &mut Cells, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
+    let (w, h) = (g.cols as f32, g.rows as f32 * 2.0);
+    let b = beams(l, t, (w, h), (cx, cy, r));
+    if let Some((start, head, _)) = b.beam {
+        // Brightest where it meets the crystal.
+        let full = p_dist(start, b.p_in).max(1.0);
+        let grown = p_dist(start, head) / full;
+        g.line(start, head, |s| step_fade(BEAM, 1.0 - s * grown));
+    }
+    // The rays leave the crystal a row apart, so each is its own line from
+    // the start, and fan out from there.
+    let n = b.rays.len() as f32;
+    for (i, &(head, c, k)) in b.rays.iter().enumerate() {
+        let off = (i as f32 - (n - 1.0) / 2.0) * 2.0;
+        let from = (b.p_out.0, b.p_out.1 + off);
+        let to = (head.0, head.1 + off);
+        let (at, strength) = pulse(b.held, k);
+        let fan = b.fan;
+        g.line(from, to, |s| {
+            let s = s * fan;
+            let base = step_fade(c, s);
+            if strength > 0.0 && (s - at).abs() < 0.035 {
+                mix(base, CELL_EDGE, 0.45 * strength)
+            } else {
+                base
+            }
+        });
+    }
+
+    // The crystal: faces back to front, each one flat tone.
+    let fs = facets(t, (cx, cy, r));
+    let light = light_dir();
+    let glow = 0.72 + 0.28 * b.energy;
+    // Tones by rank among the faces toward the viewer, so the three blues
+    // split them evenly and neighbours mostly differ; the face that
+    // catches the light turns pale once the light is in.
+    let mut front: Vec<usize> = (0..fs.len()).filter(|&i| fs[i].n[2] > 0.0).collect();
+    front.sort_by(|&a, &b| dot(fs[b].n, light).total_cmp(&dot(fs[a].n, light)));
+    let mut tone = vec![CELL_DEEP; fs.len()];
+    for (rank, &i) in front.iter().enumerate() {
+        let k = rank as f32 / front.len().max(1) as f32;
+        let base = if k < 0.34 {
+            CELL_LIGHT
+        } else if k < 0.67 {
+            CELL_MID
+        } else {
+            CELL_DEEP
+        };
+        let base = scale(base, glow);
+        tone[i] = if rank == 0 && b.energy > 0.0 {
+            mix(base, CELL_EDGE, 0.75 * b.energy)
+        } else {
+            base
+        };
+    }
+    let mut owner = vec![usize::MAX; g.px.len()];
+    let behind = g.px.clone();
+    // Only the faces toward the viewer: together they cover the crystal,
+    // and while it assembles the gaps show the background.
+    for i in (0..fs.len()).filter(|&i| fs[i].n[2] > 0.0) {
+        let f = &fs[i];
+        if f.a < 0.06 {
+            continue;
+        }
+        // Faces still flying in come up from dark in one flat color.
+        let c = mix(CELL_FADE_TO, tone[i], 0.35 + 0.65 * f.a);
+        for cell in g.tri(f.pts, c) {
+            owner[cell] = i;
+        }
+    }
+    let (cols, rows) = (g.cols, g.rows);
+    // A sliver one cell wide (a face edge on, or the tip of one) reads as
+    // a stray stroke: it goes.
+    let empty = |o: &[usize], x: usize, y: usize, dx: i32| {
+        let nx = x as i32 + dx;
+        nx < 0 || nx as usize >= cols || o[y * cols + nx as usize] == usize::MAX
+    };
+    for y in 0..rows {
+        for x in 0..cols {
+            let i = y * cols + x;
+            if owner[i] != usize::MAX && empty(&owner, x, y, -1) && empty(&owner, x, y, 1) {
+                owner[i] = usize::MAX;
+                g.px[i] = behind[i];
+            }
+        }
+    }
+    let at = |x: i32, y: i32| -> usize {
+        if x < 0 || y < 0 || x as usize >= cols || y as usize >= rows {
+            usize::MAX
+        } else {
+            owner[y as usize * cols + x as usize]
+        }
+    };
+    let mut paint = vec![];
+    // A pale rim once the crystal has come together: the covered cells
+    // next to the outside.
+    // Only the outline, never the gaps between faces still flying in:
+    // the outside is what the screen's border reaches through empty cells.
+    let rim = ease_out(seg(t, 1.0, 1.6));
+    if rim > 0.0 {
+        let mut outside = vec![false; cols * rows];
+        let mut todo: Vec<(i32, i32)> = vec![];
+        for x in 0..cols as i32 {
+            todo.push((x, 0));
+            todo.push((x, rows as i32 - 1));
+        }
+        for y in 0..rows as i32 {
+            todo.push((0, y));
+            todo.push((cols as i32 - 1, y));
+        }
+        while let Some((x, y)) = todo.pop() {
+            if x < 0 || y < 0 || x as usize >= cols || y as usize >= rows {
+                continue;
+            }
+            let i = y as usize * cols + x as usize;
+            if outside[i] || owner[i] != usize::MAX {
+                continue;
+            }
+            outside[i] = true;
+            todo.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]);
+        }
+        let out = |x: i32, y: i32| {
+            x < 0
+                || y < 0
+                || x as usize >= cols
+                || y as usize >= rows
+                || outside[y as usize * cols + x as usize]
+        };
+        let edge = mix(scale(CELL_MID, glow), CELL_EDGE, rim);
+        for y in 0..rows as i32 {
+            for x in 0..cols as i32 {
+                if at(x, y) == usize::MAX {
+                    continue;
+                }
+                let open = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                    .iter()
+                    .any(|(dx, dy)| out(x + dx, y + dy));
+                if open {
+                    paint.push((y as usize * cols + x as usize, edge));
+                }
+            }
+        }
+    }
+    for (i, c) in paint {
+        g.px[i] = c;
+    }
+}
+
+fn p_dist(a: (f32, f32), b: (f32, f32)) -> f32 {
+    ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
 }
 
 // ---------------------------------------------------------------- wordmark
@@ -1156,10 +1490,22 @@ fn draw(buf: &mut Buffer, area: Rect, t: f32, look: Look) {
         draw_mono(buf, area, &l, preview, updated);
         return;
     }
-    let sc = render(&l, t);
+    // Whole cells: one flat color per cell, drawn for it (not the half
+    // block scene averaged).
+    let (sc, cells) = if whole {
+        (None, render_cells(&l, t))
+    } else {
+        (Some(render(&l, t)), vec![])
+    };
     let at = |x: u16, y: u16| -> (Rgb, Rgb) {
         let (x, y) = (x as usize, y as usize);
-        (sc.px[2 * y * sc.w + x], sc.px[(2 * y + 1) * sc.w + x])
+        match &sc {
+            Some(sc) => (sc.px[2 * y * sc.w + x], sc.px[(2 * y + 1) * sc.w + x]),
+            None => {
+                let c = cells[y * area.width as usize + x];
+                (c, c)
+            }
+        }
     };
     let (cols, rows) = (area.width as usize, area.height as usize);
     let mut wm = vec![None; cols * rows];
@@ -1174,9 +1520,7 @@ fn draw(buf: &mut Buffer, area: Rect, t: f32, look: Look) {
                 cell.reset();
                 if let Some(c) = wm[y as usize * cols + x as usize] {
                     cell.set_symbol(" ").set_bg(to_color(c));
-                } else if whole {
-                    cell.set_symbol(" ").set_bg(to_color(mix(top, bot, 0.5)));
-                } else if ct == cb {
+                } else if whole || ct == cb {
                     cell.set_symbol(" ").set_bg(cb);
                 } else {
                     cell.set_symbol("▀").set_fg(ct).set_bg(cb);
@@ -1437,6 +1781,48 @@ mod tests {
             assert!(animate(""));
         }
         assert!(!animate("off"));
+    }
+
+    /// Whole cells: no glyph in the scene (Terminal.app draws them short of
+    /// the cell), and the crystal is a few flat tones, not a blend.
+    #[test]
+    fn whole_cells_are_flat_and_glyph_free() {
+        let (w, h) = (120, 36);
+        let area = Rect::new(0, 0, w, h);
+        let l = layout(w, h);
+        let text_rows: Vec<u16> = [
+            l.tagline.map(|t| t.0),
+            l.version,
+            l.hint,
+            l.hint.map(|r| r + 1),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        for t in [0.6, 1.4, END, END + 3.0] {
+            let mut buf = Buffer::empty(area);
+            let look = Look {
+                whole: true,
+                ..Default::default()
+            };
+            draw(&mut buf, area, t, look);
+            for y in (0..h).filter(|y| !text_rows.contains(y)) {
+                for x in 0..w {
+                    assert_eq!(buf[(x, y)].symbol(), " ", "t {t} at {x},{y}");
+                }
+            }
+        }
+        // The held crystal: its cells take only a handful of colors.
+        let (cx, cy, r) = l.crystal.unwrap();
+        let cells = render_cells(&l, END + 1.0);
+        let mut seen = std::collections::BTreeSet::new();
+        let (r0, r1) = (((cy - r) / 2.0) as usize + 1, ((cy + r) / 2.0) as usize - 1);
+        for y in r0..r1 {
+            let x = cx as usize;
+            let c = cells[y * w as usize + x];
+            seen.insert(c.map(|v| v.round() as i32));
+        }
+        assert!(seen.len() <= 5, "{seen:?}");
     }
 
     #[test]

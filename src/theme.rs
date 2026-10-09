@@ -7,6 +7,8 @@ pub const DIM: Color = Color::Rgb(132, 130, 124);
 pub const FAINT: Color = Color::Rgb(84, 86, 90);
 pub const BAR_BG: Color = Color::Rgb(38, 40, 43);
 pub const SEL_BG: Color = Color::Rgb(50, 53, 57);
+/// Selected text in a pane: a quiet slate, the text stays readable.
+pub const SELECT_BG: Color = Color::Rgb(66, 78, 94);
 
 pub const SAGE: Color = Color::Rgb(138, 160, 128);
 pub const SAND: Color = Color::Rgb(196, 176, 134);

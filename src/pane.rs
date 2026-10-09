@@ -594,17 +594,6 @@ impl Pane {
         }
     }
 
-    /// Write after a delay, from another thread (Enter after a paste).
-    pub fn write_later(&self, bytes: &[u8], delay: std::time::Duration) {
-        if let Some(p) = &self.proc {
-            let (tx, b) = (p.input.clone(), bytes.to_vec());
-            std::thread::spawn(move || {
-                std::thread::sleep(delay);
-                let _ = tx.try_send(b);
-            });
-        }
-    }
-
     /// The PTY's size (rows, cols).
     #[cfg(test)]
     pub fn pty_size(&self) -> (u16, u16) {
@@ -634,8 +623,10 @@ impl Pane {
     }
 
     pub fn scroll_by(&mut self, delta: isize) {
-        let next = (self.scroll as isize + delta).max(0) as usize;
         let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
+        // From where the view is: vt100 moves it up as output arrives, to
+        // keep the same lines in view.
+        let next = (p.screen().scrollback() as isize + delta).max(0) as usize;
         p.screen_mut().set_scrollback(next);
         // vt100 clamps to the available history.
         self.scroll = p.screen().scrollback();

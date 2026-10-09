@@ -329,17 +329,59 @@ pub fn terminate(pid: u32) -> bool {
 /// Whether `terminate` is forced on this OS (no cleanup in the process).
 pub const TERMINATE_IS_FORCED: bool = cfg!(windows);
 
-/// Put text on the clipboard (pbcopy) in the background, at most 2 s: the
-/// screen never waits on it.
+/// The clipboard programs to try, in order: pbcopy on macOS, clip on
+/// Windows, wl-copy (Wayland), xclip or xsel (X11) elsewhere.
+fn clipboard_cmds() -> Vec<(&'static str, &'static [&'static str])> {
+    if cfg!(target_os = "macos") {
+        vec![("pbcopy", &[])]
+    } else if cfg!(windows) {
+        vec![("clip", &[])]
+    } else {
+        let mut v: Vec<(&'static str, &'static [&'static str])> = vec![];
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            v.push(("wl-copy", &[]));
+        }
+        if std::env::var_os("DISPLAY").is_some() {
+            v.push(("xclip", &["-selection", "clipboard"]));
+            v.push(("xsel", &["--clipboard", "--input"]));
+        }
+        v
+    }
+}
+
+/// Whether `name` is a program on PATH.
+fn on_path(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|d| {
+        d.join(name).is_file() || (cfg!(windows) && d.join(format!("{name}.exe")).is_file())
+    })
+}
+
+/// Also copy with OSC 52 (the terminal sets its own clipboard): over SSH,
+/// where the programs above reach the wrong machine, or without them.
+pub fn osc52_wanted() -> bool {
+    std::env::var_os("SSH_TTY").is_some()
+        || std::env::var_os("SSH_CONNECTION").is_some()
+        || !clipboard_cmds().iter().any(|(c, _)| on_path(c))
+}
+
+/// Put text on the clipboard in the background, at most 2 s: the screen
+/// never waits on it.
 pub fn copy_to_clipboard(text: String) {
     std::thread::spawn(move || {
         use std::io::Write;
-        let Ok(mut c) = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        else {
+        let spawned = clipboard_cmds().into_iter().find_map(|(c, args)| {
+            std::process::Command::new(c)
+                .args(args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()
+        });
+        let Some(mut c) = spawned else {
             return;
         };
         if let Some(mut i) = c.stdin.take() {

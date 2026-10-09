@@ -240,6 +240,8 @@ pub fn carry_summary(evs: &[Value]) -> String {
 /// The History tab of the assistant panel.
 #[derive(Debug, Clone, Default)]
 pub struct HistoryUi {
+    /// Saved conversations, the one going on left out (it is pinned on
+    /// top, live).
     pub items: Vec<Summary>,
     pub query: String,
     pub sel: usize,
@@ -268,10 +270,16 @@ impl HistoryUi {
 
 impl App {
     pub fn toggle_assistant_history(&mut self) {
-        self.assistant.history = match self.assistant.history {
-            Some(_) => None,
-            None => Some(HistoryUi::load()),
-        };
+        match self.assistant.history {
+            Some(_) => self.back_to_conversation(),
+            None => {
+                let mut h = HistoryUi::load();
+                if let Some(c) = &self.assistant.conv {
+                    h.items.retain(|s| s.id != c.id);
+                }
+                self.assistant.history = Some(h);
+            }
+        }
     }
 
     /// Continue a saved conversation: a fresh brain told what was said,
@@ -360,7 +368,7 @@ impl App {
             return true;
         }
         match k.code {
-            KeyCode::Esc => self.assistant.history = None,
+            KeyCode::Esc => self.back_to_conversation(),
             KeyCode::Up => h.sel = h.sel.saturating_sub(1),
             KeyCode::Down => h.sel = (h.sel + 1).min(n.saturating_sub(1)),
             KeyCode::Enter => h.open = sel_id,

@@ -238,6 +238,17 @@ pub enum UiAction {
     MuteToggle,
     /// The speaker mute (talk back), separate from the mic.
     SpeakerToggle,
+    /// Back to the conversation going on (from History, Admin, Rules...).
+    AssistantConversation,
+    /// Answer the assistant's question: yes (true) or no.
+    AssistantAnswer(bool),
+    /// The new version chip and the Updates window's buttons.
+    OpenUpdates,
+    UpdatesDownload,
+    UpdatesRestart,
+    UpdatesRestartGo,
+    UpdatesLater,
+    UpdatesPage,
     /// The failover notice: move the tab (Ctrl-a F), or not now.
     FailoverMove,
     FailoverDismiss,

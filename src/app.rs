@@ -308,6 +308,10 @@ pub enum Modal {
     MenuOverflow,
     None,
     Help,
+    /// What is new since this version (scrolled this far), and the update.
+    Updates(u16),
+    /// "Restart to update?": what comes back, what is interrupted.
+    UpdateRestart,
     ConfirmQuit,
     ConfirmClose,
     AddAccount(Box<crate::add_account::AddForm>),
@@ -430,6 +434,9 @@ pub struct App {
     /// for a new tab.
     /// Prompts on their way into tabs (followed until claude takes them).
     pub deliveries: Vec<crate::control::Delivery>,
+    /// Pastes whose Enter waits for the tab to show them (voice "send",
+    /// a login code).
+    pub pending_enters: Vec<crate::control::PendingEnter>,
     pub delivery_seq: u64,
     /// The tab the assistant last used ("there", "that tab").
     pub last_target: Option<u64>,
@@ -537,6 +544,11 @@ pub struct App {
     pub term_rects: Vec<Rect>,
     /// The assistant panel floats over the panes this frame.
     pub panel_overlay: std::cell::Cell<bool>,
+    /// How far the Updates window can scroll (set when drawn).
+    pub updates_max_scroll: std::cell::Cell<u16>,
+    /// The menu bar is on screen (the update chip lives there, else in the
+    /// status bar).
+    pub menu_shown: std::cell::Cell<bool>,
     /// Moves on offer for tabs whose account runs out (app_failover).
     pub failover: Vec<crate::app_failover::Offer>,
     /// (tab uid, account) the user said no to.
@@ -558,6 +570,14 @@ pub struct App {
     /// Last mouse position (for hover highlights and hints).
     pub mouse_pos: Option<(u16, u16)>,
     pub last_click: Option<(Instant, crate::hits::UiAction)>,
+    /// Text selected by dragging in a pane or the assistant (app_select).
+    pub selection: Option<crate::select::Selection>,
+    /// The last press in selectable text, for double and triple clicks.
+    pub sel_press: Option<crate::select::Press>,
+    /// The assistant's conversation as drawn: its area and lines.
+    pub assistant_text: std::cell::RefCell<Option<(Rect, Vec<String>)>>,
+    /// What the last copy put on the clipboard.
+    pub last_copied: Option<String>,
     /// Mouse capture on (clickable UI) or released for text selection.
     pub mouse_capture: bool,
     pub tx: Sender<AppEvent>,
@@ -644,6 +664,7 @@ impl App {
             superseded: vec![],
             pending_job: None,
             deliveries: vec![],
+            pending_enters: vec![],
             delivery_seq: 0,
             last_target: None,
             ctl_waits: vec![],
@@ -709,6 +730,8 @@ impl App {
             term_rects: vec![],
             panel_overlay: Default::default(),
             key_burst: None,
+            updates_max_scroll: Default::default(),
+            menu_shown: Default::default(),
             failover: vec![],
             failover_declined: vec![],
             hits: Default::default(),
@@ -719,6 +742,10 @@ impl App {
             last_modal_from: None,
             mouse_pos: None,
             last_click: None,
+            selection: None,
+            sel_press: None,
+            assistant_text: Default::default(),
+            last_copied: None,
             mouse_capture: true,
             tx,
             voice: Default::default(),
@@ -1587,6 +1614,7 @@ impl App {
 
     /// Periodic work, called a few times per second.
     pub fn tick(&mut self) {
+        self.selection_tick();
         self.grok_screen_tick();
         self.takeover_tick();
         if self.view == View::Sessions
@@ -2142,6 +2170,50 @@ impl App {
                 }
                 return;
             }
+            Modal::Updates(top) => {
+                let top = *top;
+                let max = self.updates_max_scroll.get();
+                let page = 10u16;
+                match k.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.modal = Modal::None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.modal = Modal::Updates(top.saturating_sub(1))
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.modal = Modal::Updates((top + 1).min(max))
+                    }
+                    KeyCode::PageUp => self.modal = Modal::Updates(top.saturating_sub(page)),
+                    KeyCode::PageDown | KeyCode::Char(' ') => {
+                        self.modal = Modal::Updates((top + page).min(max))
+                    }
+                    KeyCode::Home => self.modal = Modal::Updates(0),
+                    KeyCode::End => self.modal = Modal::Updates(max),
+                    KeyCode::Char('l') => self.updates_later(),
+                    KeyCode::Char('p') => self.updates_release_page(),
+                    KeyCode::Char('d') => self.updates_download(),
+                    KeyCode::Char('r') | KeyCode::Enter => {
+                        if self.update.ready().is_some() {
+                            self.modal = Modal::UpdateRestart;
+                        } else if k.code == KeyCode::Enter {
+                            self.updates_download();
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            Modal::UpdateRestart => {
+                if matches!(
+                    k.code,
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter
+                ) {
+                    self.modal = Modal::None;
+                    self.restart_to_update(true);
+                } else {
+                    self.modal = Modal::Updates(0);
+                }
+                return;
+            }
             Modal::ConfirmQuit => {
                 if matches!(
                     k.code,
@@ -2312,6 +2384,11 @@ impl App {
         if is_prefix_key {
             self.prefix = true;
             self.prefix_at = Some(Instant::now());
+            return;
+        }
+        // A key into a pane (or the assistant) drops the selection there;
+        // Esc does only that.
+        if self.selection_key(&k) {
             return;
         }
         // The assistant panel's input takes typing while it is open.
@@ -2508,6 +2585,7 @@ impl App {
             }
             (_, Some('b')) => self.modal = Modal::Broadcast(String::new()),
             (_, Some('y')) => self.modal = Modal::Approvals(0),
+            (_, Some('c')) => self.copy_selection(),
             (_, Some('m')) => {
                 let (p, t) = (self.focus, self.panes[self.focus].active);
                 self.open_move_picker(p, t, false);
@@ -2518,6 +2596,7 @@ impl App {
             (_, Some('Z')) => self.toggle_memory_saver(),
             (_, Some('X')) => self.toggle_mute(),
             (_, Some('O')) => self.toggle_speaker(),
+            (_, Some('D')) => self.open_updates(),
             (_, Some('F')) => {
                 if self.accept_failover(None, false).is_none() {
                     self.flash("No move on offer");
@@ -2529,9 +2608,9 @@ impl App {
             (_, Some('M')) => {
                 self.mouse_capture = !self.mouse_capture;
                 self.flash(if self.mouse_capture {
-                    "Mouse on: everything is clickable (Ctrl-a M releases it for text selection)"
+                    "Mouse on: everything is clickable, and a drag in a pane selects and copies its text"
                 } else {
-                    "Mouse released: drag to select text, Ctrl-a M to make the UI clickable again"
+                    "Mouse released to the terminal (its selection spans every pane; drag to select works without this). Ctrl-a M takes it back"
                 });
             }
             (_, Some('T')) => {

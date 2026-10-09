@@ -32,18 +32,24 @@ pub struct Shared {
     pub checked_at: Option<chrono::DateTime<chrono::Local>>,
     pub method: Option<Method>,
     pub staged: Option<Staged>,
+    /// The releases newer than this build, newest first, with notes.
+    pub between: Vec<Release>,
 }
 
 #[derive(Default)]
 pub struct UpdateUi {
     pub shared: Arc<Mutex<Shared>>,
-    kick: Option<mpsc::Sender<()>>,
+    pub(crate) kick: Option<mpsc::Sender<()>>,
     /// The version the toast was shown for.
     pub toasted: Option<String>,
     /// A second Ctrl-a N within this window restarts despite the warning.
     pub confirm_until: Option<Instant>,
     /// Restart once the assistant's turn is over.
     pub after_turn: bool,
+    /// "Later": no chip for this version until the next launch.
+    pub later: Option<String>,
+    /// Download now even with auto_download off (the Updates "Download").
+    pub force_download: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl UpdateUi {
@@ -63,13 +69,26 @@ impl UpdateUi {
     }
 }
 
-/// One check (and download): what the thread runs.
+/// One check (and download), as the thread runs it (tests).
+#[cfg(test)]
 pub fn run_once(
     shared: &Arc<Mutex<Shared>>,
     cfg: &crate::config::UpdateCfg,
     src: &update::Source,
     l: &Layout,
     method: Method,
+) {
+    run_once_with(shared, cfg, src, l, method, false)
+}
+
+/// `force`: download even with auto_download off.
+pub fn run_once_with(
+    shared: &Arc<Mutex<Shared>>,
+    cfg: &crate::config::UpdateCfg,
+    src: &update::Source,
+    l: &Layout,
+    method: Method,
+    force: bool,
 ) {
     let set = |f: &dyn Fn(&mut Shared)| f(&mut shared.lock().unwrap_or_else(|e| e.into_inner()));
     set(&|s| {
@@ -106,6 +125,11 @@ pub fn run_once(
         return;
     };
     let v = rel.version().to_string();
+    // The notes of every version between, for the Updates window.
+    let mut cache = Cache::load(l);
+    let between = update::notes_between(src, &mut cache, &rel, &cur);
+    cache.save(l);
+    set(&|s| s.between = between.clone());
     if skipped.as_deref() == Some(v.as_str()) {
         crate::log::info(&format!("update: {v} skipped by the user"));
         set(&|s| s.phase = Phase::UpToDate);
@@ -121,7 +145,7 @@ pub fn run_once(
         set(&|s| s.phase = Phase::Ready);
         return;
     }
-    if method.hint().is_some() || !cfg.auto_download {
+    if method.hint().is_some() || (!cfg.auto_download && !force) {
         crate::log::info(&format!("update: {v} available ({})", method.describe()));
         set(&|s| s.phase = Phase::Available);
         return;
@@ -157,6 +181,7 @@ impl App {
         let (tx, rx) = mpsc::channel::<()>();
         self.update.kick = Some(tx);
         let shared = self.update.shared.clone();
+        let force = self.update.force_download.clone();
         let cfg = self.cfg.update.clone();
         let every = Duration::from_secs(cfg.check_hours.max(1) * 3600);
         let _ = std::thread::Builder::new()
@@ -171,7 +196,8 @@ impl App {
                         Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                         Err(mpsc::RecvTimeoutError::Disconnected) => return,
                     }
-                    run_once(&shared, &cfg, &src, &l, update::detect_self(&l));
+                    let now = force.swap(false, std::sync::atomic::Ordering::SeqCst);
+                    run_once_with(&shared, &cfg, &src, &l, update::detect_self(&l), now);
                     // A failed check (offline, rate limited) tries again sooner.
                     let failed = matches!(
                         shared.lock().unwrap_or_else(|e| e.into_inner()).phase,
@@ -391,9 +417,56 @@ impl App {
 
     /// The state block line for the assistant.
     pub fn update_state_line(&self) -> String {
-        match self.update.ready() {
-            Some(v) => format!("update_ready: v{v} (mention it once, briefly; \"update now\" is restart_to_update)\n"),
-            None => String::new(),
+        if let Some(v) = self.update.ready() {
+            return format!("update_ready: v{v} (mention it once, briefly; \"update now\" is restart_to_update; what's new: update_info)\n");
         }
+        let s = self.update.snapshot();
+        let Some(v) = s
+            .latest
+            .as_ref()
+            .map(|r| r.version())
+            .filter(|v| *v > Version::current())
+        else {
+            return String::new();
+        };
+        let how = match (&s.phase, s.method.as_ref().and_then(Method::hint)) {
+            (_, Some(h)) => format!("updates with: {h}"),
+            (Phase::Downloading(p), _) => format!("downloading, {p}%"),
+            _ => "not downloaded yet (restart_to_update downloads it)".into(),
+        };
+        format!("update_available: v{v}, {how}; what's new: update_info\n")
+    }
+
+    /// For the assistant's update_info.
+    pub fn update_info_json(&self) -> serde_json::Value {
+        let s = self.update.snapshot();
+        let cur = Version::current();
+        let latest = s.latest.as_ref().map(|r| r.version().to_string());
+        let mut rels = s.between.clone();
+        if rels.is_empty() {
+            rels.extend(s.latest.clone().filter(|r| r.version() > cur));
+        }
+        serde_json::json!({
+            "current": cur.to_string(),
+            "latest": latest,
+            "newer": rels.iter().any(|r| r.version() > cur),
+            "state": match &s.phase {
+                Phase::Ready => "downloaded and verified, ready to restart".to_string(),
+                Phase::Downloading(p) => format!("downloading {p}%"),
+                Phase::Available => "available".into(),
+                Phase::Checking => "checking".into(),
+                Phase::UpToDate => "up to date".into(),
+                Phase::Failed(e) => format!("last check failed: {e}"),
+                Phase::Idle => "not checked yet".into(),
+            },
+            "install": s.method.as_ref().map(Method::describe),
+            "update_with": s.method.as_ref().and_then(Method::hint),
+            "versions": rels.iter().map(|r| serde_json::json!({
+                "version": r.version().to_string(),
+                "published": r.published,
+                "notes": r.notes(20),
+                "page": r.page,
+            })).collect::<Vec<_>>(),
+        })
     }
 }

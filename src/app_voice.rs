@@ -1077,16 +1077,15 @@ impl App {
     }
 
     fn type_text(&mut self, slot: usize, tab: usize, text: &str, enter: bool) {
+        if enter {
+            // Paste, then Enter as its own write once the tab shows it: in
+            // the same read claude takes the CR as a newline in the paste.
+            self.paste_then_enter(slot, tab, text);
+            return;
+        }
         let t = &mut self.panes[slot].tabs[tab];
         t.reset_scroll();
-        if enter {
-            // Paste, then Enter as its own write a moment later: in the
-            // same burst claude reads the CR as a newline in the paste.
-            t.write(&keys::encode_paste(text, true));
-            t.write_later(b"\r", std::time::Duration::from_millis(80));
-        } else {
-            t.write(&keys::encode_paste(text, t.bracketed_paste()));
-        }
+        t.write(&keys::encode_paste(text, t.bracketed_paste()));
     }
 
     /// Speak a short confirmation.

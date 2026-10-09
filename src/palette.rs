@@ -112,7 +112,11 @@ pub const ACTIONS: &[(&str, Action)] = &[
         "account menu (switch, log in, log out, tab position)",
         Action::AccountMenu,
     ),
-    ("toggle mouse capture (select text)", Action::Key('M')),
+    (
+        "release the mouse to the terminal (select across panes)",
+        Action::Key('M'),
+    ),
+    ("copy the selected text", Action::Key('c')),
     (
         "move this tab to another account (continue the conversation there)",
         Action::Key('m'),

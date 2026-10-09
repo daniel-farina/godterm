@@ -87,8 +87,13 @@ pub const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "update_info",
+        description: "Is there a GodTerm update, and what's new: the current and latest version, whether it is downloaded, how this install updates, and every newer version's release notes (newest first). For \"is there an update?\" and \"what's new?\": summarize the notes in a sentence or two.",
+        schema: || props(json!({}), &[]),
+    },
+    Tool {
         name: "restart_to_update",
-        description: "Install the downloaded GodTerm update and restart into it once this answer ends; every tab resumes its session. Only when the state shows update_ready and the user asked (\"update now\"). If tabs are working it returns needs_confirmation: ask the user, then call again with confirm true.",
+        description: "\"Update and restart\": install the downloaded GodTerm update and restart into it once this answer ends; every tab comes back and resumes its session, running work is interrupted. Always one yes: the first call returns needs_confirmation (say what it says, ask), then call again with confirm true. Not downloaded yet: it starts the download and says so. A Homebrew or system install: it returns the command to run instead.",
         schema: || props(json!({"confirm": {"type": "boolean"}}), &[]),
     },
     Tool {
@@ -687,6 +692,14 @@ pub enum Stage {
     Failed(String),
 }
 
+/// A paste whose Enter waits for the tab to show it.
+#[derive(Debug, Clone)]
+pub struct PendingEnter {
+    pub uid: u64,
+    pub text: String,
+    pub at: Instant,
+}
+
 /// A prompt sent to a tab, followed until claude has accepted it.
 #[derive(Debug, Clone)]
 pub struct Delivery {
@@ -894,6 +907,43 @@ impl App {
         tab.write(&crate::keys::encode_paste(text, true));
     }
 
+    /// Paste into a tab, then Enter as a write of its own once the tab
+    /// shows the text (pending_enters_tick), never on a timer: a CR in the
+    /// same read as the paste is a new line, and a busy machine bunches
+    /// timed writes together.
+    pub fn paste_then_enter(&mut self, s: usize, t: usize, text: &str) {
+        let tab = &mut self.panes[s].tabs[t];
+        tab.reset_scroll();
+        tab.write(&crate::keys::encode_paste(text, true));
+        self.pending_enters.push(PendingEnter {
+            uid: tab.uid,
+            text: text.to_string(),
+            at: Instant::now(),
+        });
+    }
+
+    /// Press the Enters whose paste now shows (or waited long enough).
+    pub fn pending_enters_tick(&mut self) {
+        let ps = std::mem::take(&mut self.pending_enters);
+        for p in ps {
+            let Some((s, t)) = self.find_tab(self.current_uid(p.uid)) else {
+                continue;
+            };
+            let echoed = shows_prompt(&self.tab_screen(s, t), &p.text);
+            if echoed || p.at.elapsed() >= ECHO_WAIT {
+                if !echoed {
+                    crate::log::info(&format!(
+                        "paste: {} shows no echo, pressing Enter anyway",
+                        tab_id(p.uid)
+                    ));
+                }
+                self.panes[s].tabs[t].write(b"\r");
+            } else {
+                self.pending_enters.push(p);
+            }
+        }
+    }
+
     fn tab_screen(&self, s: usize, t: usize) -> String {
         self.panes[s].tabs[t]
             .parser
@@ -1075,6 +1125,7 @@ impl App {
     /// Deliver queued prompts and finish held replies once tabs are ready.
     pub fn control_tick(&mut self) {
         self.deliveries_tick();
+        self.pending_enters_tick();
         let ws = std::mem::take(&mut self.ctl_waits);
         for mut w in ws {
             if let Some(rx) = w.job.as_ref() {
@@ -2721,20 +2772,38 @@ impl App {
                     .collect();
                 ok(json!({"tab": id, "state": self.state_word(sl, t), "turns": turns}))
             }
+            "update_info" => ok(self.update_info_json()),
             "restart_to_update" => {
+                let snap = self.update.snapshot();
+                if let Some(h) = snap.method.as_ref().and_then(crate::update::Method::hint) {
+                    return Ok(ok(
+                        json!({"say": format!("This install updates with: {h}")}),
+                    ));
+                }
                 let Some(v) = self.update.ready() else {
+                    if snap.phase == crate::app_update::Phase::Available {
+                        self.updates_download();
+                        return Ok(ok(
+                            json!({"say": "Downloading the update now; I'll restart once it is ready and you say so."}),
+                        ));
+                    }
                     return Err("no update is downloaded and ready".into());
                 };
                 let confirm = args.get("confirm").and_then(Value::as_bool) == Some(true);
-                // The assistant's own turn is not a blocker: it restarts after it.
-                let blockers: Vec<String> = self
-                    .restart_blockers()
-                    .into_iter()
-                    .filter(|b| !b.starts_with("the assistant"))
-                    .collect();
-                if !blockers.is_empty() && !confirm {
+                if !confirm {
+                    // The assistant's own turn is not a blocker: it restarts after it.
+                    let blockers: Vec<String> = self
+                        .restart_blockers()
+                        .into_iter()
+                        .filter(|b| !b.starts_with("the assistant"))
+                        .collect();
+                    let now = if blockers.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" Right now: {}.", blockers.join(", "))
+                    };
                     return Ok(
-                        json!({"ok": false, "needs_confirmation": format!("Restarting now interrupts this: {}. Ask the user; then call again with confirm true.", blockers.join(", "))}),
+                        json!({"ok": false, "needs_confirmation": format!("Restart into version {v}? Every tab comes back and resumes its conversation; running work is interrupted.{now} Ask the user; on yes call again with confirm true.")}),
                     );
                 }
                 self.update.after_turn = true;

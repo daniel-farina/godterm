@@ -202,6 +202,14 @@ pub fn draw_menu_bar(f: &mut Frame, app: &App, area: Rect) {
         "Home: back to all sessions (Esc, Ctrl-a g)",
     );
     x += 1;
+    // The new version chip: kept whole at the right end; buttons and the
+    // mouse hint make room for it.
+    let badge = app.update_badge();
+    let full_limit = limit;
+    let limit = match &badge {
+        Some(b) => limit.saturating_sub(crate::ui_updates::chip_width(b) + 1),
+        None => limit,
+    };
     let items = menu_items(app);
     // Fixed labels, so a button never moves when state changes. When the
     // terminal is narrow, whole buttons go (lowest priority first) behind
@@ -313,6 +321,12 @@ pub fn draw_menu_bar(f: &mut Frame, app: &App, area: Rect) {
             m,
             Style::default().fg(FAINT).bg(BAR_BG),
         );
+    }
+    if let Some(b) = badge {
+        let cw = crate::ui_updates::chip_width(&b);
+        if full_limit >= area.x + cw {
+            crate::ui_updates::draw_chip(buf, app, full_limit - cw, y, &b);
+        }
     }
 }
 
@@ -683,7 +697,7 @@ pub fn pane_regions(f: &mut Frame, app: &App, i: usize, area: Rect, term: Rect, 
     hits.add(
         term,
         UiAction::PaneBody(i),
-        "Click to focus; keys go to this claude (wheel scrolls history)",
+        "Click to focus; drag to select and copy text (wheel scrolls history)",
     );
     let slot = &app.panes[i];
     match slot.account {
@@ -804,12 +818,24 @@ pub fn modal_chrome(buf: &mut Buffer, app: &App, r: Rect, buttons: &[(&str, UiAc
         }
     }
     let mut x = right.saturating_sub(total + 1).max(r.x + 1);
-    for (label, action, hint) in buttons {
+    for (k, (label, action, hint)) in buttons.iter().enumerate() {
         let accent = match action {
             UiAction::ModalCancel | UiAction::TourSkip => theme::STONE,
             _ => theme::SAGE,
         };
+        let start = x;
         x = btn(buf, app, x, y, right, label, action.clone(), hint, accent);
+        // The default (Enter) is the first: bold and underlined.
+        if k == 0 && !matches!(action, UiAction::ModalCancel) {
+            for cx in start + 1..x.saturating_sub(1) {
+                if let Some(c) = buf.cell_mut((cx, y)) {
+                    c.set_style(
+                        c.style()
+                            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1029,6 +1055,7 @@ pub fn help_action(keys: &str) -> Option<UiAction> {
         _ if k.starts_with("Ctrl-a :") => ':',
         _ if k.starts_with("Ctrl-a b") => 'b',
         _ if k.starts_with("Ctrl-a y") => 'y',
+        _ if k.starts_with("Ctrl-a c") => 'c',
         _ if k.starts_with("Ctrl-a v") => 'v',
         _ if k.starts_with("Ctrl-a M") => 'M',
         _ if k.starts_with("Ctrl-a m") => 'm',

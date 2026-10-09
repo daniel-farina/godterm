@@ -198,6 +198,10 @@ impl App {
             return;
         }
         let region = self.region_at(m.column, m.row);
+        // Dragging over text selects it (a plain click goes on as before).
+        if self.selection_mouse(&m, region.as_ref()) {
+            return;
+        }
         if m.kind == MouseEventKind::Moved && matches!(self.modal, Modal::Menu(_)) {
             self.on_menu_hover(m.column, m.row);
             return;
@@ -239,6 +243,22 @@ impl App {
                     }
                     return;
                 };
+                // Only a click inside the panel's own rect (this frame's,
+                // docked or floating) keeps the keys there; anywhere else
+                // (a tab, a pane, the menu bar, the status bar) takes them.
+                if self.modal == Modal::None {
+                    let panel = self
+                        .last_hits
+                        .find(&UiAction::AssistantFocus)
+                        .map(|p| p.rect);
+                    match panel {
+                        // Its buttons and rows too give it the keys.
+                        Some(p) if crate::hits::contains(p, m.column, m.row) => {
+                            self.assistant.focused = true
+                        }
+                        _ => self.assistant.focused = false,
+                    }
+                }
                 let double = self
                     .last_click
                     .as_ref()
@@ -261,6 +281,18 @@ impl App {
                     }
                     Some(UiAction::PathClick(i)) => self.modal = Modal::PathMenu(i),
                     _ => {}
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if matches!(self.modal, Modal::Updates(_)) =>
+            {
+                if let Modal::Updates(top) = self.modal {
+                    let max = self.updates_max_scroll.get();
+                    self.modal = Modal::Updates(if m.kind == MouseEventKind::ScrollUp {
+                        top.saturating_sub(3)
+                    } else {
+                        (top + 3).min(max)
+                    });
                 }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -710,7 +742,27 @@ impl App {
             UiAction::UndoTabMove => self.undo_tab_move(),
             UiAction::LoopJump => self.jump_to_loop(),
             UiAction::FreeNow => self.free_now(),
-            UiAction::AssistantNew => self.reset_assistant(),
+            UiAction::AssistantNew => {
+                self.back_to_conversation();
+                self.reset_assistant();
+            }
+            UiAction::OpenUpdates => self.open_updates(),
+            UiAction::UpdatesDownload => self.updates_download(),
+            UiAction::UpdatesRestart => self.modal = Modal::UpdateRestart,
+            UiAction::UpdatesRestartGo => {
+                self.modal = Modal::None;
+                self.restart_to_update(true);
+            }
+            UiAction::UpdatesLater => self.updates_later(),
+            UiAction::UpdatesPage => self.updates_release_page(),
+            UiAction::AssistantAnswer(yes) => {
+                self.assistant.input = if yes { "yes" } else { "no" }.into();
+                self.send_assistant_input();
+            }
+            UiAction::AssistantConversation => {
+                self.back_to_conversation();
+                self.assistant.focused = true;
+            }
             UiAction::AssistantSend => self.send_assistant_input(),
             UiAction::SetupInstall(id) => self.setup_click(&id),
             UiAction::SetupWhisper(m) => {

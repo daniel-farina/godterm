@@ -1307,9 +1307,8 @@ impl App {
                 .contents(),
         );
         self.admin.logins[i].seen = marks;
-        let tab = &mut self.panes[s].tabs[t];
-        tab.write(format!("\x1b[200~{code}\x1b[201~").as_bytes());
-        tab.write_later(b"\r", Duration::from_millis(150));
+        // Enter once the login screen shows the code (never on a timer).
+        self.paste_then_enter(s, t, &code);
         self.admin.logins[i].stage = LoginStage::Browser;
         crate::log::info("admin: pasted the login code (not logged)");
         self.announce_progress("Pasted the code. Checking the login.");
@@ -1318,6 +1317,8 @@ impl App {
 
     /// Every tick: drain job events, watch logins.
     pub fn admin_tick(&mut self) {
+        // A pasted login code's Enter, once its screen shows it.
+        self.pending_enters_tick();
         let mut evs = vec![];
         if let Some(rx) = &self.admin.rx {
             while let Ok(e) = rx.try_recv() {

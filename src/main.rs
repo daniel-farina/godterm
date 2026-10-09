@@ -19,6 +19,7 @@ mod app_pause;
 mod app_privacy;
 mod app_provider;
 mod app_remote;
+mod app_select;
 mod app_sessions;
 mod app_settings;
 mod app_setup;
@@ -34,10 +35,14 @@ mod app_wake;
 mod assistant;
 mod assistant_history;
 mod assistant_memory;
+#[cfg(test)]
+mod click_focus_tests;
 mod clock;
 mod closed;
 mod color_pick;
 mod config;
+#[cfg(test)]
+mod confirm_click_tests;
 mod control;
 mod creds;
 mod demo;
@@ -74,6 +79,11 @@ mod newfolder_tests;
 mod notify;
 mod palette;
 mod pane;
+#[cfg(test)]
+mod panel_view_tests;
+mod panel_views;
+#[cfg(test)]
+mod paste_enter_tests;
 mod paths;
 mod picker;
 mod platform;
@@ -85,6 +95,7 @@ mod providers;
 #[cfg(test)]
 mod remote_tests;
 mod risk;
+mod select;
 mod sess_sort;
 mod session_index;
 mod session_ops;
@@ -117,7 +128,10 @@ mod ui_assistant;
 mod ui_chrome;
 mod ui_livemap;
 mod ui_settings;
+mod ui_updates;
 mod update;
+#[cfg(test)]
+mod update_ui_tests;
 mod usage;
 mod usage_share;
 mod voice;
