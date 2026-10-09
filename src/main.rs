@@ -82,7 +82,8 @@ mod pane;
 #[cfg(test)]
 mod panel_view_tests;
 mod panel_views;
-#[cfg(test)]
+// A real PTY and a shell script stub: Unix only.
+#[cfg(all(test, unix))]
 mod paste_enter_tests;
 mod paths;
 mod picker;
