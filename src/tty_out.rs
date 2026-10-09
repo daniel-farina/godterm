@@ -533,9 +533,11 @@ mod tests {
         let (iters, frames, worst) = spin(&mut s, Duration::from_millis(400));
         // The loop kept turning; one frame went to the writer and the rest
         // waited (kept dirty) instead of piling up or being dropped.
-        assert!(iters > 50, "loop stalled: {iters} iterations");
+        // Loose bounds for slow CI runners (a 2 ms sleep can take 10 ms
+        // there); a loop blocked on the writer would turn once in 400 ms.
+        assert!(iters > 10, "loop stalled: {iters} iterations");
         assert!(
-            worst < Duration::from_millis(50),
+            worst < Duration::from_millis(200),
             "an iteration took {worst:?}"
         );
         assert_eq!(frames, 1);

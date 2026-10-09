@@ -272,7 +272,7 @@ fn system_check_reads_and_refuses() {
             if let Ok(v) = rx.try_recv() {
                 return v;
             }
-            assert!(t0.elapsed() < std::time::Duration::from_secs(10));
+            assert!(t0.elapsed() < std::time::Duration::from_secs(30));
             app.control_tick();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }

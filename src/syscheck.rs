@@ -453,8 +453,14 @@ pub fn process_tree(pid: u32) -> Value {
         return json!({"pid": pid, "running": false});
     };
     let mut parents = vec![];
+    // Windows reuses pids and keeps a dead parent's id, so parent links can
+    // form a cycle: stop at any pid already seen.
+    let mut seen = std::collections::HashSet::from([pid]);
     let mut cur = me.ppid;
     while let Some(p) = table.iter().find(|p| p.pid == cur) {
+        if !seen.insert(p.pid) {
+            break;
+        }
         parents.push(json!({"pid": p.pid, "cmd": crate::sessions::snippet(&p.cmd, 80)}));
         if p.ppid == p.pid || p.ppid <= 1 {
             break;
