@@ -1700,6 +1700,10 @@ impl App {
             "folder": crate::config::tilde(&tab.cwd),
             "state": self.state_word(s, t),
         });
+        // The row's label (finished, blocked, confirm, limit, error, queued).
+        if let Some(l) = self.tab_label(s, t) {
+            v["label"] = json!(l.word());
+        }
         if s == self.focus && t == slot.active {
             v["focused"] = json!(true);
         }

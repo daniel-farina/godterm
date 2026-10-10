@@ -501,6 +501,16 @@ impl App {
                 let _ = si;
                 let loops = self.loops_in(t.uid);
                 let queued = self.queued_for(t.uid);
+                // The row's label, when it adds to the state.
+                let state = match self.tab_label(si, ti) {
+                    Some(
+                        l @ (crate::tab_labels::TabLabel::Finished
+                        | crate::tab_labels::TabLabel::Confirm
+                        | crate::tab_labels::TabLabel::Limit
+                        | crate::tab_labels::TabLabel::Error),
+                    ) => format!("{state} [{}]", l.word()),
+                    _ => state,
+                };
                 let line = format!(
                     "{} a{} tab{} \"{}\" {}: {state}{}{}{focus}{}\n",
                     crate::control::tab_id(t.uid),

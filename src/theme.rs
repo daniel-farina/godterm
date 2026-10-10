@@ -18,6 +18,10 @@ pub const MUTED_RED: Color = Color::Rgb(178, 52, 46);
 pub const CLAY: Color = Color::Rgb(184, 128, 106);
 pub const MAUVE: Color = Color::Rgb(158, 134, 156);
 pub const STONE: Color = Color::Rgb(160, 156, 144);
+/// A soft blue-grey (a question the assistant waits on).
+pub const MIST: Color = Color::Rgb(146, 158, 172);
+/// A muted rust (something ended badly).
+pub const RUST: Color = Color::Rgb(170, 106, 86);
 /// The one accent for live work (a tab running a turn): a muted teal,
 /// clear against the calm palette without glowing.
 pub const ACTIVE: Color = Color::Rgb(104, 176, 166);

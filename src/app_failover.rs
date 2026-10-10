@@ -100,6 +100,24 @@ impl App {
     /// Look at every tab (from tick): make, keep or drop offers, and in
     /// auto mode move the idle ones.
     pub fn failover_scan(&mut self) {
+        // Which tabs say they hit a limit (their row's "limit" label), in
+        // every failover mode.
+        self.limit_hit = self
+            .all_tabs()
+            .into_iter()
+            .map(|(s, t)| &self.panes[s].tabs[t])
+            .filter(|tab| tab.is_running() && tab.kind != LaunchKind::Login)
+            .filter(|tab| {
+                limit_error(
+                    &tab.parser
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .screen()
+                        .contents(),
+                )
+            })
+            .map(|tab| tab.uid)
+            .collect();
         let mode = self.cfg.usage.auto_failover.clone();
         if mode == "off" {
             self.failover.clear();

@@ -353,6 +353,7 @@ pub fn pane_header(
     state: (String, Color),
     scroll: usize,
     show_tabs: bool,
+    list_folded: bool,
 ) {
     let y = area.y;
     let slot = &app.panes[i];
@@ -438,6 +439,24 @@ pub fn pane_header(
         1,
         None,
     ));
+    // Labels on tabs the list does not show (collapsed, folded groups):
+    // "2 finished · 1 blocked".
+    // (The strip on top shows every tab with its dot.)
+    let counts = if app.tab_pos(i) == crate::slot::TabPos::Top && !show_tabs {
+        vec![]
+    } else {
+        app.hidden_label_counts(i, show_tabs || list_folded)
+    };
+    if let Some((first, _)) = counts.first() {
+        items.push((
+            format!(" {} ", crate::tab_labels::summary(&counts, false)),
+            None,
+            "",
+            first.color(),
+            3,
+            Some(format!(" {} ", crate::tab_labels::summary(&counts, true))),
+        ));
+    }
     let short_state = state_text
         .split_whitespace()
         .next()
@@ -1550,6 +1569,13 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
         } else {
             Color::Reset
         };
+        // A label (finished, blocked...): the row takes a faint tint of
+        // its color, the pill goes at the end of the name line.
+        let label = app.tab_label(i, ti);
+        let bg = match label {
+            Some(l) => crate::tab_labels::tint(bg, l.color(), 10),
+            None => bg,
+        };
         for yy in y..y + per as u16 {
             for xx in x0..limit {
                 if let Some(c) = buf.cell_mut((xx, yy)) {
@@ -1587,6 +1613,9 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
                 .fg(look.color)
                 .bg(bg)
                 .add_modifier(Modifier::BOLD)
+        } else if let Some(l) = label.filter(|_| collapsed) {
+            // Collapsed: the number in the label's color.
+            Style::default().fg(l.color()).bg(bg)
         } else {
             Style::default().fg(FAINT).bg(bg)
         };
@@ -1647,8 +1676,9 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
                 ),
             );
         }
-        // A prompt waiting to go in once the tab is ready.
-        if app.queued_for(t.uid) > 0 {
+        // A prompt waiting to go in once the tab is ready (unless the
+        // label already says so).
+        if app.queued_for(t.uid) > 0 && label != Some(crate::tab_labels::TabLabel::Queued) {
             cx = text(
                 buf,
                 cx,
@@ -1662,6 +1692,16 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
         // the name; otherwise the name has the whole row.
         let tools = active || hovered;
         let room = (limit.saturating_sub(cx) as usize).saturating_sub(if tools { 5 } else { 1 });
+        // The label's pill, right aligned before ✎ ×: shortened ("done",
+        // then a dot) so the name keeps a few columns.
+        let pill = label.map(|l| {
+            let fit = crate::tab_labels::fit(l, room, 6);
+            (l, l.pill(fit), fit)
+        });
+        let room = match &pill {
+            Some((_, p, _)) => room.saturating_sub(p.chars().count() + 1),
+            None => room,
+        };
         // Renaming this tab: edit right here in the row.
         if let crate::app::Modal::Rename(rs, rt, b) = &app.modal {
             if *rs == i && *rt == ti {
@@ -1696,6 +1736,24 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
             &crate::paths::middle(&labels[ti], room.max(1)),
             name_style,
         );
+        if let Some((l, p, fit)) = &pill {
+            let pw = p.chars().count() as u16;
+            let end = limit.saturating_sub(if tools { 5 } else { 1 });
+            let px = end.saturating_sub(pw).max(cx);
+            let st = if *fit == crate::tab_labels::Fit::Dot {
+                Style::default().fg(l.color()).bg(bg)
+            } else {
+                Style::default()
+                    .fg(l.color())
+                    .bg(crate::tab_labels::tint(bg, l.color(), 22))
+            };
+            text(buf, px, y, end, p, st);
+            app.hits.borrow_mut().add(
+                Rect::new(px, y, pw.min(end.saturating_sub(px)), 1),
+                UiAction::SelectTab(i, ti),
+                l.hint(),
+            );
+        }
         if tools && limit >= x0 + 8 {
             link(
                 buf,
@@ -1809,9 +1867,12 @@ fn draw_tab_strip(f: &mut Frame, app: &App, i: usize, bar: Rect) {
     // In the list's order (pinned first, groups, the sort).
     let hold = app.mouse_pos.is_some_and(|(c, r)| contains(bar, c, r));
     let order = slot.tab_order(app.ungrouped_top(), hold);
+    let tags: Vec<Option<crate::tab_labels::TabLabel>> = (0..slot.tabs.len())
+        .map(|ti| app.tab_label(i, ti))
+        .collect();
     let widths: Vec<u16> = order
         .iter()
-        .map(|&ti| label(ti, &slot.tabs[ti]).chars().count() as u16 + 2)
+        .map(|&ti| label(ti, &slot.tabs[ti]).chars().count() as u16 + 2 + tags[ti].map_or(0, |_| 2))
         .collect();
     let pa = order.iter().position(|&t| t == slot.active).unwrap_or(0);
     let room = bar.width.saturating_sub(4 + 5);
@@ -1897,6 +1958,20 @@ fn draw_tab_strip(f: &mut Frame, app: &App, i: usize, bar: Rect) {
                 crate::paths::tilde(&app.tab_dir(i, ti))
             ),
         );
+        // Its label as a dot in the label's color.
+        if let Some(l) = tags[ti] {
+            x = link(
+                buf,
+                app,
+                x,
+                y,
+                limit,
+                "● ",
+                Style::default().fg(l.color()).bg(BAR_BG),
+                UiAction::SelectTab(i, ti),
+                l.hint(),
+            );
+        }
         if active {
             x = link(
                 buf,

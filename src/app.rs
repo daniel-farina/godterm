@@ -585,6 +585,8 @@ pub struct App {
     pub failover: Vec<crate::app_failover::Offer>,
     /// (tab uid, account) the user said no to.
     pub failover_declined: Vec<(u64, usize)>,
+    /// Tabs whose screen says they hit a usage limit (failover_scan).
+    pub limit_hit: std::collections::HashSet<u64>,
     /// The key being handled came in a burst (see AppEvent::KeyRead).
     pub key_burst: Option<bool>,
     /// Clickable regions being registered by the frame being drawn.
@@ -775,6 +777,7 @@ impl App {
             menu_shown: Default::default(),
             failover: vec![],
             failover_declined: vec![],
+            limit_hit: Default::default(),
             hits: Default::default(),
             modal_from: Default::default(),
             inline_rename: Default::default(),
@@ -977,6 +980,7 @@ impl App {
                 tab.accent = t.accent.clone();
                 tab.group = t.group.clone();
                 tab.pinned = t.pinned;
+                tab.finished = t.finished;
                 if let Some(o) = t.opened {
                     tab.opened = std::time::UNIX_EPOCH + std::time::Duration::from_secs(o);
                 }
@@ -1090,6 +1094,7 @@ impl App {
                             uid: Some(t.uid),
                             group: t.group.clone(),
                             pinned: t.pinned,
+                            finished: t.finished,
                             opened: t
                                 .opened
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -1724,11 +1729,17 @@ impl App {
             for (ti, t) in slot.tabs.iter_mut().enumerate() {
                 t.tick();
                 let held = t.activity_since.elapsed();
+                let visible = si == self.focus && ti == active && self.view == View::Grid;
                 if let Some((old, new)) = t.update_activity() {
+                    // A real turn ended out of view: its row says finished
+                    // until the user looks at it (tab_labels).
+                    if new == Activity::Ready && attention_worthy(old, new, held) && !visible {
+                        t.finished = true;
+                        self.state_dirty = true;
+                    }
                     // Waiting for approval, or finished a turn: only from
                     // the tab's real transition (see attention_worthy).
                     if attention_worthy(old, new, held) {
-                        let visible = si == self.focus && ti == active && self.view == View::Grid;
                         let uid = t.uid;
                         let dup = self.attention.iter().any(|a| a.uid == uid && a.what == new);
                         if !visible && !dup {
@@ -1741,6 +1752,11 @@ impl App {
                             });
                         }
                     }
+                }
+                // Seen, or working again: no longer "finished".
+                if t.finished && (visible || t.activity == Activity::Working) {
+                    t.finished = false;
+                    self.state_dirty = true;
                 }
             }
         }
@@ -3562,6 +3578,7 @@ impl App {
         if slot < self.panes.len() && self.panes[slot].select(tab) {
             self.focus = slot;
             self.view = View::Grid;
+            self.mark_seen(slot, tab);
             self.attention.retain(|a| !(a.slot == slot && a.tab == tab));
         }
     }

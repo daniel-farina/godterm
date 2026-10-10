@@ -784,6 +784,7 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
         .border_style(Style::default().fg(border));
     let full = block.inner(area);
     f.render_widget(block, area);
+    let (bar, inner, foot) = pane_layout(full, app.tab_pos(i), app.side(i));
     crate::ui_chrome::pane_header(
         f.buffer_mut(),
         app,
@@ -794,9 +795,10 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
         state,
         pane.scroll,
         // Tabs go in the header only when the pane is too small for a list.
-        pane_layout(full, app.tab_pos(i), app.side(i)).0.width == 0,
+        bar.width == 0,
+        // The list folded to a strip of numbers (no labels in it).
+        bar.width > 0 && bar.width <= 4,
     );
-    let (bar, inner, foot) = pane_layout(full, app.tab_pos(i), app.side(i));
     crate::ui_chrome::draw_tab_list(f, app, i, bar, app.tab_pos(i));
     if foot.height > 0 {
         let lines = footer_lines(app, i, foot.width, foot.height, Utc::now());

@@ -273,6 +273,9 @@ pub struct Pane {
     pub opened: std::time::SystemTime,
     /// The user's last keystroke or prompt into it.
     pub last_input: Instant,
+    /// A real turn ended while the user looked elsewhere; cleared when
+    /// they look at it or it works again (tab_labels).
+    pub finished: bool,
 }
 
 impl Pane {
@@ -308,6 +311,7 @@ impl Pane {
             pinned: false,
             opened: std::time::SystemTime::now(),
             last_input: Instant::now(),
+            finished: false,
         }
     }
 

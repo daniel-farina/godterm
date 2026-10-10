@@ -141,6 +141,9 @@ mod syscheck;
 mod sysprompt;
 mod tab_groups;
 mod tab_history;
+mod tab_labels;
+#[cfg(test)]
+mod tab_labels_tests;
 mod tab_names;
 #[cfg(test)]
 mod tab_names_tests;
