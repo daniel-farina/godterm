@@ -9376,6 +9376,11 @@ mod tests {
         // The answer arrives.
         write_turn(&transcript, q, Some("The long pauses are fixed: synthesis now streams per sentence, so Marcus starts talking within 400 ms. Commit abc landed it."));
         app.assistant.follow_ups[0].checked = None;
+        // The user spoke just now: the report waits for a quiet moment.
+        app.follow_ups_tick();
+        assert!(!app.assistant.busy, "not right after the user spoke");
+        app.assistant.quiet.spoke_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
         app.follow_ups_tick();
         assert!(
             app.assistant.busy && app.assistant.system_turn,
@@ -9483,7 +9488,7 @@ mod tests {
             app.assistant.log
         );
         app.reset_hung_turn("test over");
-        // Timed out: dropped quietly.
+        // Timed out with nothing found: said plainly, no turn.
         app.cfg.assistant.answer_wait_min = 1;
         app.register_follow_up(uid, "Is the build green?");
         let n = app.assistant.follow_ups.len();
@@ -9495,6 +9500,11 @@ mod tests {
             crate::app_followup::FuState::TimedOut
         );
         assert!(!app.assistant.busy);
+        assert!(app
+            .assistant
+            .log
+            .iter()
+            .any(|e| e.text == "trading room finished but I couldn't find its answer; read_tab has its last reply."));
         // "never mind": stop waiting, said locally.
         app.register_follow_up(uid, "Which tests fail?");
         app.ask_assistant_from("never mind", Some("never mind"));

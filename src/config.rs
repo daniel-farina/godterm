@@ -402,6 +402,9 @@ pub struct AssistantCfg {
     /// Watch for the answer to a question delegated to a tab this many
     /// minutes, then stop waiting.
     pub answer_wait_min: u64,
+    /// Updates nobody asked for (a tab's answer, a tab finished, progress)
+    /// wait until the user has been quiet this many seconds.
+    pub update_quiet_s: u64,
     /// Speak replies to typed messages too (spoken ones are always
     /// spoken unless the speaker is muted).
     pub speak_typed: bool,
@@ -447,6 +450,7 @@ impl Default for AssistantCfg {
             memory_days: 2,
             spoken_sentences: 2,
             answer_wait_min: 15,
+            update_quiet_s: 4,
             speak_typed: false,
             panel: "docked".into(),
             remote_control: false,

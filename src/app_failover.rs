@@ -229,7 +229,7 @@ impl App {
         self.flash(msg.clone());
         if auto {
             self.note(msg.clone());
-            self.speak_as(crate::voice::tts::Kind::Announce, &msg);
+            self.say_update(crate::app_quiet::Voice::Announce, &msg);
         }
         Some(msg)
     }

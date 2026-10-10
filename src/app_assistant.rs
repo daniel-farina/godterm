@@ -177,6 +177,8 @@ pub struct AssistantState {
     pub report_retry: Option<Instant>,
     /// Watching its own account's usage (warn, ask, move).
     pub selfswitch: crate::app_selfswitch::SelfSwitch,
+    /// Unprompted updates wait here for a quiet moment.
+    pub quiet: crate::app_quiet::QuietGate,
 }
 
 /// Where the time of one turn went.
@@ -732,6 +734,11 @@ impl App {
         let text = text.trim();
         if text.is_empty() {
             return;
+        }
+        if heard.is_some() {
+            self.quiet_user_spoke();
+        } else {
+            self.quiet_user_typed();
         }
         if self.self_switch_heard(text) || self.say_more(text) || self.cancel_follow_ups_said(text)
         {
@@ -1531,6 +1538,7 @@ impl App {
     pub fn assistant_tick(&mut self) {
         self.assistant_deadlines();
         self.follow_ups_tick();
+        self.quiet_tick();
         self.crash_check();
         self.remote_tick();
         if self

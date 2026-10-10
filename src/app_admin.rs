@@ -159,12 +159,8 @@ impl App {
             who: Who::Note,
             text: format!("▸ {text}"),
         });
-        if self.hold_announcement(text) {
-            return;
-        }
-        if !self.assistant.muted && self.tts_on() && self.reply_spoken() {
-            self.speak_assistant(text);
-        }
+        // Spoken at the next quiet moment (held while paused).
+        self.say_update(crate::app_quiet::Voice::Progress, text);
     }
 
     /// Log an admin action (the panel, the log, ~/.godterm/assistant/admin.jsonl).

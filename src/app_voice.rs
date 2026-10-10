@@ -472,6 +472,7 @@ impl App {
                 self.voice.status = VoiceStatus::Listening;
                 if self.voice.hold_supported {
                     self.voice.holding = Some(Instant::now());
+                    self.quiet_user_spoke();
                 }
             }
         }
@@ -591,6 +592,7 @@ impl App {
             // No barge-in while paused.
             VoiceEvent::BargeIn { .. } if self.paused() || self.voice.muted => {}
             VoiceEvent::BargeIn { speech_ms, stop_ms } => {
+                self.quiet_user_spoke();
                 self.assistant_barge_in(speech_ms, stop_ms)
             }
             VoiceEvent::Speaker(e) => self.on_speaker(e),
@@ -603,6 +605,7 @@ impl App {
                 if self.voice.status == VoiceStatus::Listening {
                     self.voice.partial = Some(text.trim().to_string());
                     self.voice.partial_ms = Some(ms);
+                    self.quiet_user_spoke();
                     self.voice.first_partial.get_or_insert_with(Instant::now);
                 }
             }
@@ -708,6 +711,7 @@ impl App {
         self.voice.heard = Some(text.to_string());
         let norm = grammar::normalize(text);
         self.voice.last_heard = Instant::now();
+        self.quiet_user_spoke();
         // Muted: the mic is off; a transcript still in flight is dropped.
         if self.voice.muted {
             crate::log::info(&format!("muted: ignored: {text}"));
@@ -1191,6 +1195,7 @@ impl App {
         let any_speaking = speaking || self.voice.preview.as_ref().is_some_and(|p| p.speaking());
         self.assistant_follow_up(any_speaking);
         self.listen_after_reply(any_speaking);
+        self.quiet_tick();
         if self.attention.is_empty() {
             return;
         }
@@ -1223,8 +1228,9 @@ impl App {
             if !self.cfg.voice.announce || self.voice.engine.is_none() || self.voice.asleep {
                 continue;
             }
+            // Said at the next quiet moment, never over the user.
             if self.voice.spoken.allow(key) {
-                self.speak_as(Kind::Announce, &msg);
+                self.say_update(crate::app_quiet::Voice::Announce, &msg);
             }
         }
     }

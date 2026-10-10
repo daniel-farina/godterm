@@ -308,7 +308,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "send_prompt",
-        description: "Give claude in one or more tabs a prompt to work on. Returns per tab: delivered (claude started on it), queued (the tab is busy or starting; it is sent once ready) or failed (with the reason). More than one tab needs one confirmation for the whole set. expect_reply true: you are asking the tab's agent a question for the user; GodTerm watches for its answer and starts a turn for you to tell the user when it arrives (default: true when the text or the user's request is a question).",
+        description: "Give claude in one or more tabs a prompt to work on. Returns per tab: delivered (claude started on it), queued (the tab is busy or starting; it is sent once ready) or failed (with the reason). More than one tab needs one confirmation for the whole set. expect_reply true: you are asking the tab's agent a question for the user; GodTerm watches for its answer and starts a turn for you to tell the user when it arrives (default: true when the text or the user's request is a question). The result says will_report: promise the user to report back only when will_report is true; when it is false, say the prompt was sent and that they can ask later.",
         schema: || {
             props(
                 json!({"tab": tab_prop(), "account": account_prop(), "text": {"type": "string"}, "expect_reply": {"type": "boolean"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
@@ -1307,6 +1307,10 @@ impl App {
             let mut said = say_deliveries(&ds, w.ready_uids.len());
             if let Some(warn) = w.reply["warning"].as_str() {
                 said = format!("{said} {warn}");
+            }
+            // send_prompt: whether the answer will be reported back.
+            if let Some(r) = w.reply["report_say"].as_str() {
+                said = format!("{said} {r}");
             }
             w.reply["say"] = json!(said);
             let _ = w.tx.send(ok(w.reply));
@@ -2739,7 +2743,7 @@ impl App {
         }
         // A question to a tab: its answer is told when it comes.
         if brain && tool == "send_prompt" && v["error"].is_null() {
-            self.follow_up_sends(args, &v);
+            self.follow_up_sends(args, &mut v);
         }
         self.assistant_log_tool(tool, args, &v);
         v

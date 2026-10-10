@@ -550,10 +550,44 @@ pub struct Turn {
     /// Its last message is text with no tool call after it (the turn is
     /// over, not paused between tools).
     pub finished: bool,
+    /// Messages typed while this turn ran, which claude took into it
+    /// instead of starting a turn of their own (a queued command
+    /// attachment, or the queue entry it absorbed mid turn).
+    pub queued: Vec<String>,
+    /// When the reply's last text was written.
+    pub reply_at: Option<String>,
 }
 
 /// The last `n` exchanges of a transcript (main chain only), oldest first.
 pub fn recent_turns(path: &Path, n: usize) -> Vec<Turn> {
+    let mut turns = scan_turns(path);
+    turns.retain(|t| !t.user.is_empty());
+    let k = turns.len().saturating_sub(n);
+    turns.split_off(k)
+}
+
+/// Like recent_turns, but a turn whose start is before the part of a big
+/// transcript that is read is kept too (with an empty `user`): its
+/// queued messages and reply still count when following up on a
+/// question sent while it ran.
+pub fn follow_turns(path: &Path, n: usize) -> Vec<Turn> {
+    let mut turns = scan_turns(path);
+    let k = turns.len().saturating_sub(n);
+    turns.split_off(k)
+}
+
+fn blank_turn() -> Turn {
+    Turn {
+        user: String::new(),
+        reply: None,
+        at: None,
+        finished: false,
+        queued: vec![],
+        reply_at: None,
+    }
+}
+
+fn scan_turns(path: &Path) -> Vec<Turn> {
     use std::io::{Seek, SeekFrom};
     let Ok(mut f) = fs::File::open(path) else {
         return vec![];
@@ -603,9 +637,8 @@ pub fn recent_turns(path: &Path, n: usize) -> Vec<Turn> {
                     Some(t) => {
                         turns.push(Turn {
                             user: t,
-                            reply: None,
                             at,
-                            finished: false,
+                            ..blank_turn()
                         });
                         msg_id.clear();
                     }
@@ -618,6 +651,9 @@ pub fn recent_turns(path: &Path, n: usize) -> Vec<Turn> {
                 }
             }
             Some("assistant") => {
+                if turns.is_empty() {
+                    turns.push(blank_turn());
+                }
                 let Some(turn) = turns.last_mut() else {
                     continue;
                 };
@@ -647,13 +683,67 @@ pub fn recent_turns(path: &Path, n: usize) -> Vec<Turn> {
                     }
                     _ => turn.reply = Some(t),
                 }
+                if at.is_some() {
+                    turn.reply_at = at;
+                }
                 msg_id = id;
+            }
+            // A message sent while the turn ran, taken into it.
+            Some("attachment") | Some("queue-operation") => {
+                let Some(text) = queued_text(&v) else {
+                    continue;
+                };
+                if turns.is_empty() {
+                    turns.push(blank_turn());
+                }
+                if let Some(turn) = turns.last_mut() {
+                    let key = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if !turn.queued.iter().any(|q| key(q) == key(&text)) {
+                        turn.queued.push(text);
+                    }
+                    // The turn goes on to answer it.
+                    turn.finished = false;
+                }
             }
             _ => {}
         }
     }
-    let k = turns.len().saturating_sub(n);
-    turns.split_off(k)
+    turns
+}
+
+/// The text of a message claude took into a running turn: a
+/// `queued_command` attachment, or a queue entry removed as
+/// `absorbed_mid_turn`. A queued entry claude later starts a turn of its
+/// own for (dequeue) is a plain user message, not this.
+fn queued_text(v: &Value) -> Option<String> {
+    let text = match v.get("type").and_then(Value::as_str)? {
+        "attachment" => {
+            let a = v.get("attachment")?;
+            if a.get("type").and_then(Value::as_str)? != "queued_command" {
+                return None;
+            }
+            match a.get("prompt")? {
+                Value::String(s) => s.clone(),
+                Value::Array(blocks) => blocks
+                    .iter()
+                    .filter(|b| b["type"] == "text")
+                    .filter_map(|b| b["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => return None,
+            }
+        }
+        "queue-operation" => {
+            if v.get("operation").and_then(Value::as_str)? != "remove"
+                || v.get("reason").and_then(Value::as_str)? != "absorbed_mid_turn"
+            {
+                return None;
+            }
+            v.get("content")?.as_str()?.to_string()
+        }
+        _ => return None,
+    };
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// Text of the last prompt typed into a transcript (main chain, not tool

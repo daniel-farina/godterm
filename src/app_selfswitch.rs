@@ -33,6 +33,17 @@ const REMOTE_FOLLOW: Duration = Duration::from_secs(120);
 /// separated; `@PATH` reads that from a file (changed while it runs).
 pub const FAKE_ENV: &str = "GODTERM_FAKE_LEFT";
 
+/// When ss_say speaks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SayHow {
+    /// It answers the user: now.
+    Now,
+    /// Nobody asked: at the next quiet moment.
+    Quiet,
+    /// It cannot wait: once the user's sentence ends.
+    Urgent,
+}
+
 /// A move on offer (auto_switch ask).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ask {
@@ -192,12 +203,18 @@ impl App {
         )
     }
 
-    /// Say something about itself: panel, flash, spoken, log.
-    fn ss_say(&mut self, msg: &str, notify: bool) {
+    /// Say something about itself: panel and flash at once, spoken now
+    /// when it answers the user, at the next quiet moment when nobody
+    /// asked, or once the user's sentence ends when it cannot wait.
+    fn ss_say(&mut self, msg: &str, notify: bool, how: SayHow) {
         crate::log::info(&format!("assistant account: {msg}"));
         self.note(msg.to_string());
         self.flash(msg.to_string());
-        self.speak_as(crate::voice::tts::Kind::Announce, msg);
+        match how {
+            SayHow::Now => self.speak_as(crate::voice::tts::Kind::Announce, msg),
+            SayHow::Quiet => self.say_update(crate::app_quiet::Voice::Announce, msg),
+            SayHow::Urgent => self.say_urgent(crate::app_quiet::Voice::Announce, msg),
+        }
         if notify && self.cfg.notifications {
             crate::notify::post("GodTerm assistant", msg);
         }
@@ -308,7 +325,7 @@ impl App {
             None => "; no other account has more room right now".into(),
         };
         let msg = format!("My account, {}{plan}.", self.left_words(a, k));
-        self.ss_say(&msg, false);
+        self.ss_say(&msg, false, SayHow::Quiet);
     }
 
     /// Ask once (Yes/No in the panel, or a spoken yes or no).
@@ -327,7 +344,7 @@ impl App {
             key,
             question: question.clone(),
         });
-        self.ss_say(&question, true);
+        self.ss_say(&question, true, SayHow::Quiet);
     }
 
     /// The Yes or No to the question on offer; false when none is.
@@ -340,7 +357,7 @@ impl App {
         } else {
             self.assistant.selfswitch.declined = Some(q.key);
             let msg = format!("Staying on {}.", self.cfg.accounts[q.from].display());
-            self.ss_say(&msg, false);
+            self.ss_say(&msg, false, SayHow::Now);
         }
         true
     }
@@ -405,10 +422,14 @@ impl App {
             )),
             None => msg.push_str(" I'll keep trying every few minutes."),
         }
-        if !self.assistant.selfswitch.blocked {
+        // Stopped by the limit: a hard failure, said once the sentence ends.
+        let how = if self.assistant.selfswitch.blocked {
+            SayHow::Urgent
+        } else {
             msg.push_str(&format!(" I keep running on {now} until it stops me."));
-        }
-        self.ss_say(&msg, true);
+            SayHow::Quiet
+        };
+        self.ss_say(&msg, true, how);
     }
 
     /// The account of the same provider that gets room the soonest: (it,
@@ -560,6 +581,15 @@ impl App {
     /// the message.
     pub fn move_assistant(&mut self, to: usize, why: &str) -> String {
         let from = self.brain_account();
+        // Asked for ("You said yes", "You asked"): said now. Moving because
+        // the limit is hit: cannot wait for quiet, only for the sentence.
+        let how = if why.starts_with("You") {
+            SayHow::Now
+        } else if self.assistant.selfswitch.blocked {
+            SayHow::Urgent
+        } else {
+            SayHow::Quiet
+        };
         let to_name = self.cfg.accounts[to].display().to_string();
         let left = self
             .self_binding(to)
@@ -641,7 +671,7 @@ impl App {
             msg.push_str(" Remote Control is coming back there; its link may change.");
         }
         self.assistant.selfswitch.last = Some(msg.clone());
-        self.ss_say(&msg, true);
+        self.ss_say(&msg, true, how);
         if let Some((text, heard, system)) = held {
             if self.assistant.brain.is_some() {
                 self.resend(&text, heard.as_deref(), system.as_deref());
@@ -687,7 +717,7 @@ impl App {
                 if changed { " (a new link)" } else { "" }
             );
             self.assistant.selfswitch.last_remote = Some(msg.clone());
-            self.ss_say(&msg, true);
+            self.ss_say(&msg, true, SayHow::Quiet);
         } else if since.elapsed() > REMOTE_FOLLOW && self.assistant.remote_flow.is_none() {
             self.assistant.selfswitch.remote_follow = None;
             crate::log::info("assistant account: Remote Control did not come back after the move");

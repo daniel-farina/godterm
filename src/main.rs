@@ -21,6 +21,7 @@ mod app_pause;
 mod app_privacy;
 mod app_projects;
 mod app_provider;
+mod app_quiet;
 mod app_remote;
 mod app_resume;
 mod app_select;
@@ -108,6 +109,8 @@ mod prompt;
 #[cfg(test)]
 mod provider_tests;
 mod providers;
+#[cfg(test)]
+mod quiet_tests;
 #[cfg(test)]
 mod remote_keep_tests;
 #[cfg(test)]

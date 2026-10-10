@@ -1189,7 +1189,21 @@ fn assistant_rows(cfg: &Config, all: bool) -> Vec<Setting> {
                 max: 120,
                 step: 5,
             },
-            "A question the assistant asks a tab's agent is reported back when it answers, for up to this many minutes.",
+            "A question the assistant asks a tab's agent is reported back when it answers, for up to this many minutes (longer while the tab is still working on it).",
+        ),
+    );
+    r.when(
+        on,
+        why,
+        g(
+            "assistant.update_quiet_s",
+            "Quiet before updates (s)",
+            Kind::Number {
+                min: 0,
+                max: 30,
+                step: 1,
+            },
+            "Updates you did not ask for (a tab's answer, a tab finished, progress) wait until you have not spoken or typed for this many seconds, and never cut in while you talk.",
         ),
     );
     r.group("Confirmations and limits");
