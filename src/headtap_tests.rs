@@ -326,6 +326,15 @@ fn a_mic_that_ends_by_itself_reopens_in_the_same_mode() {
     app.voice.open_mic = true;
     app.voice_mode_tick();
     assert_eq!(app.voice.last_on_mode, 3);
+    // Right after a start (a settings reload replaced the engine): the
+    // old engine's "stream ended" is not a lost mic.
+    app.voice.started_at = Some(std::time::Instant::now());
+    app.on_voice(crate::voice::VoiceEvent::Status(
+        crate::voice::VoiceStatus::Off(Some("microphone stream ended".into())),
+    ));
+    assert!(app.voice.reopen.is_none(), "no reopen loop after a reload");
+    // A stream that ran a while and then ended: reopened.
+    app.voice.started_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
     app.on_voice(crate::voice::VoiceEvent::Status(
         crate::voice::VoiceStatus::Off(Some("microphone stream ended".into())),
     ));
@@ -416,6 +425,8 @@ fn no_reopen_after_a_tap_off() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home, _calls, rx) = tap_on_app("noreopen", false);
     app.voice.open_mic = true;
+    // A stream that has been running a while.
+    app.voice.started_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
     app.voice_mode_tick();
     app.on_voice(crate::voice::VoiceEvent::Status(
         crate::voice::VoiceStatus::Off(Some("microphone stream ended".into())),

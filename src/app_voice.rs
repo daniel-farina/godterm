@@ -82,6 +82,10 @@ pub struct VoiceState {
     /// A tap asked for open mic while a push to talk engine was speaking:
     /// it starts again as open mic once the reply ends (never cuts it).
     pub open_mic_after_speech: bool,
+    /// When the running engine was started: a "stream ended" right after
+    /// is the old engine shutting down (a settings reload, a restart), not
+    /// a mic that went away.
+    pub started_at: Option<Instant>,
     /// "Hold on a minute": listening paused until then.
     pub paused: Option<crate::app_pause::Pause>,
     /// What was said on the last resume about held announcements.
@@ -151,6 +155,7 @@ impl Default for VoiceState {
             last_on_mode: 0,
             reopen: None,
             open_mic_after_speech: false,
+            started_at: None,
             paused: None,
             away_summary: None,
             not_you: 0,
@@ -395,6 +400,7 @@ impl App {
         let v = Voice::start(&vc, source, always_on, self.tx.clone());
         v.set_vocabulary(self.vocabulary());
         self.voice.engine = Some(v);
+        self.voice.started_at = Some(Instant::now());
         self.voice.always_on = always_on;
         self.voice.status = VoiceStatus::Starting;
         self.voice.updated = Instant::now();
@@ -655,7 +661,14 @@ impl App {
                     // The stream went away by itself (headphones switching
                     // profile, a device change): open it again in the same
                     // mode, as it ran, instead of leaving voice dead.
+                    // Only a stream that ran a while: one ending within 5 s
+                    // of a start is the replaced engine's own shutdown.
+                    let settled = self
+                        .voice
+                        .started_at
+                        .is_some_and(|t| t.elapsed() > Duration::from_secs(5));
                     if reason == "microphone stream ended"
+                        && settled
                         && self.voice.engine.is_some()
                         && !self.voice.muted
                         && self.voice.last_on_mode > 0
