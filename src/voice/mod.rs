@@ -52,8 +52,23 @@ pub fn untrack(pid: u32) {
 /// Terminate every tracked helper. Safe to call more than once.
 pub fn kill_helpers() {
     let pids: Vec<u32> = std::mem::take(&mut *HELPERS.lock().unwrap_or_else(|e| e.into_inner()));
-    for pid in pids {
+    for &pid in &pids {
         crate::platform::kill(pid as i32, crate::platform::SIGTERM);
+    }
+    // An ffmpeg capture can ignore SIGTERM (one outlived GodTerm on
+    // 2026-10-10 and kept the mic): what is still there after a moment
+    // is killed, so no recorder outlives the app.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
+    let mut left: Vec<u32> = pids;
+    while !left.is_empty() && std::time::Instant::now() < deadline {
+        left.retain(|&p| crate::platform::alive(p));
+        if !left.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    for pid in left {
+        crate::log::info(&format!("voice: helper {pid} ignored SIGTERM; killing it"));
+        crate::platform::kill(pid as i32, crate::platform::SIGKILL);
     }
 }
 
@@ -1392,5 +1407,29 @@ impl BargeAsr {
             let _ = self.tx.send((self.seq, d));
         }
         self.busy.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod kill_helpers_tests {
+    /// A recorder that ignores SIGTERM does not outlive the app.
+    #[test]
+    fn a_helper_that_ignores_sigterm_is_killed() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "trap '' TERM; sleep 30"])
+            .spawn()
+            .unwrap();
+        // Let the shell set its trap before the signal goes out.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        super::track(child.id());
+        super::kill_helpers();
+        let t0 = std::time::Instant::now();
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(t0.elapsed().as_secs() < 3, "still alive after kill_helpers");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }
