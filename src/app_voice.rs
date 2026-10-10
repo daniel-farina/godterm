@@ -86,6 +86,13 @@ pub struct VoiceState {
     /// is the old engine shutting down (a settings reload, a restart), not
     /// a mic that went away.
     pub started_at: Option<Instant>,
+    /// Open mic went to sleep after a long silence (listening for the wake
+    /// word meanwhile): it is still open mic for a restart, and the wake
+    /// word brings open mic back.
+    pub open_mic_asleep: bool,
+    /// The wake word woke a sleeping open mic: start open mic again once
+    /// nothing is being said.
+    pub wake_to_open_mic: bool,
     /// "Hold on a minute": listening paused until then.
     pub paused: Option<crate::app_pause::Pause>,
     /// What was said on the last resume about held announcements.
@@ -156,6 +163,8 @@ impl Default for VoiceState {
             reopen: None,
             open_mic_after_speech: false,
             started_at: None,
+            open_mic_asleep: false,
+            wake_to_open_mic: false,
             paused: None,
             away_summary: None,
             not_you: 0,
@@ -313,9 +322,22 @@ impl App {
 
     /// Track the running mode and reopen a mic that ended by itself.
     pub fn voice_mode_tick(&mut self) {
-        let m = self.voice_mode();
+        let m = if self.voice.open_mic_asleep {
+            3
+        } else {
+            self.voice_mode()
+        };
         if m > 0 && !self.voice.muted {
             self.voice.last_on_mode = m;
+        }
+        if self.voice.wake_to_open_mic && !self.tap_speaking() {
+            self.voice.wake_to_open_mic = false;
+            self.voice.open_mic_asleep = false;
+            if !self.voice.muted && !self.voice.open_mic {
+                crate::log::info("voice: the wake word woke open mic: open mic again");
+                self.stop_voice();
+                self.start_voice_in(3);
+            }
         }
         if self.voice.open_mic_after_speech && !self.tap_speaking() {
             self.voice.open_mic_after_speech = false;
@@ -344,7 +366,7 @@ impl App {
     pub fn voice_mode_now(&self) -> &'static str {
         if self.voice.engine.is_none() || self.voice.muted {
             "off"
-        } else if self.voice.open_mic {
+        } else if self.voice.open_mic || self.voice.open_mic_asleep {
             "open"
         } else if self.voice.always_on {
             "wake"
@@ -906,6 +928,9 @@ impl App {
             if let Some(v) = &self.voice.engine {
                 v.chime();
             }
+        }
+        if had_wake && self.voice.open_mic_asleep {
+            self.voice.wake_to_open_mic = true;
         }
         if command.trim().is_empty() {
             self.voice.wake_until = Some(Instant::now() + Duration::from_secs(6));

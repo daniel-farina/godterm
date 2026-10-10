@@ -449,3 +449,34 @@ fn no_reopen_after_a_tap_off() {
     assert!(app.voice.reopen.is_none());
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn a_sleeping_open_mic_stays_open_mic() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home, _calls, _rx) = tap_on_app("sleepopen", false);
+    app.voice.open_mic = true;
+    app.voice_mode_tick();
+    // Ten quiet minutes: it goes to sleep, listening for the wake word.
+    app.cfg.voice.open_mic_sleep_min = 1;
+    app.voice.last_heard = std::time::Instant::now() - std::time::Duration::from_secs(120);
+    let (v, _rx2) = Voice::fake(false);
+    app.voice.engine = Some(v);
+    app.open_mic_tick();
+    assert!(!app.voice.open_mic && app.voice.open_mic_asleep);
+    let (v, _rx3) = Voice::fake(false);
+    app.voice.engine = Some(v);
+    // Saved for a restart as open mic, not the wake word.
+    assert_eq!(app.voice_mode_now(), "open");
+    app.voice_mode_tick();
+    assert_eq!(app.voice.last_on_mode, 3);
+    // The wake word wakes it: open mic again.
+    app.voice.wake_to_open_mic = true;
+    app.voice_mode_tick();
+    assert!(app.voice.open_mic && !app.voice.open_mic_asleep);
+    // Choosing the wake word mode on purpose is kept.
+    let (v, _rx4) = Voice::fake(false);
+    app.voice.engine = Some(v);
+    app.set_voice_mode(2);
+    assert!(!app.voice.open_mic_asleep);
+    let _ = std::fs::remove_dir_all(&home);
+}

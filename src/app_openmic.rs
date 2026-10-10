@@ -118,6 +118,7 @@ pub fn hands_free_filter(
 impl App {
     pub fn start_open_mic(&mut self) {
         self.stop_voice();
+        self.voice.open_mic_asleep = false;
         self.voice.open_mic = true;
         self.voice.asleep = false;
         self.voice.last_heard = Instant::now();
@@ -141,12 +142,14 @@ impl App {
         }
         match m {
             0 => {
+                self.voice.open_mic_asleep = false;
                 self.voice.open_mic = false;
                 self.stop_voice();
                 self.voice.info = None;
                 self.flash("Voice off");
             }
             1 | 2 => {
+                self.voice.open_mic_asleep = false;
                 self.voice.open_mic = false;
                 self.stop_voice();
                 self.start_voice(m == 2);
@@ -178,6 +181,8 @@ impl App {
 
     /// Back to the wake word (true) or voice off.
     pub fn leave_open_mic(&mut self, to_wake: bool) {
+        // Left on purpose (the auto sleep sets it again right after).
+        self.voice.open_mic_asleep = false;
         self.voice.open_mic = false;
         self.stop_voice();
         if to_wake {
@@ -215,6 +220,8 @@ impl App {
             .unwrap_or_else(|| "the wake word".into());
         self.speak(&format!("going to sleep, say {ww} to wake me"));
         self.leave_open_mic(true);
+        // Still open mic underneath: a restart or the wake word brings it back.
+        self.voice.open_mic_asleep = true;
     }
 }
 
