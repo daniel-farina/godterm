@@ -75,25 +75,67 @@ pub fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
+/// The key a folder is saved under: its real path (symlinks resolved),
+/// and on Windows without the \\?\ prefix canonicalize adds and with one
+/// separator, so every spelling of a folder lands on the same entry.
+pub fn folder_key(p: &Path) -> String {
+    let c = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    plain(&c.to_string_lossy(), cfg!(windows))
+}
+
+/// `p` as saved and shown: on Windows no verbatim prefix, backslashes.
+fn plain(p: &str, windows: bool) -> String {
+    if !windows {
+        return p.to_string();
+    }
+    let s = match p.strip_prefix(r"\\?\UNC\") {
+        Some(r) => format!(r"\\{r}"),
+        None => p.strip_prefix(r"\\?\").unwrap_or(p).to_string(),
+    };
+    s.replace('/', "\\")
+}
+
+/// Whether a saved key names `folder` (one separator, no verbatim
+/// prefix, case-insensitive on Windows).
+fn same_folder(key: &str, folder: &str) -> bool {
+    crate::guard::same(Path::new(key), Path::new(folder))
+}
+
+impl Memo {
+    /// This entry is (kind, key): a project by its folder however spelled.
+    fn is(&self, kind: &str, key: &str) -> bool {
+        self.kind == kind
+            && if kind == "project" {
+                same_folder(&self.key, key)
+            } else {
+                self.key == key
+            }
+    }
+}
+
 impl Store {
     pub fn get(&self, kind: &str, key: &str) -> Option<&Memo> {
-        self.items.iter().find(|m| m.kind == kind && m.key == key)
+        self.items.iter().find(|m| m.is(kind, key))
+    }
+
+    /// The day a deep search last looked in `folder`, if one did.
+    pub fn deep_searched_on(&self, folder: &str) -> Option<&String> {
+        self.deep_searched
+            .iter()
+            .find(|(k, _)| same_folder(k, folder))
+            .map(|(_, d)| d)
     }
 
     /// The entry for (kind, key), made when missing.
     pub fn entry(&mut self, kind: &str, key: &str) -> &mut Memo {
-        let i = match self
-            .items
-            .iter()
-            .position(|m| m.kind == kind && m.key == key)
-        {
+        let i = match self.items.iter().position(|m| m.is(kind, key)) {
             Some(i) => i,
             None => {
                 self.items.push(Memo {
                     kind: kind.into(),
                     key: key.into(),
                     last_deep_search: (kind == "project")
-                        .then(|| self.deep_searched.get(key).cloned())
+                        .then(|| self.deep_searched_on(key).cloned())
                         .flatten(),
                     ..Default::default()
                 });
@@ -106,11 +148,14 @@ impl Store {
     /// A deep search looked in `root` today: noted for it and for every
     /// saved project inside it.
     pub fn note_deep_search(&mut self, root: &Path) {
-        let key = root.to_string_lossy().into_owned();
+        let key = folder_key(root);
         let day = today();
+        self.deep_searched.retain(|k, _| !same_folder(k, &key));
         self.deep_searched.insert(key.clone(), day.clone());
+        let root = Path::new(&key);
         for m in self.items.iter_mut().filter(|m| m.kind == "project") {
-            if Path::new(&m.key).starts_with(root) {
+            let p = Path::new(&m.key);
+            if crate::guard::same(p, root) || crate::guard::inside(p, root) {
                 m.last_deep_search = Some(day.clone());
             }
         }

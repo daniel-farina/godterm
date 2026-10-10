@@ -78,7 +78,7 @@ pub fn strictly_inside(child: &str, parent: &str, windows: bool) -> bool {
     c.len() > p.len() && c.starts_with(&p) && (p.ends_with(sep) || c[p.len()..].starts_with(sep))
 }
 
-fn inside(child: &Path, parent: &Path) -> bool {
+pub(crate) fn inside(child: &Path, parent: &Path) -> bool {
     strictly_inside(
         &child.to_string_lossy(),
         &parent.to_string_lossy(),
@@ -86,7 +86,7 @@ fn inside(child: &Path, parent: &Path) -> bool {
     )
 }
 
-fn same(a: &Path, b: &Path) -> bool {
+pub(crate) fn same(a: &Path, b: &Path) -> bool {
     path_key(&a.to_string_lossy(), cfg!(windows)) == path_key(&b.to_string_lossy(), cfg!(windows))
 }
 

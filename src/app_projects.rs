@@ -78,7 +78,7 @@ impl App {
         let store = crate::project_memory::load();
         let today = chrono::Local::now().date_naive();
         let ix = self.project_index.lock().unwrap_or_else(|e| e.into_inner());
-        let mut saved_paths = std::collections::HashSet::new();
+        let mut saved_paths: Vec<PathBuf> = vec![];
         for m in &store.items {
             let Some((sc, on)) = crate::project_memory::score(m, query) else {
                 continue;
@@ -94,14 +94,14 @@ impl App {
             // Saved entries rank first: a small lift over the index.
             let sc = (sc + 0.05).min(1.05);
             if m.kind == "project" {
-                saved_paths.insert(PathBuf::from(&m.key));
+                saved_paths.push(PathBuf::from(&m.key));
                 out.push((sc, json!({"type": "project", "path": m.key, "folder": crate::config::tilde(Path::new(&m.key)), "label": if m.description.is_empty() { crate::config::tilde(Path::new(&m.key)) } else { crate::sessions::snippet(&m.description, 80) }, "why": why, "saved": saved, "then": "open_tab with dir set to path, open_path, or list_dir"})));
             } else {
                 out.push((sc, json!({"type": "session", "id": m.key, "label": crate::sessions::snippet(&m.description, 80), "why": why, "saved": saved, "then": "open_session"})));
             }
         }
         for h in crate::project_index::search(&ix, query, limit) {
-            if saved_paths.contains(&h.path) {
+            if saved_paths.iter().any(|p| crate::guard::same(p, &h.path)) {
                 continue;
             }
             let mut v = json!({"type": "project", "path": h.path.to_string_lossy(), "folder": crate::config::tilde(&h.path), "label": if h.rel.is_empty() { crate::config::tilde(&h.root) } else { h.rel.clone() }, "why": h.why, "root": crate::config::tilde(&h.root), "then": "open_tab with dir set to path, open_path, or list_dir"});
@@ -219,7 +219,7 @@ impl App {
         let key = if kind == "project" {
             let p = s("path").ok_or("path is required (the project or subproject folder)")?;
             let p = crate::config::expand_tilde(&p);
-            let p = p.canonicalize().unwrap_or(p);
+            let p = PathBuf::from(crate::project_memory::folder_key(&p));
             if !p.is_dir() {
                 return Err(format!("{} is not a folder", crate::config::tilde(&p)));
             }

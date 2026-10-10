@@ -390,7 +390,11 @@ fn everyone_out_says_so_once_and_retries() {
     assert_eq!(t.notes("I keep running on Account 1 until it stops me."), 1);
     assert_eq!(t.on(), Some(0));
     // Hard blocked: the turn waits and is tried again now and then.
-    t.app.assistant.selfswitch.retry_every = Some(Duration::from_millis(100));
+    // The retry is due when the test says so, not after a short wall
+    // clock wait: on a slow runner (the log written line by line) the
+    // handling of the error alone took longer than a 100 ms retry, so
+    // the turn went out again before it could be seen held.
+    t.app.assistant.selfswitch.retry_every = Some(Duration::from_secs(3600));
     t.app.ask_assistant("deploy status please");
     t.done("You've hit your limit · resets 5pm", true);
     assert!(!t.app.assistant.busy);
@@ -399,7 +403,9 @@ fn everyone_out_says_so_once_and_retries() {
         t.notes("hit its usage limit, and no other account has room"),
         1
     );
-    std::thread::sleep(Duration::from_millis(150));
+    t.app.self_switch_tick();
+    assert!(!t.app.assistant.busy, "held until the retry is due");
+    t.app.assistant.selfswitch.retry_at = Some(Instant::now());
     t.app.self_switch_tick();
     assert!(t.app.assistant.busy, "sent again");
     t.pump(1, |_| false);

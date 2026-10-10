@@ -463,7 +463,7 @@ fn find_and_sessions_look_inside_projects() {
     assert!(
         hits(&v)
             .iter()
-            .any(|h| h["path"].as_str().unwrap().ends_with("retry/backoff.go")),
+            .any(|h| Path::new(h["path"].as_str().unwrap()).ends_with("retry/backoff.go")),
         "{v}"
     );
     // The subproject path is something open_path takes.
@@ -502,7 +502,7 @@ fn saved_descriptions_come_first_and_go_stale() {
         assert_eq!(h[0]["type"], "project", "{q}: {v}");
         assert_eq!(
             h[0]["path"],
-            json!(hooks.canonicalize().unwrap().to_string_lossy()),
+            json!(crate::project_memory::folder_key(&hooks)),
             "{q}"
         );
         assert!(
@@ -548,12 +548,9 @@ fn saved_descriptions_come_first_and_go_stale() {
     );
     let store = crate::project_memory::load();
     let today = crate::project_memory::today();
-    assert_eq!(
-        store.deep_searched.get(&*pf.to_string_lossy()),
-        Some(&today)
-    );
+    assert_eq!(store.deep_searched_on(&pf.to_string_lossy()), Some(&today));
     let m = store
-        .get("project", &hooks.canonicalize().unwrap().to_string_lossy())
+        .get("project", &crate::project_memory::folder_key(&hooks))
         .unwrap();
     assert_eq!(m.last_deep_search.as_deref(), Some(today.as_str()));
     let v = app.control_call("find", &json!({"query": "hook relay"}));
