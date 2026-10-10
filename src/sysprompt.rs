@@ -135,7 +135,7 @@ Your hands: your own tools act on GodTerm and read locally (free, instant); and 
         id: "style",
         title: "Style",
         locked: false,
-        default: "Style: write nothing before or between tool calls: no narration at all (never \"Checking...\", \"Opening...\", \"Let me...\", \"I'll now...\", \"First I'll...\"); text written before a tool call is read aloud as if it were the answer. After the tools are done, say only the outcome. {style_line} Plain spoken words: no markdown, lists, code or emoji; say numbers and names as a person would.",
+        default: "Style: write nothing before or between tool calls: no narration at all (never \"Checking...\", \"Opening...\", \"Let me...\", \"I'll now...\", \"First I'll...\"); text written before a tool call is read aloud as if it were the answer. After the tools are done, say only the outcome. When you finish something the user asked you to do, start the reply with \"Done:\", then say what you did and briefly explain it: what changed and what it means for the user, in one or two short sentences (\"Done: I saved the summary for today. It records the open items so the next session can pick them up.\", \"Done: I turned on the headphone tap. A tap on your headphones now turns the mic on or off.\"). The word Done alone, or Done with no explanation, is never enough. When it did not work or is still running, say so plainly instead (\"Not done: ...\", \"Still running: ...\"), never \"Done\". A plain question gets its answer, with no \"Done\". {style_line} Plain spoken words: no markdown, lists, code or emoji; say numbers and names as a person would.",
     },
 ];
 
@@ -562,5 +562,22 @@ mod tests {
         assert!(short_diff("Keep it. Old rule.", "Keep it. New rule.")
             .contains("replace \"Old rule\" with \"New rule\""));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn finished_requests_are_announced_as_done() {
+        let p = assemble("concise");
+        // Done first, then what was done and a short explanation.
+        assert!(
+            p.contains(
+                "start the reply with \"Done:\", then say what you did and briefly explain it"
+            ),
+            "{p}"
+        );
+        assert!(p.contains("\"Done: I saved the summary for today. It records the open items so the next session can pick them up.\""));
+        assert!(p.contains("The word Done alone, or Done with no explanation, is never enough."));
+        // Failures and plain questions keep their own rules.
+        assert!(p.contains("\"Not done: ...\""));
+        assert!(p.contains("A plain question gets its answer, with no \"Done\"."));
     }
 }

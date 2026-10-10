@@ -42,6 +42,8 @@ pub const RECLAIM_QUIET_MS: u64 = 1_500;
 
 /// A remote command or media key as it arrived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Built only by the macOS backend (and tests) for now.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub enum Cmd {
     TogglePlayPause,
     Play,

@@ -55,6 +55,7 @@ pub enum AppEvent {
     /// The assistant's process said something.
     Assistant(u64, crate::assistant::BrainEvent),
     /// Headphone play/pause or the media key (voice.headphone_tap).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     MediaKey(crate::media_keys::Press),
 }
 
