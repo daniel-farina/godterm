@@ -113,6 +113,11 @@ pub struct AppState {
     /// Memory saver toggled with the Mem button / Ctrl-a Z.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_saver: Option<bool>,
+    /// How voice was running at the last save: "open" (open mic), "wake",
+    /// "push" or "off". With `voice.enabled` the next start comes back in
+    /// that mode, so an open mic reopens after a restart or crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
     /// Layout picked with Ctrl-a L (overrides `layout` until it changes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<String>,
@@ -214,6 +219,7 @@ mod tests {
             window: None,
             show_email: Some(false),
             memory_saver: Some(true),
+            voice: None,
             privacy: Some(true),
             focus: 1,
             next_uid: Some(40),

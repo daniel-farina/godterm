@@ -473,6 +473,10 @@ pub struct App {
     pub rt_show_email: Option<bool>,
     /// Memory saver toggled at runtime (persisted), and its last tick.
     pub rt_mem_saver: Option<bool>,
+    /// Voice as it ran at the last save ("open", "wake", "push", "off").
+    pub rt_voice: Option<String>,
+    /// Voice as it ran just before shutdown stopped it.
+    pub voice_at_quit: Option<String>,
     pub mem_ticked: Instant,
     /// Layout picked at runtime (Ctrl-a L), dragged sizes, and the last
     /// frame's arrangement (pages, borders) and main area.
@@ -698,6 +702,8 @@ impl App {
             attention: vec![],
             rt_show_email: None,
             rt_mem_saver: None,
+            rt_voice: None,
+            voice_at_quit: None,
             mem_ticked: Instant::now(),
             rt_layout: None,
             ratios: Default::default(),
@@ -993,6 +999,7 @@ impl App {
         self.window = st.window.clone();
         self.rt_show_email = st.show_email;
         self.rt_mem_saver = st.memory_saver;
+        self.rt_voice = st.voice.clone();
         self.rt_privacy = st.privacy;
     }
 
@@ -1000,6 +1007,11 @@ impl App {
         AppState {
             show_email: self.rt_show_email,
             memory_saver: self.rt_mem_saver,
+            voice: Some(
+                self.voice_at_quit
+                    .clone()
+                    .unwrap_or_else(|| self.voice_mode_now().into()),
+            ),
             privacy: self.rt_privacy,
             layout: self.rt_layout.clone(),
             tab_list_width: self.tab_list_width.clone(),
@@ -1632,6 +1644,13 @@ impl App {
 
     /// Periodic work, called a few times per second.
     pub fn tick(&mut self) {
+        // Voice turned on, off or switched mode: saved soon, so even a crash
+        // comes back in it.
+        let now = self.voice_mode_now();
+        if self.voice_at_quit.is_none() && self.rt_voice.as_deref() != Some(now) {
+            self.rt_voice = Some(now.into());
+            self.state_dirty = true;
+        }
         self.selection_tick();
         self.headphone_tap_tick();
         self.grok_screen_tick();
@@ -2774,6 +2793,8 @@ impl App {
         // Music and the others get the play/pause presses back.
         let tx = self.tx.clone();
         self.media.set(false, &tx);
+        // Remembered before it is stopped: the next start reopens it.
+        self.voice_at_quit = Some(self.voice_mode_now().into());
         self.stop_voice();
         crate::voice::kill_helpers();
         self.detect_sessions();

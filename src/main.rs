@@ -1034,11 +1034,14 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             0
         };
     } else if opts.voice || app.cfg.voice.enabled {
-        if app.cfg.voice.mode == "open" && !opts.wake {
+        // The mode it ran in before the restart, else voice.mode.
+        let mode = app.launch_voice_mode();
+        log::info(&format!("voice: starting at launch in {mode} mode"));
+        if mode == "open" && !opts.wake {
             app.voice.open_mic = true;
             app.start_voice(true);
         } else {
-            let wake = opts.wake || app.cfg.voice.mode != "push";
+            let wake = opts.wake || mode != "push";
             app.start_voice(wake);
         }
     }

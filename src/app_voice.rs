@@ -278,6 +278,29 @@ impl App {
         }
     }
 
+    /// How voice runs now, as saved for the next start: "open" (open
+    /// mic), "wake", "push" or "off" (not running, or muted).
+    pub fn voice_mode_now(&self) -> &'static str {
+        if self.voice.engine.is_none() || self.voice.muted {
+            "off"
+        } else if self.voice.open_mic {
+            "open"
+        } else if self.voice.always_on {
+            "wake"
+        } else {
+            "push"
+        }
+    }
+
+    /// The mode voice starts in at launch: the one it ran in before the
+    /// restart (an open mic reopens), else `voice.mode`.
+    pub fn launch_voice_mode(&self) -> String {
+        match self.rt_voice.as_deref() {
+            Some(m @ ("open" | "wake" | "push")) => m.to_string(),
+            _ => self.cfg.voice.mode.clone(),
+        }
+    }
+
     pub fn start_voice(&mut self, always_on: bool) {
         if self.voice.muted {
             return;
@@ -1211,5 +1234,67 @@ impl App {
             || self.voice.info.is_some()
             || self.voice.muted
             || crate::demo::active()
+    }
+}
+
+#[cfg(test)]
+mod voice_resume_tests {
+    use crate::app::App;
+    use crate::config::testing::LOCK as ENV_LOCK;
+
+    fn app(tag: &str) -> (App, std::path::PathBuf) {
+        let home =
+            std::env::temp_dir().join(format!("godterm-voiceresume-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        crate::config::testing::set_home(&home);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut cfg = crate::config::Config::default();
+        cfg.voice.enabled = true;
+        cfg.voice.mode = "push".into();
+        (App::new(cfg, tx), home)
+    }
+
+    #[test]
+    fn an_open_mic_comes_back_after_a_restart() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, home) = app("open");
+        // Nothing saved yet: voice.mode decides.
+        assert_eq!(app.launch_voice_mode(), "push");
+        // Running with an open mic at quit (shutdown records it before it
+        // stops voice): saved, and the next start reopens it.
+        app.voice_at_quit = Some("open".into());
+        app.save_state();
+        let st = crate::state::AppState::load().unwrap();
+        assert_eq!(st.voice.as_deref(), Some("open"));
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut cfg = crate::config::Config::default();
+        cfg.voice.enabled = true;
+        cfg.voice.mode = "push".into();
+        let mut next = App::new(cfg, tx);
+        // As main does: the saved state is restored before voice starts.
+        next.restore(crate::state::AppState::load().unwrap());
+        assert_eq!(next.launch_voice_mode(), "open");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn wake_comes_back_and_off_falls_back_to_the_setting() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, home) = app("modes");
+        app.rt_voice = Some("wake".into());
+        assert_eq!(app.launch_voice_mode(), "wake");
+        app.rt_voice = Some("off".into());
+        assert_eq!(app.launch_voice_mode(), "push");
+        app.rt_voice = Some("nonsense".into());
+        assert_eq!(app.launch_voice_mode(), "push");
+        // Not running: saved as off; a change marks the state for saving.
+        assert_eq!(app.voice_mode_now(), "off");
+        app.state_dirty = false;
+        app.rt_voice = Some("open".into());
+        app.tick();
+        assert_eq!(app.rt_voice.as_deref(), Some("off"));
+        assert!(app.state_dirty);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
