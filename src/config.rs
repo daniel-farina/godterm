@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// One account slot. Each slot owns an isolated Claude Code config dir.
+/// One coding-agent slot. Claude, Grok and Codex get isolated config homes;
+/// the other harnesses currently use their native shared login stores.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AccountCfg {
     /// Short identifier, used as the directory name under `accounts/`.
@@ -19,8 +20,8 @@ pub struct AccountCfg {
     /// Human friendly label shown in pane titles and the status bar.
     #[serde(default)]
     pub label: String,
-    /// The coding agent this account runs: "claude" (default) or "grok"
-    /// (Grok Build, isolated with GROK_HOME).
+    /// The coding agent: claude (default), grok, codex, cursor,
+    /// antigravity or opencode. See docs/CLI_HARNESSES.md for capabilities.
     #[serde(
         default = "default_harness",
         skip_serializing_if = "is_default_harness"
@@ -33,7 +34,7 @@ pub struct AccountCfg {
     /// Working directory for new sessions. `~` is expanded.
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Extra arguments appended to every `claude` invocation for this slot.
+    /// Extra arguments appended to every agent invocation for this slot.
     #[serde(default)]
     pub args: Vec<String>,
     /// Base folder for new tabs of this account (overrides `new_tab_base`).
@@ -110,6 +111,14 @@ pub struct Config {
     /// ~/.local/bin/grok, else `grok` on PATH.
     #[serde(default)]
     pub grok_bin: Option<String>,
+    #[serde(default)]
+    pub codex_bin: Option<String>,
+    #[serde(default)]
+    pub cursor_bin: Option<String>,
+    #[serde(default)]
+    pub antigravity_bin: Option<String>,
+    #[serde(default)]
+    pub opencode_bin: Option<String>,
     /// What grok in a GodTerm slot may pick up from the user's Claude Code
     /// setup (~/.claude): grok scans it whatever GROK_HOME says.
     #[serde(default)]
@@ -783,6 +792,10 @@ impl Default for Config {
         Config {
             claude_bin: None,
             grok_bin: None,
+            codex_bin: None,
+            cursor_bin: None,
+            antigravity_bin: None,
+            opencode_bin: None,
             grok_claude_compat: GrokCompat::default(),
             autostart: true,
             refresh_secs: 60,
@@ -1203,6 +1216,19 @@ impl AccountCfg {
 }
 
 impl Config {
+    pub fn harness_bin(&self, h: crate::harness::Harness) -> String {
+        use crate::harness::Harness;
+        let configured = match h {
+            Harness::Claude => return self.claude_bin(),
+            Harness::Grok => &self.grok_bin,
+            Harness::Codex => &self.codex_bin,
+            Harness::Cursor => &self.cursor_bin,
+            Harness::Antigravity => &self.antigravity_bin,
+            Harness::OpenCode => &self.opencode_bin,
+        };
+        h.bin(configured.as_deref())
+    }
+
     pub fn path() -> PathBuf {
         app_home().join("config.toml")
     }
@@ -1254,8 +1280,8 @@ impl Config {
         }
         let body = toml::to_string_pretty(self)?;
         let header = "# godterm configuration\n\
-# Each [[account]] gets an isolated Claude Code config dir at\n\
-# ~/.godterm/accounts/<name>/ (passed to claude as CLAUDE_CONFIG_DIR).\n\
+# Slots use ~/.godterm/accounts/<name>/ for GodTerm-managed data.\n\
+# Claude, Grok and Codex get isolated homes; other CLIs use native stores.\n\
 # The first four accounts are shown in the 2x2 grid.\n\n";
         write_atomic(&path, format!("{header}{body}").as_bytes())
     }

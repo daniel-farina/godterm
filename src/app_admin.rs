@@ -124,7 +124,8 @@ fn setting_risk(key: &str, value: &str) -> Option<&'static str> {
         "update.enabled" if off => Some("GodTerm would stop checking for security updates"),
         "privacy" if off => Some("account emails would show on screen again"),
         "pass_env" => Some("these environment variables (possibly secrets) reach every tab"),
-        "claude_bin" | "grok_bin" => Some("every tab and the assistant would run this program"),
+        "claude_bin" | "grok_bin" | "codex_bin" | "cursor_bin" | "antigravity_bin"
+        | "opencode_bin" => Some("every tab and the assistant would run this program"),
         _ => None,
     }
 }
@@ -228,10 +229,7 @@ impl App {
     fn program_for(&self, a: usize) -> (Harness, String, PathBuf) {
         let acfg = &self.cfg.accounts[a];
         let h = acfg.harness();
-        let bin = match h {
-            Harness::Claude => self.cfg.claude_bin(),
-            Harness::Grok => h.bin(self.cfg.grok_bin.as_deref()),
-        };
+        let bin = self.cfg.harness_bin(h);
         (h, bin, acfg.config_dir())
     }
 
@@ -327,6 +325,9 @@ impl App {
     pub fn refresh_mcp_status(&mut self, a: usize) {
         let tx = self.admin_tx();
         let (h, bin, dir) = self.program_for(a);
+        if !h.integrated() {
+            return;
+        }
         let pass = self.cfg.pass_env.clone();
         std::thread::spawn(move || {
             let (_, out) = admin::run(
@@ -340,6 +341,7 @@ impl App {
             let v = match h {
                 Harness::Claude => admin::parse_mcp_list(&out),
                 Harness::Grok => admin::parse_grok_list(&out),
+                _ => vec![],
             };
             let _ = tx.send(AdminEvent::Listed(a, v));
         });
@@ -416,6 +418,8 @@ impl App {
                 j["label"] = json!(self.cfg.accounts[a].display());
                 j["harness"] = json!(self.cfg.accounts[a].harness().name());
                 j["logged_in"] = json!(st.login.logged_in());
+                j["login_managed_by_cli"] = json!(st.login.cli_managed);
+                j["admin_supported"] = json!(self.cfg.accounts[a].harness().integrated());
                 j["plan"] = json!(st
                     .profile
                     .org_tier
@@ -654,6 +658,7 @@ impl App {
                 let mut shown = vec![];
                 for &a in &accts {
                     let (h, bin, _) = self.program_for(a);
+                    if !h.integrated() { return Err(format!("Manage {} MCP servers and plugins in its CLI", h.label())); }
                     let has_market = self
                         .caps_of(a)
                         .marketplaces
@@ -730,6 +735,7 @@ impl App {
                 let mut shown = vec![];
                 for &a in &accts {
                     let (h, bin, _) = self.program_for(a);
+                    if !h.integrated() { return Err(format!("Manage {} MCP servers and plugins in its CLI", h.label())); }
                     let steps = admin::remove_steps(h, &name);
                     shown.push(admin::shown(&bin, &steps[0]));
                     per.push(json!({"account": a, "steps": steps, "check": name}));
@@ -759,6 +765,7 @@ impl App {
                 let mut shown = vec![];
                 for &a in &accts {
                     let (h, bin, _) = self.program_for(a);
+                    if !h.integrated() { return Err(format!("Manage {} MCP servers and plugins in its CLI", h.label())); }
                     let known = self.caps_of(a).marketplaces;
                     let need = market.as_deref().filter(|m| {
                         let short = m.rsplit('/').next().unwrap_or(m).trim_end_matches(".git");
@@ -847,18 +854,14 @@ impl App {
                 let label = s("label")
                     .filter(|l| !l.trim().is_empty())
                     .ok_or("the new account's name")?;
-                let harness = match s("harness")
-                    .unwrap_or_else(|| "claude".into())
-                    .to_lowercase()
-                    .as_str()
-                {
-                    "grok" => "grok",
-                    _ => "claude",
-                };
-                if harness == "grok"
-                    && !crate::harness::grok::installed(self.cfg.grok_bin.as_deref())
-                {
-                    return Err("grok is not installed here (install Grok Build first)".into());
+                let requested = s("harness").unwrap_or_else(|| "claude".into());
+                if !crate::harness::NAMES.contains(&requested.trim().to_lowercase().as_str()) {
+                    return Err(format!("Unknown harness: {requested}"));
+                }
+                let agent = Harness::of(&requested);
+                let harness = agent.name();
+                if agent != Harness::Claude && !agent.installed(&self.cfg) {
+                    return Err(format!("{} is not installed (or set {})", agent.label(), agent.bin_key()));
                 }
                 let folder = s("folder").unwrap_or_else(|| "~".into());
                 if !crate::config::expand_tilde(&folder).is_dir() {
@@ -868,7 +871,7 @@ impl App {
                     crate::theme::SWATCHES[self.cfg.accounts.len() % crate::theme::SWATCHES.len()]
                         .to_string()
                 });
-                let h = if harness == "grok" { "Grok" } else { "Claude" };
+                let h = match agent { Harness::Claude => "Claude", Harness::Grok => "Grok", _ => agent.label() };
                 Ok((
                     json!({"label": label.trim(), "harness": harness, "folder": folder, "color": color}),
                     format!(
@@ -989,6 +992,9 @@ impl App {
             }
             "logout_account" => {
                 let a = plan["account"].as_u64().unwrap_or(0) as usize;
+                if !self.cfg.accounts[a].harness().integrated() {
+                    return Err("Manage login in the CLI; native stores may be shared".into());
+                }
                 let l = self.cfg.accounts[a].display().to_string();
                 self.logout_account(a);
                 self.admin_record(&format!("logged out {l}"));
@@ -1061,6 +1067,9 @@ impl App {
                 continue;
             }
             let (h, bin, dir) = self.program_for(a);
+            if !h.integrated() {
+                return Err(format!("No GodTerm admin adapter for {}", h.label()));
+            }
             let steps: Vec<Vec<String>> =
                 serde_json::from_value(p["steps"].clone()).unwrap_or_default();
             work.push((
@@ -1139,6 +1148,7 @@ impl App {
                     let v = match h {
                         Harness::Claude => admin::parse_mcp_list(&out),
                         Harness::Grok => admin::parse_grok_list(&out),
+                        _ => vec![],
                     };
                     let _ = tx.send(AdminEvent::Listed(a, v.clone()));
                     v
@@ -1251,6 +1261,10 @@ impl App {
     // ---------- account login, hand held ----------
 
     fn start_login_flow(&mut self, a: usize) {
+        if !self.cfg.accounts[a].harness().integrated() {
+            self.flash("Finish login in the CLI; GodTerm does not track its credentials");
+            return;
+        }
         let pane = self.pane_for_account(a);
         let Some(uid) = self.panes.get(pane).map(|p| p.cur().uid) else {
             return;

@@ -38,6 +38,9 @@ pub fn should_scrub(key: &str, pass: &[String]) -> bool {
         || key.starts_with("GODTERM_")
         || key.starts_with("CLAUDEGO_")
         || crate::harness::scrub_grok(key)
+        || key == "CODEX_HOME"
+        || key.starts_with("CODEX_INTERNAL_")
+        || key == "CODEX_THREAD_ID"
 }
 
 /// Most bytes a second one tab's output is read at (see the reader).
@@ -92,7 +95,7 @@ pub enum LaunchKind {
 pub struct LaunchSpec {
     pub program: String,
     /// The variable that names the account's isolated home
-    /// (CLAUDE_CONFIG_DIR, or GROK_HOME for grok).
+    /// (CLAUDE_CONFIG_DIR, GROK_HOME or CODEX_HOME). Empty for native stores.
     pub home_env: &'static str,
     pub args: Vec<String>,
     pub cwd: PathBuf,
@@ -407,7 +410,9 @@ impl Pane {
         if spec.home_env != "CLAUDE_CONFIG_DIR" {
             cmd.env_remove("CLAUDE_CONFIG_DIR");
         }
-        cmd.env(spec.home_env, &spec.config_dir);
+        if !spec.home_env.is_empty() {
+            cmd.env(spec.home_env, &spec.config_dir);
+        }
         for (k, v) in &spec.extra_env {
             cmd.env(k, v);
         }

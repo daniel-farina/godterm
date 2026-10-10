@@ -58,6 +58,8 @@ mod grid_tests;
 mod grok_logins;
 mod guard;
 mod harness;
+#[cfg(test)]
+mod harness_tests;
 mod hits;
 mod install;
 mod instance;

@@ -29,6 +29,14 @@ sessions are a click away, and a voice assistant can open tabs, send
 prompts, answer approvals and move a conversation to another account while
 your hands stay on the keyboard (or off it).
 
+Interactive slots also support **Codex CLI, Cursor CLI, Antigravity CLI
+(`agy`) and OpenCode**. Choose one in Add account, or set an account's
+`harness` in config.toml. These integrations support terminal input,
+launch/resume flags and voice-driven tab creation. Codex gets its own
+`CODEX_HOME`; Cursor, Antigravity and OpenCode use their native shared
+login stores. See [CLI harnesses](docs/CLI_HARNESSES.md) for configuration
+and the features available to each CLI.
+
 ## Features
 
 - **Many accounts, many tabs.** Any number of Claude accounts (and Grok

@@ -7,6 +7,14 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+### Coding agents
+- Add interactive Codex CLI, Cursor CLI, Antigravity CLI (`agy`) and
+  OpenCode slots, with agent selection, binary overrides, native
+  launch/resume flags and supported permission modes. Codex uses an
+  isolated `CODEX_HOME`; the other three use native shared login stores.
+  Login, usage, transcript browsing and MCP/plugin administration remain
+  CLI-managed for these new harnesses; see docs/CLI_HARNESSES.md.
+
 ## [0.2.8] - 2026-10-08
 
 ### Panes

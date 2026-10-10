@@ -59,6 +59,8 @@ pub enum AppEvent {
 /// Login state as derived from stored credentials (no secrets kept here).
 #[derive(Debug, Clone, Default)]
 pub struct LoginInfo {
+    /// Login is handled by the CLI; GodTerm has no credential adapter.
+    pub cli_managed: bool,
     pub source: Option<CredSource>,
     pub expires_at: Option<i64>,
     pub has_refresh: bool,
@@ -67,6 +69,9 @@ pub struct LoginInfo {
 }
 
 impl LoginInfo {
+    pub fn can_start(&self) -> bool {
+        self.cli_managed || self.logged_in()
+    }
     pub fn logged_in(&self) -> bool {
         self.source.is_some()
     }
@@ -798,7 +803,7 @@ impl App {
         for p in 0..self.panes.len() {
             if let Some(a) = self.panes[p].account {
                 let t = self.panes[p].cur();
-                if self.accounts[a].login.logged_in() && t.state == PaneState::Idle {
+                if self.accounts[a].login.can_start() && t.state == PaneState::Idle {
                     let kind = t.pending.clone().unwrap_or(LaunchKind::Normal);
                     self.launch(p, kind);
                 }
@@ -814,7 +819,7 @@ impl App {
         let mut rest = vec![];
         for (p, slot) in self.panes.iter().enumerate() {
             let Some(a) = slot.account else { continue };
-            if !self.accounts.get(a).is_some_and(|x| x.login.logged_in()) {
+            if !self.accounts.get(a).is_some_and(|x| x.login.can_start()) {
                 continue;
             }
             for (ti, t) in slot.tabs.iter().enumerate() {
@@ -1068,6 +1073,9 @@ impl App {
             let Some(a) = self.panes[si].account else {
                 continue;
             };
+            if !self.cfg.accounts[a].harness().integrated() {
+                continue;
+            }
             let dir = self.cfg.accounts[a].config_dir();
             for ti in 0..self.panes[si].tabs.len() {
                 let t = &self.panes[si].tabs[ti];
@@ -1148,17 +1156,17 @@ impl App {
         let mut type_when_idle = None;
         match &kind {
             LaunchKind::Normal => {}
-            LaunchKind::Login if h == crate::harness::Harness::Grok => {
-                // `grok login` in the slot's own GROK_HOME.
+            LaunchKind::Login if h.login_args().is_some() => {
                 args = h.login_args().unwrap_or_default();
             }
-            LaunchKind::Login => {
+            LaunchKind::Login if h == crate::harness::Harness::Claude => {
                 // A fresh dir runs onboarding, which includes the OAuth login.
                 // An onboarded but logged out dir needs /login typed in.
                 if creds::load_profile(&dir).onboarded {
                     type_when_idle = Some(b"/login\r".to_vec());
                 }
             }
+            LaunchKind::Login => {} // native onboarding / login picker
             LaunchKind::Resume(id) => args.extend(h.resume_args(id)),
         }
         if let LaunchKind::Resume(id) = &kind {
@@ -1170,10 +1178,7 @@ impl App {
             }
         }
         let spec = LaunchSpec {
-            program: match h {
-                crate::harness::Harness::Claude => self.cfg.claude_bin(),
-                crate::harness::Harness::Grok => h.bin(self.cfg.grok_bin.as_deref()),
-            },
+            program: self.cfg.harness_bin(h),
             home_env: h.home_env(),
             extra_env: if h == crate::harness::Harness::Grok {
                 crate::harness::grok::write_slot_compat(&dir, &self.cfg.grok_claude_compat);
@@ -1533,14 +1538,16 @@ impl App {
         }
         st.sessions_loading = true;
         let dir = self.cfg.accounts[idx].config_dir();
-        let grok = self.cfg.accounts[idx].harness() == crate::harness::Harness::Grok;
+        let h = self.cfg.accounts[idx].harness();
         let cache = Arc::clone(&st.cache);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let list = if grok {
-                crate::harness::grok::scan_sessions(&dir)
-            } else {
-                cache.lock().unwrap_or_else(|e| e.into_inner()).scan(&dir)
+            let list = match h {
+                crate::harness::Harness::Grok => crate::harness::grok::scan_sessions(&dir),
+                crate::harness::Harness::Claude => {
+                    cache.lock().unwrap_or_else(|e| e.into_inner()).scan(&dir)
+                }
+                _ => vec![],
             };
             let _ = tx.send(AppEvent::Sessions(idx, list));
         });
@@ -1693,8 +1700,9 @@ impl App {
                         .unwrap_or_else(|e| e.into_inner())
                         .screen()
                         .contents();
-                    if crate::prompt::parse_prompt(&screen)
-                        .is_some_and(|p| p.kind == crate::prompt::PromptKind::Trust)
+                    if self.cfg.accounts[a].harness().integrated()
+                        && crate::prompt::parse_prompt(&screen)
+                            .is_some_and(|p| p.kind == crate::prompt::PromptKind::Trust)
                     {
                         to_trust.push((si, ti));
                     }
@@ -1723,7 +1731,7 @@ impl App {
             let Some(a) = self.panes[p].account else {
                 continue;
             };
-            if self.accounts[a].login.logged_in() {
+            if self.accounts[a].login.can_start() {
                 if let Some(kind) = self.panes[p].cur().pending.clone() {
                     if self.panes[p].cur().state == PaneState::Idle {
                         self.launch(p, kind);
@@ -2440,7 +2448,7 @@ impl App {
                 if k.code == KeyCode::Enter {
                     let p = self.focus;
                     let logged_in = account
-                        .map(|a| self.accounts[a].login.logged_in())
+                        .map(|a| self.accounts[a].login.can_start())
                         .unwrap_or(false);
                     let kind = match pane.pending.clone() {
                         Some(k) if logged_in => k,
@@ -3176,6 +3184,11 @@ impl App {
         self.cfg.auto_restart = new.auto_restart;
         self.cfg.autostart = new.autostart;
         self.cfg.claude_bin = new.claude_bin;
+        self.cfg.grok_bin = new.grok_bin;
+        self.cfg.codex_bin = new.codex_bin;
+        self.cfg.cursor_bin = new.cursor_bin;
+        self.cfg.antigravity_bin = new.antigravity_bin;
+        self.cfg.opencode_bin = new.opencode_bin;
         self.cfg.pass_env = new.pass_env;
         self.cfg.auto_trust = new.auto_trust;
         self.cfg.trusted_dirs = new.trusted_dirs;
@@ -3250,7 +3263,7 @@ impl App {
         };
         let next = (ob.pos..ob.queue.len()).find(|&i| {
             let a = ob.queue[i];
-            !self.accounts[a].login.logged_in() && !ob.skipped.contains(&a)
+            !self.accounts[a].login.can_start() && !ob.skipped.contains(&a)
         });
         match next {
             None => {
@@ -3559,6 +3572,14 @@ pub fn snapshot_of(a: &AccountCfg, with_usage: bool) -> StatusSnapshot {
                 usage,
             }
         }
+        _ => StatusSnapshot {
+            profile: Profile::default(),
+            login: LoginInfo {
+                cli_managed: true,
+                ..Default::default()
+            },
+            usage: None,
+        },
     }
 }
 
@@ -3570,6 +3591,7 @@ pub fn snapshot(dir: &std::path::Path, with_usage: bool) -> StatusSnapshot {
     let login = found
         .as_ref()
         .map(|(c, src)| LoginInfo {
+            cli_managed: false,
             source: Some(*src),
             expires_at: c.expires_at,
             has_refresh: c.has_refresh,

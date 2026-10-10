@@ -88,10 +88,7 @@ impl App {
     /// The program a tab of `account` runs is not installed.
     pub fn agent_missing(&self, account: Option<usize>) -> Option<&'static str> {
         let a = account?;
-        let id = match self.cfg.accounts.get(a)?.harness() {
-            crate::harness::Harness::Claude => "claude",
-            crate::harness::Harness::Grok => "grok",
-        };
+        let id = self.cfg.accounts.get(a)?.harness().name();
         self.deps()
             .iter()
             .find(|d| d.id == id && !d.status.ok())
