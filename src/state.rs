@@ -133,6 +133,30 @@ pub struct AppState {
     /// Dragged column and row sizes per shape.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub ratios: crate::layout::RatioMap,
+    /// Requests to tabs not run yet (queued in GodTerm, typed in but not
+    /// seen, or in claude's queue): queued again after a restart or crash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deliveries: Vec<SavedDelivery>,
+}
+
+/// A request to a tab, saved until it runs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SavedDelivery {
+    pub id: u64,
+    /// The tab id (uid).
+    pub tab: u64,
+    pub text: String,
+    /// queued, sending, sent or received.
+    pub state: String,
+    /// When it was typed in (epoch ms), to find it in the transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_ms: Option<i64>,
+    /// A request from the user (its receipts are said).
+    #[serde(default)]
+    pub notify: bool,
+    /// When it was asked for (epoch s).
+    #[serde(default)]
+    pub created: i64,
 }
 
 impl AppState {
@@ -285,6 +309,15 @@ mod tests {
                 },
             )]
             .into(),
+            deliveries: vec![SavedDelivery {
+                id: 4,
+                tab: 12,
+                text: "fix the build".into(),
+                state: "received".into(),
+                sent_ms: Some(1_700_000_000_000),
+                notify: true,
+                created: 1_700_000_000,
+            }],
         };
         let text = serde_json::to_string(&st).unwrap();
         assert_eq!(serde_json::from_str::<AppState>(&text).unwrap(), st);

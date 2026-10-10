@@ -308,7 +308,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "send_prompt",
-        description: "Give claude in one or more tabs a prompt to work on. Returns per tab: delivered (claude started on it), queued (the tab is busy or starting; it is sent once ready) or failed (with the reason). More than one tab needs one confirmation for the whole set. expect_reply true: you are asking the tab's agent a question for the user; GodTerm watches for its answer and starts a turn for you to tell the user when it arrives (default: true when the text or the user's request is a question). The result says will_report: promise the user to report back only when will_report is true; when it is false, say the prompt was sent and that they can ask later.",
+        description: "Give claude in one or more tabs a prompt to work on. Returns per tab a delivery id, status (delivered: typed in and taken; queued: the tab is busy or starting, it is sent once ready; failed, with the reason) and state, the receipt from the tab's own transcript: queued, sending, sent (typed in, not in the transcript yet), received (claude has it, queued behind its current work), started, done, dropped or interrupted (lost: the user should resend), unconfirmed (no transcript to check). Say a tab got a request only when its state is received, started or done; the deliveries in get_state follow each one later. More than one tab needs one confirmation for the whole set. expect_reply true: you are asking the tab's agent a question for the user; GodTerm watches for its answer and starts a turn for you to tell the user when it arrives (default: true when the text or the user's request is a question). The result says will_report: promise the user to report back only when will_report is true; when it is false, say the prompt was sent and that they can ask later.",
         schema: || {
             props(
                 json!({"tab": tab_prop(), "account": account_prop(), "text": {"type": "string"}, "expect_reply": {"type": "boolean"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
@@ -363,13 +363,18 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "press_key",
-        description: "Press a key in a tab: escape (interrupts claude's current work), enter, ctrl_c or ctrl_d. Interrupt only when the user asked: escape, ctrl_c or ctrl_d on a tab that is working or has prompts queued asks first (needs_confirmation) unless the user's own words said to stop it; an idle tab gets it at once. Enter is refused while the tab shows a permission or trust prompt: answer those with answer_prompt.",
+        description: "Press a key in a tab: escape (interrupts claude's current work), enter, ctrl_c or ctrl_d. Interrupt only when the user asked: escape, ctrl_c or ctrl_d on a tab that is working or has prompts queued asks first (needs_confirmation) unless the user's own words said to stop it; an idle tab gets it at once. Enter is refused while the tab shows a permission or trust prompt: answer those with answer_prompt. An interrupt on a tab with requests not started yet (deliveries received or queued) can drop them: the result has a warning, say it; GodTerm checks afterwards and reports any that were dropped.",
         schema: || {
             props(
                 json!({"tab": tab_prop(), "key": {"type": "string", "enum": ["escape", "enter", "ctrl_c", "ctrl_d"]}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
                 &["key"],
             )
         },
+    },
+    Tool {
+        name: "resend",
+        description: "Send a request that was dropped or interrupted again, with its exact text, to the same tab (\"resend\", \"send it again\"). id: the delivery id from deliveries in get_state; without it, the latest lost one (of tab, if given). Returns the new delivery.",
+        schema: || props(json!({"id": {"type": "integer"}, "tab": tab_prop()}), &[]),
     },
     Tool {
         name: "rename_tab",
@@ -729,9 +734,11 @@ pub struct Delivery {
     pub stage: Stage,
     pub created: Instant,
     /// The tab's last user message before this one (to see a new one).
-    before: Option<String>,
+    pub(crate) before: Option<String>,
     /// Its final status went out in a tool reply or a note.
     pub reported: bool,
+    /// What the tab's transcript shows (receipts, app_receipts).
+    pub rc: crate::app_receipts::Track,
 }
 
 impl Delivery {
@@ -905,6 +912,12 @@ impl App {
             tab_id(uid),
             text.len()
         ));
+        let busy = self.find_tab(uid).is_some_and(|(s, t)| {
+            matches!(
+                self.panes[s].tabs[t].activity,
+                Activity::Working | Activity::Permission
+            )
+        });
         self.deliveries.push(Delivery {
             id,
             uid,
@@ -913,8 +926,20 @@ impl App {
             created: Instant::now(),
             before,
             reported: false,
+            rc: crate::app_receipts::Track::new(busy),
         });
+        self.state_dirty = true;
         self.deliveries_tick();
+        id
+    }
+
+    /// A request from the user to a tab (send_prompt, open_tab, resend):
+    /// delivered with receipts that are shown and said.
+    pub fn deliver_request(&mut self, uid: u64, text: &str) -> u64 {
+        let id = self.deliver(uid, text);
+        if let Some(d) = self.deliveries.iter_mut().find(|d| d.id == id) {
+            d.rc.notify = true;
+        }
         id
     }
 
@@ -966,7 +991,7 @@ impl App {
         }
     }
 
-    fn tab_screen(&self, s: usize, t: usize) -> String {
+    pub(crate) fn tab_screen(&self, s: usize, t: usize) -> String {
         self.panes[s].tabs[t]
             .parser
             .lock()
@@ -1046,8 +1071,15 @@ impl App {
                             d.text.len()
                         ));
                         let text = d.text.clone();
+                        // Its records come after this (claude only appends).
+                        d.rc.from_offset = self
+                            .transcript_path(s, t)
+                            .and_then(|p| std::fs::metadata(p).ok())
+                            .map(|m| m.len());
                         self.paste_prompt(s, t, &text);
                         d.stage = Stage::Pasted(Instant::now());
+                        d.rc.sent_ms = Some(chrono::Utc::now().timestamp_millis());
+                        d.rc.sent_at = Some(Instant::now());
                     } else if !tab.is_running()
                         && tab.pending.is_none()
                         && !tab.suspended
@@ -1111,10 +1143,19 @@ impl App {
             }
         }
         // Keep finished ones a while so replies and the state can report them.
-        ds.retain(|d| !d.done() || d.created.elapsed() < Duration::from_secs(900));
+        // A request's receipt is followed to its end, and a lost one is
+        // kept an hour for a resend.
+        ds.retain(|d| !d.done() || d.rc.keep());
         if ds.len() > 50 {
-            let cut = ds.len() - 50;
-            ds.drain(..cut);
+            let mut cut = ds.len() - 50;
+            ds.retain(|d| {
+                if cut > 0 && d.done() && d.rc.receipt.is_final() {
+                    cut -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
         }
         self.deliveries = ds;
     }
@@ -1131,8 +1172,8 @@ impl App {
         match self.deliveries.iter().find(|d| d.id == id) {
             Some(d) => {
                 let (status, reason) = d.status();
-                let mut v = json!({"tab": tab_id(d.uid), "status": status});
-                if let Some(r) = reason {
+                let mut v = json!({"id": d.id, "tab": tab_id(d.uid), "status": status, "state": d.state_word()});
+                if let Some(r) = d.rc.receipt.reason().map(str::to_string).or(reason) {
                     v["reason"] = json!(r);
                 }
                 if !d.done() {
@@ -1148,6 +1189,7 @@ impl App {
     pub fn control_tick(&mut self) {
         self.deliveries_tick();
         self.pending_enters_tick();
+        self.receipts_tick();
         let ws = std::mem::take(&mut self.ctl_waits);
         for mut w in ws {
             if let Some(rx) = w.job.as_ref() {
@@ -1195,7 +1237,10 @@ impl App {
                 && w.ready_uids.iter().all(|u| dead(self, *u));
             let busy = w.deliveries.iter().any(|id| {
                 self.deliveries.iter().any(|d| {
-                    d.id == *id && (d.in_flight() || (w.wait_queued && d.stage == Stage::Queued))
+                    d.id == *id
+                        && (d.in_flight()
+                            || (w.wait_queued && d.stage == Stage::Queued)
+                            || d.rc.awaiting_receipt(&d.stage))
                 })
             });
             // A take-over is done once its session runs in a tab here, or
@@ -1624,7 +1669,7 @@ impl App {
         Ok(out)
     }
 
-    fn one_tab(&mut self, args: &Value) -> Result<(usize, usize), String> {
+    pub(crate) fn one_tab(&mut self, args: &Value) -> Result<(usize, usize), String> {
         let x = self.tab_targets(args, false)?[0];
         self.last_target = Some(self.panes[x.0].tabs[x.1].uid);
         Ok(x)
@@ -2336,12 +2381,18 @@ impl App {
                 let uid = self.current_uid(plan["uid"].as_u64().unwrap_or(0));
                 let (sl, t) = self.find_tab(uid).ok_or("that tab was closed")?;
                 let key = plan["key"].as_str().unwrap_or("escape");
+                // An interrupt can drop requests claude holds in its queue:
+                // warn, and check that tab's requests afterwards.
+                let warning = self.interrupt_warning(uid);
                 self.panes[sl].tabs[t].write(key_bytes(Some(key))?);
                 self.last_target = Some(uid);
                 crate::log::info(&format!("control: press_key {key} in {}", tab_id(uid)));
-                Ok(ok(
-                    json!({"tab": tab_id(uid), "pressed": key, "state": self.state_word(sl, t)}),
-                ))
+                let mut v =
+                    json!({"tab": tab_id(uid), "pressed": key, "state": self.state_word(sl, t)});
+                if let Some(w) = warning {
+                    v["warning"] = json!(w);
+                }
+                Ok(ok(v))
             }
             "edit_system_prompt" => self.run_prompt_edit(plan),
             "send_prompt" => {
@@ -2360,7 +2411,7 @@ impl App {
                         failed.push(json!({"tab": tab_id(*u), "status": "failed", "reason": "that tab is not running (it ended or was never started)"}));
                         continue;
                     }
-                    ids.push(self.deliver(*u, &text));
+                    ids.push(self.deliver_request(*u, &text));
                     self.last_target = Some(*u);
                 }
                 Ok(
@@ -2905,6 +2956,9 @@ impl App {
         if let Some(r) = self.speaker_tool(tool, args) {
             return r;
         }
+        if tool == "resend" {
+            return self.resend_tool(args);
+        }
         if let Some(r) = self.admin_tool(tool, args) {
             return r;
         }
@@ -3377,7 +3431,7 @@ impl App {
                     uids.push(uid);
                     opened.push(json!({"tab": tab_id(uid), "folder": crate::config::tilde(&dir)}));
                     if let Some(p) = &prompt {
-                        ids.push(self.deliver(uid, p));
+                        ids.push(self.deliver_request(uid, p));
                     }
                 }
                 self.last_target = uids.last().copied();
@@ -4634,7 +4688,7 @@ impl App {
                 "job": r.lp.id, "tab": tab_id(r.uid), "cadence": r.lp.cadence(),
                 "prompt": r.lp.prompt.chars().take(160).collect::<String>(), "next": r.lp.next_fire(now).map(|t| crate::loops::rel(t, now)),
             })).collect::<Vec<_>>(),
-            "recent_deliveries": self.deliveries.iter().rev().take(10).map(|d| self.delivery_json(d.id)).collect::<Vec<_>>(),
+            "deliveries": self.deliveries_json(),
             "pending_confirmations": self.pending_confirms.iter().map(|p| json!({
                 "tool": p.tool, "token": p.token, "question": p.summary, "asked_s_ago": p.age().as_secs(),
                 "answerable": p.answerable(),
@@ -4697,9 +4751,55 @@ pub fn say_deliveries(ds: &[Value], opened: usize) -> String {
     if ds.is_empty() {
         return parts.join(" ");
     }
-    let (ok_, q, f, s) = (n("delivered"), n("queued"), n("failed"), n("sending"));
-    if ok_ > 0 {
-        parts.push(format!("Claude started on it in {}.", plural(ok_, "tab")));
+    let (q, f, s) = (n("queued"), n("failed"), n("sending"));
+    // Delivered ones, by what the tab's transcript shows (the receipt).
+    let by = |sts: &[&str]| {
+        ds.iter()
+            .filter(|d| d["status"] == "delivered")
+            .filter(|d| sts.contains(&d["state"].as_str().unwrap_or("started")))
+            .count()
+    };
+    let (started, received, unseen) = (
+        by(&["started", "done"]),
+        by(&["received"]),
+        by(&["sent", "unconfirmed", "sending", "queued"]),
+    );
+    if started > 0 {
+        parts.push(format!(
+            "Claude started on it in {}.",
+            plural(started, "tab")
+        ));
+    }
+    if received > 0 {
+        parts.push(format!(
+            "Received in {}: it is queued behind the current work there.",
+            plural(received, "tab")
+        ));
+    }
+    if unseen > 0 {
+        parts.push(format!(
+            "Typed into {}, not confirmed received yet (deliveries in get_state follows it).",
+            plural(unseen, "tab")
+        ));
+    }
+    let lost: Vec<String> = ds
+        .iter()
+        .filter(|d| d["status"] == "delivered")
+        .filter(|d| matches!(d["state"].as_str(), Some("dropped" | "interrupted")))
+        .map(|d| {
+            format!(
+                "{} {}: {}",
+                d["tab"].as_str().unwrap_or(""),
+                d["state"].as_str().unwrap_or(""),
+                d["reason"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    if !lost.is_empty() {
+        parts.push(format!(
+            "Lost ({}); the user can say resend.",
+            lost.join("; ")
+        ));
     }
     if q + s > 0 {
         parts.push(format!(

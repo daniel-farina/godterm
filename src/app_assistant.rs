@@ -533,14 +533,8 @@ impl App {
         if shown < total {
             s.push_str(&format!("...{} more tabs (get_state)\n", total - shown));
         }
-        for d in self.deliveries.iter().filter(|d| !d.done()) {
-            let (st, _) = d.status();
-            s.push_str(&format!(
-                "prompt {st} for {} ({} s)\n",
-                crate::control::tab_id(d.uid),
-                d.created.elapsed().as_secs()
-            ));
-        }
+        // Requests to tabs and their receipts (deliveries in get_state).
+        s.push_str(&self.deliveries_state_lines());
         // Only a question still answerable is pending; an expired one
         // runs nothing on a yes and is only asked again.
         for p in &self.pending_confirms {
@@ -740,7 +734,10 @@ impl App {
         } else {
             self.quiet_user_typed();
         }
-        if self.self_switch_heard(text) || self.say_more(text) || self.cancel_follow_ups_said(text)
+        if self.self_switch_heard(text)
+            || self.say_more(text)
+            || self.cancel_follow_ups_said(text)
+            || self.resend_said(text)
         {
             return;
         }

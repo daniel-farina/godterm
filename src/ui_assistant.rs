@@ -363,16 +363,42 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
         }
         first = false;
     }
-    for d in app.deliveries.iter().filter(|d| !d.done()) {
-        let (st, _) = d.status();
+    // Requests to tabs: each one's receipt (tab, first words, state, time).
+    let shown: Vec<&crate::control::Delivery> = app
+        .deliveries
+        .iter()
+        .filter(|d| {
+            !d.done()
+                || (d.rc.notify
+                    && (!d.rc.receipt.is_final()
+                        || d.rc.resendable()
+                        || d.rc.receipt_at.elapsed() < std::time::Duration::from_secs(600)))
+        })
+        .collect();
+    for d in shown.iter().skip(shown.len().saturating_sub(6)) {
+        let st = d.state_word();
+        let (mark, color) = match st {
+            "dropped" | "interrupted" => ("✗", theme::CLAY),
+            "started" | "done" => ("✓", DIM),
+            _ => ("⧗", theme::SAND),
+        };
+        let name = app
+            .locate_uid(d.uid)
+            .map(|(s, t)| app.panes[s].tabs[t].name())
+            .unwrap_or_else(|| crate::control::tab_id(d.uid));
+        let resend = if d.rc.resendable() {
+            " · say resend"
+        } else {
+            ""
+        };
         out.push(Row {
             parts: vec![(
                 format!(
-                    "⧗ {st} to {}: {}",
-                    crate::control::tab_id(d.uid),
-                    crate::sessions::snippet(&d.text, 60)
+                    "{mark} {name} · \"{}\" · {st} · {}{resend}",
+                    crate::receipts::first_words(&d.text),
+                    d.rc.created_at.format("%H:%M")
                 ),
-                Style::default().fg(theme::SAND),
+                Style::default().fg(color),
             )],
             action: None,
             indent: 2,

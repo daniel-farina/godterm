@@ -527,7 +527,7 @@ pub struct App {
     pub rt_privacy: Option<bool>,
     /// Eager restore: tabs still to start, (pane, tab uid), one at a time.
     pub restore_queue: std::collections::VecDeque<(usize, u64)>,
-    restore_next: Instant,
+    pub(crate) restore_next: Instant,
     /// (tabs, accounts) started by the eager restore so far.
     restore_done: (usize, std::collections::BTreeSet<usize>),
     /// Tabs marked in the overview for broadcast (by uid).
@@ -826,6 +826,8 @@ impl App {
                 }
             }
         }
+        // Requests queued again after the restart need their tabs up.
+        self.start_tabs_with_requests();
     }
 
     /// Every restored tab of a logged in account, visible tabs first. They
@@ -1001,6 +1003,7 @@ impl App {
         self.rt_mem_saver = st.memory_saver;
         self.rt_voice = st.voice.clone();
         self.rt_privacy = st.privacy;
+        self.restore_deliveries(&st.deliveries);
     }
 
     pub fn snapshot_state(&self) -> AppState {
@@ -1031,6 +1034,7 @@ impl App {
                 .then_some(v)
             },
             ratios: self.ratios.clone(),
+            deliveries: self.saved_deliveries(),
             window: self.window.clone(),
             recents: self.recents.clone(),
             focus: self.focus,

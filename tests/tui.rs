@@ -1321,7 +1321,8 @@ for line in sys.stdin:
             "Send that prompt to 5 tabs on Bravo?",
         ),
         ("did you do it", "I am waiting for your yes."),
-        ("oh yeah I said yes", "Claude started on it in 5 tabs."),
+        // The fake claude writes no transcript: typed in, no receipt yet.
+        ("oh yeah I said yes", "Typed into 5 tabs"),
     ] {
         t.ask(said);
         t.wait_for(want, 40);
