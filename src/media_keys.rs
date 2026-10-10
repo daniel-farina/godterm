@@ -258,21 +258,131 @@ fn platform_backend(tx: Sender<AppEvent>) -> Option<Box<dyn Backend>> {
     }
 }
 
-/// `godterm tap-test [secs]`: claim Now Playing for a while and print
-/// every press and what it would do to the mic (one JSON line each), then
-/// give it back. For checking headphones without the full app.
-pub fn tap_test(secs: u64) -> anyhow::Result<()> {
+/// The audio route as CoreAudio reports it (macOS): the default output and
+/// input devices, their rates, whether they are Bluetooth, and whether
+/// anything records from the input right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub struct Route {
+    pub out_dev: u32,
+    pub out_rate: u32,
+    pub out_bt: bool,
+    pub in_dev: u32,
+    pub in_rate: u32,
+    pub in_bt: bool,
+    pub in_running: bool,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl Route {
+    /// A Bluetooth headset in call mode (HFP): its mic is recording, or
+    /// its output runs at a call rate (8 to 24 kHz). No play/pause comes
+    /// from it then.
+    pub fn call_mode(&self) -> bool {
+        (self.in_bt && self.in_running)
+            || (self.out_bt && self.out_rate > 0 && self.out_rate <= 24_000)
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "output {}{} {} Hz, input {}{} {} Hz{}, {}",
+            self.out_dev,
+            if self.out_bt { " (bluetooth)" } else { "" },
+            self.out_rate,
+            self.in_dev,
+            if self.in_bt { " (bluetooth)" } else { "" },
+            self.in_rate,
+            if self.in_running { " recording" } else { "" },
+            if self.call_mode() {
+                "call mode (HFP)"
+            } else {
+                "media mode"
+            }
+        )
+    }
+}
+
+/// Follows the route: what changed (for the log), and when a headset
+/// comes back from call mode to media mode, so Now Playing is reclaimed
+/// then (MediaRemote often goes deaf across the switch, which takes 1 to
+/// 3 s after the mic closes).
+#[derive(Debug, Default)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub struct RouteWatch {
+    last: Option<Route>,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl RouteWatch {
+    /// A new reading: (a log line when it changed, reclaim now).
+    pub fn feed(&mut self, r: Route) -> (Option<String>, bool) {
+        let prev = self.last.replace(r);
+        if prev == Some(r) {
+            return (None, false);
+        }
+        let back = prev.is_some_and(|p| p.call_mode()) && !r.call_mode();
+        (Some(format!("route: {}", r.describe())), back)
+    }
+}
+
+/// `godterm tap-test [--with-mic] [secs]`: claim Now Playing for a while
+/// and print every press and what it would do to the mic (one JSON line
+/// each), then give it back. For checking headphones without the full app.
+///
+/// `--with-mic` also opens the default input the way the voice engine does
+/// (the godterm-speech helper, open mic style) and closes and reopens it
+/// as the presses say, so a Bluetooth headset goes into call mode as in
+/// real use. Every path is printed as it fires: the remote commands (here
+/// and inside the recording helper), the headset mute gesture
+/// (AVAudioApplication, in the helper), IOHID consumer and telephony
+/// usages, and route changes.
+pub fn tap_test(secs: u64, with_mic: bool) -> anyhow::Result<()> {
     let (tx, rx) = std::sync::mpsc::channel();
     let Some(mut b) = platform_backend(tx) else {
         anyhow::bail!("no headphone tap support on this platform yet (macOS only)");
     };
-    eprintln!("Now Playing claimed for {secs} s: tap your headphones or press the play/pause key");
+    ECHO.store(true, std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "Now Playing claimed for {secs} s: tap your headphones or press the play/pause key{}",
+        if with_mic {
+            "; the mic is open (open mic): double tap to close it, again to open it"
+        } else {
+            ""
+        }
+    );
+    let vc = if with_mic {
+        crate::config::Config::load_or_init()?.voice
+    } else {
+        Default::default()
+    };
+    let mut mic = if with_mic { TestMic::open(&vc) } else { None };
     let mut gate = Gate::default();
-    let mut listening = false;
+    let mut listening = mic.is_some();
     let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     while std::time::Instant::now() < end {
         b.pump(listening, false);
+        let mut presses = vec![];
         if let Ok(AppEvent::MediaKey(p)) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            presses.push(p);
+        }
+        for ev in crate::voice::capture::take_events() {
+            println!(
+                "{}",
+                serde_json::json!({"helper": format!("{ev:?}"), "at_ms": now_ms()})
+            );
+            if let Some(p) = crate::voice::capture::helper_press(&ev) {
+                presses.push(p);
+            }
+        }
+        if mic.as_ref().is_some_and(|m| m.ended()) {
+            println!("{}", serde_json::json!({"mic": "stream ended by itself"}));
+            mic = None;
+            listening = false;
+        }
+        if let Some(m) = mic.as_mut() {
+            m.report();
+        }
+        for p in presses {
             let v = gate.decide(p, now_ms(), listening, b.reclaimed_ms());
             let what = match &v {
                 Verdict::On => "on".to_string(),
@@ -282,18 +392,119 @@ pub fn tap_test(secs: u64) -> anyhow::Result<()> {
             log(&format!("tap-test: {} ({:?}) -> {what}", p.source, p.cmd));
             println!(
                 "{}",
-                serde_json::json!({"source": p.source, "cmd": format!("{:?}", p.cmd), "mic": what})
+                serde_json::json!({"source": p.source, "cmd": format!("{:?}", p.cmd), "mic": what, "at_ms": now_ms()})
             );
             match v {
-                Verdict::On => listening = true,
-                Verdict::Off => listening = false,
+                Verdict::On => {
+                    listening = true;
+                    if with_mic && mic.is_none() {
+                        mic = TestMic::open(&vc);
+                    }
+                }
+                Verdict::Off => {
+                    listening = false;
+                    if mic.take().is_some() {
+                        println!(
+                            "{}",
+                            serde_json::json!({"mic": "closed", "at_ms": now_ms()})
+                        );
+                    }
+                }
                 Verdict::Ignored(_) => {}
             }
         }
     }
+    drop(mic);
     b.release();
+    ECHO.store(false, std::sync::atomic::Ordering::Relaxed);
     eprintln!("released: play/pause goes to the other apps again");
     Ok(())
+}
+
+/// tap-test's open mic: frames read (and dropped) on a thread, the level
+/// shown now and then. Dropped: the stream closes.
+struct TestMic {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ended: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    level: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    shown: std::time::Instant,
+}
+
+impl TestMic {
+    fn open(vc: &crate::config::VoiceCfg) -> Option<TestMic> {
+        use crate::voice::{audio, capture};
+        let cap = match capture::open_helper_mic(vc.voice_processing, true) {
+            Ok(c) => {
+                println!(
+                    "{}",
+                    serde_json::json!({"mic": "open", "capture": "godterm-speech", "vp": c.vp, "at_ms": now_ms()})
+                );
+                c
+            }
+            Err(e) => {
+                println!(
+                    "{}",
+                    serde_json::json!({"mic": format!("the helper failed ({e}); ffmpeg instead, with no helper events")})
+                );
+                match audio::Capture::start(&vc.ffmpeg, &audio::Source::Mic(vc.device.clone())) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        println!(
+                            "{}",
+                            serde_json::json!({"mic": format!("cannot open: {e}")})
+                        );
+                        return None;
+                    }
+                }
+            }
+        };
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let level = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let (s, e, l) = (stop.clone(), ended.clone(), level.clone());
+        std::thread::spawn(move || {
+            let mut cap = cap;
+            let mut frame = vec![];
+            while !s.load(std::sync::atomic::Ordering::Relaxed) {
+                if cap.frame(&mut frame).is_none() {
+                    e.store(true, std::sync::atomic::Ordering::Relaxed);
+                    break;
+                }
+                l.store(
+                    audio::db(audio::rms(&frame)).to_bits(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+            // Dropping the capture ends the helper: the input closes.
+        });
+        Some(TestMic {
+            stop,
+            ended,
+            level,
+            shown: std::time::Instant::now(),
+        })
+    }
+
+    fn ended(&self) -> bool {
+        self.ended.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn report(&mut self) {
+        if self.shown.elapsed() >= std::time::Duration::from_secs(3) {
+            self.shown = std::time::Instant::now();
+            let db = f32::from_bits(self.level.load(std::sync::atomic::Ordering::Relaxed));
+            println!(
+                "{}",
+                serde_json::json!({"mic": "open", "level_db": (db * 10.0).round() / 10.0})
+            );
+        }
+    }
+}
+
+impl Drop for TestMic {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 pub fn now_ms() -> u64 {
@@ -305,8 +516,14 @@ pub fn now_ms() -> u64 {
 
 static LOG_LOCK: Mutex<()> = Mutex::new(());
 
+/// tap-test: every log line is printed too (every path, as it fires).
+static ECHO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// One line to ~/.godterm/media-keys.log (and the main log).
 pub fn log(msg: &str) {
+    if ECHO.load(std::sync::atomic::Ordering::Relaxed) {
+        println!("{}", serde_json::json!({"log": msg}));
+    }
     crate::log::info(&format!("media-keys: {msg}"));
     let _g = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = crate::config::app_home().join("media-keys.log");
@@ -391,6 +608,55 @@ mod tests {
             g.decide(press(Cmd::TogglePlayPause), 10_000 + DEBOUNCE_MS, true, 0),
             Verdict::Off
         );
+    }
+
+    #[test]
+    fn a_reclaim_when_the_headset_leaves_call_mode() {
+        let media = Route {
+            out_dev: 80,
+            out_rate: 48_000,
+            out_bt: true,
+            in_dev: 81,
+            in_rate: 16_000,
+            in_bt: true,
+            in_running: false,
+        };
+        let call = Route {
+            out_rate: 16_000,
+            in_running: true,
+            ..media
+        };
+        assert!(!media.call_mode() && call.call_mode());
+        let mut w = RouteWatch::default();
+        let (said, reclaim) = w.feed(media);
+        assert!(
+            said.unwrap().contains("media mode") && !reclaim,
+            "first reading"
+        );
+        assert_eq!(w.feed(media), (None, false), "no change, nothing");
+        // The mic opens on the headset: call mode, no reclaim yet.
+        let (said, reclaim) = w.feed(call);
+        assert!(said.unwrap().contains("call mode") && !reclaim);
+        // The mic closed: the input stops first, the output rate a moment
+        // later (still call mode), then media mode: reclaim then, once.
+        let closing = Route {
+            in_running: false,
+            ..call
+        };
+        assert!(closing.call_mode());
+        assert!(!w.feed(closing).1);
+        assert!(w.feed(media).1, "back in media mode: reclaim");
+        assert_eq!(w.feed(media), (None, false));
+        // The built in mic recording is not call mode.
+        let builtin = Route {
+            in_dev: 90,
+            in_bt: false,
+            in_running: true,
+            in_rate: 48_000,
+            ..media
+        };
+        assert!(!builtin.call_mode());
+        assert!(!w.feed(builtin).1);
     }
 
     #[test]

@@ -559,9 +559,15 @@ While the setting is on GodTerm holds the system's Now Playing slot, so
 the press does not reach Music or Spotify; turning it off, or quitting,
 gives it back. No audio is played to hold it. Presses are logged to
 `~/.godterm/media-keys.log`; `godterm tap-test` shows them without the
-app. If the headset's own mic is the input, macOS puts it in call mode
-and most headsets stop sending taps until capture ends: the Mac's mic
-keeps them working. macOS only for now (Linux MPRIS and Windows media
+app. When the headset's own mic is the input, macOS puts it in call mode
+while the mic is open and most headsets send no play/pause then. GodTerm
+records through its `godterm-speech` helper, which takes the headset's
+mute gesture (macOS 14 and later) as a tap off; a tap off, a mute (Ctrl-a
+X or "mute") or voice off closes the mic stream itself, so the headset
+goes back to media mode and the next double tap opens open mic again. On
+older macOS, stop listening from the screen or by voice. `godterm
+tap-test --with-mic [secs]` opens the mic like open mic and prints every
+event from every path, with route changes. macOS only for now (Linux MPRIS and Windows media
 controls are planned).
 
 **Noise and background talk.** Without a wake word (open mic, or the

@@ -34,8 +34,11 @@
 //!
 //! Bluetooth note (GrokTerm's findings): when the headset's own mic is the
 //! input, macOS switches it to the call profile (HFP) and most headsets
-//! then stop sending play/pause until capture ends. The Mac's built in mic
-//! keeps taps working.
+//! then stop sending play/pause until capture ends. So a tap off closes the
+//! stream itself, the stop while it is open is the headset mute gesture
+//! (taken in the recording helper, see voice::capture), telephony HID
+//! usages are watched too, and the route is read twice a second: when the
+//! headset is back in media mode, Now Playing is reclaimed.
 
 use std::os::raw::c_void;
 use std::ptr::NonNull;
@@ -58,7 +61,7 @@ use objc2_media_player::{
 };
 
 use crate::app::AppEvent;
-use crate::media_keys::{log, now_ms, Cmd, Press};
+use crate::media_keys::{log, now_ms, Cmd, Press, Route, RouteWatch};
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
@@ -77,6 +80,10 @@ pub struct MacBackend {
     published_ms: u64,
     rebound_ms: u64,
     reclaimed_ms: u64,
+    /// The audio route, read twice a second: a headset back from call
+    /// mode gets a hard reclaim.
+    route: RouteWatch,
+    route_ms: u64,
     stop: Arc<AtomicBool>,
     _threads: Vec<JoinHandle<()>>,
     released: bool,
@@ -116,6 +123,8 @@ pub fn start(tx: Sender<AppEvent>) -> Option<MacBackend> {
         published_ms: 0,
         rebound_ms: now,
         reclaimed_ms: 0,
+        route: RouteWatch::default(),
+        route_ms: 0,
         stop,
         _threads: threads,
         released: false,
@@ -229,6 +238,20 @@ impl crate::media_keys::Backend for MacBackend {
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.0, 0);
         }
         let now = now_ms();
+        if now.saturating_sub(self.route_ms) >= 500 {
+            self.route_ms = now;
+            if let Some(r) = route_now() {
+                let (changed, back) = self.route.feed(r);
+                if let Some(c) = changed {
+                    log(&c);
+                }
+                if back {
+                    log("the headset is back in media mode (A2DP): reclaiming Now Playing");
+                    self.hard_reclaim();
+                    return;
+                }
+            }
+        }
         let was = std::mem::replace(&mut self.listening, listening);
         let was_speaking = std::mem::replace(&mut self.speaking, speaking);
         if was && !listening {
@@ -288,6 +311,83 @@ impl Drop for MacBackend {
     }
 }
 
+// ─── the audio route (CoreAudio, read only) ────────────────────────────────
+
+mod ca {
+    use std::os::raw::c_void;
+
+    #[repr(C)]
+    pub struct Address {
+        pub selector: u32,
+        pub scope: u32,
+        pub element: u32,
+    }
+
+    pub const SYSTEM: u32 = 1;
+    pub const DEFAULT_OUTPUT: u32 = 0x644f_7574; // 'dOut'
+    pub const DEFAULT_INPUT: u32 = 0x6449_6e20; // 'dIn '
+    pub const GLOBAL: u32 = 0x676c_6f62; // 'glob'
+    pub const NOMINAL_RATE: u32 = 0x6e73_7274; // 'nsrt'
+    pub const TRANSPORT: u32 = 0x7472_616e; // 'tran'
+    pub const RUNNING_SOMEWHERE: u32 = 0x676f_6e65; // 'gone'
+    pub const BLUETOOTH: u32 = 0x626c_7565; // 'blue'
+    pub const BLUETOOTH_LE: u32 = 0x626c_6561; // 'blea'
+
+    #[link(name = "CoreAudio", kind = "framework")]
+    extern "C" {
+        pub fn AudioObjectGetPropertyData(
+            id: u32,
+            addr: *const Address,
+            qualifier_size: u32,
+            qualifier: *const c_void,
+            size: *mut u32,
+            data: *mut c_void,
+        ) -> i32;
+    }
+
+    pub fn get<T: Default>(id: u32, selector: u32) -> Option<T> {
+        let addr = Address {
+            selector,
+            scope: GLOBAL,
+            element: 0,
+        };
+        let mut v = T::default();
+        let mut size = std::mem::size_of::<T>() as u32;
+        let r = unsafe {
+            AudioObjectGetPropertyData(
+                id,
+                &addr,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut v as *mut T as *mut c_void,
+            )
+        };
+        (r == 0).then_some(v)
+    }
+}
+
+/// The default output and input as CoreAudio has them now.
+pub fn route_now() -> Option<Route> {
+    let out: u32 = ca::get(ca::SYSTEM, ca::DEFAULT_OUTPUT)?;
+    let input: u32 = ca::get(ca::SYSTEM, ca::DEFAULT_INPUT).unwrap_or(0);
+    let bt = |id: u32| {
+        ca::get::<u32>(id, ca::TRANSPORT)
+            .is_some_and(|t| t == ca::BLUETOOTH || t == ca::BLUETOOTH_LE)
+    };
+    let rate = |id: u32| ca::get::<f64>(id, ca::NOMINAL_RATE).unwrap_or(0.0) as u32;
+    Some(Route {
+        out_dev: out,
+        out_rate: rate(out),
+        out_bt: bt(out),
+        in_dev: input,
+        in_rate: if input != 0 { rate(input) } else { 0 },
+        in_bt: input != 0 && bt(input),
+        in_running: input != 0
+            && ca::get::<u32>(input, ca::RUNNING_SOMEWHERE).is_some_and(|r| r != 0),
+    })
+}
+
 // ─── permissions (read only: never prompt) ─────────────────────────────────
 
 #[link(name = "IOKit", kind = "framework")]
@@ -337,6 +437,11 @@ mod hid {
     pub const USAGE_PLAY: u32 = 0xB0;
     pub const USAGE_PAUSE: u32 = 0xB1;
     pub const USAGE_PLAY_OR_PAUSE: u32 = 0xCD;
+    /// Telephony: what a headset in call mode may send for its button.
+    pub const PAGE_TELEPHONY: u32 = 0x0B;
+    pub const USAGE_HOOK_SWITCH: u32 = 0x20;
+    pub const USAGE_FLASH: u32 = 0x21;
+    pub const USAGE_PHONE_MUTE: u32 = 0x2F;
 
     pub type ValueCallback = Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, Ref)>;
 
@@ -393,11 +498,30 @@ fn run_hid(tx: &Sender<AppEvent>, stop: &AtomicBool) -> Result<(), String> {
         }
         let ctx = &*(ctx as *const Ctx);
         let el = IOHIDValueGetElement(value);
-        if el.is_null() || IOHIDValueGetIntegerValue(value) == 0 {
-            return; // a release
-        }
-        if IOHIDElementGetUsagePage(el) != PAGE_CONSUMER {
+        if el.is_null() {
             return;
+        }
+        let v = IOHIDValueGetIntegerValue(value);
+        let page = IOHIDElementGetUsagePage(el);
+        if page == PAGE_TELEPHONY {
+            // Every telephony usage is logged (a real headset test shows
+            // which fires in call mode); the button ones turn the mic off
+            // only, like pause.
+            let usage = IOHIDElementGetUsage(el);
+            log(&format!("HID telephony usage 0x{usage:02X} value {v}"));
+            let source = match usage {
+                USAGE_HOOK_SWITCH => "HID:Telephony:HookSwitch",
+                USAGE_FLASH => "HID:Telephony:Flash",
+                USAGE_PHONE_MUTE => "HID:Telephony:PhoneMute",
+                _ => return,
+            };
+            if v != 0 {
+                send(&ctx.tx, Cmd::Pause, source);
+            }
+            return;
+        }
+        if v == 0 || page != PAGE_CONSUMER {
+            return; // a release, or not a media key
         }
         let (cmd, source) = match IOHIDElementGetUsage(el) {
             USAGE_PLAY_OR_PAUSE => (Cmd::TogglePlayPause, "HID:PlayOrPause"),
@@ -423,7 +547,7 @@ fn run_hid(tx: &Sender<AppEvent>, stop: &AtomicBool) -> Result<(), String> {
             drop(Box::from_raw(ctx));
             return Err(format!("IOHIDManagerOpen failed ({open})"));
         }
-        log("IOHID backup on: consumer play/pause from every device");
+        log("IOHID backup on: consumer play/pause and telephony usages from every device");
         while !stop.load(Ordering::Relaxed) {
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.25, 0);
         }

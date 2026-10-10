@@ -419,7 +419,17 @@ impl App {
         if on {
             self.voice.muted_prev = self.voice_mode();
             self.voice.open_mic = false;
-            self.stop_voice();
+            // Only the capture closes (the headset leaves call mode, so its
+            // play/pause comes again); the engine stays, so a reply being
+            // said goes on to its end. Unmute opens the mic again.
+            if let Some(v) = &self.voice.engine {
+                v.set_mic(false);
+            }
+            self.voice.wake_until = None;
+            self.voice.listen_after_speech = false;
+            self.voice.holding = None;
+            self.voice.partial = None;
+            self.voice.reopen = None;
             self.voice.muted = true;
             self.voice.action = Some("muted".into());
             crate::log::info("voice: muted");

@@ -739,7 +739,7 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
         "Start with the mic muted (the red MUTED button or Ctrl-a X unmutes).",
     ));
     r.add(g("voice.instant_commands", "Instant one-word commands", Kind::Toggle, "stop, yes, no, approve, deny, sleep, stop talking, next tab, previous tab run at once when they are the whole utterance; everything else goes to the assistant."));
-    r.add(g("voice.headphone_tap", "Headphone tap", Kind::Toggle, "Play/pause on your headphones (AirPods or headset tap, EarPods button) or the media key turns the mic on or off; what is being said is never cut off. GodTerm takes Now Playing while this is on, so the press does not reach Music or Spotify; off gives it back. macOS only for now."));
+    r.add(g("voice.headphone_tap", "Headphone tap", Kind::Toggle, "Play/pause on your headphones (AirPods or headset tap, EarPods button) or the media key turns the mic on or off; what is being said is never cut off. GodTerm takes Now Playing while this is on, so the press does not reach Music or Spotify; off gives it back. With the headset mic open (call mode) the stop is its mute gesture on macOS 14 and later; before 14, stop from the screen or by voice. macOS only for now."));
 
     r.group("Microphone");
     r.add(g(

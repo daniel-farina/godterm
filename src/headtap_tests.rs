@@ -346,3 +346,95 @@ fn a_mic_that_ends_by_itself_reopens_in_the_same_mode() {
     assert!(app.voice.reopen.is_none());
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// Open mic on the headset's own mic (call mode): the headset mute
+/// gesture, from the capturing helper, is a tap off. Only the capture
+/// closes; the engine and a reply being said go on.
+#[test]
+fn the_headset_mute_gesture_closes_the_capture_only() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home, _calls, rx) = tap_on_app("mutegesture", true);
+    app.voice.open_mic = true;
+    assert!(app.tap_listening());
+    let before = stops(&app);
+    let p =
+        crate::voice::capture::helper_press(&crate::voice::capture::HelperEvent::InputMute(true))
+            .unwrap();
+    app.media.gate = Gate::default();
+    app.handle(AppEvent::MediaKey(p));
+    assert!(app.voice.muted && !app.voice.open_mic, "mic off");
+    assert_eq!(
+        sent(&rx),
+        vec!["mic false"],
+        "the capture closes, no shutdown"
+    );
+    assert!(app.voice.engine.is_some(), "the engine stays");
+    assert_eq!(stops(&app), before, "the reply goes on");
+    // Unmuting from the gesture is not a start: only a tap opens it.
+    let p =
+        crate::voice::capture::helper_press(&crate::voice::capture::HelperEvent::InputMute(true))
+            .unwrap();
+    app.media.gate = Gate::default();
+    app.handle(AppEvent::MediaKey(p));
+    assert!(app.voice.muted);
+    assert!(sent(&rx).is_empty());
+    // The next double tap (the headset back in media mode): open mic.
+    press(&mut app, Cmd::TogglePlayPause);
+    assert!(!app.voice.muted && app.voice.open_mic);
+    assert_eq!(sent(&rx), vec!["mic true"]);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Mute by key (Ctrl-a X) or by voice closes the capture and keeps the
+/// engine, so what is being said is not cut off; unmute opens it again.
+#[test]
+fn a_mute_by_key_or_voice_closes_the_capture_only() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home, _calls, rx) = tap_on_app("mutekey", true);
+    app.voice.open_mic = true;
+    let before = stops(&app);
+    app.toggle_mute();
+    assert!(app.voice.muted && app.voice.engine.is_some());
+    assert_eq!(sent(&rx), vec!["mic false"]);
+    assert_eq!(stops(&app), before, "the reply goes on");
+    assert_eq!(app.voice_mode_now(), "off");
+    app.toggle_mute();
+    assert!(!app.voice.muted && app.voice.open_mic, "back to open mic");
+    assert_eq!(sent(&rx), vec!["mic true"]);
+    // By voice ("mute"), the same.
+    app.set_muted(true);
+    assert_eq!(sent(&rx), vec!["mic false"]);
+    assert_eq!(stops(&app), before);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// A stream that ended by itself (a route change) is reopened, but never
+/// after a deliberate tap off, even one that lands after the reopen was
+/// planned.
+#[test]
+fn no_reopen_after_a_tap_off() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home, _calls, rx) = tap_on_app("noreopen", false);
+    app.voice.open_mic = true;
+    app.voice_mode_tick();
+    app.on_voice(crate::voice::VoiceEvent::Status(
+        crate::voice::VoiceStatus::Off(Some("microphone stream ended".into())),
+    ));
+    assert!(app.voice.reopen.is_some(), "planned");
+    press(&mut app, Cmd::TogglePlayPause);
+    assert!(app.voice.muted);
+    assert!(app.voice.reopen.is_none(), "the tap off drops it");
+    let _ = sent(&rx);
+    // Even if one were due, muted blocks it: the engine is not restarted.
+    app.voice.reopen = Some((std::time::Instant::now(), 3, 1));
+    app.voice_mode_tick();
+    assert!(app.voice.muted && app.voice.engine.is_some());
+    assert!(sent(&rx).is_empty(), "no restart, no mic");
+    // A stream end after the tap off (the closing route change) plans nothing.
+    app.voice.reopen = None;
+    app.on_voice(crate::voice::VoiceEvent::Status(
+        crate::voice::VoiceStatus::Off(Some("microphone stream ended".into())),
+    ));
+    assert!(app.voice.reopen.is_none());
+    let _ = std::fs::remove_dir_all(&home);
+}

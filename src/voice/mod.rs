@@ -681,6 +681,13 @@ impl Engine {
         };
         self.status(idle());
         loop {
+            // The helper's headset mute gesture (call mode, where no
+            // play/pause comes): a headphone tap that turns the mic off.
+            for ev in capture::take_events() {
+                if let Some(p) = capture::helper_press(&ev) {
+                    let _ = self.events.send(AppEvent::MediaKey(p));
+                }
+            }
             // Control messages (block briefly when the mic is closed).
             loop {
                 let msg = if cap.is_none() {
@@ -772,10 +779,16 @@ impl Engine {
                     Ok(Ctl::SetProfile(p)) => profile = p,
                     Ok(Ctl::Mic(false)) => {
                         // What was being captured is dropped; talk back goes on.
+                        // The stream itself closes once nothing is being
+                        // said: closing it moves a Bluetooth headset out of
+                        // call mode, and that route change must not land in
+                        // the middle of a reply.
                         mic_off = true;
                         want_open = false;
-                        cap = None;
-                        cap_vp = None;
+                        if !self.speaking.load(Ordering::SeqCst) {
+                            cap = None;
+                            cap_vp = None;
+                        }
                         ptt = false;
                         ep.reset();
                         utt_started = None;
@@ -818,9 +831,23 @@ impl Engine {
                     }
                 }
             }
-            if cap.is_none() {
+            // Mic off during a reply: frames are dropped until it ends,
+            // then the stream closes.
+            if mic_off && cap.is_some() {
+                let still = self.speaking.load(Ordering::SeqCst)
+                    && cap.as_mut().is_some_and(|c| c.frame(&mut frame).is_some());
+                if !still {
+                    cap = None;
+                    cap_vp = None;
+                    crate::log::info("voice: mic off, capture closed");
+                }
+            }
+            if cap.is_none() || mic_off {
                 self.levels.open.store(false, Ordering::Relaxed);
                 self.levels.speech.store(false, Ordering::Relaxed);
+            }
+            if mic_off {
+                continue;
             }
             let Some(c) = cap.as_mut() else { continue };
             // A new capture: echo cancellation in it relaxes the echo

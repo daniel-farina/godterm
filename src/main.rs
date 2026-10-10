@@ -447,7 +447,12 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("tap-test") => {
-            media_keys::tap_test(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20))
+            let with_mic = args.iter().any(|a| a == "--with-mic");
+            let secs = args[1..]
+                .iter()
+                .find_map(|s| s.parse().ok())
+                .unwrap_or(if with_mic { 60 } else { 20 });
+            media_keys::tap_test(secs, with_mic)
         }
         Some("stt-eval") => voice::eval::command(
             flag_value(&args, "--out").map(std::path::PathBuf::from),

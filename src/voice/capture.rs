@@ -192,7 +192,127 @@ pub enum HelperLine {
     },
     Mode(String),
     Error(String),
+    /// The headset mute gesture (AVAudioApplication): true is a mute.
+    InputMute(bool),
+    /// A remote command the helper claimed (tap-test --with-mic only).
+    Remote(String),
+    /// Diagnostics: a route change, which paths registered, a retry
+    /// without voice processing (the whole line).
+    Diag(String),
     Other(String),
+}
+
+/// What the helper reported for GodTerm to act on or show.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HelperEvent {
+    InputMute(bool),
+    Remote(String),
+    Diag(String),
+}
+
+static EVENTS: Mutex<std::collections::VecDeque<HelperEvent>> =
+    Mutex::new(std::collections::VecDeque::new());
+
+fn push_event(e: HelperEvent) {
+    let mut q = EVENTS.lock().unwrap_or_else(|e| e.into_inner());
+    q.push_back(e);
+    while q.len() > 64 {
+        q.pop_front();
+    }
+}
+
+/// The helper's events since the last call (the engine loop and tap-test).
+pub fn take_events() -> Vec<HelperEvent> {
+    EVENTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .drain(..)
+        .collect()
+}
+
+/// A helper event that counts as a headphone press: the mute gesture is a
+/// tap that only turns the mic off (pause); the helper's own remote
+/// commands as they are.
+pub fn helper_press(e: &HelperEvent) -> Option<crate::media_keys::Press> {
+    use crate::media_keys::{Cmd, Press};
+    let (cmd, source) = match e {
+        HelperEvent::InputMute(true) => (Cmd::Pause, "helper:inputMute"),
+        HelperEvent::Remote(c) => match c.as_str() {
+            "togglePlayPause" => (Cmd::TogglePlayPause, "helper:remote:togglePlayPause"),
+            "play" => (Cmd::Play, "helper:remote:play"),
+            "pause" => (Cmd::Pause, "helper:remote:pause"),
+            "stop" => (Cmd::Stop, "helper:remote:stop"),
+            "next" => (Cmd::Next, "helper:remote:next"),
+            "prev" => (Cmd::Previous, "helper:remote:prev"),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(Press { cmd, source })
+}
+
+/// Read the helper's status lines: the first start (or error) goes to
+/// `tx`, the last error text to `err`, and events to the queue (and the
+/// media keys log, so a real headset test shows which path fired).
+pub fn read_status(
+    from: impl std::io::Read,
+    tx: mpsc::Sender<Result<bool, String>>,
+    err: Arc<Mutex<String>>,
+) {
+    for l in BufReader::new(from).lines().map_while(Result::ok) {
+        match parse_line(&l) {
+            HelperLine::Started {
+                vp,
+                mode,
+                preferred,
+            } => {
+                crate::log::info(&format!(
+                    "voice: Apple capture, voice processing {}, mic mode {}",
+                    if vp { "on" } else { "off" },
+                    mode.as_deref().unwrap_or("unknown")
+                ));
+                set_info(MicInfo {
+                    backend: "apple".into(),
+                    vp,
+                    mode,
+                    preferred,
+                    fallback: None,
+                });
+                let _ = tx.send(Ok(vp));
+            }
+            HelperLine::Mode(m) => {
+                crate::log::info(&format!("voice: mic mode now {m}"));
+                let mut g = MIC.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(i) = g.as_mut() {
+                    i.mode = Some(m);
+                }
+            }
+            HelperLine::Error(e) => {
+                *err.lock().unwrap_or_else(|e| e.into_inner()) = e.clone();
+                let _ = tx.send(Err(e));
+            }
+            HelperLine::InputMute(m) => {
+                crate::media_keys::log(&format!(
+                    "helper: AVAudioApplication input mute {} (the headset mute gesture)",
+                    if m { "on" } else { "off" }
+                ));
+                push_event(HelperEvent::InputMute(m));
+            }
+            HelperLine::Remote(c) => {
+                crate::media_keys::log(&format!("helper: remote:{c} (in the recording process)"));
+                push_event(HelperEvent::Remote(c));
+            }
+            HelperLine::Diag(d) => {
+                crate::media_keys::log(&format!("helper: {d}"));
+                crate::log::info(&format!("voice: helper: {d}"));
+                push_event(HelperEvent::Diag(d));
+            }
+            HelperLine::Other(o) if !o.is_empty() => {
+                *err.lock().unwrap_or_else(|e| e.into_inner()) = o;
+            }
+            HelperLine::Other(_) => {}
+        }
+    }
 }
 
 pub fn parse_line(l: &str) -> HelperLine {
@@ -208,24 +328,48 @@ pub fn parse_line(l: &str) -> HelperLine {
         },
         Some("mode") => HelperLine::Mode(s("mode").unwrap_or_default()),
         Some("error") => HelperLine::Error(s("error").unwrap_or_default()),
+        Some("input_mute") => HelperLine::InputMute(v["muted"].as_bool().unwrap_or(false)),
+        Some("remote") => HelperLine::Remote(s("cmd").unwrap_or_default()),
+        Some("route" | "restarted" | "retry" | "path" | "note") => {
+            HelperLine::Diag(l.trim().to_string())
+        }
         _ => HelperLine::Other(l.trim().to_string()),
     }
 }
 
 /// Start `godterm-speech --mic`; waits for its first status line.
 fn start_apple(vp: bool) -> std::io::Result<Capture> {
-    use std::io::{Error, ErrorKind};
     if cfg!(test) || crate::config::env_var("NO_MIC").is_some() {
-        return Err(Error::new(
-            ErrorKind::PermissionDenied,
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
             "the microphone is disabled (GODTERM_NO_MIC)",
         ));
     }
-    let bin = super::apple_helper_path();
-    let mut cmd = Command::new(&bin);
+    start_helper(&super::apple_helper_path(), vp, false)
+}
+
+/// `godterm tap-test --with-mic`: the helper capture as the voice engine
+/// opens it, with `remote` also claiming the remote commands inside the
+/// recording process (to see whether any arrive in call mode).
+pub fn open_helper_mic(vp: bool, remote: bool) -> std::io::Result<Capture> {
+    if crate::config::env_var("NO_MIC").is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the microphone is disabled (GODTERM_NO_MIC)",
+        ));
+    }
+    start_helper(&super::apple_helper_path(), vp, remote)
+}
+
+fn start_helper(bin: &std::path::Path, vp: bool, remote: bool) -> std::io::Result<Capture> {
+    use std::io::Error;
+    let mut cmd = Command::new(bin);
     cmd.arg("--mic");
     if !vp {
         cmd.arg("--no-vp");
+    }
+    if remote {
+        cmd.arg("--remote");
     }
     let mut child = cmd
         .stdin(Stdio::null())
@@ -238,46 +382,7 @@ fn start_apple(vp: bool) -> std::io::Result<Capture> {
     let (tx, rx) = mpsc::channel::<Result<bool, String>>();
     if let Some(e) = stderr {
         let err = Arc::clone(&err);
-        std::thread::spawn(move || {
-            for l in BufReader::new(e).lines().map_while(Result::ok) {
-                match parse_line(&l) {
-                    HelperLine::Started {
-                        vp,
-                        mode,
-                        preferred,
-                    } => {
-                        crate::log::info(&format!(
-                            "voice: Apple capture, voice processing {}, mic mode {}",
-                            if vp { "on" } else { "off" },
-                            mode.as_deref().unwrap_or("unknown")
-                        ));
-                        set_info(MicInfo {
-                            backend: "apple".into(),
-                            vp,
-                            mode,
-                            preferred,
-                            fallback: None,
-                        });
-                        let _ = tx.send(Ok(vp));
-                    }
-                    HelperLine::Mode(m) => {
-                        crate::log::info(&format!("voice: mic mode now {m}"));
-                        let mut g = MIC.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(i) = g.as_mut() {
-                            i.mode = Some(m);
-                        }
-                    }
-                    HelperLine::Error(e) => {
-                        *err.lock().unwrap_or_else(|e| e.into_inner()) = e.clone();
-                        let _ = tx.send(Err(e));
-                    }
-                    HelperLine::Other(o) if !o.is_empty() => {
-                        *err.lock().unwrap_or_else(|e| e.into_inner()) = o;
-                    }
-                    HelperLine::Other(_) => {}
-                }
-            }
-        });
+        std::thread::spawn(move || read_status(e, tx, err));
     }
     let fail = |child: &mut std::process::Child, why: String| {
         let _ = child.kill();
@@ -419,6 +524,73 @@ mod tests {
             Some(("standard".into(), "voice_isolation".into()))
         );
         assert_eq!(parse_check("usage: godterm-speech ..."), None);
+    }
+
+    #[test]
+    fn helper_events_map_to_presses() {
+        use crate::media_keys::Cmd;
+        assert_eq!(
+            parse_line(r#"{"event":"input_mute","muted":true,"source":"AVAudioApplication"}"#),
+            HelperLine::InputMute(true)
+        );
+        assert_eq!(
+            parse_line(r#"{"cmd":"togglePlayPause","event":"remote","source":"helper"}"#),
+            HelperLine::Remote("togglePlayPause".into())
+        );
+        let route = r#"{"event":"route","restarts":1,"what":"engine configuration changed"}"#;
+        assert_eq!(parse_line(route), HelperLine::Diag(route.into()));
+        // The mute gesture only turns the mic off, like pause.
+        let p = helper_press(&HelperEvent::InputMute(true)).unwrap();
+        assert_eq!((p.cmd, p.source), (Cmd::Pause, "helper:inputMute"));
+        assert!(helper_press(&HelperEvent::InputMute(false)).is_none());
+        let p = helper_press(&HelperEvent::Remote("play".into())).unwrap();
+        assert_eq!(p.cmd, Cmd::Play);
+        assert!(helper_press(&HelperEvent::Diag("x".into())).is_none());
+    }
+
+    /// A fake helper: voice processing fails (-10875) and it starts
+    /// without; then the headset mute gesture comes, as a press.
+    #[cfg(unix)]
+    #[test]
+    fn a_fake_helper_starts_without_vp_and_reports_the_mute_gesture() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gt-fakehelper-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("godterm-speech");
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+echo '{"error":"com.apple.coreaudio.avfaudio error -10875","event":"retry","mixer":true,"vp":true}' >&2
+echo '{"event":"started","in_rate":16000,"mode":"standard","vp":false,"vp_error":"-10875"}' >&2
+echo '{"event":"input_mute","muted":true,"source":"AVAudioApplication"}' >&2
+head -c 640 /dev/zero
+sleep 2
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cap = start_helper(&bin, true, false).expect("started without voice processing");
+        // Not one for other tests' engine shutdowns to kill.
+        super::super::untrack(cap.child.id());
+        assert!(!cap.vp, "the helper said it runs without voice processing");
+        let mut frame = vec![];
+        assert!(cap.frame(&mut frame).is_some(), "audio comes");
+        let mut got = vec![];
+        for _ in 0..50 {
+            got.extend(take_events());
+            if got.contains(&HelperEvent::InputMute(true)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(got.contains(&HelperEvent::InputMute(true)), "{got:?}");
+        assert!(got
+            .iter()
+            .any(|e| matches!(e, HelperEvent::Diag(d) if d.contains("-10875"))));
+        let press = got.iter().find_map(helper_press).unwrap();
+        assert_eq!(press.source, "helper:inputMute");
+        drop(cap); // the fake helper is killed: the stream closes
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

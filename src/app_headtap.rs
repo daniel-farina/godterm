@@ -101,6 +101,8 @@ impl App {
             self.voice.muted_prev = 3;
         }
         self.voice.muted = true;
+        // A deliberate off: a stream that ended just before is not reopened.
+        self.voice.reopen = None;
         self.voice.open_mic = false;
         self.voice.wake_until = None;
         self.voice.listen_after_speech = false;

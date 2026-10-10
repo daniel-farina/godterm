@@ -14,6 +14,12 @@
 //                                   {"event":"started","vp":true,"mode":"standard",...}
 //                                   {"event":"mode","mode":"voice_isolation"}
 //                                   {"event":"error","error":"..."}
+//                                   {"event":"input_mute","muted":true}  the headset mute gesture
+//                                   {"event":"route","what":"..."}  route change (engine restarted)
+//                                   {"event":"retry"|"path"|"note"|"remote",...}  diagnostics
+//                                   Voice processing that cannot start (-10875 with a
+//                                   Bluetooth headset) falls back to plain capture here.
+//                                   --remote: also claim the remote commands (tap-test only)
 //   godterm-speech --mic-file x.wav [--realtime]
 //                                   the same conversion and framing from a file
 //   godterm-speech --mic-check      {"mic": true, "mode": "...", "preferred": "..."}
@@ -27,6 +33,7 @@
 
 import AVFoundation
 import Foundation
+import MediaPlayer
 import Speech
 
 struct Out: Encodable {
@@ -184,15 +191,22 @@ func micDisabled() -> Bool {
     return [env["GODTERM_NO_MIC"], env["CLAUDEGO_NO_MIC"]].contains { ($0 ?? "").isEmpty == false }
 }
 
-func runMic(vp: Bool) -> Never {
-    if micDisabled() {
-        status(["event": "error", "error": "the microphone is disabled (GODTERM_NO_MIC)"])
-        exit(77)
-    }
-    let engine = AVAudioEngine()
-    let input = engine.inputNode
+/// The running capture: an AVAudioEngine tapping the default input, built
+/// again after a route change (a Bluetooth headset switching profile).
+final class MicSession {
+    let wantVP: Bool
+    var engine = AVAudioEngine()
     var pipe: Pipe16k?
-    do {
+    var vpError: String?
+    var restarts = 0
+
+    init(vp: Bool) { wantVP = vp }
+
+    /// One way of starting: voice processing or not, with or without the
+    /// output side (mainMixerNode) in the graph.
+    func attempt(vp: Bool, mixer: Bool) throws -> AVAudioFormat {
+        engine = AVAudioEngine()
+        let input = engine.inputNode
         if vp {
             try input.setVoiceProcessingEnabled(true)
             // Do not turn other audio (GodTerm's own talk back) down.
@@ -201,31 +215,157 @@ func runMic(vp: Bool) -> Never {
                     AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false, duckingLevel: .min)
             }
         }
-        _ = engine.mainMixerNode
+        if mixer { _ = engine.mainMixerNode }
         let fmt = input.outputFormat(forBus: 0)
         guard fmt.sampleRate > 0, fmt.channelCount > 0 else { throw err("no input device") }
         let p = try Pipe16k(rate: fmt.sampleRate)
         pipe = p
         input.installTap(onBus: 0, bufferSize: 2048, format: fmt) { buf, _ in p.push(buf) }
         engine.prepare()
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            engine.stop()
+            throw error
+        }
+        return fmt
+    }
+
+    /// Voice processing first; when it cannot start (avfaudio -10875 with
+    /// a Bluetooth headset in call mode), without it: the helper keeps the
+    /// capture, so the headset mute gesture still comes here.
+    func start() throws -> AVAudioFormat {
+        let ladder: [(Bool, Bool)] = wantVP ? [(true, true), (true, false), (false, true), (false, false)] : [(false, true), (false, false)]
+        var last: Error = err("no way to start the mic")
+        for (vp, mixer) in ladder {
+            do {
+                return try attempt(vp: vp, mixer: mixer)
+            } catch {
+                last = error
+                if vp { vpError = "\(error.localizedDescription)" }
+                status(["event": "retry", "vp": vp, "mixer": mixer, "error": "\(error.localizedDescription)"])
+            }
+        }
+        throw last
+    }
+
+    func started(_ fmt: AVAudioFormat) {
+        let input = engine.inputNode
         var d = micModes()
         d["event"] = "started"
         d["vp"] = input.isVoiceProcessingEnabled
-        d["agc"] = vp ? input.isVoiceProcessingAGCEnabled : false
+        d["agc"] = input.isVoiceProcessingEnabled ? input.isVoiceProcessingAGCEnabled : false
         d["in_rate"] = fmt.sampleRate
         d["in_channels"] = fmt.channelCount
+        if let e = vpError { d["vp_error"] = e }
         status(d)
+    }
+
+    /// The route changed under the engine (it stops itself): start again
+    /// on the new format, or end so GodTerm reopens the mic.
+    func restart(_ why: String) {
+        restarts += 1
+        status(["event": "route", "what": why, "restarts": restarts])
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        guard restarts <= 20 else {
+            status(["event": "error", "error": "the audio route keeps changing"])
+            exit(4)
+        }
+        do {
+            let fmt = try start()
+            status(["event": "restarted", "vp": engine.inputNode.isVoiceProcessingEnabled, "in_rate": fmt.sampleRate])
+            observe()
+        } catch {
+            status(["event": "error", "error": "after a route change: \(error.localizedDescription)"])
+            exit(4)
+        }
+    }
+
+    var observer: NSObjectProtocol?
+
+    func observe() {
+        if let o = observer { NotificationCenter.default.removeObserver(o) }
+        observer = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            self?.restart("engine configuration changed")
+        }
+    }
+}
+
+/// The headset's mute gesture (macOS 14+): delivered to the process that
+/// records, which is this one. GodTerm takes a mute as a tap: mic off.
+func registerMuteHandler() {
+    if #available(macOS 14.0, *) {
+        do {
+            try AVAudioApplication.shared.setInputMuteStateChangeHandler { muted in
+                status(["event": "input_mute", "muted": muted, "source": "AVAudioApplication"])
+                return true
+            }
+            status(["event": "path", "path": "AVAudioApplication.inputMuteStateChangeHandler", "ok": true])
+        } catch {
+            status(["event": "path", "path": "AVAudioApplication.inputMuteStateChangeHandler", "ok": false, "error": "\(error.localizedDescription)"])
+        }
+        NotificationCenter.default.addObserver(
+            forName: AVAudioApplication.inputMuteStateChangeNotification, object: nil, queue: .main
+        ) { n in
+            let m = (n.userInfo?[AVAudioApplication.muteStateKey] as? NSNumber)?.boolValue
+            status(["event": "note", "what": "AVAudioApplication.inputMuteStateChangeNotification", "muted": m as Any])
+        }
+    } else {
+        status(["event": "path", "path": "AVAudioApplication.inputMuteStateChangeHandler", "ok": false, "error": "needs macOS 14"])
+    }
+}
+
+/// Diagnostics (--remote): the remote commands claimed from inside the
+/// recording process, to see whether any arrive while the headset is in
+/// call mode. Only for godterm tap-test: GodTerm itself owns Now Playing.
+func registerRemoteCommands() {
+    let c = MPRemoteCommandCenter.shared()
+    let cmds: [(MPRemoteCommand, String)] = [
+        (c.togglePlayPauseCommand, "togglePlayPause"), (c.playCommand, "play"),
+        (c.pauseCommand, "pause"), (c.stopCommand, "stop"),
+        (c.nextTrackCommand, "next"), (c.previousTrackCommand, "prev"),
+    ]
+    for (cmd, name) in cmds {
+        cmd.isEnabled = true
+        cmd.addTarget { _ in
+            status(["event": "remote", "cmd": name, "source": "helper"])
+            return .success
+        }
+    }
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+        MPMediaItemPropertyTitle: "GodTerm tap-test (mic open)",
+        MPNowPlayingInfoPropertyPlaybackRate: 1.0,
+    ]
+    MPNowPlayingInfoCenter.default().playbackState = .playing
+    status(["event": "path", "path": "MPRemoteCommandCenter (helper)", "ok": true])
+}
+
+func runMic(vp: Bool, remote: Bool) -> Never {
+    if micDisabled() {
+        status(["event": "error", "error": "the microphone is disabled (GODTERM_NO_MIC)"])
+        exit(77)
+    }
+    registerMuteHandler()
+    let s = MicSession(vp: vp)
+    do {
+        let fmt = try s.start()
+        s.started(fmt)
+        s.observe()
     } catch {
         status(["event": "error", "error": "\(error.localizedDescription)"])
         exit(3)
     }
-    _ = pipe
+    if remote { registerRemoteCommands() }
     // Report mic mode changes (Voice Isolation picked in Control Center).
     var last = modeName(AVCaptureDevice.activeMicrophoneMode)
     let t = DispatchSource.makeTimerSource(queue: .main)
     t.schedule(deadline: .now() + 1, repeating: 1)
     t.setEventHandler {
+        _ = s
         let m = modeName(AVCaptureDevice.activeMicrophoneMode)
         if m != last {
             last = m
@@ -298,7 +438,7 @@ if micArgs.contains("--mic-modes") {
     exit(0)
 }
 if micArgs.contains("--mic") {
-    runMic(vp: !micArgs.contains("--no-vp"))
+    runMic(vp: !micArgs.contains("--no-vp"), remote: micArgs.contains("--remote"))
 }
 if let i = micArgs.firstIndex(of: "--mic-file"), i + 1 < micArgs.count {
     runMicFile(micArgs[i + 1], realtime: micArgs.contains("--realtime"))
