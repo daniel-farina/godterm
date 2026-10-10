@@ -298,10 +298,10 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "open_tab",
-        description: "Open a new claude tab on an account and, with prompt, give its claude that task. name: a short task name; the tab gets a new folder of that name. dir: a folder (path or recent project name) instead; a path that does not exist yet is created when its parent folder exists under the home folder (its say: \"Created ~/x and opened a session there on Account 4.\"); when the parent is missing too it returns an error naming it: ask the user once, and on yes call again with create true. Waits until the tab is ready and the prompt is accepted; returns the tab id and the delivery status.",
+        description: "Open a new claude tab on an account and, with prompt, give its claude that task. name: a short task name; the tab gets a new folder of that name. dir: a folder (path or recent project name) instead; a path that does not exist yet is created when its parent folder exists under the home folder (its say: \"Created ~/x and opened a session there on Account 4.\"); when the parent is missing too it returns an error naming it: ask the user once, and on yes call again with create true. Waits until the tab is ready and the prompt is accepted; returns the tab id and the delivery status. A prompt that asks the tab's agent something for the user (or expect_reply true) is followed: GodTerm tells the user its first reply when it comes. The result says will_report: promise to report back only when it is true.",
         schema: || {
             props(
-                json!({"account": account_prop(), "name": {"type": "string"}, "dir": {"type": "string"}, "create": {"type": "boolean", "description": "The user said yes to creating dir and its missing parents"}, "prompt": {"type": "string"}, "count": {"type": "integer", "description": "Open this many such tabs at once (1 to 10), each in its own folder name-1, name-2..."}}),
+                json!({"account": account_prop(), "name": {"type": "string"}, "dir": {"type": "string"}, "create": {"type": "boolean", "description": "The user said yes to creating dir and its missing parents"}, "prompt": {"type": "string"}, "expect_reply": {"type": "boolean", "description": "The prompt asks the new tab's agent a question for the user: its answer is reported (default: true when the prompt or the user's request is a question)"}, "count": {"type": "integer", "description": "Open this many such tabs at once (1 to 10), each in its own folder name-1, name-2..."}}),
                 &[],
             )
         },
@@ -363,10 +363,10 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "press_key",
-        description: "Press a key in a tab: escape (interrupts claude's current work), enter, or ctrl_c. Enter is refused while the tab shows a permission or trust prompt: answer those with answer_prompt.",
+        description: "Press a key in a tab: escape (interrupts claude's current work), enter, ctrl_c or ctrl_d. Interrupt only when the user asked: escape, ctrl_c or ctrl_d on a tab that is working or has prompts queued asks first (needs_confirmation) unless the user's own words said to stop it; an idle tab gets it at once. Enter is refused while the tab shows a permission or trust prompt: answer those with answer_prompt.",
         schema: || {
             props(
-                json!({"tab": tab_prop(), "key": {"type": "string", "enum": ["escape", "enter", "ctrl_c"]}}),
+                json!({"tab": tab_prop(), "key": {"type": "string", "enum": ["escape", "enter", "ctrl_c", "ctrl_d"]}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
                 &["key"],
             )
         },
@@ -1890,6 +1890,71 @@ impl App {
             && self.tab_activity(sl, t).state == "idle"
     }
 
+    /// Whether the user's own latest words ask to stop, interrupt, cancel
+    /// or escape tab (sl, t): a stop word, not negated or asked about, and
+    /// no other tab named instead. A turn of our own never counts.
+    pub fn stop_asked_for(&self, sl: usize, t: usize) -> bool {
+        let raw = self.assistant.last_user.trim();
+        if raw.is_empty() || raw.ends_with('?') {
+            return false;
+        }
+        let c: String = raw
+            .to_lowercase()
+            .chars()
+            .map(|ch| {
+                if ch.is_alphanumeric() || ch == '\'' {
+                    ch
+                } else {
+                    ' '
+                }
+            })
+            .collect();
+        let said = format!(" {} ", c.split_whitespace().collect::<Vec<_>>().join(" "));
+        let has = |w: &[&str]| w.iter().any(|w| said.contains(&format!(" {w} ")));
+        let stop = has(&[
+            "stop",
+            "interrupt",
+            "cancel",
+            "escape",
+            "esc",
+            "abort",
+            "halt",
+            "ctrl c",
+            "control c",
+            "ctrl d",
+            "control d",
+        ]);
+        let not = has(&[
+            "don't",
+            "dont",
+            "do not",
+            "didn't",
+            "didnt",
+            "did not",
+            "never",
+            "not",
+            "why",
+            "shouldn't",
+            "wasn't",
+        ]);
+        if !stop || not {
+            return false;
+        }
+        let tab = &self.panes[sl].tabs[t];
+        let names = |name: &str, uid: u64| {
+            let n = name.to_lowercase();
+            (n.len() >= 3 && said.contains(&n)) || said.contains(&format!(" t{uid} "))
+        };
+        let this = names(&tab.name(), tab.uid);
+        let other = self.panes.iter().enumerate().any(|(ps, p)| {
+            p.tabs
+                .iter()
+                .enumerate()
+                .any(|(pt, x)| (ps, pt) != (sl, t) && names(&x.name(), x.uid))
+        });
+        this || !other
+    }
+
     /// (plan, question, needs a yes) for a batch tool's arguments.
     fn plan_for(&mut self, tool: &str, args: &Value) -> Result<(Value, String, bool), String> {
         if let Some(r) = self.admin_plan_for(tool, args) {
@@ -2036,6 +2101,41 @@ impl App {
                     q,
                     true,
                 ))
+            }
+            "press_key" => {
+                let bytes = key_bytes(s("key").as_deref())?;
+                let key = key_word(bytes);
+                let (sl, t) = self.one_tab(args)?;
+                let tab = &self.panes[sl].tabs[t];
+                let uid = tab.uid;
+                let queued = self.queued_for(uid);
+                let doing = match tab.activity {
+                    Activity::Working => {
+                        let on = self
+                            .deliveries
+                            .iter()
+                            .rev()
+                            .find(|d| d.uid == uid && d.done())
+                            .map(|d| format!(" on \"{}\"", crate::sessions::snippet(&d.text, 60)))
+                            .unwrap_or_default();
+                        Some(format!("is working{on}"))
+                    }
+                    Activity::Permission => Some("is waiting for approval mid turn".to_string()),
+                    _ if queued > 0 => Some(format!(
+                        "has {} on the way",
+                        plural(queued, "queued prompt")
+                    )),
+                    _ => None,
+                };
+                let q = format!(
+                    "The {} tab ({}) {}. Interrupt it with {}?",
+                    tab.name(),
+                    tab_id(uid),
+                    doing.as_deref().unwrap_or("is idle"),
+                    key_label(key)
+                );
+                let needs = doing.is_some() && !self.stop_asked_for(sl, t);
+                Ok((json!({"uid": uid, "key": key}), q, needs))
             }
             "open_tab" => {
                 let n = args.get("count").and_then(Value::as_u64).unwrap_or(1);
@@ -2232,6 +2332,17 @@ impl App {
                 .collect::<Vec<_>>()
         };
         match tool {
+            "press_key" => {
+                let uid = self.current_uid(plan["uid"].as_u64().unwrap_or(0));
+                let (sl, t) = self.find_tab(uid).ok_or("that tab was closed")?;
+                let key = plan["key"].as_str().unwrap_or("escape");
+                self.panes[sl].tabs[t].write(key_bytes(Some(key))?);
+                self.last_target = Some(uid);
+                crate::log::info(&format!("control: press_key {key} in {}", tab_id(uid)));
+                Ok(ok(
+                    json!({"tab": tab_id(uid), "pressed": key, "state": self.state_word(sl, t)}),
+                ))
+            }
             "edit_system_prompt" => self.run_prompt_edit(plan),
             "send_prompt" => {
                 let text = plan["text"].as_str().unwrap_or("").to_string();
@@ -2602,6 +2713,36 @@ fn path_under(root: &std::path::Path, path: Option<&str>) -> Result<PathBuf, Str
     }
 }
 
+/// The bytes press_key sends for a key name.
+fn key_bytes(key: Option<&str>) -> Result<&'static [u8], String> {
+    match key {
+        Some("escape") | Some("esc") => Ok(b"\x1b"),
+        Some("enter") => Ok(b"\r"),
+        Some("ctrl_c") => Ok(b"\x03"),
+        Some("ctrl_d") => Ok(b"\x04"),
+        _ => Err("key must be escape, enter, ctrl_c or ctrl_d".into()),
+    }
+}
+
+/// The canonical name of press_key's bytes.
+fn key_word(bytes: &[u8]) -> &'static str {
+    match bytes {
+        b"\x1b" => "escape",
+        b"\x03" => "ctrl_c",
+        b"\x04" => "ctrl_d",
+        _ => "enter",
+    }
+}
+
+fn key_label(key: &str) -> &'static str {
+    match key {
+        "ctrl_c" => "Ctrl-C",
+        "ctrl_d" => "Ctrl-D",
+        "enter" => "Enter",
+        _ => "Escape",
+    }
+}
+
 /// "*.html", ".html", "index" or "" against a file name.
 fn name_matches(name: &str, pat: &str) -> bool {
     let p = pat.trim().to_lowercase();
@@ -2743,7 +2884,18 @@ impl App {
         }
         // A question to a tab: its answer is told when it comes.
         if brain && tool == "send_prompt" && v["error"].is_null() {
-            self.follow_up_sends(args, &mut v);
+            self.follow_up_sends(args, &mut v, false);
+        }
+        // A new tab given a question: its first turn's reply is told too.
+        if brain
+            && matches!(tool, "open_tab" | "new_tab" | "new_tab_with_prompt")
+            && v["error"].is_null()
+            && v["needs_confirmation"].is_null()
+            && v["_wait"]["deliveries"]
+                .as_array()
+                .is_some_and(|d| !d.is_empty())
+        {
+            self.follow_up_sends(args, &mut v, true);
         }
         self.assistant_log_tool(tool, args, &v);
         v
@@ -3323,27 +3475,29 @@ impl App {
                 ok(json!(did.join(", ")))
             }
             "press_key" => {
+                if args.get("confirm_token").is_some() || args.get("reissue_token").is_some() {
+                    return self.planned("press_key", args);
+                }
+                // Escape, Ctrl-C and Ctrl-D interrupt: a working tab asks
+                // first unless the user said to stop it.
+                if key_bytes(s("key").as_deref())? != b"\r" {
+                    return self.planned("press_key", args);
+                }
                 let (sl, t) = self.one_tab(args)?;
-                let bytes: &[u8] = match s("key").as_deref() {
-                    Some("escape") | Some("esc") => b"\x1b",
-                    Some("enter") => b"\r",
-                    Some("ctrl_c") => b"\x03",
-                    _ => return Err("key must be escape, enter or ctrl_c".into()),
-                };
                 // Enter on a permission or trust prompt would approve it
                 // without the user's yes: that goes through answer_prompt.
                 let asking = self.panes[sl].tabs[t].activity == Activity::Permission
                     || self.request_of(sl, t).is_some();
-                if bytes == b"\r" && asking {
+                if asking {
                     crate::log::info(&format!(
                         "control: press_key enter refused on a prompt in {}",
                         tab_id(self.panes[sl].tabs[t].uid)
                     ));
                     return Err("refused: that tab is showing a permission or trust prompt; Enter would approve it. Use answer_prompt (it asks the user when needed).".into());
                 }
-                self.panes[sl].tabs[t].write(bytes);
+                self.panes[sl].tabs[t].write(b"\r");
                 ok(
-                    json!({"tab": tab_id(self.panes[sl].tabs[t].uid), "pressed": s("key"), "state": self.state_word(sl, t)}),
+                    json!({"tab": tab_id(self.panes[sl].tabs[t].uid), "pressed": "enter", "state": self.state_word(sl, t)}),
                 )
             }
             "pause_listening" => {

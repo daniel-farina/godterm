@@ -11275,7 +11275,10 @@ mod tests {
             app.control_call("press_key", &json!({"tab": tab, "key": "enter"}))["error"]
                 .is_string()
         );
-        // Escape (it declines) and plain tabs still work.
+        // Escape (it declines) when the user says so, and plain tabs
+        // still work.
+        app.panes[0].tabs[0].activity = crate::pane::Activity::Permission;
+        app.assistant.last_user = "press escape there".into();
         assert_eq!(
             app.control_call("press_key", &json!({"tab": tab, "key": "escape"}))["ok"],
             json!(true)
@@ -11285,6 +11288,75 @@ mod tests {
             app.control_call("press_key", &json!({"tab": t2, "key": "enter"}))["ok"],
             json!(true)
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Escape, Ctrl-C or Ctrl-D on a working tab asks first unless the
+    /// user's own words said to stop it; an idle tab gets it at once.
+    #[test]
+    fn press_key_never_interrupts_unasked() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use serde_json::json;
+        let (mut app, home) = test_app("presskeystop");
+        app.panes[0].tabs[0].custom_name = Some("claudego".into());
+        app.panes[1].tabs[0].custom_name = Some("botmesh".into());
+        app.panes[0].tabs[0].activity = crate::pane::Activity::Working;
+        let tab = format!("t{}", app.panes[0].tabs[0].uid);
+        let call = |app: &mut App, key: &str| {
+            app.control_call(
+                "press_key",
+                &json!({"_client": "brain", "tab": tab, "key": key}),
+            )
+        };
+        // Asked something else entirely: Escape asks first.
+        app.assistant_turn += 1;
+        app.assistant.last_user = "what is claudego doing".into();
+        let v = call(&mut app, "escape");
+        assert_eq!(v["needs_confirmation"], json!(true), "{v}");
+        let q = v["question"].as_str().unwrap();
+        assert!(
+            q.contains("claudego") && q.contains("working") && q.contains("Escape"),
+            "{q}"
+        );
+        // Ctrl-C and Ctrl-D too.
+        for k in ["ctrl_c", "ctrl_d"] {
+            let v = call(&mut app, k);
+            assert_eq!(v["needs_confirmation"], json!(true), "{k}: {v}");
+        }
+        // Complaining about a stop is not a stop request.
+        app.assistant.last_user = "why do you stop it, I didn't ask you that".into();
+        assert_eq!(call(&mut app, "escape")["needs_confirmation"], json!(true));
+        // Another tab named: not this one.
+        app.assistant.last_user = "stop botmesh".into();
+        assert_eq!(call(&mut app, "escape")["needs_confirmation"], json!(true));
+        // The user said to stop it: at once.
+        app.assistant.last_user = "stop claudego".into();
+        let v = call(&mut app, "escape");
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["result"]["pressed"], json!("escape"), "{v}");
+        app.assistant.last_user = "interrupt it".into();
+        assert_eq!(call(&mut app, "ctrl_c")["ok"], json!(true));
+        // A yes in the next turn runs the asked one.
+        app.assistant.last_user = "check on it".into();
+        let v = call(&mut app, "escape");
+        let token = v["token"].as_str().unwrap().to_string();
+        app.assistant_turn += 1;
+        app.assistant.last_user = "yes".into();
+        let v = app.control_call(
+            "press_key",
+            &json!({"_client": "brain", "confirm_token": token}),
+        );
+        assert_eq!(v["ok"], json!(true), "{v}");
+        // An idle tab: at once, whatever was said.
+        app.assistant.last_user = "what is claudego doing".into();
+        app.panes[0].tabs[0].activity = crate::pane::Activity::Ready;
+        assert_eq!(call(&mut app, "escape")["ok"], json!(true));
+        // Prompts on their way count as work.
+        let uid = app.panes[0].tabs[0].uid;
+        app.deliver(uid, "Run the tests.");
+        let v = call(&mut app, "escape");
+        assert_eq!(v["needs_confirmation"], json!(true), "{v}");
+        assert!(v["question"].as_str().unwrap().contains("queued prompt"));
         let _ = std::fs::remove_dir_all(&home);
     }
 

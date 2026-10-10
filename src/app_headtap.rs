@@ -35,7 +35,7 @@ impl App {
     }
 
     /// Talking back right now (the engine or the preview).
-    fn tap_speaking(&self) -> bool {
+    pub(crate) fn tap_speaking(&self) -> bool {
         self.voice.engine.as_ref().is_some_and(|v| v.speaking())
             || self.voice.preview.as_ref().is_some_and(|p| p.speaking())
     }
@@ -97,7 +97,8 @@ impl App {
     fn tap_mic_off(&mut self) {
         crate::log::info("voice: headphone tap: mic off");
         if !self.voice.muted {
-            self.voice.muted_prev = self.voice_mode();
+            // A tap means open mic: the next tap reopens it as open mic.
+            self.voice.muted_prev = 3;
         }
         self.voice.muted = true;
         self.voice.open_mic = false;
@@ -112,10 +113,12 @@ impl App {
         self.flash("Mic off (headphone tap; tap again to listen)");
     }
 
-    /// Open the mic and listen for a command without the wake word.
+    /// Open the mic in open mic mode: a double tap always means open mic,
+    /// never push to talk or the wake word.
     fn tap_mic_on(&mut self) {
-        crate::log::info("voice: headphone tap: listening");
+        crate::log::info("voice: headphone tap: listening (open mic)");
         let speaking = self.tap_speaking();
+        self.voice.muted_prev = 3;
         if self.voice.muted {
             if self.voice.engine.is_some() {
                 self.resume_kept_mic();
@@ -126,16 +129,24 @@ impl App {
         if self.paused() {
             self.resume_listening("headphone tap");
         }
-        if self.voice.engine.is_none() {
-            match self.cfg.voice.mode.as_str() {
-                "open" => {
-                    self.voice.open_mic = true;
-                    self.voice.last_heard = Instant::now();
-                    self.start_voice(true);
-                }
-                "push" => self.start_voice(false),
-                _ => self.start_voice(true),
+        // An engine running as push to talk listens only on demand: start
+        // it again always on, as open mic. While it is talking that would
+        // cut the reply: then it switches once the reply ends.
+        if self.voice.engine.is_some() && !self.voice.always_on {
+            if speaking {
+                self.voice.open_mic_after_speech = true;
+            } else {
+                self.stop_voice();
             }
+        }
+        if self.voice.engine.is_none() {
+            // Open mic, whatever voice.mode in the config file says.
+            self.voice.reopen = None;
+            self.start_voice_in(3);
+        }
+        if !self.voice.open_mic {
+            self.voice.open_mic = true;
+            self.voice.last_heard = Instant::now();
         }
         self.voice.asleep = false;
         self.voice.last_heard = Instant::now();

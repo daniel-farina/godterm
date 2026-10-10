@@ -61,6 +61,9 @@ pub struct FollowUp {
     pub ended: Option<Instant>,
     /// The user was told it is still being worked on (past the wait).
     pub told_working: bool,
+    /// A new tab's first prompt (open_tab): the wait starts once its
+    /// first turn does, not while the tab is still coming up.
+    pub await_start: bool,
 }
 
 /// Finished entries stay in the snapshot this long.
@@ -214,13 +217,15 @@ impl App {
             held: false,
             ended: None,
             told_working: false,
+            await_start: false,
         });
     }
 
-    /// After a brain send_prompt: follow up on the deliveries that ask,
-    /// and say in the result whether the answer will be reported
-    /// (`will_report`), so nothing is promised that will not come.
-    pub fn follow_up_sends(&mut self, args: &Value, v: &mut Value) {
+    /// After a brain send_prompt (or open_tab with a prompt, `new_tab`):
+    /// follow up on the deliveries that ask, and say in the result whether
+    /// the answer will be reported (`will_report`), so nothing is promised
+    /// that will not come.
+    pub fn follow_up_sends(&mut self, args: &Value, v: &mut Value, new_tab: bool) {
         let explicit = args.get("expect_reply").and_then(Value::as_bool);
         let mut watched: Vec<String> = vec![];
         let ids: Vec<u64> = v["_wait"]["deliveries"]
@@ -241,7 +246,8 @@ impl App {
             });
             if asks {
                 self.register_follow_up(uid, &text);
-                if let Some(f) = self.assistant.follow_ups.last() {
+                if let Some(f) = self.assistant.follow_ups.last_mut() {
+                    f.await_start = new_tab;
                     if !watched.contains(&f.tab) {
                         watched.push(f.tab.clone());
                     }
@@ -343,7 +349,8 @@ impl App {
             if f.state != FuState::Waiting {
                 continue;
             }
-            let uid = self.current_uid(f.uid);
+            let first = f.uid;
+            let uid = self.current_uid(first);
             f.uid = uid;
             let Some((s, t)) = self.find_tab(uid) else {
                 f.state = FuState::Gone;
@@ -355,6 +362,23 @@ impl App {
                 ));
                 continue;
             };
+            // A new tab: its wait starts with its first turn (the prompt
+            // accepted and the tab past starting).
+            if f.await_start {
+                let coming = self.panes[s].tabs[t].activity == Activity::Starting
+                    || self
+                        .deliveries
+                        .iter()
+                        .any(|d| (d.uid == uid || d.uid == first) && !d.done());
+                if coming && f.sent.elapsed() < cap {
+                    continue;
+                }
+                f.await_start = false;
+                f.sent = Instant::now();
+                crate::log::info(&format!(
+                    "follow-up: t{uid}'s first turn started; waiting for its answer"
+                ));
+            }
             let past = f.sent.elapsed() > wait;
             let not_found = format!(
                 "{} finished but I couldn't find its answer; read_tab has its last reply.",

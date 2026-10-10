@@ -232,15 +232,19 @@ fn a_tap_on_during_talk_back_does_not_stop_it() {
     assert_eq!(stops(&app), before, "the reply goes on");
     assert_eq!(sent(&rx), vec!["mic true"]);
 
-    // Push to talk: the capture opens after the reply, never over it
-    // (push to talk in the engine cuts talk back off).
+    // A push to talk engine: a tap means open mic, but restarting the
+    // engine now would cut the reply, so it switches once the reply ends.
     press(&mut app, Cmd::TogglePlayPause);
     assert!(app.voice.muted);
     let _ = sent(&rx);
     app.voice.always_on = false;
     press(&mut app, Cmd::TogglePlayPause);
     assert!(!app.voice.muted);
-    assert!(app.voice.listen_after_speech, "listens once the reply ends");
+    assert!(app.voice.engine.is_some(), "not restarted over the reply");
+    assert!(
+        app.voice.open_mic_after_speech,
+        "open mic once the reply ends"
+    );
     assert_eq!(sent(&rx), vec!["mic true"], "no push to talk while talking");
     assert_eq!(stops(&app), before);
     let _ = std::fs::remove_dir_all(&home);
@@ -269,7 +273,76 @@ fn a_tap_wakes_it_from_paused_or_asleep() {
     app.cfg.voice.mode = "wake".into();
     assert!(!app.tap_listening());
     press(&mut app, Cmd::TogglePlayPause);
-    assert!(app.voice.always_on, "started in the configured wake mode");
+    assert!(
+        app.voice.always_on && app.voice.open_mic,
+        "a tap always starts open mic, whatever voice.mode says"
+    );
     assert!(app.voice.wake_until.is_some());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_tap_never_switches_open_mic_to_push_to_talk() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home, _calls, _rx) = tap_on_app("openmic", false);
+    // The config file still says push to talk; voice ran as open mic,
+    // then its engine went away (as when the mic stream ends).
+    app.cfg.voice.mode = "push".into();
+    app.voice.open_mic = true;
+    app.stop_voice();
+    assert!(app.voice.engine.is_none());
+    press(&mut app, Cmd::TogglePlayPause);
+    // (Tests never open a mic, so no engine runs; the mode is what counts.)
+    assert!(
+        app.voice.open_mic && app.voice.always_on,
+        "open mic, not push to talk"
+    );
+    // A stand in engine, as the real one would be after that start.
+    let (v, _rx2) = Voice::fake(false);
+    app.voice.engine = Some(v);
+    // Off and on again: still open mic, every time.
+    for _ in 0..3 {
+        press(&mut app, Cmd::TogglePlayPause);
+        assert!(app.voice.muted);
+        assert_eq!(app.voice.muted_prev, 3, "remembered as open mic");
+        press(&mut app, Cmd::TogglePlayPause);
+        assert!(!app.voice.muted);
+        assert!(app.voice.open_mic && app.voice.always_on);
+    }
+    // A push to talk engine is started again as open mic by a tap.
+    press(&mut app, Cmd::TogglePlayPause);
+    app.voice.always_on = false;
+    app.voice.open_mic = false;
+    press(&mut app, Cmd::Play);
+    assert!(app.voice.open_mic && app.voice.always_on);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_mic_that_ends_by_itself_reopens_in_the_same_mode() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home, _calls, _rx) = tap_on_app("reopen", false);
+    app.cfg.voice.mode = "push".into();
+    app.voice.open_mic = true;
+    app.voice_mode_tick();
+    assert_eq!(app.voice.last_on_mode, 3);
+    app.on_voice(crate::voice::VoiceEvent::Status(
+        crate::voice::VoiceStatus::Off(Some("microphone stream ended".into())),
+    ));
+    let (_, mode, tries) = app.voice.reopen.expect("a reopen is planned");
+    assert_eq!((mode, tries), (3, 1));
+    // Due now: voice comes back as open mic, not voice.mode.
+    app.voice.reopen = Some((std::time::Instant::now(), 3, 1));
+    app.voice.open_mic = false;
+    app.voice.always_on = false;
+    app.voice_mode_tick();
+    assert!(app.voice.open_mic && app.voice.always_on, "open mic again");
+    // Muted on purpose: an ended stream is left alone.
+    app.voice.muted = true;
+    app.voice.reopen = None;
+    app.on_voice(crate::voice::VoiceEvent::Status(
+        crate::voice::VoiceStatus::Off(Some("microphone stream ended".into())),
+    ));
+    assert!(app.voice.reopen.is_none());
     let _ = std::fs::remove_dir_all(&home);
 }

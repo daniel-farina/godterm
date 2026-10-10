@@ -1646,6 +1646,7 @@ impl App {
     pub fn tick(&mut self) {
         // Voice turned on, off or switched mode: saved soon, so even a crash
         // comes back in it.
+        self.voice_mode_tick();
         let now = self.voice_mode_now();
         if self.voice_at_quit.is_none() && self.rt_voice.as_deref() != Some(now) {
             self.rt_voice = Some(now.into());

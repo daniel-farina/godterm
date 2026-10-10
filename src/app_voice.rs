@@ -72,6 +72,16 @@ pub struct VoiceState {
     /// The mic is muted (capture stopped); the voice mode to go back to.
     pub muted: bool,
     pub muted_prev: u8,
+    /// The mode voice last ran in (1 push to talk, 2 wake word, 3 open
+    /// mic; 0 never on): a headphone tap or a mic that came back reopens
+    /// it in this mode, never in another one.
+    pub last_on_mode: u8,
+    /// The mic stream ended by itself (a Bluetooth route change): reopen
+    /// it at this time, in this mode, after this many tries.
+    pub reopen: Option<(Instant, u8, u32)>,
+    /// A tap asked for open mic while a push to talk engine was speaking:
+    /// it starts again as open mic once the reply ends (never cuts it).
+    pub open_mic_after_speech: bool,
     /// "Hold on a minute": listening paused until then.
     pub paused: Option<crate::app_pause::Pause>,
     /// What was said on the last resume about held announcements.
@@ -138,6 +148,9 @@ impl Default for VoiceState {
             ignored: 0,
             muted: false,
             muted_prev: 0,
+            last_on_mode: 0,
+            reopen: None,
+            open_mic_after_speech: false,
             paused: None,
             away_summary: None,
             not_you: 0,
@@ -274,6 +287,49 @@ impl App {
             if let Some(e) = &self.voice.engine {
                 e.set_vocabulary(v.clone());
                 self.voice.vocab_sent = Some(v);
+            }
+        }
+    }
+
+    /// Start voice in a mode (1 push to talk, 2 wake word, 3 open mic),
+    /// keeping it: the same mode it ran in, nothing else.
+    pub fn start_voice_in(&mut self, m: u8) {
+        match m {
+            3 => {
+                self.voice.open_mic = true;
+                self.voice.asleep = false;
+                self.voice.last_heard = Instant::now();
+                self.start_voice(true);
+            }
+            1 => self.start_voice(false),
+            _ => self.start_voice(true),
+        }
+    }
+
+    /// Track the running mode and reopen a mic that ended by itself.
+    pub fn voice_mode_tick(&mut self) {
+        let m = self.voice_mode();
+        if m > 0 && !self.voice.muted {
+            self.voice.last_on_mode = m;
+        }
+        if self.voice.open_mic_after_speech && !self.tap_speaking() {
+            self.voice.open_mic_after_speech = false;
+            if !self.voice.muted && !self.voice.always_on {
+                crate::log::info("voice: the reply ended; starting open mic (headphone tap)");
+                self.stop_voice();
+                self.start_voice_in(3);
+            }
+        }
+        if let Some((at, mode, tries)) = self.voice.reopen {
+            if Instant::now() >= at && !self.voice.muted && !self.paused() {
+                crate::log::info(&format!(
+                    "voice: reopening the mic in {} mode",
+                    mode_name(mode)
+                ));
+                self.stop_voice();
+                self.start_voice_in(mode);
+                // Kept (with its count) until it runs again.
+                self.voice.reopen = Some((Instant::now() + Duration::from_secs(3600), mode, tries));
             }
         }
     }
@@ -586,6 +642,32 @@ impl App {
                 if let VoiceStatus::Off(Some(reason)) = &s {
                     self.voice.info = Some(reason.clone());
                     crate::log::info(&format!("voice: {reason}"));
+                    // The stream went away by itself (headphones switching
+                    // profile, a device change): open it again in the same
+                    // mode, as it ran, instead of leaving voice dead.
+                    if reason == "microphone stream ended"
+                        && self.voice.engine.is_some()
+                        && !self.voice.muted
+                        && self.voice.last_on_mode > 0
+                    {
+                        let tries = self.voice.reopen.map_or(0, |r| r.2);
+                        if tries < 5 {
+                            let m = self.voice.last_on_mode;
+                            self.voice.reopen =
+                                Some((Instant::now() + Duration::from_secs(2), m, tries + 1));
+                            crate::log::info(&format!(
+                                "voice: reopening the mic in 2 s in {} mode (try {})",
+                                mode_name(m),
+                                tries + 1
+                            ));
+                        }
+                    }
+                }
+                if s == VoiceStatus::Listening || s == VoiceStatus::Idle {
+                    // Running again: the next end starts a fresh count.
+                    if self.voice.reopen.is_some_and(|r| Instant::now() > r.0) {
+                        self.voice.reopen = None;
+                    }
                 }
                 self.voice.status = s;
             }
@@ -1302,5 +1384,14 @@ mod voice_resume_tests {
         assert_eq!(app.rt_voice.as_deref(), Some("off"));
         assert!(app.state_dirty);
         let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+fn mode_name(m: u8) -> &'static str {
+    match m {
+        3 => "open mic",
+        2 => "wake word",
+        1 => "push to talk",
+        _ => "off",
     }
 }

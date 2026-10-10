@@ -461,3 +461,102 @@ fn urgent_updates_wait_only_for_the_sentence() {
     );
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// A new tab's session transcript, named like `tab` does.
+fn new_tab_transcript(app: &mut App, uid: u64, sid: &str) -> PathBuf {
+    let (s, t) = app.find_tab(uid).unwrap();
+    let a = app.panes[s].account.unwrap();
+    let cwd = app.panes[s].tabs[t].cwd.clone();
+    app.panes[s].tabs[t].session_id = Some(sid.into());
+    let dir = app.cfg.accounts[a]
+        .config_dir()
+        .join("projects")
+        .join(crate::state::encode_project_dir(&cwd));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join(format!("{sid}.jsonl"))
+}
+
+fn uid_of(v: &Value) -> u64 {
+    v["tab"].as_str().unwrap()[1..].parse().unwrap()
+}
+
+/// A question asked through open_tab comes back: will_report is true,
+/// the wait starts with the tab's first turn, and its reply is the answer.
+#[test]
+fn an_open_tab_question_is_reported() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("opentabq");
+    let q = "Is a dehumidifier a major appliance?";
+    let v = app.control_call(
+        "open_tab",
+        &json!({"_client": "brain", "account": 1, "name": "appliance", "prompt": q}),
+    );
+    assert!(v["error"].is_null(), "{v}");
+    assert_eq!(v["will_report"], json!(true), "{v}");
+    assert!(v["report_say"].as_str().unwrap().contains("I'll tell you"));
+    let uid = uid_of(&v);
+    let f = app.assistant.follow_ups.last().unwrap();
+    assert_eq!((f.uid, f.question.as_str()), (uid, q));
+    assert!(f.await_start);
+    // Still coming up: the wait has not started.
+    set_activity(&mut app, uid, Activity::Starting);
+    app.follow_ups_tick();
+    assert!(app.assistant.follow_ups.last().unwrap().await_start);
+    // The prompt is in and the turn runs.
+    for d in app.deliveries.iter_mut().filter(|d| d.uid == uid) {
+        d.stage = crate::control::Stage::Delivered;
+    }
+    set_activity(&mut app, uid, Activity::Working);
+    app.follow_ups_tick();
+    let f = app.assistant.follow_ups.last().unwrap();
+    assert!(!f.await_start && f.seen_working && f.state == FuState::Waiting);
+    let path = new_tab_transcript(&mut app, uid, "7777aaaa-0000-4000-8000-0000000000a1");
+    write(
+        &path,
+        &[
+            json!({"type": "user", "message": {"role": "user", "content": q}, "timestamp": stamp(1)}),
+            json!({"type": "assistant", "message": {"id": "a", "content": [{"type": "text", "text": "Usually not: a portable dehumidifier counts as a small appliance."}]}, "timestamp": stamp(2)}),
+        ],
+    );
+    set_activity(&mut app, uid, Activity::Ready);
+    app.assistant.follow_ups.last_mut().unwrap().checked = None;
+    app.follow_ups_tick();
+    match &app.assistant.follow_ups.last().unwrap().state {
+        FuState::Answered { text, .. } | FuState::Reported { text, .. } => {
+            assert!(text.contains("small appliance"), "{text}")
+        }
+        s => panic!("{s:?}"),
+    }
+    app.assistant.brain = None;
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// A plain task through open_tab is not reported back, unless
+/// expect_reply says it is a question for the user.
+#[test]
+fn an_open_tab_task_is_not_reported_unless_asked() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("opentabtask");
+    app.assistant.last_user = "make me a calculator app".into();
+    let v = app.control_call(
+        "open_tab",
+        &json!({"_client": "brain", "account": 1, "name": "calc", "prompt": "Build a simple calculator web app."}),
+    );
+    assert!(v["error"].is_null(), "{v}");
+    assert_eq!(v["will_report"], json!(false), "{v}");
+    assert!(app.assistant.follow_ups.is_empty());
+    let v = app.control_call(
+        "open_tab",
+        &json!({"_client": "brain", "account": 1, "name": "sizes", "prompt": "List the five largest files in this repo.", "expect_reply": true}),
+    );
+    assert_eq!(v["will_report"], json!(true), "{v}");
+    assert_eq!(app.assistant.follow_ups.len(), 1);
+    assert_eq!(app.assistant.follow_ups[0].uid, uid_of(&v));
+    // No prompt: nothing to report, and nothing is said about it.
+    let v = app.control_call(
+        "open_tab",
+        &json!({"_client": "brain", "account": 1, "name": "empty"}),
+    );
+    assert!(v["will_report"].is_null(), "{v}");
+    let _ = std::fs::remove_dir_all(&home);
+}
