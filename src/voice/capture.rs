@@ -126,8 +126,16 @@ pub fn parse_check(text: &str) -> Option<(String, String)> {
 /// The capture `voice.capture` asks for: files always go through ffmpeg;
 /// "auto" picks Apple on macOS when the helper supports it and the
 /// default input is used (a chosen device stays with ffmpeg, which can
-/// address it by name).
+/// address it by name), except a Bluetooth headset mic: Apple capture on
+/// one (WH-1000XM5, 2026-10-10) failed voice processing (-10875), then
+/// delivered no audio while the headset flipped between call and media
+/// mode; ffmpeg records it, and the headphone tap starts and stops it.
 pub fn backend(cfg: &VoiceCfg, src: &Source, helper_ok: bool) -> Backend {
+    backend_for(cfg, src, helper_ok, false)
+}
+
+/// `backend`, knowing whether the default input is a Bluetooth headset.
+pub fn backend_for(cfg: &VoiceCfg, src: &Source, helper_ok: bool, bt_default: bool) -> Backend {
     let Source::Mic(dev) = src else {
         return Backend::Ffmpeg;
     };
@@ -137,7 +145,7 @@ pub fn backend(cfg: &VoiceCfg, src: &Source, helper_ok: bool) -> Backend {
     let default_dev = dev.is_empty() || dev == "default";
     match cfg.capture.as_str() {
         "apple" => Backend::Apple,
-        "auto" if helper_ok && default_dev => Backend::Apple,
+        "auto" if helper_ok && default_dev && !bt_default => Backend::Apple,
         _ => Backend::Ffmpeg,
     }
 }
@@ -155,10 +163,19 @@ pub fn denoise_on(cfg: &VoiceCfg, vp: bool) -> bool {
 /// Open the mic (or file) with the configured capture, falling back to
 /// ffmpeg when Apple capture fails and the setting is "auto".
 pub fn open(cfg: &VoiceCfg, src: &Source) -> std::io::Result<Capture> {
-    let want = backend(
+    let bt_default = cfg.capture == "auto"
+        && cfg!(target_os = "macos")
+        && matches!(src, Source::Mic(d) if d.is_empty() || d == "default")
+        && crate::voice::devices::chosen(&crate::voice::devices::list(), "default")
+            .is_some_and(|d| d.transport == "bluetooth");
+    if bt_default {
+        crate::log::info("voice: the default mic is a Bluetooth headset: recording with ffmpeg");
+    }
+    let want = backend_for(
         cfg,
         src,
         cfg.capture == "apple" || helper_mic_wait(std::time::Duration::from_secs(4)).is_some(),
+        bt_default,
     );
     let mut fallback = None;
     if want == Backend::Apple {
@@ -477,10 +494,18 @@ mod tests {
             Backend::Ffmpeg,
             "a chosen device stays with ffmpeg"
         );
+        // A Bluetooth headset as the default mic: ffmpeg on auto (Apple
+        // capture gave no audio on one), Apple only when asked for.
+        assert_eq!(
+            backend_for(&c, &mic, true, true),
+            Backend::Ffmpeg,
+            "a Bluetooth headset records with ffmpeg"
+        );
         c.capture = "ffmpeg".into();
         assert_eq!(backend(&c, &mic, true), Backend::Ffmpeg);
         c.capture = "apple".into();
         assert_eq!(backend(&c, &mic, false), apple);
+        assert_eq!(backend_for(&c, &mic, true, true), apple);
     }
 
     #[test]
