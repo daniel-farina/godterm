@@ -701,7 +701,7 @@ pub fn pane_regions(f: &mut Frame, app: &App, i: usize, area: Rect, term: Rect, 
     );
     let slot = &app.panes[i];
     match slot.account {
-        Some(a) if app.accounts[a].login.logged_in() => {
+        Some(a) if app.accounts[a].login.can_start() => {
             hits.add(
                 foot,
                 UiAction::UsageOf(a),

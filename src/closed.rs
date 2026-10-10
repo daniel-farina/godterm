@@ -330,7 +330,7 @@ impl App {
         let orig = self.cfg.accounts.iter().position(|a| a.name == c.account);
         let harness = orig.map(|a| self.cfg.accounts[a].harness());
         // Its own account when it can run, else the best of the same agent.
-        let usable = |app: &App, a: usize| app.accounts[a].login.logged_in();
+        let usable = |app: &App, a: usize| app.accounts[a].login.can_start();
         let a = match orig {
             Some(a) if usable(self, a) => a,
             _ => {

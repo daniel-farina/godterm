@@ -178,6 +178,10 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("suggest_move_below", "Suggest moving tabs below (% 5h left)", Kind::Float { min: 0.0, max: 50.0, step: 5.0 }, "When a tab's account has less than this left, its header offers a one click move to the account with the most left. 0 turns it off."),
             g("refresh_secs", "Usage refresh (seconds)", Kind::Number { min: 60, max: 3600, step: 30 }, "How often usage is fetched per account (never more than once a minute)."),
             g("usage.auto_failover", "When an account runs out", Kind::Choice(&["ask", "auto", "off"]), "ask: a notice offers to move the tab to the account of the same provider with the most left, one yes (Ctrl-a F, a click, or \"move it\") moves it; auto: idle tabs move by themselves and it says so, busy ones are offered; off: nothing."),
+            g("codex_bin", "Codex CLI binary", Kind::Text, "Path to codex; empty uses PATH."),
+            g("cursor_bin", "Cursor CLI binary", Kind::Text, "Path to cursor-agent or agent; empty detects either on PATH."),
+            g("antigravity_bin", "Antigravity CLI binary", Kind::Text, "Path to agy; empty uses PATH."),
+            g("opencode_bin", "OpenCode binary", Kind::Text, "Path to opencode; empty uses PATH."),
             g("usage.failover_pct", "Runs out below (% left)", Kind::Float { min: 0.0, max: 50.0, step: 1.0 }, "An account counts as running out under this much left (its binding limit, 5 hour or weekly), or when a tab says it hit its limit."),
         ],
         Section::Layout => vec![
@@ -203,7 +207,7 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
                     hidden: None,
                 };
                 v.push(acc("label", "label", Kind::Text, "Name shown in the pane header and status bar.", false, false));
-                v.push(acc("harness", "harness", Kind::Choice(crate::harness::NAMES), "The coding agent it runs: claude (Claude Code) or grok (Grok Build, isolated with its own GROK_HOME). Restart its tabs after a change.", false, false));
+                v.push(acc("harness", "harness", Kind::Choice(crate::harness::NAMES), "The coding agent: claude, grok, codex, cursor, antigravity or opencode. Cursor, Antigravity and OpenCode use native shared login stores. Restart tabs after a change.", false, false));
                 v.push(acc("color", "color", Kind::Choice(&crate::theme::ROTATION), "Accent color of the account.", false, false));
                 v.push(acc("cwd", "default folder", Kind::Text, "Folder new tabs of this account start in.", false, false));
                 v.push(acc("new_tab_base", "new tab base", Kind::Text, "Base folder for this account's new tabs.", true, false));

@@ -153,13 +153,13 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "set_setting",
-        description: "Change any setting (validated against its kind, written to config.toml keeping comments, applied at once). account for per account keys. Risky changes (bypass permissions, update checks or signatures off, privacy off, pass_env, claude_bin / grok_bin) need a second yes that names the risk. A secret (an API key) only from the user's own dictated words; never read back.",
+        description: "Change any setting (validated against its kind, written to config.toml keeping comments, applied at once). account for per account keys. Risky changes (bypass permissions, update checks or signatures off, privacy off, pass_env, agent binary paths) need a second yes that names the risk. A secret (an API key) only from the user's own dictated words; never read back.",
         schema: || props(json!({"key": {"type": "string"}, "value": {"type": ["string", "number", "boolean"]}, "account": account_prop(), "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
     },
     Tool {
         name: "add_account",
-        description: "Add a Claude or Grok account (label, harness claude|grok, optional color and folder), then start its login in a pane and guide it by voice: opens the login page, says when to sign in and approve, waits for a code (the user copies it and says \"paste it\": login_paste_code), and says when the account is configured or the login failed.",
-        schema: || props(json!({"label": {"type": "string"}, "harness": {"type": "string", "enum": ["claude", "grok"]}, "color": {"type": "string"}, "folder": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+        description: "Add an agent slot (label, harness claude|grok|codex|cursor|antigravity|opencode, optional color and folder), then start its native login in a pane. Codex/Cursor/Antigravity/OpenCode login is CLI-managed. Claude/Grok login is guided by voice: opens the login page, says when to sign in and approve, waits for a code (the user copies it and says \"paste it\": login_paste_code), and says when the account is configured or the login failed.",
+        schema: || props(json!({"label": {"type": "string"}, "harness": {"type": "string", "enum": crate::harness::NAMES}, "color": {"type": "string"}, "folder": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
     },
     Tool {
         name: "relogin_account",
@@ -3016,7 +3016,7 @@ impl App {
                         .and_then(|p| p.account)
                         .ok_or("no account on the focused pane")?,
                 };
-                if !self.accounts[acct].login.logged_in() {
+                if !self.accounts[acct].login.can_start() {
                     return Err(format!(
                         "{} is not logged in",
                         self.cfg.accounts[acct].display()
@@ -3417,6 +3417,8 @@ impl App {
                         .map_err(|e| format!("{e:#}"))?;
                         (true, r.info.id.clone())
                     }
+
+                    _ => return Err("No transcript adapter for this CLI".into()),
                 };
                 ok(
                     json!({"copied": copied, "id": id, "from": r.source, "to": self.cfg.accounts[target].display()}),
@@ -3847,6 +3849,8 @@ impl App {
                     crate::harness::Harness::Grok => {
                         crate::session_index::detail_grok(&r.info.path)
                     }
+
+                    _ => return Err("No transcript adapter for this CLI".into()),
                 };
                 d["session"] = crate::session_index::row_json(&r, None, false);
                 ok(d)
@@ -3923,6 +3927,8 @@ impl App {
                                 )
                                 .map_err(|e| format!("{e:#}"))?;
                             }
+
+                            _ => return Err("No transcript adapter for this CLI".into()),
                         }
                         if let Some(st) = self.accounts.get_mut(want) {
                             if !st.sessions.iter().any(|x| x.id == r.info.id) {
@@ -4364,7 +4370,9 @@ impl App {
                     crate::usage::UsageError::NotLoggedIn => "not_logged_in".to_string(),
                     other => format!("{other:?}"),
                 }),
-                "available": self.accounts[a].login.logged_in()
+                "harness": self.cfg.accounts[a].harness().name(),
+                "login_managed_by_cli": self.accounts[a].login.cli_managed,
+                "available": self.accounts[a].login.can_start()
                     && !matches!(self.accounts[a].usage_err, Some(crate::usage::UsageError::Unauthorized))
                     && self.accounts[a].effective_left().is_none_or(|e| e >= 2.0),
                 "next_reset_that_unblocks": self.accounts[a].binding().filter(|b| b.0 < 2.0).and_then(|b| b.2).map(|t| t.with_timezone(&chrono::Local).format("%a %b %-d %H:%M").to_string()),

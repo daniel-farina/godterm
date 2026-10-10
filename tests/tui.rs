@@ -621,7 +621,7 @@ fn interrupted_setup_writes_no_config() {
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let mut t = Tui::start(home.clone(), &[]);
-    t.wait_for("How many Claude accounts", 10);
+    t.wait_for("How many agent slots", 10);
     t.send(b"3\r");
     t.wait_for("Account 1 of 3", 5);
     t.send(b"\x03");

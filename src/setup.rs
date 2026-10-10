@@ -75,9 +75,10 @@ fn ask(input: &mut dyn BufRead, prompt: &str, default: &str) -> Result<String> {
 /// Ask for a number of accounts (1 to 16). Keeps every other setting of `base`.
 pub fn ask_accounts(input: &mut dyn BufRead, base: Config) -> Result<Config> {
     println!("godterm setup\n");
-    println!("Each account gets its own Claude Code login, kept apart from your normal ~/.claude.");
+    println!("Choose a coding agent for each slot. Claude, Grok and Codex have separate homes.");
+    println!("Cursor, Antigravity and OpenCode use their native shared login stores.");
     let n: usize = loop {
-        let a = ask(input, "How many Claude accounts do you want to use", "2")?;
+        let a = ask(input, "How many agent slots do you want to use", "2")?;
         match a.parse::<usize>() {
             Ok(n) if (1..=16).contains(&n) => break n,
             _ => println!("  please enter a number from 1 to 16 (more can be added later)"),
@@ -97,10 +98,13 @@ pub fn ask_accounts(input: &mut dyn BufRead, base: Config) -> Result<Config> {
                     .unwrap_or_else(|| format!("Account {i}"))
             });
         let label = ask(input, "  Label", &default_label)?;
-        let harness = if crate::harness::grok::installed(base.grok_bin.as_deref()) {
+        let harness = if crate::harness::ALL
+            .iter()
+            .any(|h| *h != crate::harness::Harness::Claude && h.installed(&base))
+        {
             let h = ask(
                 input,
-                "  Agent: claude (Claude Code) or grok (Grok Build)",
+                "  Agent: claude, grok, codex, cursor, antigravity or opencode",
                 base.accounts
                     .get(i - 1)
                     .map(|a| a.harness.as_str())
@@ -139,11 +143,14 @@ pub fn ask_accounts(input: &mut dyn BufRead, base: Config) -> Result<Config> {
             harness,
         });
     }
-    println!("\nNext: godterm opens and logs each account in, one at a time.");
-    println!("For each one, pick \"Claude account with subscription\", open the link in a browser");
-    println!(
-        "signed in to that account (a separate browser profile helps), and paste the code back.\n"
-    );
+    println!("\nNext: GodTerm opens the slots. Follow each CLI's native login steps.");
+    if accounts
+        .iter()
+        .any(|a| a.harness() == crate::harness::Harness::Claude)
+    {
+        println!("For Claude, pick \"Claude account with subscription\", open the browser link,");
+        println!("sign in to that account and paste the code back.\n");
+    }
     Ok(Config { accounts, ..base })
 }
 
@@ -252,8 +259,24 @@ pub fn doctor() -> Result<()> {
         r.warn("accounts", "none configured", "run godterm setup");
     }
 
-    println!("\nAccounts (each has its own CLAUDE_CONFIG_DIR and keychain item)");
+    println!("\nAccounts");
     for a in &cfg.accounts {
+        let h = a.harness();
+        if h != crate::harness::Harness::Claude {
+            let bin = cfg.harness_bin(h);
+            match which(&bin) {
+                Some(p) => r.ok(
+                    &format!("[{}] {}", a.name, h.label()),
+                    &format!("{}; login managed by the CLI", p.display()),
+                ),
+                None => r.warn(
+                    &format!("[{}] {}", a.name, h.label()),
+                    &format!("{bin} not found"),
+                    &format!("install {} or set {}", h.label(), h.bin_key()),
+                ),
+            }
+            continue;
+        }
         let dir = a.config_dir();
         let svc = creds::keychain_service(&dir.to_string_lossy());
         let mut q = Command::new("security");

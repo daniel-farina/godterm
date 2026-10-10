@@ -2,6 +2,7 @@
 //! program compiled once per test run (instead of a `#!/bin/sh` script),
 //! copied next to a `.cfg` file that says what this copy does:
 //!   args_to=PATH      append the arguments as one line
+//!   env_to=PATH       record only home/session marker vars for launch tests
 //!   stdin_to=PATH     copy stdin there as it arrives (stdin_append=1 appends)
 //!   sleep_s=N         then stay alive N seconds
 //!   exit_now=1        exit at once (like /usr/bin/true)
@@ -80,6 +81,11 @@ fn main() {
         }
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(p) = get("env_to") {
+        let keys = ["CODEX_HOME", "CODEX_THREAD_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CLAUDE_CONFIG_DIR", "GROK_HOME", "HOME"];
+        let values: Vec<String> = keys.iter().filter_map(|k| std::env::var(k).ok().map(|v| format!("{k}={v}"))).collect();
+        std::fs::write(p, values.join("\n")).unwrap();
+    }
     if get("fake_admin").is_some() && matches!(args.first().map(String::as_str), Some("mcp") | Some("plugin")) {
         std::process::exit(fake_admin(&args, &get));
     }

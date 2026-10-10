@@ -32,7 +32,7 @@ impl App {
                 if low == "all" || low == "every" || low == "everything" {
                     return Ok((0..n).collect());
                 }
-                for h in [Harness::Claude, Harness::Grok] {
+                for &h in crate::harness::ALL {
                     if low == h.name() {
                         return Ok((0..n)
                             .filter(|&a| self.cfg.accounts[a].harness() == h)
