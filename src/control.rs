@@ -4649,6 +4649,8 @@ impl App {
         let now = chrono::Utc::now();
         json!({
             "modes": self.modes_line().trim(),
+            // What GodTerm itself said or showed the user (not the assistant).
+            "told_user": self.told_json(),
             "pending_answers": self.pending_answers_json(),
             "providers": self.providers_json(),
             "remote_control": self.remote_json(),

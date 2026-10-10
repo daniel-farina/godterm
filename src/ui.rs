@@ -5507,11 +5507,17 @@ mod tests {
         // A background tab asks: plain "yes" approves it at once.
         app.panes[1].tabs[0].activity = Activity::Permission;
         heard(&mut app, "yes");
-        assert_eq!(app.voice.action.as_deref(), Some("approved Account 2"));
+        assert_eq!(
+            app.voice.action.as_deref(),
+            Some("approved a fresh tab on Account 2")
+        );
         assert_eq!(app.assistant_turn, 1, "no assistant turn");
         app.panes[1].tabs[0].activity = Activity::Permission;
         heard(&mut app, "No.");
-        assert_eq!(app.voice.action.as_deref(), Some("denied Account 2"));
+        assert_eq!(
+            app.voice.action.as_deref(),
+            Some("denied a fresh tab on Account 2")
+        );
         // Two waiting: which one is for the assistant to sort out.
         app.panes[0].tabs[0].activity = Activity::Permission;
         app.panes[1].tabs[0].activity = Activity::Permission;
@@ -5546,7 +5552,10 @@ mod tests {
         app.cfg.voice.instant_commands = true;
         app.cfg.voice.instant = vec!["yep=approve".into()];
         heard(&mut app, "yep");
-        assert_eq!(app.voice.action.as_deref(), Some("approved Account 1"));
+        assert_eq!(
+            app.voice.action.as_deref(),
+            Some("approved a fresh tab on Account 1")
+        );
         // Usage aware hint: account 1 has 77% left, account 2 has 8%.
         app.focus = 1;
         assert!(
@@ -5700,7 +5709,7 @@ mod tests {
         // The parsed option is used, by number.
         assert_eq!(
             app.answer_tab(1, 0, crate::prompt::Choice::Approve),
-            "approved Account 2 (Yes)"
+            "approved a fresh tab on Account 2 (Yes)"
         );
         // What each waiting tab wants is in the assistant's state.
         app.panes[1].tabs[0].activity = Activity::Permission;
@@ -6237,7 +6246,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .0
-            .starts_with("approved Account 2"));
+            .starts_with("approved a fresh tab on Account 2"));
 
         // Approvals popup with inline buttons.
         click_on(&mut app, &mut term, &UiAction::Key('y'));
@@ -9112,10 +9121,13 @@ mod tests {
         assert_eq!(app.voice.action.as_deref(), Some("(paused, ignored)"));
         assert!(app.paused());
         // Announcements wait.
+        app.panes[1].tabs[0].activity = crate::pane::Activity::Permission;
         app.attention.push(crate::app::Attention {
             slot: 1,
             tab: 0,
             what: crate::pane::Activity::Permission,
+            uid: app.panes[1].tabs[0].uid,
+            from: crate::pane::Activity::Working,
         });
         app.voice_tick();
         assert_eq!(app.voice.paused.as_ref().unwrap().queued.len(), 1);
@@ -10549,7 +10561,10 @@ mod tests {
         assert_eq!(app.voice.action.as_deref(), Some("(too short, ignored)"));
         app.panes[0].tabs[0].activity = Activity::Permission;
         heard(&mut app, "yes", UttStats { ms: 400, ..long });
-        assert_eq!(app.voice.action.as_deref(), Some("approved Account 1"));
+        assert_eq!(
+            app.voice.action.as_deref(),
+            Some("approved a fresh tab on Account 1")
+        );
         // The chip is in the status bar; it opens the voice menu.
         let mut term = Terminal::new(TestBackend::new(200, 40)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();

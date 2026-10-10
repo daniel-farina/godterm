@@ -149,6 +149,7 @@ impl App {
     }
 
     fn toast(&mut self, msg: String) {
+        self.told_record("toast", &msg, crate::told::Channel::Flash, false);
         self.undo_toast = Some((Instant::now(), msg));
     }
 
@@ -165,6 +166,12 @@ impl App {
             .get(t)
             .map(|x| x.name())
             .unwrap_or_default();
+        let who = self
+            .panes
+            .get(s)
+            .and_then(|p| p.tabs.get(t))
+            .map(|x| self.spoken_tab_name(x.uid))
+            .unwrap_or_default();
         self.tab_event(s, t, "close", Some(by), None);
         let kept = self.remember_closed(s, t, g);
         let fallback = self.panes[s]
@@ -176,7 +183,7 @@ impl App {
         if kept {
             self.toast(format!("Closed '{label}'"));
         } else {
-            self.flash(format!("Closed tab {} of pane {}", t + 1, s + 1));
+            self.flash(format!("Closed {who}"));
         }
     }
 

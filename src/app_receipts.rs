@@ -190,10 +190,7 @@ impl App {
                 continue;
             }
             let uid = self.current_uid(d.uid);
-            let name = self
-                .find_tab(uid)
-                .map(|(s, t)| self.panes[s].tabs[t].name())
-                .unwrap_or_else(|| tab_id(uid));
+            let name = self.spoken_tab_name(uid);
             if to == Receipt::Received {
                 d.rc.busy = true;
             }
@@ -217,7 +214,20 @@ impl App {
             self.state_dirty = true;
         }
         for c in changes {
-            self.announce_receipt(c);
+            let src = crate::told::Source {
+                tab: Some(c.uid),
+                account: self
+                    .find_tab(c.uid)
+                    .and_then(|(s, _)| self.panes[s].account),
+                fact: Some(format!(
+                    "request #{} to {} {} to {}",
+                    c.id,
+                    tab_id(c.uid),
+                    word(&c.from),
+                    word(&c.to)
+                )),
+            };
+            self.told_from("delivery receipt", src, |app| app.announce_receipt(c));
         }
     }
 
@@ -546,13 +556,13 @@ impl App {
             .find(|d| d.id == id)
             .map(|d| (self.current_uid(d.uid), d.text.clone()))
             .ok_or(format!("there is no request #{id} any more"))?;
-        let Some((s, t)) = self.find_tab(uid) else {
+        if self.find_tab(uid).is_none() {
             return Err(format!(
                 "{} is closed; send the request to another tab with send_prompt",
                 tab_id(uid)
             ));
-        };
-        let name = self.panes[s].tabs[t].name();
+        }
+        let name = self.spoken_tab_name(uid);
         let new = self.deliver_request(uid, &text);
         if let Some(d) = self.deliveries.iter_mut().find(|d| d.id == id) {
             d.rc.resent_as = Some(new);
@@ -661,6 +671,10 @@ impl App {
         self.assistant.unsaid = None;
         self.assistant.muted = false;
         self.assistant.spoken.push(say.clone());
+        self.told_record("resend", &say, crate::told::Channel::Panel, false);
+        if self.will_speak_assistant() {
+            self.told_record("resend", &say, crate::told::Channel::Spoken, false);
+        }
         self.speak_assistant(&say);
         true
     }
@@ -749,7 +763,7 @@ impl App {
                         tab_id(sd.tab)
                     ));
                 }
-                (Some((s, t)), _) => {
+                (Some(_), _) => {
                     crate::log::info(&format!(
                         "receipt: #{} {} was {} at the restart; queued again",
                         sd.id,
@@ -759,7 +773,7 @@ impl App {
                     if sd.notify {
                         requeued.push(format!(
                             "{} ('{}')",
-                            self.panes[s].tabs[t].name(),
+                            self.spoken_tab_name(sd.tab),
                             first_words(&sd.text)
                         ));
                     }

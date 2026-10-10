@@ -244,7 +244,7 @@ impl App {
         if let (Some(n), Some(v), false) = (note, v, dev) {
             if self.update.toasted.as_deref() != Some(v.as_str()) {
                 self.update.toasted = Some(v);
-                self.flash(n);
+                self.tell_user("update notice", &n, crate::told::Channel::Flash);
             }
         }
         if self.update.after_turn && !self.assistant.busy {

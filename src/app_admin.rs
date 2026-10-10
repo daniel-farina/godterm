@@ -155,6 +155,7 @@ impl App {
     pub fn announce_progress(&mut self, text: &str) {
         crate::log::info(&format!("admin: progress: {text}"));
         self.admin.said.push(text.to_string());
+        self.told_record("progress", text, crate::told::Channel::Panel, false);
         self.assistant.log.push(Entry {
             who: Who::Note,
             text: format!("▸ {text}"),
@@ -177,6 +178,7 @@ impl App {
         if self.admin.history.len() > 50 {
             self.admin.history.remove(0);
         }
+        self.told_record("admin", text, crate::told::Channel::Panel, false);
         self.assistant.log.push(Entry {
             who: Who::Note,
             text: format!("Admin: {text}"),

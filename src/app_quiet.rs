@@ -30,6 +30,8 @@ pub struct Update {
     pub voice: Voice,
     /// Said as soon as the user's sentence ends, quiet or not.
     pub urgent: bool,
+    /// Where it came from (told.rs), recorded when it is said.
+    pub src: Option<(String, crate::told::Source)>,
 }
 
 #[derive(Debug, Default)]
@@ -114,10 +116,12 @@ impl App {
             "quiet: queued{}: {text}",
             if urgent { " (urgent)" } else { "" }
         ));
+        let src = self.told.borrow().ctx.clone();
         self.assistant.quiet.queue.push(Update {
             text: text.to_string(),
             voice,
             urgent,
+            src,
         });
         self.quiet_tick();
     }
@@ -178,20 +182,46 @@ impl App {
             let text = texts.join(" ");
             crate::log::info(&format!("quiet: saying: {text}"));
             self.assistant.quiet.said.push(text.clone());
+            // Recorded one by one, each with its own source (told.rs).
+            let record = |app: &App, how: &str, ch: crate::told::Channel| {
+                for u in us.iter().filter(|u| u.voice == voice) {
+                    let mut log = app.told.borrow_mut();
+                    let prev = std::mem::replace(&mut log.ctx, u.src.clone());
+                    log.record(how, &u.text, ch, false);
+                    log.ctx = prev;
+                }
+            };
             match voice {
-                Voice::Announce => self.speak_as(crate::voice::tts::Kind::Announce, &text),
+                Voice::Announce => {
+                    let vc = &self.cfg.voice;
+                    if !vc.speaker_muted && vc.announce && self.speaker_on() {
+                        record(self, "announcement", crate::told::Channel::Spoken);
+                    }
+                    if let Some(v) = &self.voice.engine {
+                        if !vc.speaker_muted && vc.announce {
+                            v.say(&text);
+                        }
+                    }
+                }
                 Voice::Reply => {
+                    record(self, "update", crate::told::Channel::Panel);
                     self.assistant.log.push(Entry {
                         who: Who::Reply,
                         text: text.clone(),
                     });
                     self.assistant.spoken.push(text.clone());
                     if self.tts_on() && !self.cfg.voice.speaker_muted {
+                        if self.will_speak_assistant() {
+                            record(self, "update", crate::told::Channel::Spoken);
+                        }
                         self.speak_assistant(&text);
                     }
                 }
                 Voice::Progress => {
                     if !self.assistant.muted && self.tts_on() && self.reply_spoken() {
+                        if self.will_speak_assistant() {
+                            record(self, "progress", crate::told::Channel::Spoken);
+                        }
                         self.speak_assistant(&text);
                     }
                 }

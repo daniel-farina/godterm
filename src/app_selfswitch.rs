@@ -208,16 +208,32 @@ impl App {
     /// asked, or once the user's sentence ends when it cannot wait.
     fn ss_say(&mut self, msg: &str, notify: bool, how: SayHow) {
         crate::log::info(&format!("assistant account: {msg}"));
-        self.note(msg.to_string());
-        self.flash(msg.to_string());
-        match how {
-            SayHow::Now => self.speak_as(crate::voice::tts::Kind::Announce, msg),
-            SayHow::Quiet => self.say_update(crate::app_quiet::Voice::Announce, msg),
-            SayHow::Urgent => self.say_urgent(crate::app_quiet::Voice::Announce, msg),
-        }
-        if notify && self.cfg.notifications {
-            crate::notify::post("GodTerm assistant", msg);
-        }
+        let src = crate::told::Source {
+            account: self.brain_account(),
+            fact: self.brain_account().and_then(|a| {
+                self.self_binding(a).map(|k| {
+                    format!(
+                        "you run on a{}: {:.0}% left ({})",
+                        a + 1,
+                        k.left_pct.floor(),
+                        k.long
+                    )
+                })
+            }),
+            tab: None,
+        };
+        self.told_from("assistant account", src, |app| {
+            app.note(msg.to_string());
+            app.flash(msg.to_string());
+            match how {
+                SayHow::Now => app.speak_as(crate::voice::tts::Kind::Announce, msg),
+                SayHow::Quiet => app.say_update(crate::app_quiet::Voice::Announce, msg),
+                SayHow::Urgent => app.say_urgent(crate::app_quiet::Voice::Announce, msg),
+            }
+            if notify && app.cfg.notifications {
+                app.notify_user("GodTerm assistant", msg);
+            }
+        });
     }
 
     /// Every tick: warn, ask, move, or say that every account is out.

@@ -185,10 +185,7 @@ pub fn find_answer(
 impl App {
     /// Watch for the answer to `question`, just sent to tab `uid`.
     pub fn register_follow_up(&mut self, uid: u64, question: &str) {
-        let tab = self
-            .find_tab(uid)
-            .map(|(s, t)| self.panes[s].tabs[t].name())
-            .unwrap_or_else(|| format!("t{uid}"));
+        let tab = self.spoken_tab_name(uid);
         // Several questions to one tab are all followed (a busy tab may
         // answer them in one turn); the same question again replaces it.
         let key = key_of(question);
@@ -333,6 +330,10 @@ impl App {
         self.assistant.unsaid = None;
         self.assistant.muted = false;
         self.assistant.spoken.push(say.clone());
+        self.told_record("follow-up", &say, crate::told::Channel::Panel, false);
+        if self.will_speak_assistant() {
+            self.told_record("follow-up", &say, crate::told::Channel::Spoken, false);
+        }
         self.speak_assistant(&say);
         true
     }
@@ -344,7 +345,7 @@ impl App {
         let wait = Duration::from_secs(self.cfg.assistant.answer_wait_min.max(1) * 60);
         let cap = HARD_CAP.max(wait);
         let mut fus = std::mem::take(&mut self.assistant.follow_ups);
-        let mut notices: Vec<String> = vec![];
+        let mut notices: Vec<(u64, &str, String)> = vec![];
         for f in &mut fus {
             if f.state != FuState::Waiting {
                 continue;
@@ -356,9 +357,10 @@ impl App {
                 f.state = FuState::Gone;
                 f.ended = Some(Instant::now());
                 crate::log::info(&format!("follow-up: t{uid} closed before it answered"));
-                notices.push(format!(
-                    "{} was closed before it answered your question.",
-                    f.tab
+                notices.push((
+                    uid,
+                    "the tab was closed before it answered",
+                    format!("{} was closed before it answered your question.", f.tab),
                 ));
                 continue;
             };
@@ -394,20 +396,24 @@ impl App {
                             "follow-up: t{uid} still working after {} min; stopped waiting",
                             f.sent.elapsed().as_secs() / 60
                         ));
-                        notices.push(format!(
+                        notices.push((uid, "still working past the wait cap", format!(
                             "{} is still working after {} hours, so I stopped waiting for its answer; read_tab has its last reply.",
                             f.tab,
                             cap.as_secs() / 3600
-                        ));
+                        )));
                     } else if past && !f.told_working {
                         // Busy on it: keep waiting, and say so once.
                         f.told_working = true;
                         crate::log::info(&format!(
                             "follow-up: t{uid} still working past the wait; waiting on"
                         ));
-                        notices.push(format!(
+                        notices.push((
+                            uid,
+                            "still working past the wait",
+                            format!(
                             "{} is still working on your question; I'll tell you when it's done.",
                             f.tab
+                        ),
                         ));
                     }
                     continue;
@@ -418,7 +424,7 @@ impl App {
                         f.state = FuState::TimedOut;
                         f.ended = Some(Instant::now());
                         crate::log::info(&format!("follow-up: t{uid} idle with no answer"));
-                        notices.push(not_found);
+                        notices.push((uid, "idle, no answer found in its transcript", not_found));
                     }
                     continue;
                 }
@@ -464,15 +470,22 @@ impl App {
                     crate::log::info(&format!(
                         "follow-up: t{uid} ready but no answer found; telling the user"
                     ));
-                    notices.push(not_found);
+                    notices.push((uid, "ready, no answer found in its transcript", not_found));
                 }
                 None => {}
             }
         }
         fus.retain(|f| f.ended.is_none_or(|e| e.elapsed() < KEEP_DONE));
         self.assistant.follow_ups = fus;
-        for n in notices {
-            self.say_update(crate::app_quiet::Voice::Reply, &n);
+        for (uid, fact, n) in notices {
+            let src = crate::told::Source {
+                tab: Some(uid),
+                account: self.find_tab(uid).and_then(|(s, _)| self.panes[s].account),
+                fact: Some(format!("{}: {fact}", crate::control::tab_id(uid))),
+            };
+            self.told_from("follow-up", src, |app| {
+                app.say_update(crate::app_quiet::Voice::Reply, &n)
+            });
         }
         self.report_answers();
     }

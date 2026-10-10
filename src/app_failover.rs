@@ -207,7 +207,7 @@ impl App {
         };
         self.failover.retain(|x| x.uid != o.uid);
         let (s, t) = self.find_tab(o.uid)?;
-        let name = self.panes[s].tabs[t].name();
+        let name = self.spoken_tab_name(o.uid);
         let to = self.cfg.accounts[o.to].display().to_string();
         if matches!(self.panes[s].tabs[t].activity, Activity::Working) {
             // Busy: it moves once its turn ends.
@@ -226,11 +226,24 @@ impl App {
             format!("Moving {name} to {to}.")
         };
         crate::log::info(&format!("failover: t{} to {to} (auto {auto})", o.uid));
-        self.flash(msg.clone());
-        if auto {
-            self.note(msg.clone());
-            self.say_update(crate::app_quiet::Voice::Announce, &msg);
-        }
+        use crate::told::Channel;
+        let src = crate::told::Source {
+            tab: Some(o.uid),
+            account: Some(o.from),
+            fact: Some(format!(
+                "{} move from a{} to a{}: {}",
+                crate::control::tab_id(o.uid),
+                o.from + 1,
+                o.to + 1,
+                o.why
+            )),
+        };
+        let chans: &[Channel] = if auto {
+            &[Channel::Flash, Channel::Panel, Channel::Spoken]
+        } else {
+            &[Channel::Flash]
+        };
+        self.tell_user_from("failover", &msg, chans, src);
         Some(msg)
     }
 

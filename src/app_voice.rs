@@ -759,6 +759,7 @@ impl App {
             "Hi, this is {}. Approved, account two is next.",
             who.replace('_', " ")
         );
+        self.told_record("voice preview", &text, crate::told::Channel::Spoken, true);
         match &self.voice.engine {
             Some(v) if v.tts => v.say(&text),
             _ => {
@@ -1099,16 +1100,10 @@ impl App {
         }
     }
 
+    /// How a tab is named to the user: by its project or task, never
+    /// only an account and a tab number (tab_names.rs).
     fn describe(&self, slot: usize, tab: usize) -> String {
-        let name = self.panes[slot]
-            .account
-            .map(|a| self.cfg.accounts[a].display().to_string())
-            .unwrap_or_else(|| format!("pane {}", slot + 1));
-        if self.panes[slot].tabs.len() > 1 {
-            format!("{name} tab {}", spell(tab + 1))
-        } else {
-            name
-        }
+        self.spoken_tab_name(self.panes[slot].tabs[tab].uid)
     }
 
     /// Every tab waiting for approval, longest waiting first.
@@ -1229,6 +1224,14 @@ impl App {
         if !on {
             return;
         }
+        // Heard by the user: recorded for the assistant (told.rs).
+        if self.speaker_on() {
+            let what = match kind {
+                Kind::Confirm => "confirmation",
+                Kind::Announce => "announcement",
+            };
+            self.told_record(what, text, crate::told::Channel::Spoken, false);
+        }
         if let Some(v) = &self.voice.engine {
             v.say(text);
         }
@@ -1295,35 +1298,57 @@ impl App {
         let every = Duration::from_secs(self.cfg.voice.announce_every_s.max(3) as u64);
         self.voice.spoken.set_per_key(every * 3);
         for a in items {
+            // The tab as it is now: gone, or no longer waiting, means the
+            // notice is stale and nothing is said.
+            let Some((slot, tab)) = self.find_tab(a.uid) else {
+                continue;
+            };
+            let now = self.panes[slot].tabs[tab].activity;
             let need = a.what == Activity::Permission;
-            let who = self.describe(a.slot, a.tab);
+            if need && now != Activity::Permission {
+                continue;
+            }
+            let who = self.describe(slot, tab);
             let msg = if need {
                 format!("{who} needs approval")
             } else {
                 format!("{who} finished")
             };
-            self.flash(msg.clone());
-            crate::log::info(&format!("attention: {msg}"));
-            let key = (a.slot, a.tab, need);
-            // Desktop notification when the terminal is not in front (or
-            // when it never reports focus at all).
-            if self.cfg.notifications
+            let tid = crate::control::tab_id(a.uid);
+            let src = crate::told::Source {
+                tab: Some(a.uid),
+                account: self.panes[slot].account,
+                fact: Some(format!(
+                    "{tid} state {} to {} (now {})",
+                    a.from.label(),
+                    a.what.label(),
+                    now.label()
+                )),
+            };
+            crate::log::info(&format!("attention: {msg} ({tid})"));
+            let key = (slot, tab, need);
+            let notify = self.cfg.notifications
                 && self.voice.term_focused != Some(true)
-                && self.voice.notified.allow(key)
-            {
-                crate::notify::post("godterm", &msg);
-            }
-            // Paused: held, and summarized on resume.
-            if self.cfg.voice.announce && self.hold_announcement(&msg) {
-                continue;
-            }
-            if !self.cfg.voice.announce || self.voice.engine.is_none() || self.voice.asleep {
-                continue;
-            }
-            // Said at the next quiet moment, never over the user.
-            if self.voice.spoken.allow(key) {
-                self.say_update(crate::app_quiet::Voice::Announce, &msg);
-            }
+                && self.voice.notified.allow(key);
+            self.told_from("attention", src, |app| {
+                app.flash(msg.clone());
+                // Desktop notification when the terminal is not in front
+                // (or when it never reports focus at all).
+                if notify {
+                    app.notify_user("godterm", &msg);
+                }
+                // Paused: held, and summarized on resume.
+                if app.cfg.voice.announce && app.hold_announcement(&msg) {
+                    return;
+                }
+                if !app.cfg.voice.announce || app.voice.engine.is_none() || app.voice.asleep {
+                    return;
+                }
+                // Said at the next quiet moment, never over the user.
+                if app.voice.spoken.allow(key) {
+                    app.say_update(crate::app_quiet::Voice::Announce, &msg);
+                }
+            });
         }
     }
 

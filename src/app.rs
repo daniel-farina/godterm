@@ -382,6 +382,25 @@ pub struct Attention {
     pub slot: usize,
     pub tab: usize,
     pub what: Activity,
+    /// The tab's uid, and the transition seen ("working to ready").
+    pub uid: u64,
+    pub from: Activity,
+}
+
+/// A "finished" notice needs a turn that really ran: Working held this
+/// long (a one tick flicker of the spinner is not a turn).
+pub const FINISHED_MIN_WORK: Duration = Duration::from_millis(1500);
+
+/// Whether a tab's activity change is one the user is told about: it
+/// started waiting for approval, or a real turn ended (Working, held,
+/// to Ready). Never from Starting (a launch or a restore), Idle or
+/// Exited.
+pub fn attention_worthy(old: Activity, new: Activity, held: Duration) -> bool {
+    match new {
+        Activity::Permission => matches!(old, Activity::Working | Activity::Ready),
+        Activity::Ready => old == Activity::Working && held >= FINISHED_MIN_WORK,
+        _ => false,
+    }
 }
 
 pub struct App {
@@ -469,6 +488,8 @@ pub struct App {
     pub sel_overview: usize,
     /// Background tabs that just started waiting or finished.
     pub attention: Vec<Attention>,
+    /// Everything GodTerm itself said or showed the user (told.rs).
+    pub told: crate::told::Shared,
     /// Runtime email toggles (persisted in state.json).
     pub rt_show_email: Option<bool>,
     /// Memory saver toggled at runtime (persisted), and its last tick.
@@ -700,6 +721,7 @@ impl App {
             last_tab_move: None,
             sel_overview: 0,
             attention: vec![],
+            told: Default::default(),
             rt_show_email: None,
             rt_mem_saver: None,
             rt_voice: None,
@@ -1139,8 +1161,17 @@ impl App {
                 .is_some_and(|t| t.elapsed() < Duration::from_millis(100))
     }
 
+    /// A status-bar message, recorded for the assistant (told.rs); pure
+    /// UI hints are recorded low and kept out of its context.
     pub fn flash(&mut self, msg: impl Into<String>) {
-        self.flash = Some((msg.into(), Instant::now()));
+        let msg = msg.into();
+        self.told_record(
+            "flash",
+            &msg,
+            crate::told::Channel::Flash,
+            crate::told::is_ui_hint(&msg),
+        );
+        self.flash = Some((msg, Instant::now()));
     }
 
     pub fn account_cfg(&self, idx: usize) -> &AccountCfg {
@@ -1692,16 +1723,21 @@ impl App {
             let active = slot.active;
             for (ti, t) in slot.tabs.iter_mut().enumerate() {
                 t.tick();
+                let held = t.activity_since.elapsed();
                 if let Some((old, new)) = t.update_activity() {
-                    // Waiting for approval, or finished a turn.
-                    let finished = old == Activity::Working && new == Activity::Ready;
-                    if new == Activity::Permission || finished {
+                    // Waiting for approval, or finished a turn: only from
+                    // the tab's real transition (see attention_worthy).
+                    if attention_worthy(old, new, held) {
                         let visible = si == self.focus && ti == active && self.view == View::Grid;
-                        if !visible {
+                        let uid = t.uid;
+                        let dup = self.attention.iter().any(|a| a.uid == uid && a.what == new);
+                        if !visible && !dup {
                             self.attention.push(Attention {
                                 slot: si,
                                 tab: ti,
                                 what: new,
+                                uid,
+                                from: old,
                             });
                         }
                     }
@@ -1895,6 +1931,7 @@ impl App {
                 for si in 0..self.panes.len() {
                     if let Some(ti) = self.panes[si].find_uid(uid) {
                         let auto = self.cfg.auto_restart;
+                        let who = self.spoken_tab_name(uid);
                         let t = &mut self.panes[si].tabs[ti];
                         let was_login = t.kind == LaunchKind::Login;
                         let was_running = t.is_running();
@@ -1923,9 +1960,11 @@ impl App {
                             let t = &mut self.panes[si].tabs[ti];
                             if auto && crashes <= 3 {
                                 t.restart_at = Some(Instant::now() + Duration::from_secs(2));
-                                self.flash(format!("{msg}; restarting"));
+                                self.flash(format!("{who} exited with code {code}; restarting"));
                             } else {
-                                self.flash(format!("{msg}; Enter restarts it"));
+                                self.flash(format!(
+                                    "{who} exited with code {code}; Enter restarts it"
+                                ));
                             }
                         }
                         if was_login {

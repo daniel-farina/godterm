@@ -263,7 +263,7 @@ impl App {
                         ))
                         .unwrap_or_default()
                 ));
-                names.push(tab.name());
+                names.push(tab.uid);
                 self.cont.waiting.push(Waiting {
                     uid: tab.uid,
                     mark: m.clone(),
@@ -273,15 +273,29 @@ impl App {
             }
         }
         if !names.is_empty() {
-            self.cont.note = Some((
-                format!(
-                    "Restarted; continued {} working tab{}: {}",
-                    names.len(),
-                    if names.len() == 1 { "" } else { "s" },
-                    names.join(", ")
-                ),
-                Instant::now(),
-            ));
+            let uids = names;
+            let names: Vec<String> = uids.iter().map(|&u| self.spoken_tab_name(u)).collect();
+            let text = format!(
+                "Restarted; continued {} working tab{}: {}",
+                names.len(),
+                if names.len() == 1 { "" } else { "s" },
+                names.join(", ")
+            );
+            let src = crate::told::Source {
+                tab: uids.first().copied().filter(|_| uids.len() == 1),
+                account: None,
+                fact: Some(format!(
+                    "working before the restart: {}",
+                    uids.iter()
+                        .map(|&u| tab_id(u))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            };
+            self.told_from("restart", src, |app| {
+                app.told_record("restart", &text, crate::told::Channel::Panel, false)
+            });
+            self.cont.note = Some((text, Instant::now()));
         }
     }
 

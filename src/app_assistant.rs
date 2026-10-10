@@ -264,6 +264,7 @@ impl App {
 
     pub(crate) fn note(&mut self, text: impl Into<String>) {
         let text = text.into();
+        self.told_record("panel note", &text, crate::told::Channel::Panel, false);
         if let Some(c) = &self.assistant.conv {
             c.write("note", serde_json::json!({"text": text}));
         }
@@ -563,6 +564,7 @@ impl App {
         s.push_str(&self.failover_state_line());
         s.push_str(&self.setup_state_line());
         s.push_str(&self.remote_state_line());
+        s.push_str(&self.told_state_lines());
         // Listening is GodTerm's business: a message here means it is on.
         s.push_str(&match self.pause_left() {
             Some(left) => format!("listening_paused: {left} s left\n"),
@@ -865,10 +867,16 @@ impl App {
             self.assistant.sent.pop_front();
         }
         let sent = self.assistant.brain.as_mut().map(|b| b.send(&msg));
-        if let Some(Err(e)) = sent {
-            self.assistant.busy = false;
-            self.assistant.brain = None;
-            self.note(format!("Could not send: {e}"));
+        match sent {
+            Some(Err(e)) => {
+                self.assistant.busy = false;
+                self.assistant.brain = None;
+                self.note(format!("Could not send: {e}"));
+            }
+            // What GodTerm told the user is in this state: next turn's
+            // told_user starts after it.
+            Some(Ok(_)) => self.told_turn_sent(),
+            None => {}
         }
         if system.is_some() {
             crate::log::info(&format!(

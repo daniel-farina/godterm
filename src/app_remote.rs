@@ -468,6 +468,7 @@ impl App {
                     r.name
                 )
             };
+            self.told_record("remote control", &msg, crate::told::Channel::Panel, false);
             self.assistant.log.push(Entry {
                 who: Who::Note,
                 text: msg.clone(),

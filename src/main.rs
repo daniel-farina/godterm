@@ -141,6 +141,9 @@ mod syscheck;
 mod sysprompt;
 mod tab_groups;
 mod tab_history;
+mod tab_names;
+#[cfg(test)]
+mod tab_names_tests;
 #[cfg(test)]
 mod tabgroup_tests;
 mod takeover;
@@ -150,6 +153,9 @@ mod test_guard;
 #[cfg(test)]
 mod test_stub;
 mod theme;
+mod told;
+#[cfg(test)]
+mod told_tests;
 mod trust;
 mod tty_out;
 mod ui;
