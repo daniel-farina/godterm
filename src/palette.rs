@@ -17,6 +17,7 @@ pub enum Action {
     FreeNow,
     AssistantNew,
     OpenMic,
+    HeadphoneTap,
     ShowHidden,
     VoicePreview,
     StopTalking,
@@ -55,6 +56,10 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("voice: train the wake word", Action::VoiceTrain),
     ("voice: preview the talk back voice", Action::VoicePreview),
     ("voice: stop talking", Action::StopTalking),
+    (
+        "voice: headphone tap on or off (play/pause turns the mic on or off)",
+        Action::HeadphoneTap,
+    ),
     ("approvals queue", Action::Key('y')),
     ("loops: scheduled prompts in running tabs", Action::Key('@')),
     ("stop all loops", Action::StopAllLoops),

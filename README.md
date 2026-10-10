@@ -547,6 +547,23 @@ an approval when several tabs are waiting. Add synonyms as
 or sent; talk back still plays. Only a click or `Ctrl-a X` unmutes, back
 to the voice mode from before. `voice.mute_on_start` starts muted.
 
+**Headphone tap.** With `voice.headphone_tap` on (Settings > Voice, the
+palette, or say "turn on headphone tap"), the play/pause button on your
+headphones (an AirPods or Bluetooth headset tap or double tap, the wired
+EarPods button) or the keyboard's play/pause key turns the mic on or off.
+A tap on opens the mic (from muted, paused, asleep or voice off) and the
+next thing you say needs no wake word; a tap off closes it (`● MUTED`).
+Neither cuts off what is being said: a reply goes on to its end. Pause
+only ever turns the mic off, so taking headphones off never opens it.
+While the setting is on GodTerm holds the system's Now Playing slot, so
+the press does not reach Music or Spotify; turning it off, or quitting,
+gives it back. No audio is played to hold it. Presses are logged to
+`~/.godterm/media-keys.log`; `godterm tap-test` shows them without the
+app. If the headset's own mic is the input, macOS puts it in call mode
+and most headsets stop sending taps until capture ends: the Mac's mic
+keeps them working. macOS only for now (Linux MPRIS and Windows media
+controls are planned).
+
 **Noise and background talk.** Without a wake word (open mic, or the
 follow up window after a reply) an utterance is dropped when it is one of
 whisper's stock hallucinations or a lone filler word ("Thank you.",
@@ -1046,10 +1063,52 @@ launch, through its own MCP config; any other program that runs
 `godterm mcp` (or talks to the socket) can only look (`get_state`,
 `sessions`, `read_tab`, ...) unless godterm was started with
 `--control-rw`. Tabs never see GodTerm's home or tokens in their
-environment. It also runs without saving its own
-session (`--no-session-persistence`: its chatter would otherwise land in
-the account's projects folder and clutter Sessions). One process is kept
-for the whole conversation.
+environment. One process is kept for the whole conversation. With
+`assistant.resume` (on by default) it keeps its own claude session
+(`--session-id`, then `--resume` on every start: launch, crash, update, a
+brain that died), so the chat continues where it was; New, a session
+over 3 MB, another account or provider start a fresh one with the memory
+summary. The id is in `~/.godterm/assistant/session.json`; these
+sessions stay out of Sessions. Off, it runs with
+`--no-session-persistence` as before.
+
+**Supervisor.** `godterm supervisor install` adds a launchd user agent
+(`~/Library/LaunchAgents/com.godterm.supervisor.plist`) that checks every
+20 s: when GodTerm is not running and its last exit was not a quit (a
+crash, kill, panic or a closed window), it opens GodTerm.app again (or
+the command in `supervisor.launch`); every tab comes back at once, the
+assistant resumes its session and Remote Control returns when kept on. A
+GodTerm whose control socket has not answered for 2 minutes is stopped
+and opened again (`supervisor.hang_restart`). At most 3 relaunches in 10
+minutes, then a notification. `godterm supervisor status` shows the
+state, `uninstall` removes it, `supervisor.enabled = false` pauses it.
+
+**Remote Control.** "Turn on remote control" (one yes) lets claude.ai/code
+and the Claude app talk to the assistant, which drives every tab with its
+tools. The confirmed call waits for claude's real answer: the session link
+on success, the reason on failure. A failure is retried once, then once
+more after restarting the assistant's claude (its session kept).
+`assistant.remote_control = true` ("keep remote control on"; risky, so
+the assistant asks twice) turns it on whenever the assistant starts and
+again when the bridge drops. The panel title shows **Remote** while it is
+connected (a click opens and copies the link); Admin actions lists the
+link and the state. Claude only: on Grok the setting rests.
+
+**Its own account.** The assistant watches the account it runs on. Under
+`assistant.switch_warn_pct` (15) left on the binding limit (5 hour or
+weekly) it says so once per window, spoken and flashed, with where it
+would move. At `assistant.switch_at_pct` (5) or less, or when a request
+fails on a usage or rate limit, `assistant.auto_switch` (auto by
+default; ask gives one Yes/No; off) moves it between requests to the
+account of the same provider with the most left, never one out on either
+limit, logged out or erroring. The conversation comes along: its claude
+session is copied into the new account's config dir and resumed by the
+same id (a failed resume starts fresh with the memory and a fuller
+summary), the account is saved to the config, a request the limit
+refused is sent again, and Remote Control turns on again there, its link
+said, flashed, notified and in `get_state`. With no account left it says
+when the soonest limit resets and tries again every few minutes. "Move
+yourself to account two" takes the same path.
 
 **History.** Every conversation is saved to
 `~/.godterm/assistant/conversations/<date>-<id>.jsonl`: what you said

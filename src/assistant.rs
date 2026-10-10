@@ -32,6 +32,9 @@ pub enum BrainEvent {
     /// --replay-user-messages; one GodTerm did not send came through
     /// Remote Control).
     UserText(String),
+    /// Remote Control's link to claude.ai: "connected", "reconnecting",
+    /// "disconnected", ...
+    Bridge(String),
 }
 
 pub struct Brain {
@@ -229,6 +232,11 @@ pub fn parse_line(line: &str) -> Vec<BrainEvent> {
                 }
             }
         }
+        Some("system") if v["subtype"] == "bridge_state" => {
+            if let Some(s) = v["state"].as_str() {
+                out.push(BrainEvent::Bridge(s.to_string()));
+            }
+        }
         Some("result") => out.push(BrainEvent::Done {
             text: v["result"].as_str().unwrap_or("").to_string(),
             cost: v["total_cost_usd"].as_f64(),
@@ -367,6 +375,10 @@ mod tests {
         );
         assert!(parse_line("not json").is_empty());
         assert!(parse_line(r#"{"type":"system","subtype":"init"}"#).is_empty());
+        assert_eq!(
+            parse_line(r#"{"type":"system","subtype":"bridge_state","state":"connected"}"#),
+            vec![BrainEvent::Bridge("connected".into())]
+        );
     }
 
     #[test]

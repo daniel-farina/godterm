@@ -4,6 +4,7 @@
 
 pub mod apple;
 pub mod audio;
+pub mod barge;
 pub mod capture;
 pub mod denoise;
 pub mod devices;
@@ -133,6 +134,9 @@ pub enum Ctl {
     SetVocabulary(String),
     SetProfile(Option<wake_profile::WakeProfile>),
     Speaker(speaker::Cmd),
+    /// The mic off (false) or on again with the engine kept: capture
+    /// closes, talk back goes on (the headphone tap).
+    Mic(bool),
     Shutdown,
 }
 
@@ -203,6 +207,34 @@ impl Voice {
     /// Speaker lock enrollment and reset.
     pub fn speaker(&self, c: speaker::Cmd) {
         let _ = self.ctl.send(Ctl::Speaker(c));
+    }
+
+    /// Close the mic (false) or open it again (true), without touching
+    /// what is being said.
+    pub fn set_mic(&self, on: bool) {
+        let _ = self.ctl.send(Ctl::Mic(on));
+    }
+
+    /// Tests: a handle with no engine and an idle speaker that reports it
+    /// is talking; the receiver sees what the app sent.
+    #[cfg(test)]
+    pub fn fake(speaking: bool) -> (Voice, Receiver<Ctl>) {
+        let (tx, rx) = mpsc::channel();
+        let v = Voice {
+            ctl: tx,
+            levels: Arc::new(Levels::default()),
+            speaking: Arc::new(AtomicBool::new(speaking)),
+            speaker: Arc::new(tts::Speaker::idle()),
+            tts: true,
+            chime: false,
+        };
+        (v, rx)
+    }
+
+    /// Tests: how many times what was being said was cut off.
+    #[cfg(test)]
+    pub fn speech_stops(&self) -> u64 {
+        self.speaker.stops()
     }
 
     pub fn set_vocabulary(&self, v: String) {
@@ -595,6 +627,9 @@ impl Engine {
         // Wake mode keeps the mic open; push to talk opens it per utterance
         // so the microphone indicator is only on while you talk.
         let mut cap: Option<Capture> = None;
+        // The headphone tap closed the mic (Ctl::Mic(false)).
+        let mut mic_off = false;
+        let mut want_open = false;
         if self.always_on {
             match capture::open(&self.cfg, &self.source) {
                 Ok(c) => cap = Some(c),
@@ -622,6 +657,19 @@ impl Engine {
         let mut profile = wake_profile::WakeProfile::load();
         let mut gate = audio::EchoGate::new(self.cfg.barge_in, self.cfg.barge_margin_db);
         let mut barged = false;
+        // Barge-in on words, not noise: a trigger ducks the reply and the
+        // overlapping audio goes to the fast ASR until it is decided.
+        let mut barge = barge::Decider::new(barge::BargeCfg::new(
+            self.cfg.barge_in,
+            self.cfg.barge_in_min_words as usize,
+            self.cfg.barge_in_duck,
+        ));
+        let t_base = Instant::now();
+        let mut barge_pcm: Vec<i16> = vec![];
+        let mut barge_seq = 0u64;
+        let (barge_tx, barge_rx) = mpsc::channel::<(u64, stt::Decoded)>();
+        let barge_busy = Arc::new(AtomicBool::new(false));
+        let mut barge_req: Option<Instant> = None;
         let mut muted: std::collections::VecDeque<Vec<i16>> = Default::default();
         let mut guard = speaker::Guard::new(&self.cfg);
         let idle = || {
@@ -648,9 +696,13 @@ impl Engine {
                 };
                 match msg {
                     Ok(Ctl::PushToTalk) => {
+                        mic_off = false;
                         // Talking to us cuts off whatever we were saying.
                         self.speaker.stop();
                         barged = true;
+                        barge.cancel();
+                        barge_pcm.clear();
+                        player::set_duck(1.0);
                         if cap.is_none() {
                             // The model was unloaded when the mic failed.
                             if apple.is_none() {
@@ -718,6 +770,24 @@ impl Engine {
                         whisper.prompt = v;
                     }
                     Ok(Ctl::SetProfile(p)) => profile = p,
+                    Ok(Ctl::Mic(false)) => {
+                        // What was being captured is dropped; talk back goes on.
+                        mic_off = true;
+                        want_open = false;
+                        cap = None;
+                        cap_vp = None;
+                        ptt = false;
+                        ep.reset();
+                        utt_started = None;
+                        self.status(VoiceStatus::Off(None));
+                    }
+                    Ok(Ctl::Mic(true)) => {
+                        mic_off = false;
+                        want_open = self.always_on && cap.is_none();
+                        if !want_open {
+                            self.status(idle());
+                        }
+                    }
                     Ok(Ctl::Speaker(c)) => {
                         if let Some(ev) = guard.command(c) {
                             self.send(VoiceEvent::Speaker(ev));
@@ -729,6 +799,23 @@ impl Engine {
                         return;
                     }
                     Err(TryRecvError::Empty) => break,
+                }
+            }
+            if want_open && !mic_off {
+                want_open = false;
+                if apple.is_none() && !grok_only {
+                    let _ = whisper.start_server();
+                }
+                match capture::open(&self.cfg, &self.source) {
+                    Ok(c) => {
+                        cap = Some(c);
+                        cap_started = Instant::now();
+                        got_audio = false;
+                        self.status(idle());
+                    }
+                    Err(e) => {
+                        self.status(VoiceStatus::Off(Some(format!("cannot start the mic: {e}"))));
+                    }
                 }
             }
             if cap.is_none() {
@@ -794,6 +881,11 @@ impl Engine {
                                 }
                                 break;
                             }
+                            Ctl::Mic(true) if !file => {
+                                mic_off = false;
+                                want_open = self.always_on;
+                                break;
+                            }
                             _ => {}
                         }
                     }
@@ -831,7 +923,11 @@ impl Engine {
             // The loudest thing we played in the last 400 ms: our own echo
             // can only be about that loud (times the learned coupling).
             let played = player::played_db(Duration::from_millis(400));
-            match gate.push(l, audio::db(ep.threshold()), talking && !barged, played) {
+            let now_ms = t_base.elapsed().as_millis() as u64;
+            barge.noise.push(l, now_ms);
+            gate.noise_bar_db = barge.noise.bar_db();
+            let gated = talking && !barged && !barge.pending();
+            match gate.push(l, audio::db(ep.threshold()), gated, played) {
                 audio::Gate::Mute => {
                     muted.push_back(frame.clone());
                     if muted.len() > 12 {
@@ -841,36 +937,94 @@ impl Engine {
                     continue;
                 }
                 audio::Gate::BargeIn => {
-                    let t0 = Instant::now();
-                    *player::FLUSHED_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                    self.speaker.stop();
-                    barged = true;
-                    // How quickly the output went quiet (the callback flushes).
-                    let mut stop_ms = 0;
-                    while t0.elapsed() < Duration::from_millis(60) {
-                        if let Some(at) =
-                            *player::FLUSHED_AT.lock().unwrap_or_else(|e| e.into_inner())
-                        {
-                            stop_ms = at.saturating_duration_since(t0).as_millis() as u32;
-                            break;
+                    let port = wake_whisper
+                        .as_ref()
+                        .and_then(|w| w.port())
+                        .or_else(|| whisper.port());
+                    if port.is_none() && apple_partial.is_none() {
+                        // No fast recognizer to check for words: energy alone.
+                        crate::log::info(
+                            "voice: barge-in accepted (no recognizer to check for words)",
+                        );
+                        self.barge_stop(&gate);
+                        barged = true;
+                        if !self.always_on {
+                            ptt = true;
                         }
-                        std::thread::sleep(Duration::from_millis(2));
-                    }
-                    crate::log::info(&format!("voice: barge-in: user speech for {} ms over the echo (coupling {:.0} dB), audio stopped in {stop_ms} ms", gate.need_ms, gate.coupling_db));
-                    self.send(VoiceEvent::BargeIn {
-                        speech_ms: gate.need_ms,
-                        stop_ms,
-                    });
-                    // Capture it now, wake word or not.
-                    if !self.always_on {
-                        ptt = true;
-                    }
-                    // Replay the loud start so the first word is not lost.
-                    for f in muted.drain(..) {
-                        let _ = ep.push(&f);
+                        for f in muted.drain(..) {
+                            let _ = ep.push(&f);
+                        }
+                    } else {
+                        match barge.trigger(now_ms) {
+                            barge::Start::Off => {}
+                            barge::Start::Cooldown => {
+                                crate::log::info(
+                                    "voice: barge-in ignored (just after a false alarm)",
+                                );
+                                ep.reset();
+                                continue;
+                            }
+                            barge::Start::Decide { duck } => {
+                                player::set_duck(duck);
+                                barge_seq += 1;
+                                barge_pcm = muted.drain(..).flatten().collect();
+                                barge_req = None;
+                            }
+                        }
                     }
                 }
                 audio::Gate::Feed => muted.clear(),
+            }
+            if barge.pending() {
+                barge_pcm.extend_from_slice(&frame);
+                let said = self.speaker.said();
+                let mut decided = None;
+                while let Ok((seq, d)) = barge_rx.try_recv() {
+                    if seq == barge_seq && decided.is_none() {
+                        decided = barge.transcript(now_ms, &d.text, &said, d.no_speech, d.logprob);
+                    }
+                }
+                if decided.is_none() {
+                    decided = barge.tick(now_ms, barge_busy.load(Ordering::Acquire));
+                }
+                if decided.is_none()
+                    && barge_req.is_none_or(|t| t.elapsed() >= Duration::from_millis(150))
+                    && !barge_busy.swap(true, Ordering::AcqRel)
+                {
+                    barge_req = Some(Instant::now());
+                    let port = wake_whisper
+                        .as_ref()
+                        .and_then(|w| w.port())
+                        .or_else(|| whisper.port());
+                    let job = BargeAsr {
+                        port,
+                        apple: apple_partial.clone(),
+                        pcm: barge_pcm.clone(),
+                        lang: self.cfg.language.clone(),
+                        seq: barge_seq,
+                        tx: barge_tx.clone(),
+                        busy: Arc::clone(&barge_busy),
+                    };
+                    std::thread::spawn(move || job.run());
+                }
+                let Some(d) = decided else { continue };
+                crate::log::info(&barge::Decider::log_line(&d));
+                player::set_duck(1.0);
+                if d.stop {
+                    self.barge_stop(&gate);
+                    barged = true;
+                    // Capture it now, wake word or not, from its start.
+                    if !self.always_on {
+                        ptt = true;
+                    }
+                    for f in barge_pcm.chunks(audio::FRAME) {
+                        let _ = ep.push(f);
+                    }
+                } else {
+                    ep.reset();
+                }
+                barge_pcm.clear();
+                continue;
             }
             if !self.always_on && !ptt {
                 continue;
@@ -988,6 +1142,31 @@ impl Engine {
                 self.status(idle());
             }
         }
+    }
+
+    /// Stop talking for a barge-in and tell the app; returns once the
+    /// output is silent (or after 60 ms).
+    fn barge_stop(&self, gate: &audio::EchoGate) {
+        let t0 = Instant::now();
+        *player::FLUSHED_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.speaker.stop();
+        // How quickly the output went quiet (the callback flushes).
+        let mut stop_ms = 0;
+        while t0.elapsed() < Duration::from_millis(60) {
+            if let Some(at) = *player::FLUSHED_AT.lock().unwrap_or_else(|e| e.into_inner()) {
+                stop_ms = at.saturating_duration_since(t0).as_millis() as u32;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        crate::log::info(&format!(
+            "voice: barge-in: user speech over the echo (coupling {:.0} dB), audio stopped in {stop_ms} ms",
+            gate.coupling_db
+        ));
+        self.send(VoiceEvent::BargeIn {
+            speech_ms: gate.need_ms,
+            stop_ms,
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1142,5 +1321,49 @@ impl Engine {
             Ok(_) => {}
             Err(e) => self.send(VoiceEvent::Info(format!("transcription failed: {e}"))),
         }
+    }
+}
+
+/// One fast transcription of the audio over our reply (barge-in check),
+/// on its own thread; the result goes back to the voice loop.
+struct BargeAsr {
+    port: Option<u16>,
+    apple: Option<Arc<std::sync::Mutex<apple::AppleSpeech>>>,
+    pcm: Vec<i16>,
+    lang: String,
+    seq: u64,
+    tx: Sender<(u64, stt::Decoded)>,
+    busy: Arc<AtomicBool>,
+}
+
+impl BargeAsr {
+    fn run(self) {
+        let max = audio::RATE as usize * 4;
+        let pcm = &self.pcm[self.pcm.len().saturating_sub(max)..];
+        // No vocabulary prompt: it would bias noise toward our own words.
+        let got = if let Some(port) = self.port {
+            stt::post_decode(
+                port,
+                &audio::wav_bytes(pcm),
+                &self.lang,
+                "",
+                stt::Opts {
+                    fast: true,
+                    beam: 1,
+                },
+            )
+            .ok()
+        } else {
+            self.apple.as_ref().and_then(|a| {
+                a.lock()
+                    .ok()
+                    .and_then(|mut a| a.transcribe(pcm).ok())
+                    .map(|h| h.decoded)
+            })
+        };
+        if let Some(d) = got {
+            let _ = self.tx.send((self.seq, d));
+        }
+        self.busy.store(false, Ordering::Release);
     }
 }

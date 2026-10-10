@@ -474,6 +474,9 @@ pub struct EchoGate {
     /// The capture cancels echo itself (Apple voice processing): what is
     /// left of our voice is far weaker, so the bars come down.
     pub aec: bool,
+    /// Never below this (dBFS): the rolling noise floor plus false alarm
+    /// margin from barge::NoiseFloor, so a vacuum or fan stops firing.
+    pub noise_bar_db: f32,
 }
 
 /// dB over the expected echo that counts as the user.
@@ -492,6 +495,7 @@ impl EchoGate {
             recent: Default::default(),
             coupling_db: -12.0,
             aec: false,
+            noise_bar_db: -100.0,
         }
     }
 
@@ -527,7 +531,8 @@ impl EchoGate {
         let bar = match played_db.filter(|p| *p > -80.0) {
             Some(p) => (p + self.coupling_db + ref_margin).max(threshold_db + 3.0),
             None => threshold_db + margin,
-        };
+        }
+        .max(self.noise_bar_db);
         let loud = self.barge_in && level_db > bar;
         // Sustained: most of the last 300 ms over the bar (syllable dips
         // are fine, a lone click or a burst of echo is not).

@@ -54,6 +54,8 @@ pub enum AppEvent {
     ),
     /// The assistant's process said something.
     Assistant(u64, crate::assistant::BrainEvent),
+    /// Headphone play/pause or the media key (voice.headphone_tap).
+    MediaKey(crate::media_keys::Press),
 }
 
 /// Login state as derived from stored credentials (no secrets kept here).
@@ -441,6 +443,8 @@ pub struct App {
     /// The tab the assistant last used ("there", "that tab").
     pub last_target: Option<u64>,
     pub ctl_waits: Vec<crate::control::Waiting>,
+    /// The user quit (not a signal, a closed terminal or an update).
+    pub exit_clean: bool,
     pub loops: Vec<crate::app_loops::LoopRow>,
     pub loops_scanning: bool,
     pub loops_scanned: Instant,
@@ -449,6 +453,8 @@ pub struct App {
     pub pending_moves: Vec<crate::app_tabmove::PendingMove>,
     /// Every session on the Mac, for the assistant's sessions tool.
     pub session_index: crate::session_index::Shared,
+    /// What is inside each project folder, for find and search_projects.
+    pub project_index: crate::project_index::Shared,
     /// Sessions being brought here from other terminals.
     pub takeovers: Vec<crate::takeover::TakeOver>,
     /// Sessions running in other terminals (for the Sessions view), and when looked.
@@ -582,6 +588,8 @@ pub struct App {
     pub mouse_capture: bool,
     pub tx: Sender<AppEvent>,
     pub voice: crate::app_voice::VoiceState,
+    /// The headphone tap's Now Playing claim (voice.headphone_tap).
+    pub media: crate::media_keys::MediaKeys,
     /// config.toml mtime last loaded, for hot reload.
     pub(crate) config_mtime: Option<std::time::SystemTime>,
     last_config_check: Instant,
@@ -603,6 +611,8 @@ pub struct App {
     last_session_scan: Instant,
     pub(crate) state_dirty: bool,
     last_state_save: Instant,
+    /// Which tabs were working, for a restart to continue them.
+    pub cont: crate::app_continue::ContinueState,
 }
 
 impl App {
@@ -668,6 +678,7 @@ impl App {
             delivery_seq: 0,
             last_target: None,
             ctl_waits: vec![],
+            exit_clean: false,
             loops: vec![],
             loops_scanning: false,
             loops_scanned: Instant::now() - std::time::Duration::from_secs(60),
@@ -680,6 +691,7 @@ impl App {
             sess_live: Default::default(),
             sess_live_at: None,
             session_index: Default::default(),
+            project_index: Default::default(),
             last_tab_move: None,
             sel_overview: 0,
             attention: vec![],
@@ -749,6 +761,7 @@ impl App {
             mouse_capture: true,
             tx,
             voice: Default::default(),
+            media: Default::default(),
             onboard: None,
             settings_section: 0,
             settings_sel: 0,
@@ -766,6 +779,7 @@ impl App {
             last_session_scan: Instant::now(),
             state_dirty: false,
             last_state_save: Instant::now(),
+            cont: Default::default(),
         };
         for a in &app.cfg.accounts {
             ensure_dir(a);
@@ -792,6 +806,7 @@ impl App {
         if !self.cfg.autostart {
             return;
         }
+        self.plan_continue();
         if self.restore_mode() == "eager" {
             self.queue_eager_restore();
         }
@@ -937,6 +952,7 @@ impl App {
                 if let Some(u) = t.uid.filter(|u| taken.insert(*u)) {
                     tab.uid = u;
                 }
+                self.cont.read_mark(tab.uid, t);
                 tab.pending = Some(match &t.session_id {
                     Some(id) => LaunchKind::Resume(id.clone()),
                     None => LaunchKind::Normal,
@@ -1040,6 +1056,7 @@ impl App {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .ok()
                                 .map(|d| d.as_secs()),
+                            ..self.working_mark(t)
                         })
                         .collect(),
                     sidebar_collapsed: s.sidebar_collapsed,
@@ -1615,6 +1632,7 @@ impl App {
     /// Periodic work, called a few times per second.
     pub fn tick(&mut self) {
         self.selection_tick();
+        self.headphone_tap_tick();
         self.grok_screen_tick();
         self.takeover_tick();
         if self.view == View::Sessions
@@ -1630,6 +1648,7 @@ impl App {
             self.sess_live_at = Some(Instant::now());
         }
         self.restore_step();
+        self.continue_tick();
         self.tabmove_tick();
         self.refresh_loops(false);
         self.stop_tick();
@@ -1898,6 +1917,7 @@ impl App {
                 self.own_usage.insert(id, *r);
             }
             AppEvent::Voice(ev) => self.on_voice(ev),
+            AppEvent::MediaKey(p) => self.headphone_tap(p),
             AppEvent::Mem(m) => self.mem = m,
             AppEvent::Window(w) => {
                 if let Some(w) = w {
@@ -1950,6 +1970,7 @@ impl App {
                         } else {
                             None
                         },
+                        timeout_error: w["timeout_error"].as_str().map(str::to_string),
                     });
                     self.control_tick();
                 } else {
@@ -2219,7 +2240,7 @@ impl App {
                     k.code,
                     KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter
                 ) {
-                    self.quit = true;
+                    self.quit_by_user();
                 }
                 self.modal = Modal::None;
                 return;
@@ -2623,7 +2644,7 @@ impl App {
             (_, Some('E')) => self.toggle_privacy(),
             (_, Some('?')) => self.modal = Modal::Help,
             (_, Some('q')) => self.modal = Modal::ConfirmQuit,
-            (_, Some('Q')) => self.quit = true,
+            (_, Some('Q')) => self.quit_by_user(),
             (_, Some('N')) => self.restart_to_update(false),
             (_, Some('C')) => {
                 if let Some(a) = self.panes.get(self.focus).and_then(|p| p.account) {
@@ -2737,16 +2758,26 @@ impl App {
         }
     }
 
+    /// The user quit: a clean exit the supervisor leaves alone.
+    pub fn quit_by_user(&mut self) {
+        self.quit = true;
+        self.exit_clean = true;
+    }
+
     pub fn shutdown(&mut self) {
         if self.cfg.remember_window && crate::window::terminal_app().is_some() {
             if let Some(w) = crate::window::capture() {
                 self.window = Some(w);
             }
         }
+        // Music and the others get the play/pause presses back.
+        let tx = self.tx.clone();
+        self.media.set(false, &tx);
         self.stop_voice();
         crate::voice::kill_helpers();
         self.detect_sessions();
         self.save_state();
+        crate::app_resume::mark_clean_exit();
         for p in &mut self.panes {
             p.kill_all();
         }
@@ -3129,7 +3160,12 @@ impl App {
     /// existing ones get new labels, colors, dirs and args; new ones are
     /// added. Returns a short summary.
     pub fn apply_config(&mut self, new: Config) -> String {
-        if self.cfg.assistant != new.assistant {
+        // Keeping Remote Control on and resuming change nothing in the
+        // running process (they act at its next start).
+        let mut same = new.assistant.clone();
+        same.remote_control = self.cfg.assistant.remote_control;
+        same.resume = self.cfg.assistant.resume;
+        if self.cfg.assistant != same {
             // Model, style or account changed: the next request starts fresh.
             self.assistant.brain = None;
         }
@@ -3174,6 +3210,7 @@ impl App {
         self.cfg.notifications = new.notifications;
         self.cfg.refresh_secs = new.refresh_secs;
         self.cfg.auto_restart = new.auto_restart;
+        self.cfg.restore_continue_working = new.restore_continue_working;
         self.cfg.autostart = new.autostart;
         self.cfg.claude_bin = new.claude_bin;
         self.cfg.pass_env = new.pass_env;
@@ -3363,6 +3400,7 @@ impl App {
             Action::FreeNow => self.free_now(),
             Action::AssistantNew => self.reset_assistant(),
             Action::OpenMic => self.start_open_mic(),
+            Action::HeadphoneTap => self.toggle_headphone_tap(),
             Action::StopAllLoops => {
                 if !self.loops.is_empty() {
                     self.modal = Modal::ConfirmStopLoops;

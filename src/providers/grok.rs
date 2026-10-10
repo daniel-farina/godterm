@@ -226,6 +226,7 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         format!("{}{}", ctx.system_prompt, tools_note()),
         ctx.events,
         ctx.gen,
+        ctx.session,
     )))
 }
 
@@ -237,14 +238,20 @@ impl GrokBackend {
         prompt: String,
         events: std::sync::mpsc::Sender<AppEvent>,
         gen: u64,
+        session: Option<super::SessionPlan>,
     ) -> GrokBackend {
+        // A kept session: its id; resumed, it is open already (no primer).
+        let (session, started) = match session {
+            Some(s) => (s.id, s.resume),
+            None => (crate::session_ops::new_uuid(), false),
+        };
         GrokBackend {
             launch,
             model,
             effort,
             prompt,
-            session: crate::session_ops::new_uuid(),
-            started: false,
+            session,
+            started,
             events,
             gen,
             child: Arc::new(Mutex::new(None)),

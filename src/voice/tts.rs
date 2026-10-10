@@ -2,6 +2,7 @@
 //! sentence by sentence, interruptible. The first sentence starts playing
 //! as soon as it is synthesized; the next one is made while it plays.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -250,6 +251,8 @@ pub struct Speaker {
     /// Engine in use, for the HUD and doctor ("kokoro af_heart", "say (...)").
     pub engine: Arc<Mutex<String>>,
     speaking_flag: Arc<AtomicBool>,
+    /// The last few sentences spoken (the barge-in echo check).
+    said: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl Speaker {
@@ -265,6 +268,7 @@ impl Speaker {
             flush: Arc::new(AtomicBool::new(false)),
             engine: Arc::new(Mutex::new("idle".into())),
             speaking_flag: Arc::new(AtomicBool::new(true)),
+            said: Default::default(),
         }
     }
 
@@ -283,6 +287,8 @@ impl Speaker {
         let flush = Arc::new(AtomicBool::new(false));
         let engine = Arc::new(Mutex::new(String::from("starting")));
         let speaking_flag = Arc::clone(&speaking);
+        let said: Arc<Mutex<VecDeque<String>>> = Default::default();
+        let sd = Arc::clone(&said);
         let (c, g, pl, fl, en) = (
             cfg.clone(),
             Arc::clone(&gen),
@@ -301,6 +307,7 @@ impl Speaker {
                     player: pl,
                     flush: fl,
                     engine: en,
+                    said: sd,
                     speaking,
                     kokoro: None,
                     grok: None,
@@ -316,7 +323,18 @@ impl Speaker {
             flush,
             engine,
             speaking_flag,
+            said,
         }
+    }
+
+    /// The sentences spoken lately (being spoken, and a few before).
+    pub fn said(&self) -> Vec<String> {
+        self.said
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Speak, cutting off whatever is being said.
@@ -372,6 +390,7 @@ struct Worker {
     player: Arc<Mutex<Option<u32>>>,
     flush: Arc<AtomicBool>,
     engine: Arc<Mutex<String>>,
+    said: Arc<Mutex<VecDeque<String>>>,
     speaking: Arc<AtomicBool>,
     kokoro: Option<Kokoro>,
     grok: Option<super::engines::GrokEngine>,
@@ -551,6 +570,13 @@ impl Worker {
         for sentence in split_first(chunk_sentences(&text)) {
             if !self.current(gen) {
                 break;
+            }
+            {
+                let mut s = self.said.lock().unwrap_or_else(|e| e.into_inner());
+                s.push_back(sentence.clone());
+                while s.len() > 3 {
+                    s.pop_front();
+                }
             }
             // Without an output stream: collect, then afplay the WAV.
             let mut held: Vec<f32> = vec![];

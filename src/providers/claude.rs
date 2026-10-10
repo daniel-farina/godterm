@@ -37,6 +37,9 @@ pub const PROVIDER: Provider = Provider {
     start,
 };
 
+/// Switches off Remote Control's start (see `start`): never set for the brain.
+pub const NO_TRAFFIC: &str = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC";
+
 pub struct ClaudeBackend {
     child: Child,
     stdin: ChildStdin,
@@ -67,7 +70,6 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         "--include-partial-messages",
         // Messages from Remote Control show up in the stream.
         "--replay-user-messages",
-        "--no-session-persistence",
         "--strict-mcp-config",
         "--tools",
         "",
@@ -84,6 +86,7 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         "--mcp-config",
     ])
     .arg(&mcp)
+    .args(session_args(ctx.session.as_ref()))
     .arg("--allowedTools")
     .args(allowed_tools())
     .current_dir(&d)
@@ -101,6 +104,10 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
     // and nothing at startup that is not needed (no updater, telemetry,
     // error reports, surveys, auto memory or other background traffic).
     // (--bare would also skip these but switches off the OAuth login.)
+    // Not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: with it Remote Control
+    // fails ("Remote Control initialization failed", claude 2.1.296), so
+    // it is removed even when GodTerm's own environment has it.
+    cmd.env_remove(NO_TRAFFIC);
     cmd.env("CLAUDE_EFFORT", &a.effort)
         .env("CLAUDE_CODE_EFFORT_LEVEL", &a.effort)
         .env(
@@ -110,7 +117,6 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         .env("DISABLE_AUTOUPDATER", "1")
         .env("DISABLE_TELEMETRY", "1")
         .env("DISABLE_ERROR_REPORTING", "1")
-        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .env("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY", "1")
         .env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")
         .env("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1");
@@ -147,6 +153,16 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         let _ = events.send(AppEvent::Assistant(gen, BrainEvent::Exited(tail)));
     });
     Ok(Box::new(ClaudeBackend { child, stdin }))
+}
+
+/// Its session: resumed, a new one with a known id, or none saved.
+pub fn session_args(s: Option<&super::SessionPlan>) -> Vec<String> {
+    match s {
+        Some(s) if s.resume => vec!["--resume".into(), s.id.clone()],
+        Some(s) => vec!["--session-id".into(), s.id.clone()],
+        // Its chatter would otherwise land in the account's projects.
+        None => vec!["--no-session-persistence".into()],
+    }
 }
 
 impl Backend for ClaudeBackend {

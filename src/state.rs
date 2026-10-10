@@ -30,6 +30,17 @@ pub struct TabState {
     /// When it was first opened (seconds since 1970).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened: Option<u64>,
+    /// A turn was in progress at this save: after a restart it gets one
+    /// "continue" prompt (restore_continue_working).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub was_working: bool,
+    /// When it was last seen working (seconds since 1970); an old mark
+    /// does not fire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_at: Option<u64>,
+    /// The last prompt it was given, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -218,6 +229,9 @@ mod tests {
                     group: Some("backend".into()),
                     pinned: true,
                     opened: Some(1_700_000_000),
+                    was_working: true,
+                    working_at: Some(1_700_000_100),
+                    last_prompt: Some("fix the build".into()),
                 }],
                 sidebar_collapsed: true,
                 tab_pos: Some(crate::slot::TabPos::Right),

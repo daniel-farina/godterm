@@ -55,7 +55,16 @@ impl Harness {
             return test_agent();
         }
         match self {
-            Harness::Claude => "claude".into(),
+            // On PATH; else the installer's place (a GodTerm started from
+            // launchd, by the supervisor, has a short PATH).
+            Harness::Claude => {
+                let local = crate::config::home_dir().join(".local/bin/claude");
+                if crate::deps::which("claude").is_none() && local.exists() {
+                    local.to_string_lossy().into_owned()
+                } else {
+                    "claude".into()
+                }
+            }
             Harness::Grok => {
                 let local = crate::config::home_dir().join(".local/bin/grok");
                 if local.exists() {
@@ -666,7 +675,16 @@ pub mod grok {
                 .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                 .map(std::time::SystemTime::from),
             headless: summary.get("session_kind").and_then(Value::as_str) == Some("headless"),
-            name: None,
+            // A title set with /rename (or GodTerm's rename_session).
+            name: summary
+                .get("title_is_manual")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                .then(|| summary.get("generated_title").and_then(Value::as_str))
+                .flatten()
+                .filter(|t| !t.is_empty())
+                .map(|t| crate::sessions::snippet(t, 120)),
+            files: vec![],
         })
     }
 }

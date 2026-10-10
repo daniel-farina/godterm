@@ -146,6 +146,7 @@ pub fn chip(app: &App, tool: &str, args: &Value, status: &str) -> (String, Color
         "sessions"
         | "session_detail"
         | "find"
+        | "search_projects"
         | "history"
         | "tab_history"
         | "get_state"
@@ -596,6 +597,61 @@ pub fn input_lines(text: &str, w: usize) -> Vec<String> {
     out
 }
 
+/// Remote Control and the kept session, at the top of the Admin view.
+pub fn remote_rows(app: &App) -> Vec<(String, Option<UiAction>)> {
+    let mut v = vec![];
+    let keep = app.cfg.assistant.remote_control;
+    let line = match &app.assistant.remote {
+        Some(r) => format!(
+            "Remote Control: on as '{}' · {} · {}",
+            r.name,
+            r.bridge,
+            r.url.as_deref().unwrap_or("no link")
+        ),
+        None if app.assistant.remote_flow.is_some() => "Remote Control: turning on…".into(),
+        None => "Remote Control: off".into(),
+    };
+    let link = app
+        .assistant
+        .remote
+        .as_ref()
+        .and_then(|r| r.url.as_ref())
+        .is_some();
+    v.push((line, link.then_some(UiAction::AssistantRemoteLink)));
+    let kept = if !keep {
+        "Keep Remote Control on: off (Settings > Assistant, or say keep remote control on)"
+            .to_string()
+    } else if app.remote_supported().is_err() {
+        "Keep Remote Control on: set, resting (not supported on this provider; Claude only)".into()
+    } else {
+        "Keep Remote Control on: on (it turns on whenever the assistant starts)".into()
+    };
+    v.push((kept, None));
+    if app.assistant.remote.is_none() {
+        if let Some(u) = &app.assistant.remote_last_url {
+            v.push((
+                format!("Last link: {u}"),
+                Some(UiAction::AssistantRemoteLink),
+            ));
+        }
+    }
+    v.push((
+        format!(
+            "Session: {}",
+            if !app.cfg.assistant.resume {
+                "fresh each start (resume off)".to_string()
+            } else {
+                match crate::app_resume::load().filter(|k| !k.id.is_empty()) {
+                    Some(k) => format!("kept across restarts ({})", &k.id[..k.id.len().min(8)]),
+                    None => "kept across restarts".into(),
+                }
+            }
+        ),
+        None,
+    ));
+    v
+}
+
 /// The title: "assistant · Claude · Account 2 · 5h 89% · wk 3% · haiku ▾",
 /// as parts (tone 2: the binding bucket when it is low). Narrow, whole
 /// pieces go: the other buckets, then "assistant", then the provider and
@@ -648,8 +704,8 @@ pub fn title_parts(app: &App, room: usize) -> Vec<(String, u8)> {
         }
     }
     segs.push((format!("{short_model} ▾"), 0, 0));
-    if app.assistant.remote.is_some() {
-        segs.push(("RC".into(), 0, 0));
+    if let Some(r) = app.remote_indicator() {
+        segs.push((r, 1, 0));
     }
     let width = |segs: &[(String, u8, u8)]| -> usize {
         segs.iter().map(|s| cells(&s.0) as usize).sum::<usize>()
@@ -725,13 +781,18 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(DIM).bg(BAR_BG)
     };
     let mut tx = area.x + 2;
+    let mut remote_at = None;
     for (t, tone) in &title {
         let st = match tone {
             2 => title_st.fg(theme::SAND),
             1 => title_st.fg(theme::SLATE).add_modifier(Modifier::BOLD),
             _ => title_st,
         };
+        let x0 = tx;
         tx = crate::hits::text(buf, tx, area.y, area.x + 2 + tw, t, st);
+        if t.starts_with("Remote") {
+            remote_at = Some((x0, tx.saturating_sub(x0)));
+        }
     }
     // What it is doing, in the same calm accent.
     if let Some(chip) = state_chip(app) {
@@ -750,6 +811,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         UiAction::MenuOpen(crate::menus::MenuId::AssistantAccount),
         "The account it spends and its model: click to switch",
     );
+    if let Some((x, w)) = remote_at.filter(|(_, w)| *w > 0) {
+        hits.add(
+            Rect::new(x, area.y, w, 1),
+            UiAction::AssistantRemoteLink,
+            "Remote Control: click to open its claude.ai link (also copied)",
+        );
+    }
     // Toolbar: what fits, then ⋯ (everything) and × (close).
     let y = inner.y;
     let tail = cells(" ⋯ ") + 1 + cells(" × ");
@@ -884,7 +952,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let iy0 = iy + 1 - in_h;
     // A question waiting for the user's yes: Yes / No buttons above the
     // input (a click answers, as typing "yes" would).
-    let asking = !app.pending_confirms.is_empty() && !app.assistant.show_admin;
+    let asking = (!app.pending_confirms.is_empty() || app.assistant.selfswitch.asked.is_some())
+        && !app.assistant.show_admin;
     let ask_y = iy0.saturating_sub(1);
     let body_h = (if asking { ask_y } else { iy0 }).saturating_sub(top + 1);
     let rows: Vec<Row> = if app.assistant.show_admin {
@@ -892,6 +961,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             "Admin actions".into(),
             Style::default().fg(FG).add_modifier(Modifier::BOLD),
         )])];
+        for (line, action) in remote_rows(app) {
+            v.push(Row {
+                parts: vec![(line, Style::default().fg(DIM))],
+                action,
+                indent: 0,
+            });
+        }
         if app.admin.history.is_empty() {
             v.push(row(vec![(
                 "None yet: installs, settings and account changes the assistant makes show here."
@@ -931,11 +1007,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
         shown.push(text);
         if let Some(a) = action {
-            hits.add(
-                Rect::new(inner.x, ly, inner.width, 1),
-                a,
-                "Click to show or hide what it ran",
-            );
+            let hint = if a == UiAction::AssistantRemoteLink {
+                "Click to open the Remote Control link (also copied)"
+            } else {
+                "Click to show or hide what it ran"
+            };
+            hits.add(Rect::new(inner.x, ly, inner.width, 1), a, hint);
         }
     }
     if asking {
@@ -950,6 +1027,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             .pending_confirms
             .last()
             .map(|p| p.summary.clone())
+            .or_else(|| {
+                app.assistant
+                    .selfswitch
+                    .asked
+                    .as_ref()
+                    .map(|q| q.question.clone())
+            })
             .unwrap_or_default();
         let q = format!("? {q}");
         let qx = crate::hits::text(

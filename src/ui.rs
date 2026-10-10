@@ -4680,6 +4680,10 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("Ctrl-a X", "mute or unmute the microphone (the Mic button)"),
     (
+        "headphone tap",
+        "play/pause on headphones turns the mic on or off (Settings > Voice)",
+    ),
+    (
         "Ctrl-a O",
         "mute or unmute the speaker (it stops talking, still hears)",
     ),

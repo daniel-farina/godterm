@@ -73,13 +73,9 @@ fn enable_use_switch_and_disable() {
         "enable_remote_control",
         &json!({"_client": "brain", "confirm_token": tok}),
     );
-    assert!(
-        r["result"]["say"]
-            .as_str()
-            .unwrap()
-            .contains("Turning on Remote Control"),
-        "{r}"
-    );
+    // The reply waits for the outcome: nothing success looking yet.
+    assert!(r.get("_wait").is_some() && r["result"].is_null(), "{r}");
+    let job = app.pending_job.take().unwrap();
     let sent = wait_for(&rec, "remote_control");
     assert!(
         sent.contains("\"subtype\":\"remote_control\"") && sent.contains("\"enabled\":true"),
@@ -98,7 +94,9 @@ fn enable_use_switch_and_disable() {
         app.on_brain(ev);
     }
     assert!(app.assistant.remote.is_some());
-    assert!(app.admin.said.iter().any(|s| s == "Remote Control is on. Open claude.ai/code or the Claude app and pick 'GodTerm assistant (Account 1)'."), "{:?}", app.admin.said);
+    let out = job.try_recv().unwrap();
+    assert_eq!(out["on"], json!(true));
+    assert_eq!(out["say"], json!("Remote Control is on. Open https://claude.ai/code/session_abc, or pick 'GodTerm assistant (Account 1)' in claude.ai/code or the Claude app."));
     assert!(app
         .assistant
         .log
@@ -192,6 +190,7 @@ fn enable_use_switch_and_disable() {
         url: None,
         account: Some(0),
         gen: 0,
+        bridge: "connected".into(),
     });
     app.ensure_brain().unwrap();
     app.assistant.remote = Some(crate::app_remote::Remote {
@@ -199,6 +198,7 @@ fn enable_use_switch_and_disable() {
         url: None,
         account: Some(0),
         gen: 0,
+        bridge: "connected".into(),
     });
     let v = app.control_call("disable_remote_control", &json!({"_client": "brain"}));
     assert_eq!(v["result"]["say"], json!("Remote Control is off."));

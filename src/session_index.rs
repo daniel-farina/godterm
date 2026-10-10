@@ -49,7 +49,7 @@ struct Disk {
     files: Vec<(PathBuf, u128, u64, SessionInfo)>,
 }
 
-const DISK_VERSION: u32 = 5;
+const DISK_VERSION: u32 = 6;
 
 fn stamp(p: &Path) -> Option<(u128, u64)> {
     let m = std::fs::metadata(p).ok()?;
@@ -78,6 +78,9 @@ fn list(h: Harness, home: &Path) -> Vec<Item> {
             for proj in projects
                 .flatten()
                 .filter(|p| p.file_type().is_ok_and(|t| t.is_dir()))
+                .filter(|p| {
+                    !crate::app_resume::is_assistant_project(&p.file_name().to_string_lossy())
+                })
             {
                 let Ok(files) = std::fs::read_dir(proj.path()) else {
                     continue;

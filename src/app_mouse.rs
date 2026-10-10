@@ -640,6 +640,7 @@ impl App {
                 self.assistant.focused = false;
             }
             UiAction::AssistantFocus => self.assistant.focused = true,
+            UiAction::AssistantRemoteLink => self.open_remote_link(),
             UiAction::PaneHeader(i) => {
                 self.focus = i;
                 self.view = View::Grid;
@@ -756,6 +757,10 @@ impl App {
             UiAction::UpdatesLater => self.updates_later(),
             UiAction::UpdatesPage => self.updates_release_page(),
             UiAction::AssistantAnswer(yes) => {
+                // Its own question (moving to another account) is answered here.
+                if self.pending_confirms.is_empty() && self.answer_self_switch(yes) {
+                    return;
+                }
                 self.assistant.input = if yes { "yes" } else { "no" }.into();
                 self.send_assistant_input();
             }
@@ -1293,7 +1298,7 @@ impl App {
                     self.modal = Modal::None;
                 }
             }
-            Modal::ConfirmQuit => self.quit = true,
+            Modal::ConfirmQuit => self.quit_by_user(),
             Modal::ConfirmStopLoops => {
                 self.modal = Modal::None;
                 self.stop_all_loops();

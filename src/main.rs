@@ -6,9 +6,11 @@ mod admin;
 mod app;
 mod app_admin;
 mod app_assistant;
+mod app_continue;
 mod app_failover;
 mod app_followup;
 mod app_grid;
+mod app_headtap;
 mod app_layout;
 mod app_learned;
 mod app_loops;
@@ -17,9 +19,12 @@ mod app_mouse;
 mod app_openmic;
 mod app_pause;
 mod app_privacy;
+mod app_projects;
 mod app_provider;
 mod app_remote;
+mod app_resume;
 mod app_select;
+mod app_selfswitch;
 mod app_sessions;
 mod app_settings;
 mod app_setup;
@@ -58,6 +63,8 @@ mod grid_tests;
 mod grok_logins;
 mod guard;
 mod harness;
+#[cfg(test)]
+mod headtap_tests;
 mod hits;
 mod install;
 mod instance;
@@ -71,6 +78,9 @@ mod livemap;
 mod log;
 mod loops;
 mod mcp;
+mod media_keys;
+#[cfg(target_os = "macos")]
+mod media_keys_mac;
 mod menus;
 mod migrate;
 mod migrate_accounts;
@@ -82,24 +92,34 @@ mod pane;
 #[cfg(test)]
 mod panel_view_tests;
 mod panel_views;
+mod supervisor;
 // A real PTY and a shell script stub: Unix only.
+#[cfg(all(test, unix))]
+mod continue_tests;
 #[cfg(all(test, unix))]
 mod paste_enter_tests;
 mod paths;
 mod picker;
 mod platform;
 mod procs;
+mod project_index;
+mod project_memory;
 mod prompt;
 #[cfg(test)]
 mod provider_tests;
 mod providers;
 #[cfg(test)]
+mod remote_keep_tests;
+#[cfg(test)]
 mod remote_tests;
 mod risk;
 mod select;
+#[cfg(test)]
+mod selfswitch_tests;
 mod sess_sort;
 mod session_index;
 mod session_ops;
+mod session_rename;
 mod sessions;
 mod settings;
 mod setup;
@@ -185,6 +205,9 @@ USAGE:
     godterm mcp                    MCP server (stdio) with the tools of the running godterm
     godterm install [--dock]       the GodTerm app in ~/Applications and the godterm command in ~/.local/bin
     godterm uninstall [--purge]    remove them (--purge also deletes ~/.godterm)
+    godterm supervisor install|uninstall|status [--label L] [--interval S]
+                                   the launchd watchdog that relaunches GodTerm after a crash
+                                   (run: one check, what launchd runs)
                         check the voice setup; with the mic, show live levels,
                         noise floor and threshold for N seconds (default 5),
                         then how each utterance was heard and understood
@@ -416,6 +439,9 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some("tap-test") => {
+            media_keys::tap_test(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20))
+        }
         Some("stt-eval") => voice::eval::command(
             flag_value(&args, "--out").map(std::path::PathBuf::from),
             flag_value(&args, "--grok").and_then(|n| n.parse().ok()),
@@ -424,6 +450,7 @@ fn main() -> Result<()> {
             migrate_accounts::command(args.iter().any(|a| a == "--dry-run"))
         }
         Some("update") => update::command(&args[1..]),
+        Some("supervisor") => supervisor::command(&args[1..]),
         Some("install") => install::install(args.iter().any(|a| a == "--dock")),
         Some("uninstall") => install::uninstall(args.iter().any(|a| a == "--purge")),
         Some("window") => window_cmd(args.get(1).map(String::as_str)),
@@ -825,6 +852,10 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         Err(_) => None,
     };
     config::secure_home();
+    // Running: until a quit says otherwise, an exit is unclean.
+    if _instance.is_some() {
+        supervisor::mark_running();
+    }
     // First run (no config yet), no accounts, or `godterm setup`: ask the
     // questions on the plain terminal, then walk through the logins.
     let first_run = !Config::path().exists();
@@ -970,6 +1001,11 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         std::env::remove_var(update::EAGER_ENV);
         app.force_eager = true;
     }
+    // Opened again by the supervisor after a crash: the same.
+    if supervisor::take_relaunched() {
+        log::info("supervisor: started after an unclean exit; every tab comes back");
+        app.force_eager = true;
+    }
     let first_run = !crate::state::AppState::path().exists();
     app.autostart();
     app.start_update_checker();
@@ -1033,6 +1069,12 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             let wait = if screen.stalled() { 50 } else { 4 };
             timeout = timeout.max(Duration::from_millis(wait));
         }
+        // Headphone tap: the remote command handlers run on this (the
+        // main) thread when it pumps, so do not sleep long.
+        if app.media.claimed() {
+            timeout = timeout.min(Duration::from_millis(100));
+        }
+        app.media_pump();
         match rx.recv_timeout(timeout) {
             Ok(ev) => {
                 app.handle(ev);
@@ -1128,6 +1170,9 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     // State saved and children stopped before any terminal write that
     // could wait on a stuck terminal.
     app.shutdown();
+    if app.exit_clean {
+        supervisor::mark_clean();
+    }
     if let Some(t) = &ctl_token {
         control::cleanup(t);
     }

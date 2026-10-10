@@ -19,6 +19,12 @@
 //!                     to stderr and exit with exit_code (after args_to)
 //!   fake_login=1      show a login screen with a wrapped OAuth URL and a code
 //!                     prompt; login_code=CODE is the code that works
+//!   rc_answers=A,B..  answer remote_control requests in turn: ok (a
+//!                     session_url, then bridge_state connected), fail
+//!                     (initialization failed) or silent; counted across
+//!                     runs of this copy
+//!   resume_fail=1     a --resume exits at once with claude's "No
+//!                     conversation found" error
 //! Without stdin_to it reads stdin to the end and drops it.
 
 use std::path::{Path, PathBuf};
@@ -99,6 +105,15 @@ fn main() {
         }
         std::process::exit(get("exit_code").and_then(|c| c.parse().ok()).unwrap_or(0));
     }
+    // A resume of a session it does not have fails like claude's.
+    if get("resume_fail").is_some() {
+        if let Some(i) = args.iter().position(|a| a == "--resume") {
+            eprintln!("No conversation found with session ID: {}", args.get(i + 1).map(String::as_str).unwrap_or(""));
+            std::process::exit(1);
+        }
+    }
+    let rc: Vec<String> = get("rc_answers").map(|s| s.split(',').map(|x| x.to_string()).collect()).unwrap_or_default();
+    let mut line = Vec::new();
     let mut out: Option<std::fs::File> = get("stdin_to").map(|p| {
         let append = get("stdin_append").as_deref() == Some("1");
         std::fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(p).unwrap()
@@ -113,12 +128,48 @@ fn main() {
                     let _ = f.write_all(&buf[..n]);
                     let _ = f.flush();
                 }
+                if !rc.is_empty() {
+                    for &b in &buf[..n] {
+                        if b != b'\n' {
+                            line.push(b);
+                            continue;
+                        }
+                        let l = String::from_utf8_lossy(&line).to_string();
+                        line.clear();
+                        if l.contains("\"subtype\":\"remote_control\"") && l.contains("\"enabled\":true") {
+                            remote_answer(&exe, &rc, &l);
+                        }
+                    }
+                }
             }
         }
     }
     if let Some(s) = get("sleep_s").and_then(|s| s.parse::<u64>().ok()) {
         std::thread::sleep(std::time::Duration::from_secs(s));
     }
+}
+
+// Answers a remote_control request with the next of rc_answers (ok, fail,
+// silent; counted across runs in <exe>.rc_n): ok gives a session_url
+// and bridge_state connected.
+fn remote_answer(exe: &std::path::Path, rc: &[String], l: &str) {
+    let n_path = exe.with_extension("rc_n");
+    let n: usize = std::fs::read_to_string(&n_path).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    let _ = std::fs::write(&n_path, (n + 1).to_string());
+    let what = rc.get(n).or(rc.last()).map(String::as_str).unwrap_or("ok");
+    let id = l.split("\"request_id\":\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("");
+    let mut o = std::io::stdout().lock();
+    match what {
+        "ok" => {
+            let _ = writeln!(o, "{{\"type\":\"control_response\",\"response\":{{\"subtype\":\"success\",\"request_id\":\"{id}\",\"response\":{{\"session_url\":\"https://claude.ai/code/session_stub{n}\",\"bridge_session_id\":\"cse_{n}\"}}}}}}");
+            let _ = writeln!(o, "{{\"type\":\"system\",\"subtype\":\"bridge_state\",\"state\":\"connected\"}}");
+        }
+        "fail" => {
+            let _ = writeln!(o, "{{\"type\":\"control_response\",\"response\":{{\"subtype\":\"error\",\"request_id\":\"{id}\",\"error\":\"Remote Control initialization failed\"}}}}");
+        }
+        _ => {}
+    }
+    let _ = o.flush();
 }
 
 fn home() -> std::path::PathBuf {

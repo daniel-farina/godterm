@@ -153,7 +153,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "set_setting",
-        description: "Change any setting (validated against its kind, written to config.toml keeping comments, applied at once). account for per account keys. Risky changes (bypass permissions, update checks or signatures off, privacy off, pass_env, claude_bin / grok_bin) need a second yes that names the risk. A secret (an API key) only from the user's own dictated words; never read back.",
+        description: "Change any setting (validated against its kind, written to config.toml keeping comments, applied at once). account for per account keys. Risky changes (bypass permissions, update checks or signatures off, privacy off, pass_env, claude_bin / grok_bin, keeping Remote Control on) need a second yes that names the risk. \"Keep remote control on\" / \"always on\" is assistant.remote_control true. \"Turn on headphone tap\" (play/pause on headphones turns the mic on or off) is voice.headphone_tap true. A secret (an API key) only from the user's own dictated words; never read back.",
         schema: || props(json!({"key": {"type": "string"}, "value": {"type": ["string", "number", "boolean"]}, "account": account_prop(), "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
     },
     Tool {
@@ -188,12 +188,12 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "enable_remote_control",
-        description: "Turn on Claude Code Remote Control for yourself: then claude.ai/code and the Claude app (signed in to the same claude.ai account) can talk to you, with your admin tools. Only on Claude. One confirmation. It ends when you switch account, provider or model. name: the session name shown there.",
+        description: "Turn on Claude Code Remote Control for yourself, this once (\"turn on remote control\"): then claude.ai/code and the Claude app (signed in to the same claude.ai account) can talk to you, with your admin tools. Only on Claude. One confirmation. The confirmed call waits for the real outcome: it is on only when the result has on true and a session_url; then give that link. An error or pending result means it is NOT on: say the say text, never that it is on. It ends when you switch account, provider or model. To keep it on across restarts (\"keep remote control on\", \"always on\") use set_setting assistant.remote_control true instead. name: the session name shown there.",
         schema: || props(json!({"name": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
     },
     Tool {
         name: "disable_remote_control",
-        description: "Turn Remote Control off.",
+        description: "Turn Remote Control off (until GodTerm restarts when it is kept on; set_setting assistant.remote_control false stops that).",
         schema: || props(json!({}), &[]),
     },
     Tool {
@@ -492,13 +492,33 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "find",
-        description: "Search everything at once for something the user remembers: coding sessions (all accounts and the main installs), the tab history, and your own past conversations. query can be a project, folder, topic or tab name, misheard is fine; since narrows it (\"yesterday\"). Returns ranked hits, each with its type (session, tab, chat) and the id to act on: open_session for a session, reopen_tab for a tab, history detail for a chat.",
+        description: "Search everything at once for something the user remembers: saved project descriptions, projects and what is inside them (subprojects such as apps/billing-dashboard in a monorepo, workspace members, folders, READMEs and package descriptions), coding sessions (titles, prompts, folders and the files they touched; all accounts and the main installs), the tab history, and your own past conversations. query can be a project, subproject, folder, topic or tab name, spoken or misheard is fine (\"bot mesh\", \"web hooks\"); since narrows it (\"yesterday\"). Returns ranked hits, each with its type (project, session, tab, chat), why it matched, and the id or path to act on: open_tab (dir) or open_path for a project path, open_session for a session, reopen_tab for a tab, history detail for a chat. strong false means no hit is a clear match: look deeper (search_projects) before saying it is not there.",
         schema: || {
             props(
                 json!({"query": {"type": "string"}, "since": {"type": "string"}, "limit": {"type": "integer"}}),
                 &["query"],
             )
         },
+    },
+    Tool {
+        name: "search_projects",
+        description: "Look deeper inside project folders when find has no strong hit: a bounded walk over file and folder names in every known project root (or path, one folder), and with content true a grep inside text files, each with a time cap. Skips dependencies, build output, dot folders and private files. Returns paths with why each matched. Then save what you learned with describe_project.",
+        schema: || props(json!({"query": {"type": "string"}, "path": {"type": "string"}, "content": {"type": "boolean"}, "depth": {"type": "integer"}, "limit": {"type": "integer"}}), &["query"]),
+    },
+    Tool {
+        name: "describe_project",
+        description: "Save (or update) what a project or subproject folder is, so find gets it at once next time: path (the folder), description (one or two sentences), aliases (what the user calls it, spoken forms too: \"billing dashboard\", \"the invoices app\"), subprojects (key ones, relative paths), tags, deep_searched true after a deep search looked at it. Only the fields given change.",
+        schema: || props(json!({"path": {"type": "string"}, "description": {"type": "string"}, "aliases": {"type": "array", "items": {"type": "string"}}, "subprojects": {"type": "array", "items": {"type": "string"}}, "tags": {"type": "array", "items": {"type": "string"}}, "deep_searched": {"type": "boolean"}}), &["path"]),
+    },
+    Tool {
+        name: "describe_session",
+        description: "Save (or update) a short description of a coding session (id from sessions or find), with aliases and tags, so find and sessions show it.",
+        schema: || props(json!({"id": {"type": "string"}, "description": {"type": "string"}, "aliases": {"type": "array", "items": {"type": "string"}}, "tags": {"type": "array", "items": {"type": "string"}}}), &["id"]),
+    },
+    Tool {
+        name: "rename_session",
+        description: "Rename Claude Code or Grok sessions themselves (their title in claude --resume and Grok's picker, not only a tab): id (a session id from sessions or find, or a list) and name (one, or one per id). A session open in a tab gets /rename there and the tab is renamed too; otherwise the harness's own title record is written. One session runs at once; several ask once (needs_confirmation).",
+        schema: || props(json!({"id": {"type": ["string", "array"], "items": {"type": "string"}}, "name": {"type": ["string", "array"], "items": {"type": "string"}}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
     },
     Tool {
         name: "learn",
@@ -750,6 +770,8 @@ pub struct Waiting {
     pub takeovers: Vec<String>,
     /// Work done off the UI thread (system_check): its result is the reply.
     pub job: Option<std::sync::mpsc::Receiver<Value>>,
+    /// The error when `job` does not answer in time.
+    pub timeout_error: Option<String>,
 }
 
 /// A safe folder name from a task name: "Simple Calculator!" -> "simple-calculator".
@@ -1131,8 +1153,14 @@ impl App {
             if let Some(rx) = w.job.as_ref() {
                 match rx.try_recv() {
                     Ok(v) => {
-                        let _ = w.tx.send(if v.get("error").is_some() {
-                            err(v["error"].as_str().unwrap_or("failed").to_string())
+                        let _ = w.tx.send(if let Some(e) = v.get("error") {
+                            let mut r = err(e.as_str().unwrap_or("failed").to_string());
+                            for k in ["say", "next", "pending"] {
+                                if let Some(x) = v.get(k) {
+                                    r[k] = x.clone();
+                                }
+                            }
+                            r
                         } else {
                             ok(v)
                         });
@@ -1141,7 +1169,10 @@ impl App {
                         self.ctl_waits.push(w)
                     }
                     _ => {
-                        let _ = w.tx.send(err("the check did not finish in time"));
+                        let _ = w.tx.send(err(w
+                            .timeout_error
+                            .clone()
+                            .unwrap_or_else(|| "the check did not finish in time".into())));
                     }
                 }
                 continue;
@@ -1860,6 +1891,9 @@ impl App {
         if let Some(r) = self.admin_plan_for(tool, args) {
             return r;
         }
+        if tool == "rename_session" {
+            return self.rename_plan_for(args);
+        }
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
         let listy = |k: &[&str]| {
             matches!(args.get("tab"), Some(Value::Array(_)))
@@ -2176,6 +2210,9 @@ impl App {
     fn run_plan(&mut self, tool: &str, plan: &Value) -> Result<Value, String> {
         if let Some(r) = self.admin_run_plan(tool, plan) {
             return r;
+        }
+        if tool == "rename_session" {
+            return self.rename_run(plan);
         }
         let uids: Vec<u64> = plan["uids"]
             .as_array()
@@ -2639,6 +2676,7 @@ impl App {
                     | "history"
                     | "tab_history"
                     | "find"
+                    | "search_projects"
             ) {
                 self.assistant.turn_reads += 1;
             }
@@ -2722,7 +2760,19 @@ impl App {
             return Ok(json!({"ok": true, "result": {"say": say}}));
         }
         if tool == "switch_assistant" {
-            if let Some(r) = &self.assistant.remote {
+            // Only another account of the same provider: Remote Control
+            // comes along (the conversation is moved, not restarted).
+            let same_provider = args["provider"].as_str().is_none_or(|p| {
+                let p = p.trim().to_lowercase();
+                p == self.cfg.assistant.provider
+                    || crate::providers::by_id(&self.cfg.assistant.provider)
+                        .name
+                        .eq_ignore_ascii_case(&p)
+            });
+            let account_only = same_provider
+                && args["model"].as_str().is_none_or(|m| m.trim().is_empty())
+                && args.get("account").is_some_and(|a| !a.is_null());
+            if let Some(r) = self.assistant.remote.as_ref().filter(|_| !account_only) {
                 if args["end_remote_control"].as_bool() != Some(true) {
                     return Err(format!("switching ends Remote Control ('{}'): tell the user (\"Switching ends Remote Control; I can turn it back on after\") and call again with end_remote_control true if they still want it", r.name));
                 }
@@ -2735,6 +2785,9 @@ impl App {
             return Ok(json!({"ok": true, "result": {"say": say}}));
         }
         if let Some(r) = self.learned_tool(tool, args) {
+            return r;
+        }
+        if let Some(r) = self.projects_tool(tool, args) {
             return r;
         }
         if tool == "edit_system_prompt" {
@@ -2920,7 +2973,13 @@ impl App {
                     Some(Value::String(x)) => vec![x.clone()],
                     _ => return Err("paths is required (files, folders or http URLs)".into()),
                 };
-                let roots = self.tab_roots();
+                let mut roots = self.tab_roots();
+                // Project folders find and search_projects report.
+                roots.extend(
+                    self.project_roots()
+                        .into_iter()
+                        .map(|r| r.canonicalize().unwrap_or(r)),
+                );
                 let base = match args.get("tab") {
                     Some(_) => {
                         let (sl, t) = self.one_tab(args)?;
@@ -2955,7 +3014,7 @@ impl App {
                             refused.push(json!({"path": c.to_string_lossy(), "reason": format!("{why}; only documents, folders and http(s) links are opened")}));
                         }
                         Ok(c) if roots.iter().any(|r| c.starts_with(r)) => opened.push(c.to_string_lossy().into_owned()),
-                        Ok(c) => refused.push(json!({"path": c.to_string_lossy(), "reason": "outside every tab's folder"})),
+                        Ok(c) => refused.push(json!({"path": c.to_string_lossy(), "reason": "outside every tab's folder and known project"})),
                         Err(_) => refused.push(json!({"path": it, "reason": "does not exist"})),
                     }
                 }
@@ -3691,7 +3750,16 @@ impl App {
                     .and_then(Value::as_u64)
                     .unwrap_or(8)
                     .clamp(1, 30) as usize;
-                ok(json!({"hits": self.find_everywhere(&q, since, limit)}))
+                let hits = self.find_everywhere(&q, since, limit);
+                let strong = hits
+                    .first()
+                    .and_then(|h| h["score"].as_f64())
+                    .is_some_and(|s| s >= 0.85);
+                let mut v = json!({"hits": hits, "strong": strong});
+                if !strong {
+                    v["next"] = json!("No strong hit. Before saying it is not there, look deeper: search_projects with the query (content true to grep inside files), or list_dir into the likely project roots.");
+                }
+                ok(v)
             }
             "remember_summary" => {
                 let text = s("summary")
@@ -4021,7 +4089,18 @@ impl App {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .building = true;
-        let work = move || crate::session_index::rebuild(&shared, &sources);
+        // Then what is inside each project the sessions and tabs were in.
+        let (projects, extra, allowed) = (
+            std::sync::Arc::clone(&self.project_index),
+            self.project_extra_roots(),
+            self.workspaces(),
+        );
+        let work = move || {
+            crate::session_index::rebuild(&shared, &sources);
+            crate::project_index::refresh_from_sessions(
+                &projects, &shared, &extra, force, &allowed,
+            );
+        };
         if cfg!(test) {
             work();
         } else {
@@ -4165,6 +4244,7 @@ impl App {
                 }
             }
         }
+        let memos = crate::project_memory::load();
         let fresh = |r: &crate::session_index::Row| {
             r.info.modified.is_some_and(|m| {
                 m.elapsed().unwrap_or_default() < std::time::Duration::from_secs(300)
@@ -4202,15 +4282,27 @@ impl App {
             })
             .filter_map(|r| {
                 let live_name = external.get(&r.info.id).and_then(|l| l.name.as_deref());
+                // Its saved description and the files it touched count too.
+                let memo = memos
+                    .get("session", &r.info.id)
+                    .or_else(|| memos.get("project", &r.info.cwd));
                 let hay = format!(
-                    "{} {} {} {} {} {} {}",
+                    "{} {} {} {} {} {} {} {} {} {}",
                     r.info.name.as_deref().unwrap_or(""),
                     live_name.unwrap_or(""),
                     r.info.title.as_deref().unwrap_or(""),
                     r.info.first_prompt.as_deref().unwrap_or(""),
                     r.info.last_prompt.as_deref().unwrap_or(""),
                     r.info.cwd,
-                    r.info.model.as_deref().unwrap_or("")
+                    r.info.model.as_deref().unwrap_or(""),
+                    memo.map(|m| m.description.as_str()).unwrap_or(""),
+                    memo.map(|m| m.aliases.join(" ")).unwrap_or_default(),
+                    r.info
+                        .files
+                        .iter()
+                        .map(|f| f.strip_prefix(r.info.cwd.as_str()).unwrap_or(f))
+                        .collect::<Vec<_>>()
+                        .join(" "),
                 );
                 match s("text").map(|q| crate::fuzzy::spoken_punctuation(&q)) {
                     // Words found, or a name that sounds like it.
@@ -4284,6 +4376,12 @@ impl App {
             .iter()
             .map(|(_, r)| {
                 let mut v = crate::session_index::row_json(r, open.get(&r.info.id).map(|u| tab_id(*u)), open.contains_key(&r.info.id) || external.contains_key(&r.info.id) || fresh(r));
+                if let Some(m) = memos.get("session", &r.info.id) {
+                    v["saved"] = crate::project_memory::json(m, None);
+                }
+                if let Some(m) = memos.get("project", &r.info.cwd) {
+                    v["project_saved"] = json!(m.description);
+                }
                 if let Some(l) = external.get(&r.info.id) {
                     // Idle only when nothing at all runs (see activity.rs).
                     let act = crate::activity::of_live(l, &procs, 0);
@@ -4342,6 +4440,8 @@ impl App {
             "pending_answers": self.pending_answers_json(),
             "providers": self.providers_json(),
             "remote_control": self.remote_json(),
+            "restart": self.cont.note_text(),
+            "assistant_account": self.self_switch_json(),
             "listening_paused": self.voice.paused.as_ref().map(|p| json!({"seconds_left": self.pause_left(), "reason": p.reason, "announcements_held": p.queued.len()})),
             "closed": self.closed.iter().rev().take(10).enumerate().map(|(i, c)| json!({"index": i, "tab": c.label, "account": c.account, "cwd": c.cwd, "loops": c.loops.len()})).collect::<Vec<_>>(),
             "accounts": (0..self.cfg.accounts.len()).map(|a| json!({
@@ -4728,10 +4828,11 @@ fn handle(conn: UnixStream, events: Sender<AppEvent>, token: &str, ro_token: &st
                     args = json!({"_client": client});
                 }
                 let (tx, rx) = std::sync::mpsc::channel();
+                let tool_name = tool.clone();
                 if events.send(AppEvent::Control(tool, args, tx)).is_err() {
                     break;
                 }
-                rx.recv_timeout(Duration::from_secs(20))
+                rx.recv_timeout(reply_wait(&tool_name))
                     .unwrap_or_else(|_| err("godterm did not answer in time"))
             }
             Ok(_) => err("bad token"),
@@ -4769,11 +4870,22 @@ pub const READ_ONLY: &[&str] = &[
     "history",
     "tab_history",
     "find",
+    "search_projects",
     "list_learnings",
     "learning_history",
     "get_system_prompt",
     "prompt_history",
 ];
+
+/// How long a tool's reply may take: turning Remote Control on waits for
+/// its outcome (two attempts of up to 20 s each).
+pub fn reply_wait(tool: &str) -> Duration {
+    if tool == "enable_remote_control" {
+        Duration::from_secs(60)
+    } else {
+        Duration::from_secs(20)
+    }
+}
 
 /// Client side (used by `godterm mcp`): one call over the socket.
 pub fn call(tool: &str, args: &Value) -> Result<Value> {
@@ -4792,7 +4904,7 @@ pub fn call(tool: &str, args: &Value) -> Result<Value> {
         .unwrap_or("");
     let mut s = UnixStream::connect(sock)
         .map_err(|e| anyhow!("cannot reach godterm ({e}); is it running?"))?;
-    s.set_read_timeout(Some(Duration::from_secs(25)))?;
+    s.set_read_timeout(Some(reply_wait(tool) + Duration::from_secs(5)))?;
     // The assistant's own brain says so (its mcp.json sets GODTERM_CLIENT).
     let client = crate::config::env_var("CLIENT").unwrap_or_else(|| "external".into());
     writeln!(

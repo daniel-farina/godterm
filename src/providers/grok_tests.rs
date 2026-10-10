@@ -34,6 +34,7 @@ fn backend(d: &Path, bin: &Path) -> (GrokBackend, Receiver<AppEvent>) {
         "You are GodTerm's assistant.".into(),
         tx,
         7,
+        None,
     );
     (b, rx)
 }

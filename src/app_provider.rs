@@ -55,6 +55,31 @@ impl App {
             }
             None => providers::by_id(&cur),
         };
+        // Only another account of the same provider ("move yourself to
+        // account two"): the conversation and Remote Control move along.
+        if p.id == cur && model.is_none_or(|m| m.trim().is_empty()) {
+            if let (Some(h), Some(a)) = (p.harness, account.filter(|a| !a.is_null())) {
+                let i = self.account_arg(a)?;
+                if self.cfg.accounts[i].harness() != h {
+                    return Err(format!(
+                        "{} is not a {} account",
+                        self.cfg.accounts[i].display(),
+                        p.name
+                    ));
+                }
+                if self.brain_account() == Some(i) {
+                    return Ok(format!("Already on {}.", self.cfg.accounts[i].display()));
+                }
+                if self.assistant.busy {
+                    self.assistant.account_after = Some(Some(i));
+                    return Ok(format!(
+                        "Moving to {} after this answer; our conversation continues there.",
+                        self.cfg.accounts[i].display()
+                    ));
+                }
+                return Ok(self.move_assistant(i, "You asked"));
+            }
+        }
         let write = |key: &'static str, v: &str| {
             let _ = crate::settings::write(
                 &crate::config::Config::path(),
@@ -135,8 +160,12 @@ impl App {
         ));
         let mut say = format!("Switched to {} ({whom}, {model}).", p.name);
         if had_remote.is_some() {
-            say.push_str(if p.caps.remote_control {
+            say.push_str(if p.caps.remote_control && self.cfg.assistant.remote_control {
+                " Remote Control ended with the switch; it is kept on, so it turns back on by itself (with a new link)."
+            } else if p.caps.remote_control {
                 " Remote Control ended with the switch; say turn on remote control to start it again."
+            } else if self.cfg.assistant.remote_control {
+                " Remote Control ended with the switch; Grok has none, so Keep Remote Control on rests until you switch back to Claude."
             } else {
                 " Remote Control ended with the switch (it works only on Claude)."
             });
@@ -161,7 +190,7 @@ impl App {
             Some(_) => "its own login, NOT signed in (assistant_login)".to_string(),
             None => self
                 .assistant_account()
-                .map(|a| format!("a{}", a + 1))
+                .map(|a| format!("a{}{}", a + 1, self.self_left_words()))
                 .unwrap_or_else(|| "no logged in account".into()),
         };
         format!(

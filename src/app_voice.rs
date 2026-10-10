@@ -345,6 +345,11 @@ impl App {
             self.voice.action = Some("muted".into());
             crate::log::info("voice: muted");
             self.flash("Mic muted: nothing is heard or sent (click ● MUTED or Ctrl-a X to unmute)");
+        } else if self.voice.engine.is_some() {
+            // A headphone tap closed the mic and kept the engine.
+            self.resume_kept_mic();
+            self.voice.action = Some("unmuted".into());
+            self.flash("Mic on");
         } else {
             self.voice.muted = false;
             let prev = self.voice.muted_prev;
@@ -561,7 +566,7 @@ impl App {
                 self.voice.status = s;
             }
             // No barge-in while paused.
-            VoiceEvent::BargeIn { .. } if self.paused() => {}
+            VoiceEvent::BargeIn { .. } if self.paused() || self.voice.muted => {}
             VoiceEvent::BargeIn { speech_ms, stop_ms } => {
                 self.assistant_barge_in(speech_ms, stop_ms)
             }

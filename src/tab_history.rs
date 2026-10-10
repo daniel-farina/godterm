@@ -366,8 +366,11 @@ impl App {
                     .to_string()
             })
         };
+        let qt = crate::project_index::query_tokens(&q);
         // Coding sessions.
         self.kick_index(false);
+        // Saved descriptions and what is inside each project.
+        hits.extend(self.project_hits(&q, limit.max(8)));
         {
             let ix = self.session_index.lock().unwrap_or_else(|e| e.into_inner());
             for r in ix
@@ -379,13 +382,35 @@ impl App {
                     continue;
                 }
                 let title = r.info.summary();
-                let sc = score(
-                    &title,
-                    &r.info.cwd,
-                    r.info.last_prompt.as_deref().unwrap_or(""),
+                let text = format!(
+                    "{} {}",
+                    r.info.first_prompt.as_deref().unwrap_or(""),
+                    r.info.last_prompt.as_deref().unwrap_or("")
                 );
+                let sc = score(&title, &r.info.cwd, &text);
+                // What it worked on: the files its tool calls named, a
+                // step below its title and prompts.
+                let touched = crate::project_index::touched_score(&qt, &r.info.cwd, &r.info.files);
+                let (sc, why) = match touched {
+                    Some((t, f)) if t > sc => (t, format!("touched {f}")),
+                    _ => {
+                        let n = crate::fuzzy::similarity(&q, &title);
+                        let why = if n >= sc - 0.01 || title.to_lowercase().contains(&ql) {
+                            "session title"
+                        } else if crate::fuzzy::similarity(
+                            &q,
+                            r.info.cwd.rsplit('/').next().unwrap_or(""),
+                        ) >= sc - 0.01
+                        {
+                            "session folder"
+                        } else {
+                            "session title, prompts or folder"
+                        };
+                        (sc, why.to_string())
+                    }
+                };
                 if sc >= 0.6 {
-                    hits.push((sc, json!({"type": "session", "id": r.info.id, "label": crate::sessions::snippet(&title, 80), "folder": crate::config::tilde(std::path::Path::new(&r.info.cwd)), "when": ts(r.info.modified), "source": r.source, "then": "open_session"})));
+                    hits.push((sc, json!({"type": "session", "id": r.info.id, "label": crate::sessions::snippet(&title, 80), "folder": crate::config::tilde(std::path::Path::new(&r.info.cwd)), "why": why, "when": ts(r.info.modified), "source": r.source, "then": "open_session"})));
                 }
             }
         }
@@ -409,14 +434,14 @@ impl App {
             }
             let sc = score(&r.name, &r.cwd, "");
             if sc >= 0.6 {
-                hits.push((sc * 0.98, json!({"type": "tab", "id": r.id, "label": r.name, "folder": crate::config::tilde(std::path::Path::new(&r.cwd)), "when": ts(at), "last_event": r.event, "session": r.session_id, "then": "reopen_tab"})));
+                hits.push((sc * 0.98, json!({"type": "tab", "id": r.id, "label": r.name, "why": "tab name or folder", "folder": crate::config::tilde(std::path::Path::new(&r.cwd)), "when": ts(at), "last_event": r.event, "session": r.session_id, "then": "reopen_tab"})));
             }
         }
         // Your own chats.
         for c in crate::assistant_history::list().into_iter().take(200) {
             let sc = score(&c.first, "", &c.text);
             if sc >= 0.6 {
-                hits.push((sc * 0.9, json!({"type": "chat", "id": c.id, "label": crate::sessions::snippet(&c.first, 80), "when": c.started, "then": "history action=detail"})));
+                hits.push((sc * 0.9, json!({"type": "chat", "id": c.id, "label": crate::sessions::snippet(&c.first, 80), "why": "your conversation with the user", "when": c.started, "then": "history action=detail"})));
             }
         }
         hits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));

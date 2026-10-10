@@ -14,6 +14,7 @@ pub const INSTANT_KEYS: &[&str] = &[
     "voice.tts_volume",
     "assistant.speak_typed",
     "assistant.panel",
+    "voice.headphone_tap",
 ];
 
 /// "50%", "50", "0.5", "half" -> 0.5.
@@ -68,6 +69,18 @@ impl App {
                     "voice.speaker_muted" => json!({"muted": v}),
                     "voice.tts_volume" => json!({"volume": v}),
                     "assistant.speak_typed" => json!({"speak_typed": v}),
+                    "voice.headphone_tap" => {
+                        let Some(on) = truthy(v) else {
+                            return Some(Err("voice.headphone_tap: true or false".into()));
+                        };
+                        self.set_headphone_tap(on);
+                        let say = if on {
+                            "Headphone tap is on: tap your headphones to turn the mic on or off."
+                        } else {
+                            "Headphone tap is off: play and pause go to your music again."
+                        };
+                        return Some(Ok(json!({"ok": true, "result": {"say": say}})));
+                    }
                     _ => {
                         let m = v.as_str().unwrap_or("").to_string();
                         return Some(

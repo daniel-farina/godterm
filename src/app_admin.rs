@@ -125,6 +125,9 @@ fn setting_risk(key: &str, value: &str) -> Option<&'static str> {
         "privacy" if off => Some("account emails would show on screen again"),
         "pass_env" => Some("these environment variables (possibly secrets) reach every tab"),
         "claude_bin" | "grok_bin" => Some("every tab and the assistant would run this program"),
+        "assistant.remote_control" if !off => Some(
+            "anyone signed in to the assistant's claude.ai account could then talk to me from claude.ai/code or the Claude app at any time, with my admin tools, and it turns itself back on after every restart",
+        ),
         _ => None,
     }
 }
@@ -881,7 +884,14 @@ impl App {
             "enable_remote_control" => {
                 self.remote_supported()?;
                 if let Some(r) = &self.assistant.remote {
-                    return Err(format!("Remote Control is already on as '{}'", r.name));
+                    return Err(format!(
+                        "Remote Control is already on as '{}'{}",
+                        r.name,
+                        r.url.as_deref().map(|u| format!(" at {u}")).unwrap_or_default()
+                    ));
+                }
+                if self.assistant.remote_flow.is_some() {
+                    return Err("Remote Control is already turning on; a progress line tells the outcome. It is not on yet.".into());
                 }
                 let name = s("name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| self.remote_default_name());
                 let whom = self.assistant_account().map(|a| self.cfg.accounts[a].display().to_string()).unwrap_or_default();
@@ -961,9 +971,7 @@ impl App {
                 ))
             }
             "enable_remote_control" => {
-                let say =
-                    self.enable_remote(plan["name"].as_str().unwrap_or("GodTerm assistant"))?;
-                Ok(ok(json!({"say": say})))
+                self.enable_remote_tool(plan["name"].as_str().unwrap_or("GodTerm assistant"))
             }
             "install_dependency" => {
                 let ids: Vec<String> =

@@ -138,6 +138,8 @@ pub enum UiAction {
     SetupDontShow,
     /// The assistant panel's input (or anywhere in it): give it the keys.
     AssistantFocus,
+    /// The panel's Remote indicator: open (and copy) the link.
+    AssistantRemoteLink,
     /// The assistant panel's Send button.
     AssistantSend,
     /// An action chip in the assistant panel: show or hide its raw call.

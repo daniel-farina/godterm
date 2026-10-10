@@ -54,6 +54,16 @@ pub struct StartCtx<'a> {
     pub gen: u64,
     /// The assembled system prompt (sections and learned rules).
     pub system_prompt: String,
+    /// Its own session, kept across restarts (assistant.resume); None:
+    /// nothing is saved.
+    pub session: Option<SessionPlan>,
+}
+
+/// The session a brain runs in: a new one with this id, or this one again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionPlan {
+    pub id: String,
+    pub resume: bool,
 }
 
 pub struct Provider {

@@ -43,7 +43,6 @@ pub struct AssistantState {
     got_delta: bool,
     /// Spoken replies open a follow up window when speech ends.
     pub follow_up: bool,
-    warned_low: bool,
     pub last_cost: Option<f64>,
     pub started: Option<Instant>,
     /// Turns sent to the current process.
@@ -130,7 +129,7 @@ pub struct AssistantState {
     /// This turn was already retried with a higher limit.
     cap_retried: bool,
     /// The current turn, to send again: (text, heard, system note).
-    last_turn: Option<(String, Option<String>, Option<String>)>,
+    pub(crate) last_turn: Option<(String, Option<String>, Option<String>)>,
     /// The panel shows the admin actions instead of the chat.
     pub show_admin: bool,
     /// The panel shows the full timing of the last turn.
@@ -152,11 +151,32 @@ pub struct AssistantState {
     pub turn_remote: bool,
     /// The menu's Remote Control waits for its second pick.
     pub remote_armed: Option<Instant>,
+    /// Turning Remote Control on (its attempts, retry and restart).
+    pub remote_flow: Option<crate::app_remote::RemoteFlow>,
+    /// Kept on (assistant.remote_control): not before this (after a
+    /// failure, or a short pause after it dropped).
+    pub remote_retry_at: Option<Instant>,
+    /// The user turned it off: not turned on again by itself until
+    /// GodTerm restarts (or it is turned on).
+    pub remote_off_by_user: bool,
+    /// The last Remote Control link (it can change on each enable).
+    pub remote_last_url: Option<String>,
+    /// The next brain starts a new session (New, reset_after_turns, ...).
+    pub fresh_session: bool,
+    /// The current brain resumed its session (its gen) and has not
+    /// answered yet: an exit now means the resume failed.
+    pub resumed: Option<u64>,
+    /// The crash check ran (once per launch).
+    pub crash_checked: bool,
+    /// Start the brain now (after a crash), not on the first request.
+    pub eager_start: bool,
     /// Questions sent to tabs whose answers are reported back.
     pub follow_ups: Vec<crate::app_followup::FollowUp>,
     pub follow_seq: u64,
     /// The assistant could not start for a report: try again after this.
     pub report_retry: Option<Instant>,
+    /// Watching its own account's usage (warn, ask, move).
+    pub selfswitch: crate::app_selfswitch::SelfSwitch,
 }
 
 /// Where the time of one turn went.
@@ -296,6 +316,8 @@ impl App {
             self.assistant.carry = (!carry.is_empty()).then_some(carry);
             self.assistant.brain = None;
             self.assistant.turns_in_brain = 0;
+            // A trim: the next process gets a new session, not this one.
+            self.assistant.fresh_session = true;
         }
         let provider = crate::providers::by_id(&self.cfg.assistant.provider);
         let best = self.cfg.assistant.account == "best";
@@ -334,7 +356,10 @@ impl App {
             acfg.max_output_tokens = acfg.max_output_tokens.max(c);
         }
         let model = crate::providers::model_for(provider, &acfg);
+        let session = self.session_plan(provider, account, &home);
+        let resumed = session.as_ref().is_some_and(|s| s.resume);
         let ctx = crate::providers::StartCtx {
+            session,
             bin: (provider.bin)(&self.cfg),
             home,
             cfg: &acfg,
@@ -362,8 +387,18 @@ impl App {
                 ""
             }
         ));
+        self.assistant.resumed = None;
+        if resumed {
+            // It has the conversation: no memory block or summary.
+            self.assistant.resumed = Some(b.gen);
+            self.assistant.carry = None;
+            self.assistant.brain_fresh = false;
+            self.note("It continues its own session.");
+        } else {
+            self.assistant.brain_fresh = true;
+        }
+        self.assistant.turns_in_brain = 0;
         self.assistant.brain = Some(b);
-        self.assistant.brain_fresh = true;
         self.assistant.started = Some(Instant::now());
         Ok(())
     }
@@ -698,7 +733,8 @@ impl App {
         if text.is_empty() {
             return;
         }
-        if self.say_more(text) || self.cancel_follow_ups_said(text) {
+        if self.self_switch_heard(text) || self.say_more(text) || self.cancel_follow_ups_said(text)
+        {
             return;
         }
         self.start_turn(text, heard, None);
@@ -710,7 +746,7 @@ impl App {
         self.start_turn(msg, None, Some(note));
     }
 
-    fn start_turn(&mut self, text: &str, heard: Option<&str>, system: Option<&str>) {
+    pub(crate) fn start_turn(&mut self, text: &str, heard: Option<&str>, system: Option<&str>) {
         self.assistant.cap_retried = false;
         self.assistant.last_turn = Some((
             text.to_string(),
@@ -843,6 +879,7 @@ impl App {
     /// "new conversation" / "forget that".
     pub fn reset_assistant(&mut self) {
         self.assistant.brain = None;
+        self.assistant.fresh_session = true;
         self.assistant.conv = None;
         self.assistant.carry = None;
         self.last_target = None;
@@ -862,8 +899,17 @@ impl App {
         }
     }
 
-    /// Point it at another account (by index, or None for "best").
+    /// Point it at another account (by index, or None for "best"). Another
+    /// account of its provider: the conversation moves along.
     pub fn set_assistant_account(&mut self, a: Option<usize>) {
+        let h = crate::providers::by_id(&self.cfg.assistant.provider).harness;
+        if let Some(i) = a.filter(|&i| {
+            h == Some(self.cfg.accounts[i].harness()) && self.brain_account() != Some(i)
+        }) {
+            let msg = self.move_assistant(i, "You asked");
+            crate::log::info(&format!("assistant: account set: {msg}"));
+            return;
+        }
         let name = a
             .map(|i| self.cfg.accounts[i].name.clone())
             .unwrap_or_else(|| "best".into());
@@ -1151,6 +1197,7 @@ impl App {
         match ev {
             BrainEvent::Control(id, r) => return self.on_remote_response(&id, r),
             BrainEvent::UserText(t) => return self.on_user_text(&t),
+            BrainEvent::Bridge(s) => return self.on_bridge_state(&s),
             _ => {}
         }
         // A cut off turn: drop its output; its end frees the next one.
@@ -1217,6 +1264,15 @@ impl App {
                 // Tool calls are logged by the control API itself.
             }
             BrainEvent::Done { text, cost, error } => {
+                // A resumed session that cannot be found (grok answers so).
+                if error
+                    && self.assistant.resumed.is_some()
+                    && text.to_lowercase().contains("no conversation found")
+                {
+                    let was_busy = self.assistant.busy;
+                    return self.resume_failed(&text, was_busy);
+                }
+                self.assistant.resumed = None;
                 if !self.assistant.block.trim().is_empty() {
                     self.end_block(false);
                 }
@@ -1231,6 +1287,10 @@ impl App {
                 };
                 self.assistant.finals.clear();
                 self.assistant.current.clear();
+                // A usage or rate limit: it moves itself, the turn sent again.
+                if error && self.self_switch_on_limit(&format!("{reply} {text}")) {
+                    return;
+                }
                 // A provider's login refused (Grok's own login): back to Claude.
                 if error && self.cfg.assistant.provider != "claude" {
                     let low = format!("{reply} {text}").to_lowercase();
@@ -1327,8 +1387,10 @@ impl App {
                     self.set_assistant_account(a);
                 }
             }
-            BrainEvent::Control(..) | BrainEvent::UserText(_) => {}
+            BrainEvent::Control(..) | BrainEvent::UserText(_) | BrainEvent::Bridge(_) => {}
             BrainEvent::Exited(tail) => {
+                let was_busy = self.assistant.busy;
+                let resume_failed = self.assistant.resumed.is_some();
                 self.remote_lost("the assistant stopped");
                 if self.assistant.brain.is_some() {
                     let why = tail
@@ -1346,6 +1408,15 @@ impl App {
                 self.assistant.stale = 0;
                 self.assistant.queued_after_cut = false;
                 self.assistant.muted = false;
+                if resume_failed {
+                    let why = tail
+                        .lines()
+                        .rev()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("it exited")
+                        .to_string();
+                    self.resume_failed(&why, was_busy);
+                }
             }
         }
     }
@@ -1374,6 +1445,7 @@ impl App {
         ));
         self.assistant.token_cap = Some(new);
         self.assistant.brain = None;
+        self.assistant.fresh_session = true;
         self.assistant.busy = false;
         self.assistant.log.push(Entry {
             who: Who::Preamble,
@@ -1461,10 +1533,12 @@ impl App {
         }
     }
 
-    /// Every second or so: move off a nearly empty account.
+    /// Every second or so: deadlines, Remote Control, its own account.
     pub fn assistant_tick(&mut self) {
         self.assistant_deadlines();
         self.follow_ups_tick();
+        self.crash_check();
+        self.remote_tick();
         if self
             .assistant
             .memory_count
@@ -1497,30 +1571,8 @@ impl App {
             // Keep the session index warm for the sessions tool.
             self.kick_index(false);
         }
-        let Some(a) = self.assistant.brain.as_ref().and_then(|b| b.account) else {
-            return;
-        };
-        let left = self.accounts[a].effective_left();
-        if left.is_some_and(|l| l < 5.0) {
-            if self.cfg.assistant.account == "best"
-                && self.assistant_account() != Some(a)
-                && !self.assistant.busy
-            {
-                self.assistant.brain = None;
-                let to = self
-                    .assistant_account()
-                    .map(|i| self.cfg.accounts[i].display().to_string())
-                    .unwrap_or_default();
-                self.note(format!(
-                    "Switched to {to}: the previous account was under 5% left."
-                ));
-            } else if !self.assistant.warned_low {
-                self.assistant.warned_low = true;
-                let msg = format!("The assistant's account {} is under 5% left; pick another in Settings > Assistant", self.cfg.accounts[a].display());
-                self.note(msg.clone());
-                self.flash(msg);
-            }
-        }
+        // Its own account: warn, ask or move (app_selfswitch).
+        self.self_switch_tick();
     }
 
     /// Ctrl-a .: open the panel (with the keys), give it the keys back

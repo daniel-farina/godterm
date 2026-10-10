@@ -184,6 +184,22 @@ fn keychain_read(service: &str) -> Option<String> {
     }
 }
 
+/// The item exists (its attributes only; the secret is not read).
+fn keychain_present(service: &str) -> bool {
+    if !crate::demo::keychain_allowed() {
+        return false;
+    }
+    let mut cmd = Command::new("security");
+    cmd.args([
+        "find-generic-password",
+        "-a",
+        &keychain_account(),
+        "-s",
+        service,
+    ]);
+    output_with_timeout(cmd, Duration::from_secs(5)).is_some_and(|o| o.status.success())
+}
+
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
@@ -205,6 +221,15 @@ pub fn load_creds(config_dir: &Path) -> Option<(OAuthCreds, CredSource)> {
         for cand in dir_candidates(config_dir) {
             let svc = keychain_service(&cand);
             if svc == SERVICE_BASE {
+                continue;
+            }
+            // GODTERM_CREDS_PRESENCE_ONLY=1 (an isolated test instance):
+            // the item's existence is the login; its secret is never read,
+            // so no keychain prompt appears for another binary.
+            if crate::config::env_var("CREDS_PRESENCE_ONLY").is_some_and(|v| v == "1") {
+                if keychain_present(&svc) {
+                    return Some((OAuthCreds::default(), CredSource::Keychain));
+                }
                 continue;
             }
             if let Some(c) = keychain_read(&svc).as_deref().and_then(parse_creds) {

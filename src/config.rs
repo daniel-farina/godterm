@@ -175,6 +175,10 @@ pub struct Config {
     /// "eager" starts every restored tab at launch; "lazy" when first shown.
     #[serde(default = "default_restore")]
     pub restore: String,
+    /// After a restart, tabs that were in the middle of a turn get one
+    /// prompt to continue where they left off.
+    #[serde(default = "default_true")]
+    pub restore_continue_working: bool,
     /// Show the account email in pane headers.
     #[serde(default = "default_true")]
     pub show_email: bool,
@@ -257,6 +261,36 @@ pub struct Config {
     /// `[update]`: checking for and installing new versions.
     #[serde(default)]
     pub update: UpdateCfg,
+    /// `[supervisor]`: the watchdog that relaunches GodTerm after a crash
+    /// (`godterm supervisor install`).
+    #[serde(default)]
+    pub supervisor: SupervisorCfg,
+}
+
+/// `[supervisor]`: what the launchd watchdog does once installed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SupervisorCfg {
+    /// Relaunch GodTerm after an unclean exit (a crash, kill, panic or a
+    /// closed window); a quit is never undone.
+    pub enabled: bool,
+    /// Restart a GodTerm whose control socket has not answered for
+    /// `hang_s` seconds.
+    pub hang_restart: bool,
+    pub hang_s: u64,
+    /// The shell command that starts it (empty: open GodTerm.app).
+    pub launch: String,
+}
+
+impl Default for SupervisorCfg {
+    fn default() -> Self {
+        SupervisorCfg {
+            enabled: true,
+            hang_restart: true,
+            hang_s: 120,
+            launch: String::new(),
+        }
+    }
 }
 
 /// `[update]`: GodTerm checks GitHub Releases at start and every few
@@ -375,6 +409,21 @@ pub struct AssistantCfg {
     /// (floats over the right side; the panes keep their size) or "auto"
     /// (docked while every pane keeps about 80 columns).
     pub panel: String,
+    /// Keep Claude Code Remote Control on: it turns on whenever the
+    /// assistant starts or restarts, and again when it drops (Claude only).
+    pub remote_control: bool,
+    /// Keep the assistant's own session across restarts and crashes
+    /// (`--resume`); off: every process starts fresh with the memory block.
+    pub resume: bool,
+    /// Its own account running out: "auto" (move itself to the account
+    /// with the most left, conversation kept), "ask" (one Yes/No) or "off".
+    pub auto_switch: String,
+    /// Warn once per window when its account's binding limit is under this
+    /// much left (percent).
+    pub switch_warn_pct: f64,
+    /// Move (or ask) at this much left or less (percent), or when a turn
+    /// fails on a usage limit.
+    pub switch_at_pct: f64,
 }
 
 impl Default for AssistantCfg {
@@ -400,6 +449,11 @@ impl Default for AssistantCfg {
             answer_wait_min: 15,
             speak_typed: false,
             panel: "docked".into(),
+            remote_control: false,
+            resume: true,
+            auto_switch: "auto".into(),
+            switch_warn_pct: 15.0,
+            switch_at_pct: 5.0,
         }
     }
 }
@@ -531,12 +585,22 @@ pub struct VoiceCfg {
     /// (headphones recommended).
     pub barge_in: bool,
     pub barge_margin_db: f32,
+    /// Barge-in needs words, not noise: the reply stops only when the
+    /// audio over it holds this many real words (fillers, sound tags and
+    /// our own echo not counted), or a command word like "stop" at once.
+    pub barge_in_min_words: u32,
+    /// Lower the reply's volume while deciding whether it was words.
+    pub barge_in_duck: bool,
     /// Speak when a background tab needs approval or finishes.
     pub announce: bool,
     /// Minimum seconds between announcements.
     pub announce_every_s: u32,
     /// Play a short sound when the wake word is heard.
     pub chime: bool,
+    /// Headphone tap: the play/pause button on headphones (or the media
+    /// key) turns the mic on or off. GodTerm claims Now Playing while it
+    /// is on, so the press does not reach Music or Spotify (macOS).
+    pub headphone_tap: bool,
     /// Unrecognized speech after the wake word: "confirm" holds it until you
     /// say "send", "send" types it into the focused session right away,
     /// "off" ignores it.
@@ -630,7 +694,10 @@ impl Default for VoiceCfg {
             speak_readback: true,
             conversation: false,
             barge_in: true,
+            headphone_tap: false,
             barge_margin_db: 15.0,
+            barge_in_min_words: 2,
+            barge_in_duck: true,
             announce: true,
             announce_every_s: 20,
             chime: true,
@@ -802,6 +869,7 @@ impl Default for Config {
             new_tab_create_folder: true,
             recent_paths_limit: default_recent_limit(),
             restore: default_restore(),
+            restore_continue_working: true,
             show_email: true,
             show_path: true,
             privacy: false,
@@ -841,6 +909,7 @@ impl Default for Config {
             voice: VoiceCfg::default(),
             viz: Default::default(),
             update: Default::default(),
+            supervisor: Default::default(),
             assistant: AssistantCfg::default(),
             usage: UsageCfg::default(),
         }

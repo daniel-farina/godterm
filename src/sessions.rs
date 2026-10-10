@@ -79,6 +79,24 @@ pub struct SessionInfo {
     /// (entrypoint "sdk-cli") or grok's headless mode.
     #[serde(default)]
     pub headless: bool,
+    /// Files its tool calls named (Read, Edit, Write...), at most
+    /// `MAX_FILES`, for finding a session by what it worked on.
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+/// Touched files kept per session.
+pub const MAX_FILES: usize = 40;
+
+/// Keep a file path a tool call named, once, up to `MAX_FILES`.
+fn note_file(files: &mut Vec<String>, p: &str) {
+    if files.len() < MAX_FILES
+        && p.len() < 400
+        && (p.starts_with('/') || p.starts_with('~') || p.contains(":\\"))
+        && !files.iter().any(|f| f == p)
+    {
+        files.push(p.to_string());
+    }
 }
 
 impl SessionInfo {
@@ -239,6 +257,20 @@ pub fn parse_transcript_as<R: BufRead>(reader: R, id: &str, subagent: bool) -> S
                     }
                 }
                 if !sidechain {
+                    for b in msg
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+                    {
+                        let i = &b["input"];
+                        for k in ["file_path", "notebook_path", "path"] {
+                            if let Some(p) = i.get(k).and_then(Value::as_str) {
+                                note_file(&mut info.files, p);
+                            }
+                        }
+                    }
                     if let Some(m) = msg.get("model").and_then(Value::as_str) {
                         if m != "<synthetic>" {
                             info.model = Some(m.to_string());
@@ -327,6 +359,9 @@ pub fn parse_file_quick(path: &Path) -> Option<SessionInfo> {
     info.name = b.name.or(a.name);
     info.last_prompt = b.last_prompt.or(a.last_prompt);
     info.model = b.model.or(a.model);
+    for f in &b.files {
+        note_file(&mut info.files, f);
+    }
     info.approx = true;
     info.path = path.to_path_buf();
     info.modified = fs::metadata(path).and_then(|m| m.modified()).ok();
@@ -375,6 +410,10 @@ impl SessionCache {
         };
         for proj in projects.flatten() {
             if !proj.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            // The assistant's own kept session is not one of the user's.
+            if crate::app_resume::is_assistant_project(&proj.file_name().to_string_lossy()) {
                 continue;
             }
             let Ok(files) = fs::read_dir(proj.path()) else {

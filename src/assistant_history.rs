@@ -3,10 +3,11 @@
 //! or spoken with whisper's transcript), every tool call and its result
 //! (truncated), the replies, timing, and the account and model.
 //!
-//! The brain runs `claude -p --no-session-persistence`, so claude keeps no
-//! session of its own: those would land in the account's projects folder
-//! and show up as clutter in Sessions. This log is the record; resuming
-//! starts a fresh brain with a summary of it.
+//! With assistant.resume off the brain runs `claude -p
+//! --no-session-persistence`; on, it keeps one session of its own across
+//! restarts (see app_resume), kept out of Sessions. This log is the
+//! record either way; resuming a saved conversation starts a fresh brain
+//! with a summary of it.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -295,6 +296,7 @@ impl App {
         }
         let evs = read(&c.path);
         self.assistant.brain = None;
+        self.assistant.fresh_session = true;
         self.assistant.turns_in_brain = 0;
         self.assistant.carry = Some(carry_summary(&evs));
         self.assistant.log.clear();

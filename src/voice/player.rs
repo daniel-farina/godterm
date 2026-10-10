@@ -38,6 +38,22 @@ pub fn note_played(rms: f32) {
     }
 }
 
+/// Output volume factor on top of `push`'s volume (f32 bits): lowered
+/// briefly while a barge-in is decided, then restored.
+static DUCK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// Duck the output to `v` (0 to 1; 1 is full volume).
+pub fn set_duck(v: f32) {
+    DUCK.store(
+        v.clamp(0.0, 1.0).to_bits(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn duck() -> f32 {
+    f32::from_bits(DUCK.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 /// When the last flush emptied the queue (barge-in timing).
 pub static FLUSHED_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
@@ -170,8 +186,9 @@ fn fill<T: Copy>(
     }
     let mut sq = 0.0f32;
     let mut n = 0usize;
+    let gain = duck();
     for frame in out.chunks_mut(channels.max(1)) {
-        let x = q.pop_front().unwrap_or(0.0);
+        let x = q.pop_front().unwrap_or(0.0) * gain;
         sq += x * x;
         n += 1;
         let v = conv(x);

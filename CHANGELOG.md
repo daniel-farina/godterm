@@ -7,6 +7,13 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+### Voice
+- Headphone tap (`voice.headphone_tap`, off by default): play/pause on
+  headphones or the media key turns the mic on or off, and a tap on wakes
+  it so the next words need no wake word. It never cuts off a reply.
+  GodTerm holds Now Playing while it is on, so Music and Spotify do not
+  get the press; off or quitting gives it back. macOS.
+
 ## [0.2.8] - 2026-10-08
 
 ### Panes

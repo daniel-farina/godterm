@@ -899,7 +899,8 @@ done
         "mcp__godterm__answer_prompt",
         "--model claude-haiku-4-5",
         "--effort low",
-        "--no-session-persistence",
+        // Its own session, kept across restarts (assistant.resume).
+        "--session-id ",
         // The brain does what is asked instead of offering to.
         "Do, don't offer",
         "Never answer it with \"Want me to do that?\"",

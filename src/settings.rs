@@ -159,11 +159,14 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("splash", "Show splash at start", Kind::Choice(&["once", "never"]), "once: the GodTerm splash plays on the first launch and once after an update (any key skips it). never: skip it. godterm splash shows it any time."),
             g("splash_motion", "Splash animation", Kind::Choice(&["on", "auto", "off"]), "on: always animate; auto: a still frame when macOS Reduce Motion is on; off: always a still frame."),
             g("restore", "Restore tabs", Kind::Choice(&["eager", "lazy"]), "eager starts every restored tab at launch; lazy when it is first shown."),
+            g("restore_continue_working", "Continue working tabs after a restart", Kind::Toggle, "After a restart, update or crash, tabs that were in the middle of a turn (not idle, not waiting for approval) are resumed and told to continue where they left off, once. Marks older than 30 minutes are ignored."),
             g("auto_restart", "Auto restart crashed tabs", Kind::Toggle, "Restart a tab (resuming its session) when it exits with an error."),
             g("notifications", "Desktop notifications", Kind::Toggle, "Notify when a background tab needs approval or finishes, while the terminal is not in front."),
             g("autostart", "Start tabs at launch", Kind::Toggle, "Start sessions in logged in panes when godterm opens."),
             g("update.enabled", "Check for updates", Kind::Toggle, "Look for a new version on GitHub at start and every few hours (Settings > About shows it; Ctrl-a N restarts into it)."),
             g("update.channel", "Update channel", Kind::Choice(&["stable", "prerelease"]), "stable: releases only; prerelease: also release candidates."),
+            g("supervisor.enabled", "Relaunch after a crash", Kind::Toggle, "With the supervisor installed (godterm supervisor install), GodTerm is opened again after a crash, a kill or a closed window, with every tab and the assistant's session back; a quit stays quit. At most 3 relaunches in 10 minutes."),
+            g("supervisor.hang_restart", "Restart when hung", Kind::Toggle, "The supervisor restarts GodTerm when its control socket has not answered for 2 minutes."),
             g("update.auto_download", "Download updates", Kind::Toggle, "Download and verify a new version in the background, so a restart is all it takes. Homebrew and system packages only get a notice."),
             g("update.require_signature", "Require signed updates", Kind::Toggle, "On (recommended): an update is installed only if its SHA256SUMS carries a valid signature from GodTerm's release key. Turning this off is not recommended: an unsigned release would then be trusted on its checksums alone."),
             g("grok_claude_compat.hooks", "Grok: Claude hooks", Kind::Toggle, "Let grok tabs run the hooks of your Claude Code setup (~/.claude plugins and settings). Off by default: grok fails on them (command not found .../hooks/node)."),
@@ -736,6 +739,7 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
         "Start with the mic muted (the red MUTED button or Ctrl-a X unmutes).",
     ));
     r.add(g("voice.instant_commands", "Instant one-word commands", Kind::Toggle, "stop, yes, no, approve, deny, sleep, stop talking, next tab, previous tab run at once when they are the whole utterance; everything else goes to the assistant."));
+    r.add(g("voice.headphone_tap", "Headphone tap", Kind::Toggle, "Play/pause on your headphones (AirPods or headset tap, EarPods button) or the media key turns the mic on or off; what is being said is never cut off. GodTerm takes Now Playing while this is on, so the press does not reach Music or Spotify; off gives it back. macOS only for now."));
 
     r.group("Microphone");
     r.add(g(
@@ -928,7 +932,7 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
         Kind::Toggle,
         "After talking back, listen for a reply without the wake word (wake mode).",
     ));
-    r.add(g("voice.barge_in", "Barge-in", Kind::Toggle, "Talking over a reply stops it at once and takes what you say as the next request. Its own voice never counts."));
+    r.add(g("voice.barge_in", "Barge-in", Kind::Toggle, "Talking over a reply stops it and takes what you say as the next request. It needs words: noise, coughs and its own voice never count."));
     r.when(
         vc.barge_in,
         "barge-in is on",
@@ -941,6 +945,30 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
                 step: 1.0,
             },
             "How many dB over the threshold speech must be to cut through.",
+        ),
+    );
+    r.when(
+        vc.barge_in,
+        "barge-in is on",
+        g(
+            "voice.barge_in_min_words",
+            "Barge-in words",
+            Kind::Number {
+                min: 1,
+                max: 6,
+                step: 1,
+            },
+            "Real words heard over a reply before it stops (a command like \"stop\" stops it at once). Noise, coughs and fillers never do.",
+        ),
+    );
+    r.when(
+        vc.barge_in,
+        "barge-in is on",
+        g(
+            "voice.barge_in_duck",
+            "Duck while deciding",
+            Kind::Toggle,
+            "Lower the reply's volume for a moment while it checks whether you said words.",
         ),
     );
     r.add(g(
@@ -1044,6 +1072,56 @@ fn assistant_rows(cfg: &Config, all: bool) -> Vec<Setting> {
             "Keep it warm",
             Kind::Toggle,
             "Start its process at launch and when you start talking, so the first answer is quick.",
+        ),
+    );
+    r.when(
+        on,
+        why,
+        g(
+            "assistant.resume",
+            "Resume its session",
+            Kind::Toggle,
+            "Every restart (launch, crash, update) continues the assistant's own claude session; a missing or very large one starts fresh with the memory summary. New starts a fresh one.",
+        ),
+    );
+    r.when(
+        on,
+        why,
+        g(
+            "assistant.remote_control",
+            "Keep Remote Control on",
+            Kind::Toggle,
+            "Turns Remote Control on whenever the assistant starts, and again when it drops, so claude.ai/code and the Claude app can always reach it. Anyone signed in to its claude.ai account gets its admin tools. Claude only.",
+        ),
+    );
+    r.when(
+        on,
+        why,
+        g(
+            "assistant.auto_switch",
+            "When its own account runs out",
+            Kind::Choice(&["auto", "ask", "off"]),
+            "auto: at the switch level (or when a request fails on a usage limit) it moves itself to the account of the same provider with the most left; the conversation and Remote Control come along. ask: one Yes/No first. off: it stays.",
+        ),
+    );
+    r.when(
+        on,
+        why,
+        g(
+            "assistant.switch_warn_pct",
+            "Warn about its account below (% left)",
+            Kind::Float { min: 0.0, max: 50.0, step: 1.0 },
+            "Once per usage window it says its account is running low (the binding limit, 5 hour or weekly) and where it will move.",
+        ),
+    );
+    r.when(
+        on,
+        why,
+        g(
+            "assistant.switch_at_pct",
+            "Move itself at (% left)",
+            Kind::Float { min: 0.0, max: 50.0, step: 1.0 },
+            "At this much left or less on either limit it moves to another account (see When its own account runs out).",
         ),
     );
     r.group("Speaking");
