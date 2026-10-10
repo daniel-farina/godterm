@@ -1042,7 +1042,7 @@ impl App {
     }
 
     /// Speak the answer: narration dropped (shown dim), at most the
-    /// spoken sentence limit, the rest offered. Returns the reply without
+    /// spoken sentence limit, the rest shown ("more" says it). Returns the reply without
     /// its narration.
     fn speak_reply(&mut self, reply: &str) -> String {
         let max = self.cfg.assistant.spoken_sentences;
@@ -1057,22 +1057,16 @@ impl App {
             Some(r) => format!("{say} {r}"),
             None => say.clone(),
         };
-        match rest {
-            Some(rest) => {
-                let offer = if say.contains('?') {
-                    "Say more for the rest."
-                } else {
-                    "Want the rest?"
-                };
-                self.say_part(&format!("{say} {offer}"));
-                self.assistant.unsaid = Some((Instant::now(), rest));
-            }
-            None => self.say_part(&say),
+        // No closing offer: the spoken part ends where it ends. The rest
+        // stays shown, and "more" still says it.
+        self.say_part(&say);
+        if let Some(rest) = rest {
+            self.assistant.unsaid = Some((Instant::now(), rest));
         }
         shown
     }
 
-    /// "more", "go on", or a yes to "Want the rest?": say what the last
+    /// "more", "go on" or "the rest": say what the last
     /// reply left unsaid, without a turn.
     fn say_more(&mut self, text: &str) -> bool {
         let Some((at, rest)) = self.assistant.unsaid.clone() else {

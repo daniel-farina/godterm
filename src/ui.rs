@@ -9219,7 +9219,7 @@ mod tests {
         });
         assert_eq!(
             app.assistant.spoken,
-            vec!["The pause fix landed on Tuesday. Marcus now answers within a second. Want the rest?"]
+            vec!["The pause fix landed on Tuesday. Marcus now answers within a second."]
         );
         let reply = app
             .assistant

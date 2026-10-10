@@ -383,9 +383,9 @@ impl App {
             names.push(format!("t{} ({})", f.uid, f.tab));
         }
         let how = if parts.len() > 1 {
-            "Summarize each for the user in one or two spoken sentences, then ask if they want the details. Call no tools."
+            "Summarize each for the user in one or two spoken sentences. Call no tools."
         } else {
-            "Summarize it for the user in one or two spoken sentences, then ask if they want the details. Call no tools."
+            "Summarize it for the user in one or two spoken sentences. Call no tools."
         };
         let msg = format!("{}\n{how}", parts.join("\n"));
         let note = format!("({} answered)", names.join(", "));
