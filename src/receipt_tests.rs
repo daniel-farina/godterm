@@ -565,3 +565,45 @@ fn restart_requeues_or_reports() {
     });
     assert!(!r.submitted().contains("tag the release"));
 }
+
+/// A request with an image: the tab gets the image path on its own line
+/// (Claude Code attaches it as [Image #1]), and the receipts still follow
+/// it through the transcript, where the text has the image's placeholder.
+#[test]
+fn request_with_image_keeps_receipts() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut r) = rig("image", "ready") else {
+        return;
+    };
+    let (p, w, h) =
+        crate::assistant_images::save_png(&crate::assistant_images::testing::png(8, 8)).unwrap();
+    r.app
+        .assistant
+        .images
+        .push(crate::assistant_images::Attachment {
+            id: 1,
+            path: p.clone(),
+            w,
+            h,
+            at: Instant::now(),
+        });
+    let tid = format!("t{}", r.uid);
+    let v = r.app.control_call(
+        "send_prompt",
+        &json!({"_client": "brain", "tab": tid, "text": "fix the header", "expect_reply": false, "images": [1]}),
+    );
+    assert!(v["error"].is_null(), "{v}");
+    let id = r.app.deliveries.last().unwrap().id;
+    let path = p.display().to_string();
+    r.until(20, "the paste", |r| r.submitted().contains(&path));
+    assert!(r.submitted().contains("fix the header"));
+    r.mode("working");
+    r.record(json!({"type": "user", "timestamp": now_ts(), "message": {"role": "user", "content": [
+        {"type": "text", "text": "[Image #1] fix the header"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+    ]}}));
+    r.until(10, "started", |r| r.state(id) == "started");
+    r.reply_and_end("Fixed.");
+    r.mode("ready");
+    r.until(10, "done", |r| r.state(id) == "done");
+}

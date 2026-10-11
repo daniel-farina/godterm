@@ -99,7 +99,11 @@ fn norm(s: &str) -> String {
 
 /// The part of a prompt looked for in the transcript.
 pub fn key(text: &str) -> String {
-    norm(text).chars().take(40).collect()
+    // Image lines GodTerm added: Claude Code shows them as attachments.
+    norm(crate::assistant_images::strip_image_lines(text))
+        .chars()
+        .take(40)
+        .collect()
 }
 
 /// The first words of a prompt, for a spoken notice.

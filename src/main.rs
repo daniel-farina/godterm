@@ -11,6 +11,7 @@ mod app_failover;
 mod app_followup;
 mod app_grid;
 mod app_headtap;
+mod app_images;
 mod app_layout;
 mod app_learned;
 mod app_loops;
@@ -41,6 +42,7 @@ mod app_voice;
 mod app_wake;
 mod assistant;
 mod assistant_history;
+mod assistant_images;
 mod assistant_memory;
 #[cfg(test)]
 mod click_focus_tests;
@@ -68,6 +70,8 @@ mod harness;
 #[cfg(test)]
 mod headtap_tests;
 mod hits;
+#[cfg(test)]
+mod image_tests;
 mod install;
 mod instance;
 mod instant;

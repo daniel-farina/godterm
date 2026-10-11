@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 /// The real path: symlinks resolved for the part that exists (so a path
 /// that is not there yet still compares right, /var vs /private/var).
-fn canon(p: &Path) -> PathBuf {
+pub fn canon(p: &Path) -> PathBuf {
     if let Ok(c) = p.canonicalize() {
         return c;
     }

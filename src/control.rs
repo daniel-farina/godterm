@@ -298,20 +298,20 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "open_tab",
-        description: "Open a new claude tab on an account and, with prompt, give its claude that task. name: a short task name; the tab gets a new folder of that name. dir: a folder (path or recent project name) instead; a path that does not exist yet is created when its parent folder exists under the home folder (its say: \"Created ~/x and opened a session there on Account 4.\"); when the parent is missing too it returns an error naming it: ask the user once, and on yes call again with create true. Waits until the tab is ready and the prompt is accepted; returns the tab id and the delivery status. A prompt that asks the tab's agent something for the user (or expect_reply true) is followed: GodTerm tells the user its first reply when it comes. The result says will_report: promise to report back only when it is true.",
+        description: "Open a new claude tab on an account and, with prompt, give its claude that task. name: a short task name; the tab gets a new folder of that name. dir: a folder (path or recent project name) instead; a path that does not exist yet is created when its parent folder exists under the home folder (its say: \"Created ~/x and opened a session there on Account 4.\"); when the parent is missing too it returns an error naming it: ask the user once, and on yes call again with create true. Waits until the tab is ready and the prompt is accepted; returns the tab id and the delivery status. A prompt that asks the tab's agent something for the user (or expect_reply true) is followed: GodTerm tells the user its first reply when it comes. The result says will_report: promise to report back only when it is true. images: attached images to give the new tab with its prompt.",
         schema: || {
             props(
-                json!({"account": account_prop(), "name": {"type": "string"}, "dir": {"type": "string"}, "create": {"type": "boolean", "description": "The user said yes to creating dir and its missing parents"}, "prompt": {"type": "string"}, "expect_reply": {"type": "boolean", "description": "The prompt asks the new tab's agent a question for the user: its answer is reported (default: true when the prompt or the user's request is a question)"}, "count": {"type": "integer", "description": "Open this many such tabs at once (1 to 10), each in its own folder name-1, name-2..."}}),
+                json!({"account": account_prop(), "name": {"type": "string"}, "dir": {"type": "string"}, "create": {"type": "boolean", "description": "The user said yes to creating dir and its missing parents"}, "prompt": {"type": "string"}, "images": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "Images the user attached that this prompt is about: their numbers (1 for image 1) from the user's messages of the last 30 minutes, or image file paths. Only the images the user means for this tab."}, "expect_reply": {"type": "boolean", "description": "The prompt asks the new tab's agent a question for the user: its answer is reported (default: true when the prompt or the user's request is a question)"}, "count": {"type": "integer", "description": "Open this many such tabs at once (1 to 10), each in its own folder name-1, name-2..."}}),
                 &[],
             )
         },
     },
     Tool {
         name: "send_prompt",
-        description: "Give claude in one or more tabs a prompt to work on. Returns per tab a delivery id, status (delivered: typed in and taken; queued: the tab is busy or starting, it is sent once ready; failed, with the reason) and state, the receipt from the tab's own transcript: queued, sending, sent (typed in, not in the transcript yet), received (claude has it, queued behind its current work), started, done, dropped or interrupted (lost: the user should resend), unconfirmed (no transcript to check). Say a tab got a request only when its state is received, started or done; the deliveries in get_state follow each one later. More than one tab needs one confirmation for the whole set. expect_reply true: you are asking the tab's agent a question for the user; GodTerm watches for its answer and starts a turn for you to tell the user when it arrives (default: true when the text or the user's request is a question). The result says will_report: promise the user to report back only when will_report is true; when it is false, say the prompt was sent and that they can ask later.",
+        description: "Give claude in one or more tabs a prompt to work on. Returns per tab a delivery id, status (delivered: typed in and taken; queued: the tab is busy or starting, it is sent once ready; failed, with the reason) and state, the receipt from the tab's own transcript: queued, sending, sent (typed in, not in the transcript yet), received (claude has it, queued behind its current work), started, done, dropped or interrupted (lost: the user should resend), unconfirmed (no transcript to check). Say a tab got a request only when its state is received, started or done; the deliveries in get_state follow each one later. More than one tab needs one confirmation for the whole set. expect_reply true: you are asking the tab's agent a question for the user; GodTerm watches for its answer and starts a turn for you to tell the user when it arrives (default: true when the text or the user's request is a question). The result says will_report: promise the user to report back only when will_report is true; when it is false, say the prompt was sent and that they can ask later. images: attached images (numbers, or paths) the tab gets with the prompt, as files its agent reads; include them when the user asks to pass them on or to work on them in that tab, and never to a tab they did not mean.",
         schema: || {
             props(
-                json!({"tab": tab_prop(), "account": account_prop(), "text": {"type": "string"}, "expect_reply": {"type": "boolean"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
+                json!({"tab": tab_prop(), "account": account_prop(), "text": {"type": "string"}, "expect_reply": {"type": "boolean"}, "images": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "Images the user attached that this prompt is about: their numbers (1 for image 1) from the user's messages of the last 30 minutes, or image file paths. Only the images the user means for this tab."}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
                 &["text"],
             )
         },
@@ -931,6 +931,16 @@ impl App {
         self.state_dirty = true;
         self.deliveries_tick();
         id
+    }
+
+    /// A prompt for a tab in `slot` with image files: path lines for
+    /// Claude Code (it attaches them), "Image: /path" for Grok.
+    pub fn with_images(&self, slot: usize, text: &str, images: &[PathBuf]) -> String {
+        let grok = self.panes[slot]
+            .account
+            .and_then(|a| self.cfg.accounts.get(a))
+            .is_some_and(|a| a.harness() == crate::harness::Harness::Grok);
+        crate::assistant_images::tab_text(text, images, grok)
     }
 
     /// A request from the user to a tab (send_prompt, open_tab, resend):
@@ -2026,9 +2036,15 @@ impl App {
                     .filter(|t| !t.trim().is_empty())
                     .ok_or("text is required")?;
                 let tabs = self.tab_targets(args, listy(&["all", "waiting", "working"]))?;
-                let q = format!("Send that prompt to {}?", self.describe_set(&tabs));
+                let images = self.resolve_images(args.get("images"))?;
+                let with = match images.len() {
+                    0 => String::new(),
+                    1 => " with the image".to_string(),
+                    n => format!(" with the {n} images"),
+                };
+                let q = format!("Send that prompt{with} to {}?", self.describe_set(&tabs));
                 Ok((
-                    json!({"uids": self.uids(&tabs), "text": text}),
+                    json!({"uids": self.uids(&tabs), "text": text, "images": images}),
                     q,
                     tabs.len() > 1,
                 ))
@@ -2401,6 +2417,12 @@ impl App {
             "edit_system_prompt" => self.run_prompt_edit(plan),
             "send_prompt" => {
                 let text = plan["text"].as_str().unwrap_or("").to_string();
+                let images: Vec<PathBuf> = plan["images"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| p.as_str().map(PathBuf::from))
+                    .collect();
                 let mut ids = vec![];
                 let mut failed: Vec<Value> = gone(self)
                     .into_iter()
@@ -2415,6 +2437,7 @@ impl App {
                         failed.push(json!({"tab": tab_id(*u), "status": "failed", "reason": "that tab is not running (it ended or was never started)"}));
                         continue;
                     }
+                    let text = self.with_images(sl, &text, &images);
                     ids.push(self.deliver_request(*u, &text));
                     self.last_target = Some(*u);
                 }
@@ -3404,7 +3427,11 @@ impl App {
                     .and_then(Value::as_u64)
                     .unwrap_or(1)
                     .clamp(1, 10) as usize;
-                let prompt = s("prompt").filter(|p| !p.trim().is_empty());
+                let images = self.resolve_images(args.get("images"))?;
+                let prompt = s("prompt").filter(|p| !p.trim().is_empty()).or_else(|| {
+                    (!images.is_empty()).then(|| "Look at the attached image.".to_string())
+                });
+                let prompt = prompt.map(|p| self.with_images(slot, &p, &images));
                 let mut uids = vec![];
                 let mut ids = vec![];
                 let mut opened = vec![];

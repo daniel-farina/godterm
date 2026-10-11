@@ -179,6 +179,19 @@ pub struct AssistantState {
     pub selfswitch: crate::app_selfswitch::SelfSwitch,
     /// Unprompted updates wait here for a quiet moment.
     pub quiet: crate::app_quiet::QuietGate,
+    /// Images attached in the input (their chips are in it).
+    pub pending_images: Vec<crate::assistant_images::Attachment>,
+    /// Images sent lately, referable by number (30 minutes).
+    pub images: Vec<crate::assistant_images::Attachment>,
+    /// The last image number given.
+    pub image_seq: u32,
+    /// The images of the turn being started.
+    pub next_images: Vec<crate::assistant_images::Attachment>,
+    /// Old images were pruned this run.
+    pub images_pruned: bool,
+    /// The clipboard images are read from (None: the system's; tests set
+    /// a fake).
+    pub clipboard: Option<Box<dyn crate::assistant_images::Clipboard>>,
 }
 
 /// Where the time of one turn went.
@@ -786,6 +799,17 @@ impl App {
                 text: text.to_string(),
             },
         });
+        let images = if system.is_none() {
+            std::mem::take(&mut self.assistant.next_images)
+        } else {
+            vec![]
+        };
+        for a in &images {
+            self.assistant.log.push(Entry {
+                who: Who::Note,
+                text: format!("\u{1F4CE} {}", a.label()),
+            });
+        }
         // A turn of our own is never the user's yes.
         self.assistant.last_user = if system.is_some() {
             String::new()
@@ -853,7 +877,7 @@ impl App {
         match heard {
             _ if system.is_some() => conv.write("system", serde_json::json!({"text": text, "account": account, "model": model})),
             Some(h) => conv.write("user", serde_json::json!({"text": text, "via": "voice", "heard": h, "account": account, "model": model})),
-            None => conv.write("user", serde_json::json!({"text": text, "via": "typed", "account": account, "model": model})),
+            None => conv.write("user", serde_json::json!({"text": text, "via": "typed", "account": account, "model": model, "images": images.iter().map(|a| a.path.display().to_string()).collect::<Vec<_>>()})),
         }
         // The request first and the state last: the system prompt and the
         // conversation so far stay byte stable for prompt caching.
@@ -870,13 +894,21 @@ impl App {
         self.assistant.queued_after_cut = self.assistant.stale > 0;
         // Spoken requests are marked: speech recognition mishears names.
         let spoken = if heard.is_some() { "(spoken) " } else { "" };
-        let msg = format!("{earlier}{spoken}{text}\n\n{}", self.state_preamble());
+        let (image_note, blocks) = self.turn_images(&images);
+        let msg = format!(
+            "{earlier}{spoken}{text}{image_note}\n\n{}",
+            self.state_preamble()
+        );
         self.assistant.turn_remote = false;
         self.assistant.sent.push_back(msg.clone());
         if self.assistant.sent.len() > 20 {
             self.assistant.sent.pop_front();
         }
-        let sent = self.assistant.brain.as_mut().map(|b| b.send(&msg));
+        let sent = self
+            .assistant
+            .brain
+            .as_mut()
+            .map(|b| b.send_images(&msg, &blocks));
         match sent {
             Some(Err(e)) => {
                 self.assistant.busy = false;
@@ -1613,6 +1645,15 @@ impl App {
 
     /// Keys while the panel is open: typing goes to its input.
     pub fn on_assistant_key(&mut self, k: KeyEvent) -> bool {
+        // Ctrl-V: the clipboard's image (a terminal paste carries no image).
+        if self.assistant_has_focus()
+            && self.assistant.history.is_none()
+            && k.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(k.code, KeyCode::Char('v' | 'V'))
+        {
+            self.paste_clipboard_image(false);
+            return true;
+        }
         if !self.assistant_has_focus() || k.modifiers.contains(KeyModifiers::CONTROL) {
             return false;
         }
@@ -1666,7 +1707,9 @@ impl App {
                 None => {}
             },
             KeyCode::Backspace => {
-                self.assistant.input.pop();
+                if !self.backspace_chip() {
+                    self.assistant.input.pop();
+                }
             }
             KeyCode::Char(c) => {
                 self.assistant.input.push(c);
@@ -1682,6 +1725,16 @@ impl App {
     /// control characters dropped, at most PASTE_MAX characters.
     pub fn assistant_paste(&mut self, text: &str) {
         const PASTE_MAX: usize = 16_000;
+        // Cmd-V of an image gives the terminal an empty paste: read the
+        // clipboard. A dragged or pasted image file path attaches the file.
+        if text.trim().is_empty()
+            && (self.paste_clipboard_image(!text.is_empty()) || text.is_empty())
+        {
+            return;
+        }
+        if self.paste_image_paths(text) {
+            return;
+        }
         let norm = text
             .replace("\r\n", "\n")
             .replace('\r', "\n")
@@ -1721,7 +1774,10 @@ impl App {
             }
         }
         self.assistant.show_admin = false;
+        self.assistant.next_images = self.take_input_images(&t);
         self.ask_assistant(&t);
+        // Not taken (the request was answered without a turn).
+        self.assistant.next_images.clear();
     }
 
     /// After a spoken reply ends, listen for the follow up (wake mode).

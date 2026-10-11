@@ -19,6 +19,19 @@ pub mod grok;
 pub trait Backend: Send {
     /// Send one user turn.
     fn send(&mut self, text: &str) -> Result<()>;
+    /// Whether the model sees images sent with a turn.
+    fn takes_images(&self) -> bool {
+        false
+    }
+    /// Send one user turn with images (a provider that takes none gets
+    /// the text only; the caller says where the files are).
+    fn send_images(
+        &mut self,
+        text: &str,
+        _images: &[crate::assistant_images::ModelImage],
+    ) -> Result<()> {
+        self.send(text)
+    }
     /// Stop the current turn (it still ends with a Done).
     fn interrupt(&mut self) -> Result<()>;
     fn pid(&self) -> u32;

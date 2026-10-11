@@ -165,9 +165,40 @@ pub fn session_args(s: Option<&super::SessionPlan>) -> Vec<String> {
     }
 }
 
+/// A stream-json user message with image blocks.
+pub fn user_message(
+    text: &str,
+    images: &[crate::assistant_images::ModelImage],
+) -> serde_json::Value {
+    let mut content = vec![json!({"type": "text", "text": text})];
+    for i in images {
+        content.push(json!({"type": "image", "source": {"type": "base64", "media_type": i.media_type, "data": i.data}}));
+    }
+    json!({"type": "user", "message": {"role": "user", "content": content}})
+}
+
 impl Backend for ClaudeBackend {
     fn send(&mut self, text: &str) -> Result<()> {
         let msg = json!({"type": "user", "message": {"role": "user", "content": text}});
+        writeln!(self.stdin, "{msg}")?;
+        self.stdin.flush()?;
+        Ok(())
+    }
+
+    fn takes_images(&self) -> bool {
+        true
+    }
+
+    /// The text first, then each image as a base64 image block.
+    fn send_images(
+        &mut self,
+        text: &str,
+        images: &[crate::assistant_images::ModelImage],
+    ) -> Result<()> {
+        if images.is_empty() {
+            return self.send(text);
+        }
+        let msg = user_message(text, images);
         writeln!(self.stdin, "{msg}")?;
         self.stdin.flush()?;
         Ok(())

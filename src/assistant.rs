@@ -116,9 +116,18 @@ impl Brain {
         })
     }
 
-    /// Send one user turn.
-    pub fn send(&mut self, text: &str) -> Result<()> {
-        self.inner.send(text)
+    /// Send one user turn (with images, when it has any).
+    pub fn send_images(
+        &mut self,
+        text: &str,
+        images: &[crate::assistant_images::ModelImage],
+    ) -> Result<()> {
+        self.inner.send_images(text, images)
+    }
+
+    /// Whether its model sees images.
+    pub fn takes_images(&self) -> bool {
+        self.inner.takes_images()
     }
 
     /// Stop the current turn (the turn still ends with a result).
