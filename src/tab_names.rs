@@ -188,7 +188,12 @@ impl App {
             .iter()
             .filter(|(r, _)| cwd.starts_with(r))
             .max_by_key(|(r, _)| r.components().count())?;
-        let rel = cwd.strip_prefix(root).ok()?.to_string_lossy().into_owned();
+        // The index keeps "/" separators; Windows folders use "\\".
+        let rel = cwd
+            .strip_prefix(root)
+            .ok()?
+            .to_string_lossy()
+            .replace('\\', "/");
         let sub = map
             .entries
             .iter()
