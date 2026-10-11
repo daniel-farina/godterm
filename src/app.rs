@@ -1731,15 +1731,32 @@ impl App {
                 let held = t.activity_since.elapsed();
                 let visible = si == self.focus && ti == active && self.view == View::Grid;
                 if let Some((old, new)) = t.update_activity() {
+                    // The turn ended, but it handed work to background
+                    // agents or shells that still run: not finished yet.
+                    let bg = new == Activity::Ready
+                        && attention_worthy(old, new, held)
+                        && crate::app_continue::background_busy(&t.screen_text());
+                    if bg {
+                        t.bg_wait = true;
+                        t.bg_wait_unseen = !visible;
+                        crate::log::info(&format!(
+                            "attention: t{} turn ended with background work still running: not finished yet",
+                            t.uid
+                        ));
+                    }
+                    if new == Activity::Working {
+                        t.bg_wait = false;
+                    }
                     // A real turn ended out of view: its row says finished
                     // until the user looks at it (tab_labels).
-                    if new == Activity::Ready && attention_worthy(old, new, held) && !visible {
+                    if !bg && new == Activity::Ready && attention_worthy(old, new, held) && !visible
+                    {
                         t.finished = true;
                         self.state_dirty = true;
                     }
                     // Waiting for approval, or finished a turn: only from
                     // the tab's real transition (see attention_worthy).
-                    if attention_worthy(old, new, held) {
+                    if !bg && attention_worthy(old, new, held) {
                         let uid = t.uid;
                         let dup = self.attention.iter().any(|a| a.uid == uid && a.what == new);
                         if !visible && !dup {
@@ -1749,6 +1766,35 @@ impl App {
                                 what: new,
                                 uid,
                                 from: old,
+                            });
+                        }
+                    }
+                }
+                // The background work it waited on is done: finished now.
+                if t.bg_wait
+                    && t.activity == Activity::Ready
+                    && !crate::app_continue::background_busy(&t.screen_text())
+                {
+                    t.bg_wait = false;
+                    crate::log::info(&format!(
+                        "attention: t{} background work done: finished",
+                        t.uid
+                    ));
+                    let uid = t.uid;
+                    if t.bg_wait_unseen || !visible {
+                        t.finished = !visible;
+                        self.state_dirty = true;
+                        let dup = self
+                            .attention
+                            .iter()
+                            .any(|a| a.uid == uid && a.what == Activity::Ready);
+                        if !visible && !dup {
+                            self.attention.push(Attention {
+                                slot: si,
+                                tab: ti,
+                                what: Activity::Ready,
+                                uid,
+                                from: Activity::Working,
                             });
                         }
                     }

@@ -324,3 +324,47 @@ fn pills_shorten_with_the_room() {
     let s = crate::tab_labels::summary(&[(TabLabel::Finished, 2), (TabLabel::Blocked, 1)], false);
     assert_eq!(s, "2 finished · 1 blocked");
 }
+
+#[test]
+fn handed_to_background_agents_is_not_finished_until_they_are_done() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("background");
+    let (s, t) = (1, 0);
+    app.focus = 0;
+    let tab = &mut app.panes[s].tabs[t];
+    tab.state = PaneState::Running;
+    tab.set_activity(Activity::Starting);
+    show(&mut app, s, t, "? for shortcuts");
+    app.tick();
+    // A real turn that ends with agents still running in the background.
+    show(&mut app, s, t, "esc to interrupt");
+    app.tick();
+    app.panes[s].tabs[t].activity_since = Instant::now() - Duration::from_secs(5);
+    show(&mut app, s, t, ">\n  2 background tasks · ? for shortcuts");
+    app.tick();
+    assert_eq!(app.panes[s].tabs[t].activity, Activity::Ready);
+    assert!(
+        !app.panes[s].tabs[t].finished,
+        "not finished: work still runs"
+    );
+    let finished_said = |app: &App| {
+        app.told
+            .borrow()
+            .ring
+            .iter()
+            .any(|r| r.kind == "attention" && r.text.ends_with("finished"))
+    };
+    assert!(!finished_said(&app), "no finished announcement yet");
+    assert_eq!(app.tab_label(s, t), Some(TabLabel::Background));
+    // Still running a while later: still not finished.
+    app.tick();
+    assert_eq!(app.tab_label(s, t), Some(TabLabel::Background));
+    // The background work is done: finished now, and announced.
+    show(&mut app, s, t, ">\n  ? for shortcuts");
+    app.tick();
+    assert!(app.panes[s].tabs[t].finished);
+    assert_eq!(app.tab_label(s, t), Some(TabLabel::Finished));
+    assert!(finished_said(&app), "announced once the work is done");
+    idle_all(&mut app);
+    let _ = std::fs::remove_dir_all(&home);
+}

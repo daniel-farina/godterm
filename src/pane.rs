@@ -276,9 +276,24 @@ pub struct Pane {
     /// A real turn ended while the user looked elsewhere; cleared when
     /// they look at it or it works again (tab_labels).
     pub finished: bool,
+    /// The turn ended but background agents or shells still run: not
+    /// finished yet; "finished" waits until they are done too.
+    pub bg_wait: bool,
+    /// Its turn ended out of view (for the finished label once the
+    /// background work is done).
+    pub bg_wait_unseen: bool,
 }
 
 impl Pane {
+    /// The visible screen as text.
+    pub fn screen_text(&self) -> String {
+        self.parser
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .screen()
+            .contents()
+    }
+
     pub fn new(cwd: PathBuf) -> Pane {
         Pane {
             live_cwd: None,
@@ -312,6 +327,8 @@ impl Pane {
             opened: std::time::SystemTime::now(),
             last_input: Instant::now(),
             finished: false,
+            bg_wait: false,
+            bg_wait_unseen: false,
         }
     }
 

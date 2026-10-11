@@ -2,8 +2,10 @@
 //! permission, plan or trust prompt is open), "confirm" (the assistant
 //! waits on the user's yes about this tab), "limit" (its screen says it
 //! hit a usage limit), "error" (claude exited with an error or failed to
-//! start), "finished" (a real turn ended while the user looked elsewhere)
-//! and "queued" (a prompt on its way in). One label per tab, in that
+//! start), "background" (its turn ended but background agents or shells
+//! it started still run: not finished yet), "finished" (a real turn ended,
+//! with nothing left running, while the user looked elsewhere) and
+//! "queued" (a prompt on its way in). One label per tab, in that
 //! order. All from real state: the tab's activity, pending_confirms, the
 //! failover scan, the process state, the finished mark and deliveries.
 
@@ -19,16 +21,18 @@ pub enum TabLabel {
     Confirm,
     Limit,
     Error,
+    Background,
     Finished,
     Queued,
 }
 
 /// Every label, in precedence order.
-pub const ALL: [TabLabel; 6] = [
+pub const ALL: [TabLabel; 7] = [
     TabLabel::Blocked,
     TabLabel::Confirm,
     TabLabel::Limit,
     TabLabel::Error,
+    TabLabel::Background,
     TabLabel::Finished,
     TabLabel::Queued,
 ];
@@ -48,6 +52,7 @@ impl TabLabel {
             TabLabel::Confirm => "confirm",
             TabLabel::Limit => "limit",
             TabLabel::Error => "error",
+            TabLabel::Background => "background",
             TabLabel::Finished => "finished",
             TabLabel::Queued => "queued",
         }
@@ -59,6 +64,7 @@ impl TabLabel {
             TabLabel::Confirm => "ask",
             TabLabel::Limit => "lim",
             TabLabel::Error => "err",
+            TabLabel::Background => "bg",
             TabLabel::Finished => "done",
             TabLabel::Queued => "q",
         }
@@ -70,6 +76,7 @@ impl TabLabel {
             TabLabel::Confirm => theme::MIST,
             TabLabel::Limit => theme::CLAY,
             TabLabel::Error => theme::RUST,
+            TabLabel::Background => theme::SLATE,
             TabLabel::Finished => theme::SAGE,
             TabLabel::Queued => theme::SLATE,
         }
@@ -82,6 +89,9 @@ impl TabLabel {
             TabLabel::Confirm => "The assistant asked you to confirm something about this tab",
             TabLabel::Limit => "It hit a usage limit",
             TabLabel::Error => "claude ended with an error; Enter restarts it",
+            TabLabel::Background => {
+                "Its turn ended, but background agents or shells it started still run"
+            }
             TabLabel::Finished => "Finished its work while you were elsewhere",
             TabLabel::Queued => "A prompt is waiting to go in",
         }
@@ -167,6 +177,9 @@ impl App {
         }
         if tab.crashed() || matches!(tab.state, PaneState::Failed(_)) {
             return Some(TabLabel::Error);
+        }
+        if tab.bg_wait && tab.activity == Activity::Ready {
+            return Some(TabLabel::Background);
         }
         if tab.finished && !self.tab_in_view(s, t) {
             return Some(TabLabel::Finished);
