@@ -7,12 +7,81 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-10-11
+
+### Terminal
+- The UI never waits on the terminal: frames go out through a writer
+  thread, so a stalled or slow terminal no longer freezes GodTerm.
+
+### Supervisor
+- `godterm supervisor install` adds a launchd watchdog that opens GodTerm
+  again after a crash, kill or closed window (every tab comes back, the
+  assistant resumes), restarts a GodTerm whose control socket stopped
+  answering for 2 minutes, and gives up with a notification after 3
+  relaunches in 10 minutes. `godterm supervisor status` and `uninstall`;
+  `supervisor.enabled = false` pauses it. macOS.
+
+### Restart
+- A restart continues the tabs that were working, and only those. A tab
+  waiting on an approval mid turn is continued too and asks again.
+
+### Assistant
+- Remote Control tells the truth: turning it on waits for the real
+  answer (the link, or why it failed), retries, and heals itself.
+  `assistant.remote_control = true` keeps it on and brings it back when
+  the bridge drops; the panel title shows Remote while connected.
+- The assistant keeps its own claude session across launches, crashes
+  and updates (`assistant.resume`, on by default), so the chat continues
+  where it was.
+- It watches the account it runs on: a warning once per window under
+  `assistant.switch_warn_pct`, and under `assistant.switch_at_pct` (or on
+  a usage limit) it moves itself to the account of the same provider
+  with the most left, conversation and Remote Control kept
+  (`assistant.auto_switch`: auto, ask or off).
+- It looks inside projects: subprojects, READMEs and recently touched
+  files in find, `search_projects` for deeper looks, saved project
+  descriptions, and `rename_session` for Claude and Grok sessions.
+- A finished request starts with "Done:", then what changed and a short
+  explanation. Spoken replies end where they end, with no offer to read
+  the rest.
+- Answers from tabs always come back, and updates wait for a quiet
+  moment instead of cutting in.
+- Requests to tabs get receipts: received, started, done, or dropped and
+  interrupted, said out loud with an offer to resend.
+- A question asked through `open_tab` is reported back.
+- The assistant never interrupts a working tab unless you ask it to.
+- It knows everything GodTerm already told you, so it does not repeat
+  it, and tabs are named by their project.
+
+### Tabs
+- Tab rows carry a status label: finished, background, blocked, confirm,
+  limit, error or queued. A tab that handed its work to background
+  agents shows background, and finished is said only once that work is
+  done.
+
 ### Voice
+- Barge-in needs words, not noise: the reply ducks while the overlap is
+  transcribed and stops only on a command word or enough real words.
 - Headphone tap (`voice.headphone_tap`, off by default): play/pause on
-  headphones or the media key turns the mic on or off, and a tap on wakes
-  it so the next words need no wake word. It never cuts off a reply.
-  GodTerm holds Now Playing while it is on, so Music and Spotify do not
-  get the press; off or quitting gives it back. macOS.
+  headphones or the media key turns the mic on or off, and a tap on opens
+  open mic so the next words need no wake word. It never cuts off a
+  reply. GodTerm holds Now Playing while it is on, so Music and Spotify
+  do not get the press; off or quitting gives it back. With the headset's
+  own mic, its mute gesture stops open mic and closing the mic lets the
+  headset leave call mode. `godterm tap-test` shows the presses. macOS.
+- Voice comes back as it ran: the mode (open mic, wake word, push to
+  talk) is restored after a restart. A sleeping open mic stays open mic,
+  and the wake word wakes it into open mic again.
+- A Bluetooth headset mic that gave no audio through Apple capture is
+  recorded with ffmpeg.
+- No reopen loop after a settings reload, and no recorder outlives
+  GodTerm on quit.
+
+### Fixed
+- Windows: saved project descriptions and tab names find their folder
+  however the path is spelled; process trees stop at a parent loop.
+- Linux and Windows builds: macOS only media key and supervisor parts
+  are left out there.
 
 ## [0.2.8] - 2026-10-08
 
