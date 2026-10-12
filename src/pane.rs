@@ -282,6 +282,11 @@ pub struct Pane {
     /// Its turn ended out of view (for the finished label once the
     /// background work is done).
     pub bg_wait_unseen: bool,
+    /// Its resume failed because a Claude Code background run holds the
+    /// session: the tab offers attach, stop and resume, or fork.
+    pub bg_lock: Option<crate::session_ids::BgLock>,
+    /// The next launch attaches or forks instead of a plain resume.
+    pub next_launch: Option<crate::session_ids::NextLaunch>,
 }
 
 impl Pane {
@@ -329,7 +334,14 @@ impl Pane {
             finished: false,
             bg_wait: false,
             bg_wait_unseen: false,
+            bg_lock: None,
+            next_launch: None,
         }
+    }
+
+    /// When it last printed anything.
+    pub fn last_output_at(&self) -> Instant {
+        *self.last_output.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The last output, input or state change.
@@ -339,8 +351,12 @@ impl Pane {
     }
 
     /// History lines this tab keeps. Changing it rebuilds the screen
-    /// parser (vt100 fixes it per parser) and replays the visible screen,
-    /// so lowering it frees the old history.
+    /// parser (vt100 fixes it per parser): the newest history that fits
+    /// the new size comes along (as text), then the screen itself with
+    /// its colors, so lowering it frees the oldest history and raising it
+    /// (the tab comes on screen) keeps what there was. A view scrolled
+    /// back stays where it was. Before, every rebuild kept only the
+    /// screen: a tab clicked in a tab list had no history to scroll.
     pub fn set_history(&mut self, lines: usize) {
         if lines == self.history {
             return;
@@ -348,12 +364,33 @@ impl Pane {
         self.history = lines;
         let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
         let (rows, cols) = p.screen().size();
+        let was = p.screen().scrollback();
+        p.screen_mut().set_scrollback(usize::MAX);
+        let keep = p.screen().scrollback().min(lines);
+        let mut text: Vec<String> = Vec::with_capacity(keep + rows as usize);
+        for k in (1..=keep).rev() {
+            p.screen_mut().set_scrollback(k);
+            text.push(p.screen().rows(0, cols).next().unwrap_or_default());
+        }
+        p.screen_mut().set_scrollback(0);
         let replay = p.screen().contents_formatted();
         let mut fresh = vt100::Parser::new(rows, cols, lines);
+        if keep > 0 {
+            // The history, then the screen's rows as text: the history
+            // ends up above the screen, which is then drawn again in full.
+            text.extend(p.screen().rows(0, cols));
+            let n = text.len();
+            for (i, l) in text.iter().enumerate() {
+                fresh.process(l.as_bytes());
+                if i + 1 < n {
+                    fresh.process(b"\r\n");
+                }
+            }
+        }
         fresh.process(&replay);
+        fresh.screen_mut().set_scrollback(was.min(keep));
+        self.scroll = fresh.screen().scrollback();
         *p = fresh;
-        drop(p);
-        self.scroll = 0;
     }
 
     #[cfg(test)]
@@ -824,6 +861,59 @@ mod tests {
         }
         p.screen_mut().set_scrollback(usize::MAX);
         assert_eq!(p.screen().scrollback(), 100);
+    }
+
+    #[test]
+    fn history_survives_a_new_limit() {
+        // A tab going to the background (a lower limit) keeps its newest
+        // history, and coming back (a higher one) keeps what it had.
+        let mut t = Pane::new("/tmp".into());
+        t.resize(10, 40);
+        t.set_history(10_000);
+        {
+            let mut p = t.parser.lock().unwrap();
+            for i in 1..=300 {
+                p.process(format!("line {i}\r\n").as_bytes());
+            }
+            p.process(b"\x1b[31mprompt\x1b[0m");
+        }
+        let total = |t: &Pane| {
+            let mut p = t.parser.lock().unwrap();
+            p.screen_mut().set_scrollback(usize::MAX);
+            let n = p.screen().scrollback();
+            p.screen_mut().set_scrollback(0);
+            n
+        };
+        assert_eq!(total(&t), 291);
+        t.set_history(100);
+        assert_eq!(total(&t), 100);
+        t.set_history(10_000);
+        assert_eq!(total(&t), 100, "raising the limit keeps the history");
+        let p = t.parser.lock().unwrap();
+        let screen = p.screen().contents();
+        assert!(
+            screen.contains("line 300") && screen.ends_with("prompt"),
+            "{screen}"
+        );
+        assert_eq!(
+            p.screen().cell(9, 0).unwrap().fgcolor(),
+            vt100::Color::Idx(1)
+        );
+        drop(p);
+        // The oldest kept line is the right one.
+        t.scroll_by(1000);
+        let p = t.parser.lock().unwrap();
+        assert!(
+            p.screen().contents().starts_with("line 192"),
+            "{}",
+            p.screen().contents()
+        );
+        drop(p);
+        // A view scrolled back stays scrolled back.
+        t.scroll_by(-50);
+        let at = t.scroll;
+        t.set_history(5_000);
+        assert_eq!(t.scroll, at);
     }
 
     #[test]

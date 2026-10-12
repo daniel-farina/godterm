@@ -28,8 +28,47 @@ impl App {
         layout::parse_mode(&self.layout_name(), &self.cfg.grid)
     }
 
-    /// Arrange the visible panes in `area` around the focused one.
+    /// Arrange the visible panes in `area` around the focused one;
+    /// collapsed panes fold to a strip and their siblings take the space.
     pub fn arrange(&self, area: ratatui::layout::Rect) -> (Vec<usize>, Arranged) {
+        let (vis, mut a) = self.arrange_unfolded(area);
+        let fi = vis.iter().position(|&p| p == self.focus).unwrap_or(0);
+        let page = fi / a.per_page.max(1);
+        let fold_of = |k: usize| {
+            vis.get(k)
+                .map(|&p| self.pane_fold(p))
+                .unwrap_or(crate::grid_layout::Fold::Open)
+        };
+        let folded = |k: usize| fold_of(k) != crate::grid_layout::Fold::Open;
+        let on_page: Vec<(usize, ratatui::layout::Rect)> = a
+            .placed
+            .iter()
+            .filter(|p| p.page == page)
+            .map(|p| (p.index, p.rect))
+            .collect();
+        if self.zoom || !on_page.iter().any(|(k, _)| folded(*k)) {
+            return (vis, a);
+        }
+        let rects = crate::grid_layout::fold_dirs(&on_page, &fold_of);
+        a.unfolded = a
+            .placed
+            .iter()
+            .filter(|p| p.page == page)
+            .cloned()
+            .collect();
+        for p in a.placed.iter_mut().filter(|p| p.page == page) {
+            if let Some((_, r)) = rects.iter().find(|(k, _)| *k == p.index) {
+                p.rect = *r;
+            }
+        }
+        // Border drags and free cells follow the unfolded grid.
+        a.borders.clear();
+        a.empty.clear();
+        (vis, a)
+    }
+
+    /// The arrangement with no pane collapsed.
+    pub fn arrange_unfolded(&self, area: ratatui::layout::Rect) -> (Vec<usize>, Arranged) {
         let vis = self.visible_panes();
         let fi = vis.iter().position(|&p| p == self.focus).unwrap_or(0);
         if self.layout_name() == "custom" {
@@ -50,6 +89,7 @@ impl App {
                         shape: "custom".into(),
                         borders: vec![],
                         empty: vec![],
+                        unfolded: vec![],
                     };
                     return (vis, a);
                 }
@@ -416,7 +456,9 @@ impl App {
         let s = &self.panes[i];
         crate::ui::Side {
             collapsed: s.sidebar_collapsed,
-            want: s.sidebar_w,
+            want: s
+                .sidebar_w
+                .or((self.cfg.tab_list_columns > 0).then_some(self.cfg.tab_list_columns)),
             pct: crate::ui::width_pct(self.tab_list_width.as_deref()),
             many: s.tabs.len() > 9,
         }
@@ -441,6 +483,64 @@ impl App {
             self.panes[i].sidebar_w = Some(w);
             self.state_dirty = true;
         }
+    }
+
+    /// The width pane `i`'s side tab list has now (0: none or on top).
+    pub fn sidebar_now(&self, i: usize) -> u16 {
+        let Some(r) = self.pane_rects.get(i).copied().filter(|r| r.width > 2) else {
+            return 0;
+        };
+        if self.tab_pos(i) == crate::slot::TabPos::Top {
+            return 0;
+        }
+        crate::ui::sidebar_width(r.width - 2, self.side(i))
+    }
+
+    /// The widest pane `i`'s side list may get: SIDEBAR_MAX, or less so
+    /// its terminal keeps 30 columns.
+    pub fn sidebar_max(&self, i: usize) -> u16 {
+        let room = self
+            .pane_rects
+            .get(i)
+            .filter(|r| r.width > 0)
+            .map(|r| r.width.saturating_sub(2 + 30))
+            .unwrap_or(crate::ui::SIDEBAR_MAX);
+        room.clamp(crate::ui::SIDEBAR_MIN, crate::ui::SIDEBAR_MAX)
+    }
+
+    /// Ctrl-a < / >, "make the tab list wider": pane `i`'s list by `d`
+    /// columns (it opens when collapsed), kept between the minimum and
+    /// the maximum. Returns the new width.
+    pub fn nudge_sidebar(&mut self, i: usize, d: i32) -> u16 {
+        if i >= self.panes.len() {
+            return 0;
+        }
+        if self.tab_pos(i) == crate::slot::TabPos::Top {
+            self.flash("This pane's tabs are on top: Ctrl-a S moves the list to the side");
+            return 0;
+        }
+        let was_collapsed = self.panes[i].sidebar_collapsed;
+        self.panes[i].sidebar_collapsed = false;
+        let cur = match self.sidebar_now(i) {
+            w if w >= crate::ui::SIDEBAR_MIN && !was_collapsed => w,
+            _ => self.panes[i].sidebar_w.unwrap_or(crate::ui::SIDEBAR_MIN),
+        };
+        let w = if was_collapsed && d > 0 {
+            cur
+        } else {
+            (cur as i32 + d).clamp(crate::ui::SIDEBAR_MIN as i32, self.sidebar_max(i) as i32) as u16
+        };
+        self.panes[i].sidebar_w = Some(w);
+        self.state_dirty = true;
+        self.flash(if w >= crate::ui::SIDEBAR_WIDE_AT {
+            format!("Tab list: {w} columns, with details (Ctrl-a < / > resize)")
+        } else {
+            format!(
+                "Tab list: {w} columns (Ctrl-a < / > resize; details from {})",
+                crate::ui::SIDEBAR_WIDE_AT
+            )
+        });
+        w
     }
 
     /// Tabs ▾ > Tab list width: a preset for every pane (dragged widths reset).

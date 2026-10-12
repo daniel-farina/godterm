@@ -190,3 +190,167 @@ fn layouts_from_structured_descriptions() {
     let _ = draw(&mut app, 60, 20);
     let _ = std::fs::remove_dir_all(home);
 }
+
+#[test]
+fn collapse_gives_siblings_the_space_and_keeps_tabs_running() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("collapse");
+    let stub = crate::test_stub::claude(&home.join("bin"), &[("sleep_s", "30".into())]);
+    app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
+    app.launch_tab(0, 0, crate::pane::LaunchKind::Normal);
+    assert!(app.panes[0].tabs[0].is_running());
+    let _ = draw(&mut app, 200, 60);
+    let size_before = app.panes[0].tabs[0].pty_size();
+    let area = ratatui::layout::Rect::new(0, 0, 200, 50);
+    let rect_of = |app: &crate::app::App, acct: usize| {
+        let (vis, a) = app.arrange(area);
+        a.placed
+            .iter()
+            .find(|p| app.panes[vis[p.index]].account == Some(acct))
+            .map(|p| p.rect)
+            .unwrap()
+    };
+    assert_eq!(rect_of(&app, 2).height, 25);
+    // "collapse the top two" in a 2x2.
+    let v = app.control_call("collapse_accounts", &json!({"accounts": "top two"}));
+    let say = v["result"]["say"].as_str().unwrap();
+    assert!(say.starts_with("Collapsed "), "{v}");
+    assert!(app.account_collapsed(0) && app.account_collapsed(1));
+    assert!(!app.account_collapsed(2) && !app.account_collapsed(3));
+    // The bottom two fill the height under one row of strips.
+    assert_eq!(rect_of(&app, 0).height, 1);
+    assert_eq!(rect_of(&app, 1).height, 1);
+    assert_eq!(rect_of(&app, 2), ratatui::layout::Rect::new(0, 1, 100, 49));
+    assert_eq!(
+        rect_of(&app, 3),
+        ratatui::layout::Rect::new(100, 1, 100, 49)
+    );
+    // Drawn as a strip with the account and its tab count.
+    let t = draw(&mut app, 200, 60);
+    let name0 = app.cfg.accounts[0].display().to_string();
+    assert!(
+        t.lines()
+            .any(|l| l.contains("▸") && l.contains(&name0) && l.contains("1 tab")),
+        "{t}"
+    );
+    // The PTY keeps running at its size: no resize while collapsed.
+    assert!(
+        app.panes[0].tabs[0].is_running(),
+        "collapsing never stops a tab"
+    );
+    assert_eq!(app.panes[0].tabs[0].pty_size(), size_before);
+    // The state block and config.toml know it; kept across a restart.
+    assert!(
+        app.state_preamble().contains("collapsed a1 a2"),
+        "{}",
+        app.state_preamble()
+    );
+    let cfg = crate::config::Config::load_or_init().unwrap();
+    assert_eq!(
+        cfg.collapsed_accounts,
+        vec![
+            app.cfg.accounts[0].name.clone(),
+            app.cfg.accounts[1].name.clone()
+        ]
+    );
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let again = crate::app::App::new(cfg, tx);
+    assert!(again.pane_folded(0) && !again.pane_folded(2));
+    // A click on the strip expands it.
+    let strip = app
+        .last_hits
+        .find(&crate::hits::UiAction::FoldAccount(0))
+        .unwrap()
+        .rect;
+    assert_eq!(strip.height, 1);
+    app.handle(crate::app::AppEvent::Input(crossterm::event::Event::Mouse(
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: strip.x + 3,
+            row: strip.y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+    )));
+    assert!(!app.account_collapsed(0));
+    assert_eq!(app.focus, 0);
+    // Every target close_accounts takes: all except one, a provider.
+    app.control_call(
+        "collapse_accounts",
+        &json!({"accounts": "all", "except": 4}),
+    );
+    assert_eq!(
+        (0..4).map(|a| app.account_collapsed(a)).collect::<Vec<_>>(),
+        [true, true, true, false]
+    );
+    app.control_call("expand_accounts", &json!({"accounts": "grok"}));
+    assert!(!app.account_collapsed(2) && app.account_collapsed(0));
+    // Everything collapsed: stacked strips and a hint.
+    let v = app.control_call("collapse_accounts", &json!({"accounts": "all"}));
+    assert!(
+        v["result"]["say"]
+            .as_str()
+            .unwrap()
+            .contains("Everything is collapsed"),
+        "{v}"
+    );
+    let t = draw(&mut app, 200, 60);
+    assert!(t.contains("Every pane is collapsed"), "{t}");
+    let ys: Vec<u16> = (0..4).map(|a| rect_of(&app, a).y).collect();
+    assert_eq!(ys, vec![0, 1, 2, 3]);
+    assert!(app.panes[0].tabs[0].is_running());
+    // Ctrl-a _ on the focused pane toggles it.
+    app.focus = 1;
+    app.on_command(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('_'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert!(!app.account_collapsed(1));
+    app.control_call("expand_accounts", &json!({"accounts": "all"}));
+    assert!((0..4).all(|a| !app.account_collapsed(a)));
+    for p in &mut app.panes {
+        p.kill_all();
+    }
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn positions_name_accounts() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (app, home) = test_app("positions");
+    let t = |s: &str| app.grid_targets(&json!(s)).unwrap();
+    assert_eq!(t("top two"), vec![0, 1]);
+    assert_eq!(t("the top ones"), vec![0, 1]);
+    assert_eq!(t("bottom row"), vec![2, 3]);
+    assert_eq!(t("left"), vec![0, 2]);
+    assert_eq!(t("right two"), vec![1, 3]);
+    assert_eq!(t("top 1"), vec![0]);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn focusing_a_collapsed_pane_expands_it_only_when_set() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("collapsefocus");
+    let _ = draw(&mut app, 200, 60);
+    app.control_call("collapse_accounts", &json!({"accounts": 2}));
+    let key = |c: char, m: crossterm::event::KeyModifiers| {
+        crate::app::AppEvent::Input(crossterm::event::Event::Key(
+            crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char(c), m),
+        ))
+    };
+    let none = crossterm::event::KeyModifiers::NONE;
+    let ctrl = crossterm::event::KeyModifiers::CONTROL;
+    // Default: focus by number leaves it collapsed.
+    app.handle(key('a', ctrl));
+    app.handle(key('2', none));
+    assert_eq!(app.focus, 1);
+    assert!(app.account_collapsed(1));
+    // With the setting on, focusing it expands it.
+    app.cfg.expand_collapsed_on_focus = true;
+    app.handle(key('a', ctrl));
+    app.handle(key('1', none));
+    app.handle(key('a', ctrl));
+    app.handle(key('2', none));
+    assert!(!app.account_collapsed(1));
+    let _ = std::fs::remove_dir_all(home);
+}

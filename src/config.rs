@@ -211,6 +211,22 @@ pub struct Config {
     /// in, their tabs still running; reopened from View > Closed accounts.
     #[serde(default)]
     pub closed_accounts: Vec<String>,
+    /// Accounts collapsed in the grid to a one row strip (by name): their
+    /// siblings take the space, their tabs keep running.
+    #[serde(default)]
+    pub collapsed_accounts: Vec<String>,
+    /// Accounts collapsed sideways to a narrow column strip (by name):
+    /// the panes beside them take the width.
+    #[serde(default)]
+    pub collapsed_sideways: Vec<String>,
+    /// Focusing a collapsed pane (keys, the assistant) expands it; off:
+    /// only a click on its strip (or Ctrl-a _) does.
+    #[serde(default)]
+    pub expand_collapsed_on_focus: bool,
+    /// Side tab list width in columns for every pane (0: a share of the
+    /// pane). A width dragged or set with Ctrl-a < / > wins, per pane.
+    #[serde(default)]
+    pub tab_list_columns: u16,
     /// Usage colors: gradient, bands or mono.
     #[serde(default = "default_usage_colors")]
     pub usage_colors: String,
@@ -884,6 +900,10 @@ impl Default for Config {
             grid: String::new(),
             layout_tree: String::new(),
             closed_accounts: vec![],
+            collapsed_accounts: vec![],
+            collapsed_sideways: vec![],
+            expand_collapsed_on_focus: false,
+            tab_list_columns: 0,
             usage_colors: default_usage_colors(),
             suggest_move_below: default_suggest_move(),
             background_scrollback_lines: default_bg_scrollback(),

@@ -9,11 +9,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, BorderType, Borders, Clear};
 use ratatui::Frame;
 use serde_json::Value;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::App;
 use crate::app_assistant::Who;
 use crate::hits::UiAction;
+use crate::input_edit;
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 
 /// One logical row of the conversation: styled pieces, and what a click
@@ -603,26 +605,6 @@ pub fn state_chip(app: &App) -> Option<&'static str> {
     }
 }
 
-/// The input as rows of at most `w` cells: its own lines, wrapped.
-pub fn input_lines(text: &str, w: usize) -> Vec<String> {
-    let mut out = vec![];
-    for line in text.split('\n') {
-        let mut cur = String::new();
-        let mut n = 0;
-        for ch in line.chars() {
-            let cw = ch.width().unwrap_or(0);
-            if n + cw > w && !cur.is_empty() {
-                out.push(std::mem::take(&mut cur));
-                n = 0;
-            }
-            cur.push(ch);
-            n += cw;
-        }
-        out.push(cur);
-    }
-    out
-}
-
 /// Remote Control and the kept session, at the top of the Admin view.
 pub fn remote_rows(app: &App) -> Vec<(String, Option<UiAction>)> {
     let mut v = vec![];
@@ -941,6 +923,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             h,
             Rect::new(inner.x, top, inner.width, inner.y + inner.height - top),
         );
+        app.assistant.input_geo.set(None);
         return;
     }
     let buf = f.buffer_mut();
@@ -968,14 +951,40 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     };
     let spk_w = cells(spk_label) + 2;
     let right = limit.saturating_sub(send_w + mic_w + spk_w);
-    let in_lines = input_lines(
-        &app.assistant.input,
-        right.saturating_sub(inner.x + 2).max(4) as usize,
-    );
-    let in_h = (in_lines.len() as u16)
+    // The input wrapped, the caret's row and column in it, and the rows
+    // shown (scrolled to keep the caret in view).
+    let in_text = app.assistant.input.as_str();
+    let in_w = right.saturating_sub(inner.x + 2).max(4) as usize;
+    let in_rows = input_edit::rows(in_text, in_w);
+    let (caret, sel) = app.assistant.caret.view(in_text);
+    let (c_row, c_col) = input_edit::caret_rc(in_text, &in_rows, caret, in_w);
+    let in_total = in_rows.len().max(c_row + 1);
+    let in_h = (in_total as u16)
         .clamp(1, 6)
         .min(inner.height.saturating_sub(4).max(1));
+    let in_top = {
+        let h = in_h as usize;
+        let mut t = app.assistant.input_top.get().min(in_total - h);
+        if c_row < t {
+            t = c_row;
+        } else if c_row >= t + h {
+            t = c_row + 1 - h;
+        }
+        app.assistant.input_top.set(t);
+        t
+    };
     let iy0 = iy + 1 - in_h;
+    app.assistant
+        .input_geo
+        .set(Some(crate::app_input::InputGeo {
+            x0: inner.x,
+            right,
+            tx: inner.x + 2,
+            y: iy0,
+            h: in_h,
+            w: in_w,
+            top: in_top,
+        }));
     // A question waiting for the user's yes: Yes / No buttons above the
     // input (a click answers, as typing "yes" would).
     let asking = (!app.pending_confirms.is_empty() || app.assistant.selfswitch.asked.is_some())
@@ -1144,27 +1153,47 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             app.want_cursor.set(Some((inner.x + 2, iy)));
         }
     } else {
-        let shown = &in_lines[in_lines.len() - in_h as usize..];
-        for (k, l) in shown.iter().enumerate() {
+        let style = Style::default().fg(FG).bg(SEL_BG);
+        let tx = inner.x + 2;
+        for k in 0..in_h as usize {
+            let r = in_top + k;
             let y = iy0 + k as u16;
-            let lead = if k == 0 && in_lines.len() <= in_h as usize {
-                "› "
-            } else {
-                "  "
-            };
-            // The caret is the terminal's own cursor, at the end.
-            let end = crate::hits::text(
-                buf,
-                inner.x,
-                y,
-                right,
-                &format!("{lead}{l}"),
-                Style::default().fg(FG).bg(SEL_BG),
-            );
-            if k + 1 == shown.len() && focused {
-                app.want_cursor
-                    .set(Some((end.min(right.saturating_sub(1)), y)));
+            if r == 0 {
+                crate::hits::text(buf, inner.x, y, right, "› ", style);
             }
+            let Some(row) = in_rows.get(r) else {
+                continue;
+            };
+            // Grapheme by grapheme (wide ones take two cells), the
+            // selection on a calm highlight.
+            let mut x = tx;
+            for (i, g) in in_text[row.start..row.end].grapheme_indices(true) {
+                let at = row.start + i;
+                let gw = input_edit::gw(g) as u16;
+                if gw == 0 {
+                    continue;
+                }
+                if x + gw > right {
+                    break;
+                }
+                buf.set_stringn(x, y, g, gw as usize, style);
+                if sel.is_some_and(|(a, b)| at >= a && at < b) {
+                    for dx in 0..gw {
+                        crate::ui::select_cell(buf, x + dx, y);
+                    }
+                }
+                x += gw;
+            }
+            // A selected line break: one cell after the line.
+            if !row.soft && x < right && sel.is_some_and(|(a, b)| row.end >= a && row.end < b) {
+                crate::ui::select_cell(buf, x, y);
+            }
+        }
+        // The caret is the terminal's own cursor, at its row and column.
+        if focused {
+            let y = iy0 + (c_row - in_top) as u16;
+            let x = (tx + c_col as u16).min(right.saturating_sub(1));
+            app.want_cursor.set(Some((x, y)));
         }
     }
     let spk_style = if app.cfg.voice.speaker_muted {

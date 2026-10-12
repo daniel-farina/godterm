@@ -6,12 +6,14 @@ mod admin;
 mod app;
 mod app_admin;
 mod app_assistant;
+mod app_bglock;
 mod app_continue;
 mod app_failover;
 mod app_followup;
 mod app_grid;
 mod app_headtap;
 mod app_images;
+mod app_input;
 mod app_layout;
 mod app_learned;
 mod app_loops;
@@ -36,6 +38,7 @@ mod app_sysprompt;
 mod app_tabgroups;
 mod app_tabhist;
 mod app_tabmove;
+mod app_tabopts;
 mod app_talkback;
 mod app_update;
 mod app_voice;
@@ -44,6 +47,8 @@ mod assistant;
 mod assistant_history;
 mod assistant_images;
 mod assistant_memory;
+#[cfg(test)]
+mod bglock_tests;
 #[cfg(test)]
 mod click_focus_tests;
 mod clock;
@@ -72,6 +77,9 @@ mod headtap_tests;
 mod hits;
 #[cfg(test)]
 mod image_tests;
+mod input_edit;
+#[cfg(test)]
+mod input_tests;
 mod install;
 mod instance;
 mod instant;
@@ -96,9 +104,15 @@ mod notify;
 mod palette;
 mod pane;
 #[cfg(test)]
+mod pane_controls_tests;
+#[cfg(test)]
 mod panel_view_tests;
 mod panel_views;
+#[cfg(test)]
+mod scroll_click_tests;
 mod supervisor;
+#[cfg(test)]
+mod tabopts_tests;
 // A real PTY and a shell script stub: Unix only.
 #[cfg(all(test, unix))]
 mod continue_tests;
@@ -128,6 +142,7 @@ mod select;
 #[cfg(test)]
 mod selfswitch_tests;
 mod sess_sort;
+mod session_ids;
 mod session_index;
 mod session_ops;
 mod session_rename;
@@ -917,6 +932,13 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         EnableBracketedPaste,
         crossterm::event::EnableFocusChange
     );
+    // iTerm2's cursor guide paints the whole terminal row under the cursor,
+    // which draws a band across every pane; turn it off for this session.
+    if std::env::var("TERM_PROGRAM").is_ok_and(|v| v == "iTerm.app")
+        || std::env::var("LC_TERMINAL").is_ok_and(|v| v == "iTerm2")
+    {
+        setup_bytes.extend_from_slice(b"\x1b]1337;HighlightCursorLine=false\x07");
+    }
     out.send(setup_bytes);
     // Lets Shift+Enter and friends be told apart, where the terminal allows.
     // The query writes to stdout itself, so only once the writer is through.

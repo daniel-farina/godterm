@@ -80,13 +80,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.pane_rects = rects.clone();
     app.term_rects.clear();
     for (i, r) in rects.iter().enumerate() {
-        let size_from = if r.width > 0 { *r } else { sized[i] };
+        let folded = app.pane_folded(i);
+        let size_from = if r.width > 0 && !folded { *r } else { sized[i] };
         let inner = Block::default().borders(Borders::ALL).inner(size_from);
         let (_, term, _) = pane_layout(inner, app.tab_pos(i), app.side(i));
         if term.width > 0 && term.height > 0 {
             app.panes[i].resize(term.height, term.width);
         }
-        let shown_term = if r.width > 0 {
+        let shown_term = if r.width > 0 && !folded {
             term
         } else {
             Rect::new(term.x, term.y, 0, 0)
@@ -106,8 +107,32 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match app.view {
         View::Grid => {
             for (i, r) in rects.iter().enumerate() {
-                if r.width > 0 {
+                if r.width > 0 && app.pane_fold(i) == crate::grid_layout::Fold::Col {
+                    draw_folded_col(f, app, i, *r);
+                } else if r.width > 0 && app.pane_folded(i) {
+                    draw_folded(f, app, i, *r);
+                } else if r.width > 0 {
                     draw_pane(f, app, i, *r);
+                }
+            }
+            // Every pane collapsed: the strips, then how to get them back.
+            let vis = app.visible_panes();
+            if !vis.is_empty() && !app.zoom && vis.iter().all(|&p| app.pane_folded(p)) {
+                let below = vis
+                    .iter()
+                    .map(|&p| rects[p].y + rects[p].height)
+                    .max()
+                    .unwrap_or(grid_area.y);
+                if below + 2 < grid_area.y + grid_area.height {
+                    f.render_widget(
+                        Paragraph::new(Line::styled(
+                            "Every pane is collapsed. Click a strip to expand it, Ctrl-a _ expands the focused one, or View ▾ > Expand all.",
+                            Style::default().fg(DIM),
+                        ))
+                        .alignment(Alignment::Center)
+                        .wrap(Wrap { trim: true }),
+                        Rect::new(grid_area.x, below + 1, grid_area.width, 2),
+                    );
                 }
             }
             if app.visible_panes().is_empty() && grid_area.height > 2 {
@@ -419,39 +444,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             ],
             theme::SAND,
         ),
-        Modal::TabMenu(s, t, sel) => {
-            let name = app
-                .panes
-                .get(s)
-                .and_then(|p| p.tabs.get(t))
-                .map(|x| x.name())
-                .unwrap_or_default();
-            let body: Vec<String> = crate::app_tabmove::TAB_MENU
-                .iter()
-                .enumerate()
-                .map(|(i, l)| format!("{}{l}", if i == sel { "› " } else { "  " }))
-                .collect();
-            let buttons: Vec<(&str, crate::hits::UiAction, &str)> = crate::app_tabmove::TAB_MENU
-                .iter()
-                .enumerate()
-                .map(|(i, l)| {
-                    (
-                        *l,
-                        crate::hits::UiAction::TabMenuItem(i),
-                        "Run this (r, m, d, a, p, g, x)",
-                    )
-                })
-                .collect();
-            crate::ui_chrome::draw_message(
-                f,
-                area,
-                app,
-                &format!("tab {name}"),
-                &body,
-                &buttons,
-                theme::SLATE,
-            );
-        }
+        Modal::TabMenu(s, t, sel) => draw_tab_menu(f, area, app, s, t, sel),
         Modal::SessTarget(sel) => {
             let targets = app.op_targets();
             let mv = app.sess_op.as_ref().is_some_and(|o| o.mv);
@@ -646,11 +639,14 @@ pub fn width_pct(preset: Option<&str>) -> u16 {
 }
 
 pub const SIDEBAR_MIN: u16 = 22;
-pub const SIDEBAR_MAX: u16 = 40;
+pub const SIDEBAR_MAX: u16 = 64;
+/// From this many columns a side tab list shows details: each tab's
+/// second line starts with the session's own title (Claude's or Grok's).
+pub const SIDEBAR_WIDE_AT: u16 = 36;
 
 /// Columns of a left or right tab list inside a pane interior of width
 /// `inner_w`: a 3 column strip when collapsed or under 60 columns, else
-/// the dragged width or a share of the pane, 22 to 40, leaving the
+/// the dragged width or a share of the pane, 22 to 64, leaving the
 /// terminal at least 30.
 pub fn sidebar_width(inner_w: u16, side: Side) -> u16 {
     if inner_w < 24 {
@@ -725,6 +721,12 @@ pub fn pane_rects(app: &App, area: Rect) -> (Vec<Rect>, Vec<Rect>, crate::layout
             }
         }
     }
+    // A collapsed pane's PTY keeps the size it has when expanded.
+    for p in &arranged.unfolded {
+        if let Some(&i) = vis.get(p.index) {
+            sized[i] = p.rect;
+        }
+    }
     if app.zoom && app.focus < n {
         shown = vec![Rect::new(area.x, area.y, 0, 0); n];
         shown[app.focus] = area;
@@ -759,6 +761,236 @@ fn state_label(p: &Pane) -> (String, Color) {
         PaneState::Exited(None) => ("stopped".into(), theme::CLAY),
         PaneState::Failed(_) => ("failed".into(), theme::CLAY),
     }
+}
+
+/// A collapsed pane: one row with ▸, its number, account, what runs,
+/// what is left and how many tabs. A click expands it; its tabs keep
+/// running.
+fn draw_folded(f: &mut Frame, app: &App, i: usize, r: Rect) {
+    use crate::hits::{text, UiAction};
+    let slot = &app.panes[i];
+    let focused = i == app.focus && !app.assistant_has_focus();
+    let color = app.account_color(slot.account);
+    let buf = f.buffer_mut();
+    let y = r.y;
+    let full = r.x + r.width;
+    // The window controls keep the right end (on all but tiny strips).
+    let controls = r.width > crate::ui_chrome::CONTROLS_W + 12;
+    let limit = if controls {
+        full - crate::ui_chrome::CONTROLS_W - 1
+    } else {
+        full
+    };
+    let hovered = app
+        .mouse_pos
+        .is_some_and(|(c, rr)| crate::hits::contains(Rect::new(r.x, y, r.width, 1), c, rr));
+    let bg = if hovered { SEL_BG } else { BAR_BG };
+    for x in r.x..full {
+        if let Some(c) = buf.cell_mut((x, y)) {
+            c.set_char(' ');
+            c.set_style(Style::default().bg(bg));
+        }
+    }
+    let st = |c: Color| Style::default().fg(c).bg(bg);
+    let mut x = text(
+        buf,
+        r.x,
+        y,
+        limit,
+        " ▸ ",
+        st(if focused { color } else { DIM }),
+    );
+    x = text(buf, x, y, limit, &format!("{} ", i + 1), st(DIM));
+    let name = slot
+        .account
+        .map(|a| app.account_cfg(a).display().to_string())
+        .unwrap_or_else(|| "no account".into());
+    x = text(
+        buf,
+        x,
+        y,
+        limit,
+        &name,
+        st(if focused { color } else { FG }).add_modifier(Modifier::BOLD),
+    );
+    if let Some(b) = slot
+        .account
+        .and_then(|a| app.account_cfg(a).harness().badge())
+    {
+        x = text(buf, x, y, limit, &format!(" {b}"), st(theme::STONE));
+    }
+    // The state dot: a question in amber, live work in the accent.
+    let working = slot
+        .tabs
+        .iter()
+        .filter(|t| t.activity == Activity::Working)
+        .count();
+    let waiting = slot
+        .tabs
+        .iter()
+        .filter(|t| t.activity == Activity::Permission)
+        .count();
+    let dot = if waiting > 0 {
+        Activity::Permission
+    } else if working > 0 {
+        Activity::Working
+    } else {
+        Activity::Idle
+    };
+    x = text(buf, x, y, limit, " ●", st(activity_color(dot)));
+    if let Some(left) = slot.account.and_then(|a| app.accounts[a].effective_left()) {
+        x = text(buf, x, y, limit, " · ", st(FAINT));
+        x = text(
+            buf,
+            x,
+            y,
+            limit,
+            &format!("{left:.0}% left"),
+            theme::remaining_style(left).bg(bg),
+        );
+    }
+    x = text(
+        buf,
+        x,
+        y,
+        limit,
+        &format!(" · {}", crate::control::plural(slot.tabs.len(), "tab")),
+        st(DIM),
+    );
+    if working > 0 {
+        x = text(
+            buf,
+            x,
+            y,
+            limit,
+            &format!(" · {working} working"),
+            st(theme::ACTIVE).add_modifier(Modifier::BOLD),
+        );
+    }
+    let counts = app.hidden_label_counts(i, true);
+    if let Some((first, _)) = counts.first() {
+        x = text(
+            buf,
+            x,
+            y,
+            limit,
+            &format!(" · {}", crate::tab_labels::summary(&counts, false)),
+            st(first.color()).add_modifier(Modifier::BOLD),
+        );
+    }
+    let _ = x;
+    app.hits.borrow_mut().add(
+        Rect::new(r.x, y, r.width, 1),
+        UiAction::FoldAccount(i),
+        format!("{name} is collapsed (its tabs keep running): click to expand (Ctrl-a _)"),
+    );
+    if controls {
+        crate::ui_chrome::window_controls(buf, app, i, y, full, true);
+    }
+}
+
+/// A pane collapsed sideways: a narrow column with, top to bottom, the
+/// expand caret, the pane number, its state dot, % left and its tab
+/// count. A click anywhere on it expands it.
+fn draw_folded_col(f: &mut Frame, app: &App, i: usize, r: Rect) {
+    use crate::hits::{text, UiAction};
+    if r.width == 0 || r.height == 0 {
+        return;
+    }
+    let slot = &app.panes[i];
+    let focused = i == app.focus && !app.assistant_has_focus();
+    let color = app.account_color(slot.account);
+    let buf = f.buffer_mut();
+    let hovered = app
+        .mouse_pos
+        .is_some_and(|(c, rr)| crate::hits::contains(r, c, rr));
+    let bg = if hovered { SEL_BG } else { BAR_BG };
+    for y in r.y..r.y + r.height {
+        for x in r.x..r.x + r.width {
+            if let Some(c) = buf.cell_mut((x, y)) {
+                c.set_char(' ');
+                c.set_style(Style::default().bg(bg));
+            }
+        }
+        // A thin edge on its right, toward the panes that took its width.
+        if r.width > 1 {
+            if let Some(c) = buf.cell_mut((r.x + r.width - 1, y)) {
+                c.set_char('│');
+                c.set_style(
+                    Style::default()
+                        .fg(if focused { color } else { FAINT })
+                        .bg(bg),
+                );
+            }
+        }
+    }
+    let cw = r.width.saturating_sub(1).max(1);
+    let limit = r.x + cw;
+    let st = |c: Color| Style::default().fg(c).bg(bg);
+    let working = slot
+        .tabs
+        .iter()
+        .filter(|t| t.activity == Activity::Working)
+        .count();
+    let waiting = slot
+        .tabs
+        .iter()
+        .filter(|t| t.activity == Activity::Permission)
+        .count();
+    let dot = if waiting > 0 {
+        Activity::Permission
+    } else if working > 0 {
+        Activity::Working
+    } else {
+        Activity::Idle
+    };
+    let mut lines: Vec<(String, Style)> = vec![
+        ("▸".into(), st(if focused { color } else { theme::SLATE })),
+        (format!("{}", i + 1), st(color).add_modifier(Modifier::BOLD)),
+        ("●".into(), st(activity_color(dot))),
+    ];
+    if let Some(left) = slot.account.and_then(|a| app.accounts[a].effective_left()) {
+        let s = format!("{left:.0}%");
+        let pct = theme::remaining_style(left).bg(bg);
+        if s.chars().count() as u16 <= cw {
+            lines.push((s, pct));
+        } else {
+            lines.push((format!("{left:.0}"), pct));
+            lines.push(("%".into(), pct));
+        }
+    }
+    let n = slot.tabs.len();
+    let tabs = format!("{n}t");
+    lines.push((
+        if tabs.chars().count() as u16 <= cw {
+            tabs
+        } else {
+            n.to_string()
+        },
+        st(DIM),
+    ));
+    for (k, (s, style)) in lines.iter().enumerate() {
+        let y = r.y + k as u16;
+        if y >= r.y + r.height {
+            break;
+        }
+        // Centered in the strip.
+        let w = s.chars().count() as u16;
+        let x = r.x + cw.saturating_sub(w) / 2;
+        text(buf, x, y, limit, s, *style);
+    }
+    let name = slot
+        .account
+        .map(|a| app.account_cfg(a).display().to_string())
+        .unwrap_or_else(|| "no account".into());
+    app.hits.borrow_mut().add(
+        r,
+        UiAction::FoldSideways(i),
+        format!(
+            "{name} is collapsed sideways ({}, its tabs keep running): click to expand (Ctrl-a \\)",
+            crate::control::plural(n, "tab")
+        ),
+    );
 }
 
 fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
@@ -846,6 +1078,14 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
                 };
                 let msg = if pane.restart_at.is_some() {
                     " restarting... ".to_string()
+                } else if let Some(l) = &pane.bg_lock {
+                    if l.stopping {
+                        format!(" stopping the background run {}... ", l.short)
+                    } else if l.confirm_stop {
+                        format!(" Stop the background run {}? It may be doing work. y stops it and resumes here, any other key keeps it ", l.short)
+                    } else {
+                        crate::session_ids::lock_choices(&l.short)
+                    }
                 } else {
                     msg
                 };
@@ -3387,45 +3627,159 @@ fn draw_pager(f: &mut Frame, app: &App, area: Rect, a: &crate::layout::Arranged)
     }
 }
 
-/// "Move tab to..." picker: accounts sorted by 5 hour % left.
+/// A tab's right click menu: app_tabopts::tab_actions, the same list
+/// the double click panel shows.
+fn draw_tab_menu(f: &mut Frame, area: Rect, app: &App, s: usize, t: usize, sel: usize) {
+    use crate::hits::UiAction;
+    let Some(tab) = app.panes.get(s).and_then(|p| p.tabs.get(t)) else {
+        return;
+    };
+    let rows = app.tab_actions(s, t);
+    let w = 44u16.min(area.width);
+    let h = (rows.len() as u16 + 2).min(area.height);
+    if w < 16 || h < 3 {
+        return;
+    }
+    let r = centered(area, w, h);
+    f.render_widget(Clear, r);
+    f.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme::SLATE))
+            .title(Span::styled(
+                format!(" tab {} ", snippet(&tab.name(), 28)),
+                Style::default().fg(FG),
+            ))
+            .style(Style::default().bg(BAR_BG)),
+        r,
+    );
+    let room = h as usize - 2;
+    let start = (sel + 1).saturating_sub(room);
+    let buf = f.buffer_mut();
+    let limit = r.x + r.width - 1;
+    let mut hits = app.hits.borrow_mut();
+    for (k, (i, row)) in rows.iter().enumerate().skip(start).take(room).enumerate() {
+        let y = r.y + 1 + k as u16;
+        let bg = if i == sel { SEL_BG } else { BAR_BG };
+        for x in r.x + 1..limit {
+            if let Some(c) = buf.cell_mut((x, y)) {
+                c.set_char(' ');
+                c.set_style(Style::default().bg(bg));
+            }
+        }
+        let fg = if row.disabled.is_some() { FAINT } else { FG };
+        crate::hits::text(
+            buf,
+            r.x + 2,
+            y,
+            limit,
+            &format!("{}{}", if i == sel { "› " } else { "  " }, row.label),
+            Style::default().fg(fg).bg(bg),
+        );
+        crate::hits::text(
+            buf,
+            limit.saturating_sub(2),
+            y,
+            limit,
+            &row.key.to_string(),
+            Style::default().fg(DIM).bg(bg),
+        );
+        let hint = match &row.disabled {
+            Some(why) => format!("{} ({why})", row.hint),
+            None => format!("{} ({})", row.hint, row.key),
+        };
+        hits.add(
+            Rect::new(r.x + 1, y, r.width - 2, 1),
+            UiAction::TabMenuItem(i),
+            hint,
+        );
+    }
+    drop(hits);
+    crate::ui_chrome::modal_chrome(buf, app, r, &[]);
+}
+
+/// One line of the tab panel.
+#[derive(Clone, Copy, PartialEq)]
+enum PanelLine {
+    Head(bool),
+    Target(usize),
+    NoTarget,
+    MoveOpts,
+    Gap,
+    Opt(usize),
+}
+
+/// The tab panel (double click on a tab): Move to another account on
+/// top, the tab's options below. When both do not fit, the two sections
+/// become tabs; a section taller than its room scrolls to the focus.
 fn draw_move_picker(f: &mut Frame, area: Rect, app: &App, p: &crate::app_tabmove::MovePicker) {
     use crate::hits::UiAction;
     let targets = app.move_targets(p.slot);
-    let name = app
-        .panes
-        .get(p.slot)
-        .and_then(|s| s.tabs.get(p.tab))
-        .map(|t| t.name())
-        .unwrap_or_default();
+    let rows = app.panel_rows(p.slot, p.tab);
+    let Some(tab) = app.panes.get(p.slot).and_then(|s| s.tabs.get(p.tab)) else {
+        return;
+    };
+    let name = tab.name();
+    let mut move_lines = vec![PanelLine::Head(false)];
+    if targets.is_empty() {
+        move_lines.push(PanelLine::NoTarget);
+    }
+    move_lines.extend((0..targets.len()).map(PanelLine::Target));
+    move_lines.push(PanelLine::MoveOpts);
+    let mut opt_lines = vec![PanelLine::Head(true)];
+    opt_lines.extend((0..rows.len()).map(PanelLine::Opt));
+    let full = move_lines.len() + 1 + opt_lines.len();
     let w = 104u16.min(area.width);
-    let h = (targets.len() as u16 + 9).min(area.height);
+    let h = (full as u16 + 2).min(area.height);
+    if w < 24 || h < 5 {
+        return;
+    }
     let r = centered(area, w, h);
     f.render_widget(Clear, r);
-    let nloops = app
-        .panes
-        .get(p.slot)
-        .and_then(|s| s.tabs.get(p.tab))
-        .map(|t| app.loops_in(t.uid))
-        .unwrap_or(0);
+    let inner = h as usize - 2;
+    let compact = full > inner;
+    let focus = match p.opt {
+        Some(i) => PanelLine::Opt(i),
+        None if targets.is_empty() => PanelLine::NoTarget,
+        None => PanelLine::Target(p.sel.min(targets.len() - 1)),
+    };
+    let lines: Vec<PanelLine> = if compact {
+        // The section tabs take the first line; each section drops its head.
+        if p.opt.is_some() {
+            opt_lines[1..].to_vec()
+        } else {
+            move_lines[1..].to_vec()
+        }
+    } else {
+        let mut v = move_lines.clone();
+        v.push(PanelLine::Gap);
+        v.extend(opt_lines.iter().copied());
+        v
+    };
+    let room = inner - usize::from(compact);
+    let at = lines.iter().position(|l| *l == focus).unwrap_or(0);
+    let start = (at + 1)
+        .saturating_sub(room)
+        .min(lines.len().saturating_sub(room));
+    let nloops = app.loops_in(tab.uid);
     let warn = if nloops > 0 && !p.copy {
         format!(" (its {nloops} loop(s) do not move: stop them first from Loops) ")
     } else {
         String::new()
     };
-    let dir = if p.slot < app.panes.len() && p.tab < app.panes[p.slot].tabs.len() {
-        format!(
-            " ({})",
-            crate::paths::shorten_path(&crate::paths::tilde(&app.tab_dir(p.slot, p.tab)), 30)
-        )
-    } else {
-        String::new()
-    };
-    let title = format!(
-        " {} '{}'{dir} to...{warn} ",
-        if p.copy { "duplicate" } else { "move" },
-        snippet(&name, 24)
+    let dir = format!(
+        " ({})",
+        crate::paths::shorten_path(&crate::paths::tilde(&app.tab_dir(p.slot, p.tab)), 30)
     );
-    let _ = &name;
+    let verb = if p.session_only {
+        "copy the session of"
+    } else if p.copy {
+        "duplicate"
+    } else {
+        "move"
+    };
+    let title = format!(" {verb} '{}'{dir} to...{warn} ", snippet(&name, 24));
     f.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -3439,28 +3793,262 @@ fn draw_move_picker(f: &mut Frame, area: Rect, app: &App, p: &crate::app_tabmove
     let buf = f.buffer_mut();
     let limit = r.x + r.width - 1;
     let mut hits = app.hits.borrow_mut();
-    // The tab's name, editable here (kept even if the move is cancelled).
-    {
-        let y = r.y + 1;
-        let x = crate::hits::text(
-            buf,
-            r.x + 2,
-            y,
-            limit,
-            "Tab name ",
-            Style::default().fg(DIM).bg(BAR_BG),
-        );
-        let field = format!(" {}{} ", p.name, if p.name_edit { "▏" } else { "" });
-        let fw = 36u16.min(limit.saturating_sub(x + 16));
-        let st = if p.name_edit {
+    let mut y = r.y + 1;
+    if compact {
+        let mut x = r.x + 2;
+        for (label, opts) in [("Move", false), ("Tab options", true)] {
+            let on = p.opt.is_some() == opts;
+            x = crate::hits::button(
+                buf,
+                &mut hits,
+                app.mouse_pos,
+                x,
+                y,
+                limit,
+                &format!("{} {label}", if on { "●" } else { "○" }),
+                UiAction::TabPanelSec(opts),
+                "Show this section (arrows and Tab move through both)",
+                if on { theme::SAGE } else { theme::STONE },
+            ) + 1;
+        }
+        if start > 0 || start + room < lines.len() {
+            crate::hits::text(
+                buf,
+                x + 1,
+                y,
+                limit,
+                &format!("{}/{}", at + 1, lines.len()),
+                Style::default().fg(FAINT).bg(BAR_BG),
+            );
+        }
+        y += 1;
+    }
+    let first_ok = targets
+        .iter()
+        .position(|t| t.disabled.is_none() && !t.exhausted());
+    let fill = |buf: &mut Buffer, y: u16, bg: Color| {
+        for x in r.x + 1..limit {
+            if let Some(c) = buf.cell_mut((x, y)) {
+                c.set_char(' ');
+                c.set_style(Style::default().bg(bg));
+            }
+        }
+    };
+    for line in lines.iter().skip(start).take(room) {
+        let selected = *line == focus;
+        let bg = if selected { SEL_BG } else { BAR_BG };
+        match *line {
+            PanelLine::Gap => {}
+            PanelLine::Head(opts) => {
+                let label = if opts {
+                    "Tab"
+                } else if p.session_only {
+                    "Copy the session to another account"
+                } else if p.copy {
+                    "Duplicate to another account"
+                } else {
+                    "Move to another account"
+                };
+                crate::hits::text(
+                    buf,
+                    r.x + 2,
+                    y,
+                    limit,
+                    label,
+                    Style::default()
+                        .fg(DIM)
+                        .bg(BAR_BG)
+                        .add_modifier(Modifier::BOLD),
+                );
+            }
+            PanelLine::NoTarget => {
+                fill(buf, y, bg);
+                crate::hits::text(
+                    buf,
+                    r.x + 4,
+                    y,
+                    limit,
+                    "No other logged in account to move this tab to (add one with Ctrl-a A)",
+                    Style::default().fg(FAINT).bg(bg),
+                );
+            }
+            PanelLine::Target(i) => {
+                fill(buf, y, bg);
+                hits.add(
+                    Rect::new(r.x + 1, y, r.width - 2, 1),
+                    UiAction::MoveRow(i),
+                    "Select (double click moves)",
+                );
+                draw_target_row(
+                    buf,
+                    app,
+                    &targets[i],
+                    (r.x, y, limit),
+                    bg,
+                    selected,
+                    first_ok == Some(i),
+                    now,
+                );
+            }
+            PanelLine::MoveOpts => {
+                let mut x = r.x + 2;
+                for (label, copy, only, action, hint) in [
+                    (
+                        "Move",
+                        false,
+                        false,
+                        UiAction::MoveCopy(false),
+                        "The original tab closes (default)",
+                    ),
+                    (
+                        "Copy",
+                        true,
+                        false,
+                        UiAction::MoveCopy(true),
+                        "Keep both tabs (c)",
+                    ),
+                    (
+                        "Session only",
+                        true,
+                        true,
+                        UiAction::MoveSessionOnly,
+                        "Copy the conversation there, no tab opens",
+                    ),
+                ] {
+                    let on = p.copy == copy && p.session_only == only;
+                    x = crate::hits::button(
+                        buf,
+                        &mut hits,
+                        app.mouse_pos,
+                        x,
+                        y,
+                        limit,
+                        &format!("{} {label}", if on { "●" } else { "○" }),
+                        action,
+                        hint,
+                        if on { theme::SAGE } else { theme::STONE },
+                    ) + 1;
+                }
+                crate::hits::button(
+                    buf,
+                    &mut hits,
+                    app.mouse_pos,
+                    x + 1,
+                    y,
+                    limit,
+                    &format!(
+                        "{} keep the same folder",
+                        if p.same_folder { "●" } else { "○" }
+                    ),
+                    UiAction::MoveFolder,
+                    "Off: open in the target account's default folder (f)",
+                    theme::STONE,
+                );
+            }
+            PanelLine::Opt(i) => {
+                let row = &rows[i];
+                fill(buf, y, bg);
+                hits.add(
+                    Rect::new(r.x + 1, y, r.width - 2, 1),
+                    UiAction::TabOpt(i),
+                    row.hint,
+                );
+                let dim = row.disabled.is_some();
+                let x = crate::hits::text(
+                    buf,
+                    r.x + 2,
+                    y,
+                    limit,
+                    &format!("{} ", if selected { "›" } else { " " }),
+                    Style::default().fg(FG).bg(bg),
+                );
+                let label = match row.act {
+                    crate::app_tabopts::TabAct::Rename => "Name",
+                    crate::app_tabopts::TabAct::Color => "Color",
+                    crate::app_tabopts::TabAct::Group => "Group",
+                    _ => row.label.as_str(),
+                };
+                let end = crate::hits::text(
+                    buf,
+                    x,
+                    y,
+                    limit,
+                    label,
+                    Style::default().fg(if dim { FAINT } else { FG }).bg(bg),
+                );
+                let x = end.max(x + 22) + 1;
+                draw_opt_detail(
+                    buf,
+                    &mut hits,
+                    app,
+                    p,
+                    row,
+                    tab,
+                    (x, y, limit),
+                    bg,
+                    selected,
+                );
+            }
+        }
+        y += 1;
+    }
+    drop(hits);
+    let go = if p.session_only {
+        "Copy session"
+    } else if p.copy {
+        "Duplicate"
+    } else {
+        "Move"
+    };
+    let buttons: Vec<(&str, UiAction, &str)> = if p.opt.is_none() && !targets.is_empty() {
+        vec![
+            (
+                go,
+                UiAction::MoveGo,
+                "Continue the conversation there (Enter)",
+            ),
+            ("Cancel", UiAction::ModalCancel, "Esc"),
+        ]
+    } else {
+        vec![("Close", UiAction::ModalCancel, "Esc")]
+    };
+    crate::ui_chrome::modal_chrome(buf, app, r, &buttons);
+}
+
+/// The right side of an option row: a field, swatches, choices or a note.
+#[allow(clippy::too_many_arguments)]
+fn draw_opt_detail(
+    buf: &mut Buffer,
+    hits: &mut crate::hits::Hits,
+    app: &App,
+    p: &crate::app_tabmove::MovePicker,
+    row: &crate::app_tabopts::TabActRow,
+    tab: &Pane,
+    (x, y, limit): (u16, u16, u16),
+    bg: Color,
+    selected: bool,
+) {
+    use crate::app_tabopts::TabAct;
+    use crate::hits::UiAction;
+    let note = |buf: &mut Buffer, x: u16, s: &str| {
+        crate::hits::text(buf, x, y, limit, s, Style::default().fg(FAINT).bg(bg))
+    };
+    let field = |buf: &mut Buffer,
+                 hits: &mut crate::hits::Hits,
+                 text: &str,
+                 editing: bool,
+                 action: UiAction,
+                 hint: &str| {
+        let fw = 40u16.min(limit.saturating_sub(x + 1));
+        let st = if editing {
             Style::default()
                 .fg(FG)
-                .bg(SEL_BG)
+                .bg(theme::SELECT_BG)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
                 .fg(FG)
-                .bg(BAR_BG)
+                .bg(bg)
                 .add_modifier(Modifier::UNDERLINED)
         };
         for cx in x..x + fw {
@@ -3469,234 +4057,264 @@ fn draw_move_picker(f: &mut Frame, area: Rect, app: &App, p: &crate::app_tabmove
                 c.set_style(st);
             }
         }
-        crate::hits::text(buf, x, y, x + fw, &field, st);
-        hits.add(
-            Rect::new(x, y, fw, 1),
-            UiAction::MoveName,
-            "Click (or Tab) to edit the name; Enter keeps it",
-        );
-        crate::hits::button(
-            buf,
-            &mut hits,
-            app.mouse_pos,
-            x + fw + 1,
-            y,
-            limit,
-            "Rename only",
-            UiAction::MoveRenameOnly,
-            "Save just the name and close",
-            theme::SLATE,
-        );
-    }
-    let mut y = r.y + 3;
-    let first_ok = targets
-        .iter()
-        .position(|t| t.disabled.is_none() && !t.exhausted());
-    for (i, t) in targets.iter().enumerate() {
-        if y + 4 >= r.y + r.height {
-            break;
+        let shown = format!(" {text}{} ", if editing { "▏" } else { "" });
+        // While typing, the end of a long text stays in view.
+        let n = shown.chars().count();
+        let room = fw as usize;
+        let shown: String = if editing && n > room {
+            shown.chars().skip(n - room).collect()
+        } else {
+            shown
+        };
+        crate::hits::text(buf, x, y, x + fw, &shown, st);
+        hits.add(Rect::new(x, y, fw, 1), action, hint);
+        if editing {
+            note(buf, x + fw + 1, "Enter saves, Esc cancels");
         }
-        let selected = i == p.sel;
-        let bg = if selected { SEL_BG } else { BAR_BG };
-        for x in r.x + 1..limit {
-            if let Some(c) = buf.cell_mut((x, y)) {
-                c.set_char(' ');
-                c.set_style(Style::default().bg(bg));
+    };
+    match row.act {
+        TabAct::Rename => field(
+            buf,
+            hits,
+            &p.name,
+            p.name_edit,
+            UiAction::MoveName,
+            "Click (or Enter) to rename; Enter saves, Esc cancels",
+        ),
+        TabAct::SessionTitle => match &row.disabled {
+            None => field(
+                buf,
+                hits,
+                &p.title,
+                p.title_edit,
+                UiAction::TabTitleField,
+                "Click (or Enter) to rename the session itself",
+            ),
+            Some(why) => {
+                note(buf, x + 1, &format!("read only: {why}"));
+            }
+        },
+        TabAct::Color => {
+            let mut cx = x;
+            for i in 0..crate::color_pick::count() {
+                let (label, color) = if i == 0 {
+                    ("none", DIM)
+                } else {
+                    let n = theme::SWATCHES[i - 1];
+                    (n, theme::parse_color(n))
+                };
+                let cur = tab.accent.as_deref() == (i > 0).then(|| theme::SWATCHES[i - 1]);
+                let text = format!(" {} {label} ", if cur { "●" } else { "■" });
+                let wd = text.chars().count() as u16;
+                if cx + wd > limit {
+                    break;
+                }
+                let st = if selected && p.color_sel == i {
+                    Style::default().fg(color).bg(theme::SELECT_BG)
+                } else {
+                    Style::default().fg(color).bg(bg)
+                };
+                crate::hits::text(buf, cx, y, limit, &text, st);
+                hits.add(
+                    Rect::new(cx, y, wd, 1),
+                    UiAction::TabOptColor(i),
+                    "Use this color (←→ and Enter)",
+                );
+                cx += wd;
             }
         }
-        hits.add(
-            Rect::new(r.x + 1, y, r.width - 2, 1),
-            UiAction::MoveRow(i),
-            "Select (double click moves)",
-        );
-        let cfg = app.account_cfg(t.account);
-        let dim = t.disabled.is_some();
-        let fg = if dim { FAINT } else { FG };
-        let mut x = crate::hits::text(
-            buf,
-            r.x + 2,
-            y,
-            limit,
-            &format!("{} ", if selected { "›" } else { " " }),
-            Style::default().fg(FG).bg(bg),
-        );
-        x = crate::hits::text(
+        TabAct::Group => {
+            let mut cx = x;
+            for (i, g) in app.group_choices(p.slot).iter().enumerate() {
+                let cur = tab.group.as_deref() == Some(g.as_str());
+                let text = format!(" {}{g} ", if cur { "● " } else { "" });
+                let wd = unicode_width::UnicodeWidthStr::width(text.as_str()) as u16;
+                if cx + wd > limit {
+                    break;
+                }
+                let st = if selected && p.group_sel == i {
+                    Style::default().fg(FG).bg(theme::SELECT_BG)
+                } else {
+                    Style::default().fg(DIM).bg(bg)
+                };
+                crate::hits::text(buf, cx, y, limit, &text, st);
+                hits.add(
+                    Rect::new(cx, y, wd, 1),
+                    UiAction::TabOptGroup(i),
+                    "Put the tab here (←→ and Enter)",
+                );
+                cx += wd + 1;
+            }
+        }
+        TabAct::Pin => {
+            note(
+                buf,
+                x + 1,
+                if tab.pinned {
+                    "pinned: first in the list, asks before closing"
+                } else {
+                    "not pinned"
+                },
+            );
+        }
+        TabAct::CopyPath => {
+            note(
+                buf,
+                x + 1,
+                &crate::paths::tilde(&app.tab_dir(p.slot, p.tab)),
+            );
+        }
+        _ => {
+            note(buf, x + 1, row.disabled.as_deref().unwrap_or(row.hint));
+        }
+    }
+}
+
+/// One account row of the Move section.
+#[allow(clippy::too_many_arguments)]
+fn draw_target_row(
+    buf: &mut Buffer,
+    app: &App,
+    t: &crate::app_tabmove::MoveTarget,
+    (rx, y, limit): (u16, u16, u16),
+    bg: Color,
+    selected: bool,
+    most_left: bool,
+    now: DateTime<Utc>,
+) {
+    let cfg = app.account_cfg(t.account);
+    let dim = t.disabled.is_some();
+    let mut x = crate::hits::text(
+        buf,
+        rx + 2,
+        y,
+        limit,
+        &format!("{} ", if selected { "›" } else { " " }),
+        Style::default().fg(FG).bg(bg),
+    );
+    x = crate::hits::text(
+        buf,
+        x,
+        y,
+        rx + 18,
+        &snippet(cfg.display(), 14),
+        Style::default()
+            .fg(if dim {
+                FAINT
+            } else {
+                theme::parse_color(&cfg.color)
+            })
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+    );
+    x = x.max(rx + 18);
+    if let Some(why) = &t.disabled {
+        crate::hits::text(
             buf,
             x,
             y,
-            r.x + 18,
-            &snippet(cfg.display(), 14),
-            Style::default()
-                .fg(if dim {
-                    FAINT
-                } else {
-                    theme::parse_color(&cfg.color)
-                })
-                .bg(bg)
-                .add_modifier(Modifier::BOLD),
+            limit,
+            &format!("unavailable: {why}"),
+            Style::default().fg(FAINT).bg(bg),
         );
-        x = x.max(r.x + 18);
-        if let Some(why) = &t.disabled {
-            crate::hits::text(
-                buf,
-                x,
-                y,
-                limit,
-                &format!("unavailable: {why}"),
-                Style::default().fg(FAINT).bg(bg),
-            );
-            y += 1;
-            continue;
-        }
-        let bar = |buf: &mut Buffer, x: u16, label: &str, left: Option<f64>| -> u16 {
-            let mut x = crate::hits::text(buf, x, y, limit, label, Style::default().fg(DIM).bg(bg));
-            match left {
-                Some(l) => {
-                    for sp in left_bar(l, 8) {
-                        x = crate::hits::text(buf, x, y, limit, &sp.content, sp.style.bg(bg));
-                    }
-                    crate::hits::text(
-                        buf,
-                        x,
-                        y,
-                        limit,
-                        &format!(" {l:>3.0}% "),
-                        theme::remaining_style(l).bg(bg),
-                    )
+        return;
+    }
+    let bar = |buf: &mut Buffer, x: u16, label: &str, left: Option<f64>| -> u16 {
+        let mut x = crate::hits::text(buf, x, y, limit, label, Style::default().fg(DIM).bg(bg));
+        match left {
+            Some(l) => {
+                for sp in left_bar(l, 8) {
+                    x = crate::hits::text(buf, x, y, limit, &sp.content, sp.style.bg(bg));
                 }
-                None => crate::hits::text(
+                crate::hits::text(
                     buf,
                     x,
                     y,
                     limit,
-                    "  ?      ",
-                    Style::default().fg(FAINT).bg(bg),
-                ),
+                    &format!(" {l:>3.0}% "),
+                    theme::remaining_style(l).bg(bg),
+                )
             }
-        };
-        x = bar(buf, x, "5h ", t.five_left);
-        let reset = app.accounts[t.account]
-            .usage
-            .as_ref()
-            .and_then(|u| u.get("five_hour"))
-            .and_then(|w| w.resets_at)
-            .map(|at| format!("resets {} ", crate::usage::countdown(at, now)))
-            .unwrap_or_default();
-        x = crate::hits::text(
-            buf,
-            x,
-            y,
-            limit,
-            &format!("{reset:<15}"),
-            Style::default().fg(DIM).bg(bg),
-        );
-        x = bar(buf, x, "wk ", t.week_left);
-        x = crate::hits::text(
-            buf,
-            x,
-            y,
-            limit,
-            &format!(" {} tabs ", t.tabs),
-            Style::default().fg(DIM).bg(bg),
-        );
-        let badge = crate::config::permission_badge(&app.cfg.mode_for(t.account));
-        x = crate::hits::text(
-            buf,
-            x,
-            y,
-            limit,
-            &format!("{badge} "),
-            Style::default().fg(FAINT).bg(bg),
-        );
-        if t.exhausted() {
-            let (which, at) = app.accounts[t.account]
-                .binding()
-                .map(|b| (b.1, b.2))
-                .unwrap_or(("usage", None));
-            let when = at
-                .map(|a| {
-                    a.with_timezone(&chrono::Local)
-                        .format("%a %H:%M")
-                        .to_string()
-                })
-                .unwrap_or_else(|| "later".into());
-            x = crate::hits::text(
+            None => crate::hits::text(
                 buf,
                 x,
                 y,
                 limit,
-                &format!("{which} limit reached, resets {when} "),
-                Style::default().fg(theme::CLAY).bg(bg),
-            );
-        } else if Some(i) == first_ok {
-            x = crate::hits::text(
-                buf,
-                x,
-                y,
-                limit,
-                "most left ",
-                Style::default()
-                    .fg(theme::SAGE)
-                    .bg(bg)
-                    .add_modifier(Modifier::BOLD),
-            );
-        }
-        if let Some(e) = app.email_label(t.account, (limit.saturating_sub(x)) as usize) {
-            crate::hits::text(buf, x, y, limit, &e, Style::default().fg(FAINT).bg(bg));
-        }
-        y += 1;
-        let _ = fg;
-    }
-    // Options.
-    let oy = r.y + r.height - 3;
-    let mut x = r.x + 2;
-    for (label, copy, hint) in [
-        ("Move", false, "The original tab closes (default)"),
-        ("Copy", true, "Keep both tabs"),
-    ] {
-        let on = p.copy == copy;
-        x = crate::hits::button(
-            buf,
-            &mut hits,
-            app.mouse_pos,
-            x,
-            oy,
-            limit,
-            &format!("{} {label}", if on { "●" } else { "○" }),
-            UiAction::MoveCopy(copy),
-            hint,
-            if on { theme::SAGE } else { theme::STONE },
-        ) + 1;
-    }
-    crate::hits::button(
-        buf,
-        &mut hits,
-        app.mouse_pos,
-        x + 1,
-        oy,
-        limit,
-        &format!(
-            "{} keep the same folder",
-            if p.same_folder { "●" } else { "○" }
-        ),
-        UiAction::MoveFolder,
-        "Off: open in the target account's default folder (f)",
-        theme::STONE,
-    );
-    drop(hits);
-    crate::ui_chrome::modal_chrome(
-        buf,
-        app,
-        r,
-        &[
-            (
-                if p.copy { "Duplicate" } else { "Move" },
-                UiAction::MoveGo,
-                "Continue the conversation there (Enter)",
+                "  ?      ",
+                Style::default().fg(FAINT).bg(bg),
             ),
-            ("Cancel", UiAction::ModalCancel, "Esc"),
-        ],
+        }
+    };
+    x = bar(buf, x, "5h ", t.five_left);
+    let reset = app.accounts[t.account]
+        .usage
+        .as_ref()
+        .and_then(|u| u.get("five_hour"))
+        .and_then(|w| w.resets_at)
+        .map(|at| format!("resets {} ", crate::usage::countdown(at, now)))
+        .unwrap_or_default();
+    x = crate::hits::text(
+        buf,
+        x,
+        y,
+        limit,
+        &format!("{reset:<15}"),
+        Style::default().fg(DIM).bg(bg),
     );
+    x = bar(buf, x, "wk ", t.week_left);
+    x = crate::hits::text(
+        buf,
+        x,
+        y,
+        limit,
+        &format!(" {} tabs ", t.tabs),
+        Style::default().fg(DIM).bg(bg),
+    );
+    let badge = crate::config::permission_badge(&app.cfg.mode_for(t.account));
+    x = crate::hits::text(
+        buf,
+        x,
+        y,
+        limit,
+        &format!("{badge} "),
+        Style::default().fg(FAINT).bg(bg),
+    );
+    if t.exhausted() {
+        let (which, at) = app.accounts[t.account]
+            .binding()
+            .map(|b| (b.1, b.2))
+            .unwrap_or(("usage", None));
+        let when = at
+            .map(|a| {
+                a.with_timezone(&chrono::Local)
+                    .format("%a %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "later".into());
+        x = crate::hits::text(
+            buf,
+            x,
+            y,
+            limit,
+            &format!("{which} limit reached, resets {when} "),
+            Style::default().fg(theme::CLAY).bg(bg),
+        );
+    } else if most_left {
+        x = crate::hits::text(
+            buf,
+            x,
+            y,
+            limit,
+            "most left ",
+            Style::default()
+                .fg(theme::SAGE)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+    if let Some(e) = app.email_label(t.account, (limit.saturating_sub(x)) as usize) {
+        crate::hits::text(buf, x, y, limit, &e, Style::default().fg(FAINT).bg(bg));
+    }
 }
 
 /// Loops in running tabs.
@@ -4638,6 +5256,19 @@ pub const HELP: &[(&str, &str)] = &[
     ("Ctrl-a ,", "settings"),
     ("Ctrl-a R", "rename the current tab (or double click it)"),
     ("Ctrl-a s", "collapse / expand the tab list"),
+    (
+        "Ctrl-a _",
+        "minimize / restore the focused pane (a one row strip)",
+    ),
+    (
+        "Ctrl-a \\",
+        "collapse / expand the focused pane sideways (a narrow column)",
+    ),
+    ("Ctrl-a /", "search the tab list (Esc clears)"),
+    (
+        "Ctrl-a < >",
+        "narrower / wider tab list (details from 36 columns)",
+    ),
     ("Ctrl-a S", "tab list position: left, right, top"),
     ("Ctrl-a o", "overview of every account and tab"),
     ("Ctrl-a y", "approvals queue: every tab waiting"),
@@ -4772,7 +5403,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
     lines.extend(HELP.iter().map(|(k, v)| row(k, v, theme::SAND)));
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        "  Mouse: the menu bar, tab names, x and +, the account ▾ menu, zoom, restart, the usage",
+        "  Mouse: the menu bar, tab names, x and +, the account ▾ menu, the window controls (_ minimize, □ maximize, × close; ◂ collapses sideways), restart, the usage",
         Style::default().fg(DIM),
     ));
     lines.push(Line::styled(
@@ -7037,10 +7668,11 @@ mod tests {
             )
             .0;
             let buf = term.backend().buffer();
-            let rows: Vec<String> = (0..(bar.height - 2) / 2)
+            // Under the title and the search row.
+            let rows: Vec<String> = (0..(bar.height - 3) / 2)
                 .map(|k| {
                     (bar.x..bar.x + bar.width - 1)
-                        .map(|x| buf[(x, bar.y + 1 + 2 * k)].symbol().to_string())
+                        .map(|x| buf[(x, bar.y + 2 + 2 * k)].symbol().to_string())
                         .collect::<String>()
                 })
                 .map(|r| r.replace(['✎', '×'], "").trim().to_string())
@@ -7098,7 +7730,7 @@ mod tests {
                 .collect::<String>()
         };
         let names: Vec<String> = (0..6)
-            .map(|k| row(bar.y + 1 + 2 * k).trim().to_string())
+            .map(|k| row(bar.y + 2 + 2 * k).trim().to_string())
             .collect();
         let uniq: std::collections::HashSet<_> = names.iter().collect();
         assert_eq!(uniq.len(), 6, "{names:#?}");
@@ -7164,7 +7796,16 @@ mod tests {
             edge.x + 60,
             edge.y + 3,
         ));
-        assert_eq!(app.panes[0].sidebar_w, Some(40), "at most 40");
+        assert_eq!(
+            app.panes[0].sidebar_w,
+            Some(SIDEBAR_MAX),
+            "at most SIDEBAR_MAX"
+        );
+        app.handle(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            edge.x + 18,
+            edge.y + 3,
+        ));
         app.handle(mouse(MouseEventKind::Up(MouseButton::Left), 0, 0));
         assert_eq!(app.snapshot_state().slots[0].sidebar_w, Some(40));
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -8288,9 +8929,9 @@ mod tests {
         let row = app.last_hits.find(&UiAction::SelectTab(0, 1)).unwrap();
         assert!(
             row.hint.starts_with("Switch to this tab: ")
-                && row
-                    .hint
-                    .ends_with(" · ✎ rename · double click: move · right click: more"),
+                && row.hint.ends_with(
+                    " · ✎ rename · double click: move and options · right click: options"
+                ),
             "{}",
             row.hint
         );
@@ -8334,11 +8975,11 @@ mod tests {
             .iter()
             .any(|r| matches!(r.action, UiAction::RenameTab(..))));
         app.view = View::Grid;
-        // The move dialog: edit the name, Rename only saves just that.
+        // The move dialog: edit the name (n), Enter saves it at once.
         app.open_move_picker(0, 1, false);
         term.draw(|f| draw(f, &mut app)).unwrap();
-        assert!(buffer_text(term.backend().buffer()).contains("Tab name"));
-        k(&mut app, KeyCode::Tab);
+        assert!(buffer_text(term.backend().buffer()).contains("Name"));
+        k(&mut app, KeyCode::Char('n'));
         for _ in 0..80 {
             k(&mut app, KeyCode::Backspace);
         }
@@ -8346,12 +8987,13 @@ mod tests {
             k(&mut app, KeyCode::Char(c));
         }
         k(&mut app, KeyCode::Enter);
-        click_on(&mut app, &mut term, &UiAction::MoveRenameOnly);
-        assert_eq!(app.modal, Modal::None);
+        assert!(matches!(app.modal, Modal::MoveTab(_)));
         assert_eq!(app.panes[0].tabs[1].name(), "web");
+        k(&mut app, KeyCode::Esc);
+        assert_eq!(app.modal, Modal::None);
         // A name edit sticks even when the move is cancelled.
         app.open_move_picker(0, 1, false);
-        k(&mut app, KeyCode::Tab);
+        k(&mut app, KeyCode::Char('n'));
         k(&mut app, KeyCode::Char('2'));
         k(&mut app, KeyCode::Enter);
         k(&mut app, KeyCode::Esc);
@@ -11409,7 +12051,7 @@ mod tests {
     }
 
     /// QA-12: narrow headers keep the account label and folder; restart
-    /// and zoom go first and the move chip shortens.
+    /// go first (the window controls stay) and the move chip shortens.
     #[test]
     fn narrow_headers_keep_label_and_folder() {
         use ratatui::backend::TestBackend;

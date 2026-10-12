@@ -222,6 +222,16 @@ pub const TOOLS: &[Tool] = &[
         schema: || props(json!({"accounts": {"type": ["integer", "string", "array"]}, "except": {"type": ["integer", "string", "array"]}, "only": {"type": "boolean"}}), &["accounts"]),
     },
     Tool {
+        name: "collapse_accounts",
+        description: "Collapse accounts' panes to a one row strip (name, state, usage, tab count): the panes next to them take the space (\"collapse the two top ones\" in a 2x2 makes the bottom two fill the height), or with direction \"column\" sideways to a narrow column strip whose row neighbours take the width (\"collapse account 2 sideways\", \"fold the left two\"); default \"row\". Their tabs keep running; this is not close_accounts. accounts: numbers, labels, a list, \"all\", a harness (\"grok\"), or where they are on screen (\"top two\", \"bottom row\", \"left\"); except: ones to keep. Runs at once; say the short result.",
+        schema: || props(json!({"accounts": {"type": ["integer", "string", "array"]}, "except": {"type": ["integer", "string", "array"]}, "direction": {"type": "string", "enum": ["row", "column"]}}), &["accounts"]),
+    },
+    Tool {
+        name: "expand_accounts",
+        description: "Expand collapsed accounts' panes again (\"expand all\", \"expand account 2\"). Same targets as collapse_accounts. Runs at once.",
+        schema: || props(json!({"accounts": {"type": ["integer", "string", "array"]}, "except": {"type": ["integer", "string", "array"]}}), &["accounts"]),
+    },
+    Tool {
         name: "set_layout",
         description: "Arrange the grid. mode: auto, grid (with grid like \"2x2\"), columns, rows, focus. Or tree, any split: {\"split\": \"columns\"|\"rows\", \"sizes\": [2, 1], \"children\": [...]}, leaves {\"account\": N} or {\"rest\": true} (every other open account, stacked across). \"account 1 big on the left, the rest stacked on the right\" = {\"split\": \"columns\", \"sizes\": [2, 1], \"children\": [{\"account\": 1}, {\"rest\": true}]}; \"just account 2\" = {\"account\": 2}. Too small to fit falls back to auto. Runs at once.",
         schema: || props(json!({"mode": {"type": "string"}, "grid": {"type": "string"}, "tree": {"type": "object"}}), &[]),
@@ -297,11 +307,21 @@ pub const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "fix_resume",
+        description: "Fix a tab whose resume failed because Claude Code runs its session in the background (the tab's screen says \"That session is running in the background (<job>)\"; get_state and read_tab show background_lock). It acts on THAT tab and its own account; never open a new tab or a fresh session instead. choice: attach (default and safe: claude attach <job> in the tab, the background run keeps going), stop (claude stop <job>, then resume the session in the tab; the run may be doing work, so it asks once: needs_confirmation) or fork (resume a copy under a new id, the background run keeps the original).",
+        schema: || {
+            props(
+                json!({"tab": tab_prop(), "choice": {"type": "string", "enum": ["attach", "stop", "fork"]}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
+                &["tab"],
+            )
+        },
+    },
+    Tool {
         name: "open_tab",
         description: "Open a new claude tab on an account and, with prompt, give its claude that task. name: a short task name; the tab gets a new folder of that name. dir: a folder (path or recent project name) instead; a path that does not exist yet is created when its parent folder exists under the home folder (its say: \"Created ~/x and opened a session there on Account 4.\"); when the parent is missing too it returns an error naming it: ask the user once, and on yes call again with create true. Waits until the tab is ready and the prompt is accepted; returns the tab id and the delivery status. A prompt that asks the tab's agent something for the user (or expect_reply true) is followed: GodTerm tells the user its first reply when it comes. The result says will_report: promise to report back only when it is true. images: attached images to give the new tab with its prompt.",
         schema: || {
             props(
-                json!({"account": account_prop(), "name": {"type": "string"}, "dir": {"type": "string"}, "create": {"type": "boolean", "description": "The user said yes to creating dir and its missing parents"}, "prompt": {"type": "string"}, "images": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "Images the user attached that this prompt is about: their numbers (1 for image 1) from the user's messages of the last 30 minutes, or image file paths. Only the images the user means for this tab."}, "expect_reply": {"type": "boolean", "description": "The prompt asks the new tab's agent a question for the user: its answer is reported (default: true when the prompt or the user's request is a question)"}, "count": {"type": "integer", "description": "Open this many such tabs at once (1 to 10), each in its own folder name-1, name-2..."}}),
+                json!({"account": account_prop(), "name": {"type": "string"}, "dir": {"type": "string"}, "create": {"type": "boolean", "description": "The user said yes to creating dir and its missing parents"}, "prompt": {"type": "string"}, "images": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "Images the user attached that this prompt is about: their numbers (1 for image 1) from the user's messages of the last 30 minutes, or image file paths. Only the images the user means for this tab."}, "expect_reply": {"type": "boolean", "description": "The prompt asks the new tab's agent a question for the user: its answer is reported (default: true when the prompt or the user's request is a question)"}, "count": {"type": "integer", "description": "Open this many such tabs at once (1 to 10), each in its own folder name-1, name-2..."}, "fresh": {"type": "boolean", "description": "The user clearly asked for a new blank session in the folder of a tab that failed to resume (otherwise fix that tab with fix_resume)"}}),
                 &[],
             )
         },
@@ -617,8 +637,18 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "sort_tabs",
-        description: "Sort an account's tab list: by manual (drag order), recent (activity), opened, name, folder or state (needs approval first). Pinned tabs stay first.",
-        schema: || props(json!({"account": account_prop(), "by": {"type": "string", "enum": ["manual", "recent", "opened", "name", "folder", "state"]}}), &["by"]),
+        description: "Sort an account's tab list (its Sort ▾ dropdown): manual (drag order), active (most active: working first, then latest output), recent (most recent activity), name, state (status: blocked and confirm first, then working, then idle), opened (created, newest first) or folder. \"sort account 2 by most recent\" is account 2, by recent. Pinned tabs stay first; groups are sorted inside.",
+        schema: || props(json!({"account": account_prop(), "by": {"type": "string", "enum": ["manual", "active", "recent", "name", "state", "opened", "folder"]}}), &["by"]),
+    },
+    Tool {
+        name: "resize_tab_list",
+        description: "Resize an account's side tab list (default: the focused pane's): width \"wider\", \"narrower\", \"details\" (\"show tab details\": wide enough that each tab also shows its session's own Claude or Grok title, folder, status and time), \"no details\" (back to automatic), or a number of columns (22 to 64). Runs at once.",
+        schema: || props(json!({"width": {"type": ["string", "integer"]}, "account": account_prop()}), &["width"]),
+    },
+    Tool {
+        name: "search_tabs",
+        description: "Filter the tab lists by what the user remembers (\"find the tab about botmesh\"): our tab name, the session's own Claude or Grok title, the folder and the status, fuzzy (misheard is fine). The lists with a match show only the matches (\"3 of 27\"); one match is focused (focus false: not). account narrows. Empty text clears every search. Returns the matching tabs.",
+        schema: || props(json!({"text": {"type": "string"}, "account": account_prop(), "focus": {"type": "boolean"}}), &[]),
     },
     Tool {
         name: "get_system_prompt",
@@ -798,9 +828,17 @@ pub fn slug(name: &str) -> String {
 }
 
 impl App {
-    /// The id a tab has now: a moved tab continues under its new id.
+    /// The id a tab has now: a moved tab continues under its new id. A
+    /// tab that is still there is itself, whatever moves recorded (a
+    /// failed move leaves the source open; a tab can be reused), unless
+    /// it is the source of a move in progress.
     pub fn current_uid(&self, mut uid: u64) -> u64 {
         for _ in 0..16 {
+            if self.find_tab(uid).is_some()
+                && !self.pending_moves.iter().any(|m| m.source_uid == uid)
+            {
+                break;
+            }
             match self.moved_ids.get(&uid) {
                 Some(n) => uid = *n,
                 None => break,
@@ -1714,6 +1752,10 @@ impl App {
         if let Some(l) = self.tab_label(s, t) {
             v["label"] = json!(l.word());
         }
+        // Its resume is held by a Claude Code background run.
+        if let Some(l) = self.bg_lock_json(s, t) {
+            v["background_lock"] = l;
+        }
         if s == self.focus && t == slot.active {
             v["focused"] = json!(true);
         }
@@ -2021,6 +2063,9 @@ impl App {
         }
         if tool == "rename_session" {
             return self.rename_plan_for(args);
+        }
+        if tool == "fix_resume" {
+            return self.fix_resume_plan(args);
         }
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
         let listy = |k: &[&str]| {
@@ -2382,6 +2427,9 @@ impl App {
         }
         if tool == "rename_session" {
             return self.rename_run(plan);
+        }
+        if tool == "fix_resume" {
+            return self.fix_resume_run(plan);
         }
         let uids: Vec<u64> = plan["uids"]
             .as_array()
@@ -3030,6 +3078,9 @@ impl App {
         if tool == "edit_system_prompt" {
             return self.planned(tool, args);
         }
+        if tool == "fix_resume" {
+            return self.planned(tool, args);
+        }
         if let Some(r) = self.prompt_tool(tool, args) {
             return r;
         }
@@ -3115,6 +3166,23 @@ impl App {
             "read_tab" => {
                 let (sl, t) = self.one_tab(args)?;
                 let id = tab_id(self.panes[sl].tabs[t].uid);
+                // Asked by an id that moved: say so, never pass another
+                // tab's screen off as the one asked for.
+                let moved = s("tab").map(|a| a.trim().to_lowercase()).filter(|a| {
+                    a.strip_prefix('t')
+                        .is_some_and(|n| n.parse::<u64>().is_ok())
+                        && *a != id
+                });
+                let extra = |mut v: Value| {
+                    if let Some(a) = &moved {
+                        v["moved_from"] = json!(a);
+                        v["note"] = json!(format!("{a} moved; this is the same session, now {id}"));
+                    }
+                    if let Some(l) = self.bg_lock_json(sl, t) {
+                        v["background_lock"] = l;
+                    }
+                    v
+                };
                 if s("what").as_deref() == Some("screen") {
                     let n = args
                         .get("lines")
@@ -3132,18 +3200,18 @@ impl App {
                         .map(str::trim_end)
                         .filter(|l| !l.is_empty())
                         .collect();
-                    ok(
+                    ok(extra(
                         json!({"tab": id, "screen": lines[lines.len().saturating_sub(n)..].join("\n")}),
-                    )
+                    ))
                 } else {
                     let path = self.transcript_path(sl, t).ok_or(
                         "no transcript for that tab yet (nothing was asked there); try what=screen",
                     )?;
                     let text = crate::sessions::last_assistant_text(&path)
                         .ok_or("claude has not replied there yet")?;
-                    ok(
+                    ok(extra(
                         json!({"tab": id, "state": self.state_word(sl, t), "reply": crate::sessions::first_sentences(&text, 4000)}),
-                    )
+                    ))
                 }
             }
             "list_dir" => {
@@ -3303,6 +3371,13 @@ impl App {
                 // A confirmed (or re-asked) open in the home folder.
                 if args.get("confirm_token").is_some() || args.get("reissue_token").is_some() {
                     return self.planned("open_tab", args);
+                }
+                // Never a blank session in place of a tab whose resume a
+                // background run holds: that tab is fixed (fix_resume).
+                if args["fresh"].as_bool() != Some(true) {
+                    if let Some(e) = self.held_tab_for(s("dir").as_deref(), s("name").as_deref()) {
+                        return Err(e);
+                    }
                 }
                 let acct = match args.get("account") {
                     Some(v) if !v.is_null() => self.account_arg(v)?,
@@ -4143,14 +4218,11 @@ impl App {
             "session_detail" => {
                 let id = s("id").ok_or("id is required")?;
                 self.kick_index(false);
-                let ix = self.session_index.lock().unwrap_or_else(|e| e.into_inner());
-                let r = ix
-                    .rows
-                    .iter()
-                    .find(|r| r.info.id == id || r.info.id.starts_with(&id))
-                    .cloned()
+                let r = self
+                    .session_copies(&id)?
+                    .into_iter()
+                    .max_by_key(|r| r.info.modified)
                     .ok_or("no session with that id (call sessions first)")?;
-                drop(ix);
                 let mut d = match r.harness {
                     crate::harness::Harness::Claude => {
                         crate::session_index::detail_claude(&r.info.path)
@@ -4163,27 +4235,46 @@ impl App {
                 ok(d)
             }
             "open_session" => {
+                use crate::app_sessions::Src;
                 let id = s("id").ok_or("id is required")?;
                 self.kick_index(false);
-                let r = self
-                    .session_index
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .rows
+                let rows = self.session_copies(&id)?;
+                let want = match args.get("account") {
+                    Some(v) if !v.is_null() => Some(self.account_arg(v)?),
+                    _ => None,
+                };
+                // A session lives in one config dir per account (resumed on
+                // an account that lacks it, claude says "No conversation
+                // found"): open the freshest copy where it is, the asked
+                // account's own copy when that is as fresh.
+                let newest = rows
                     .iter()
-                    .find(|r| r.info.id == id || r.info.id.starts_with(&id))
+                    .max_by_key(|r| r.info.modified)
                     .cloned()
                     .ok_or("no session with that id (call sessions first)")?;
-                if r.info.parent.is_some() {
-                    return Err("that is a subagent; open its parent session instead".into());
-                }
+                let in_want =
+                    want.and_then(|w| rows.iter().find(|r| r.src == Src::Account(w)).cloned());
+                let r = match in_want {
+                    Some(w) if w.info.modified >= newest.info.modified => w,
+                    _ => newest,
+                };
+                let mut note = None;
                 let acct = match r.src {
-                    crate::app_sessions::Src::Account(a) => a,
+                    Src::Account(a) => {
+                        if let Some(w) = want.filter(|w| *w != a) {
+                            note = Some(format!(
+                                "It lives on {}, so it opened there, not on {}.",
+                                self.cfg.accounts[a].display(),
+                                self.cfg.accounts[w].display()
+                            ));
+                        }
+                        a
+                    }
                     _ => {
                         // A main install session: copy it into an account first.
-                        let want = match args.get("account") {
-                            Some(v) if !v.is_null() => self.account_arg(v)?,
-                            _ => (0..self.cfg.accounts.len())
+                        let want = match want {
+                            Some(w) => w,
+                            None => (0..self.cfg.accounts.len())
                                 .filter(|&a| {
                                     self.cfg.accounts[a].harness() == r.harness
                                         && self.accounts[a].login.logged_in()
@@ -4213,6 +4304,26 @@ impl App {
                         }
                         let from = self.src_dir(r.src);
                         let to = self.cfg.accounts[want].config_dir();
+                        // The account's older copy is replaced by the newer
+                        // one (kept in GodTerm's trash first).
+                        let older = rows
+                            .iter()
+                            .find(|x| x.src == Src::Account(want))
+                            .map(|x| x.info.path.clone());
+                        let conflict = match &older {
+                            Some(p) => {
+                                let trash = crate::config::app_home().join("trash");
+                                let _ = std::fs::create_dir_all(&trash);
+                                let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+                                std::fs::copy(
+                                    p,
+                                    trash.join(format!("{}-{stamp}.jsonl", r.info.id)),
+                                )
+                                .map_err(|e| format!("could not keep the older copy: {e}"))?;
+                                crate::session_ops::Conflict::Overwrite
+                            }
+                            None => crate::session_ops::Conflict::Skip,
+                        };
                         match r.harness {
                             crate::harness::Harness::Claude => {
                                 crate::session_ops::copy_session(
@@ -4220,7 +4331,7 @@ impl App {
                                     &r.info.path,
                                     &r.info.id,
                                     &to,
-                                    crate::session_ops::Conflict::Skip,
+                                    conflict,
                                 )
                                 .map_err(|e| format!("{e:#}"))?;
                             }
@@ -4243,6 +4354,10 @@ impl App {
                         want
                     }
                 };
+                crate::log::info(&format!(
+                    "open_session: {} from {} on {}",
+                    r.info.id, r.source, self.cfg.accounts[acct].name
+                ));
                 self.resume(acct, r.info.id.clone());
                 // A rename asked with it happens at once.
                 if let Some(n) = s("name").filter(|n| !n.trim().is_empty()) {
@@ -4257,9 +4372,15 @@ impl App {
                 if let Some(p) = self.panes.get(self.focus) {
                     self.last_target = Some(p.cur().uid);
                 }
+                let shown = self.cfg.accounts[acct].display().to_string();
+                let say = format!(
+                    "Opened it on {shown} as {}.{}",
+                    tab.clone().unwrap_or_default(),
+                    note.as_deref().map(|n| format!(" {n}")).unwrap_or_default()
+                );
                 // The folder too: remembered later, it finds the tab again.
                 ok(
-                    json!({"opened": r.info.id, "account": self.cfg.accounts[acct].display(), "tab": tab, "folder": folder, "say": format!("Opened it on {} in a new tab.", self.cfg.accounts[acct].display())}),
+                    json!({"opened": r.info.id, "account": shown, "from": r.source, "tab": tab, "folder": folder, "say": say}),
                 )
             }
             "speak" => {
@@ -4487,6 +4608,32 @@ impl App {
                 }
             }
         }
+        // A session id (whole, its first 8 characters, or cut short when
+        // pasted), or a Claude Code background run's job id: matched on
+        // the id itself. A background run also finds the session it
+        // continues (its own fork may have no conversation yet).
+        const ID_HIT: usize = 10_000;
+        let id_q = s("text").and_then(|q| crate::session_ids::id_query(&q));
+        let bg_runs: Vec<(usize, crate::session_ids::BgJob)> = match &id_q {
+            Some(q) => (0..self.cfg.accounts.len())
+                .flat_map(|a| {
+                    crate::session_ids::bg_jobs(&self.cfg.accounts[a].config_dir())
+                        .into_iter()
+                        .filter(|j| {
+                            crate::session_ids::id_matches(q, &j.short)
+                                || j.session_id
+                                    .as_deref()
+                                    .is_some_and(|i| crate::session_ids::id_matches(q, i))
+                        })
+                        .map(move |j| (a, j))
+                })
+                .collect(),
+            None => vec![],
+        };
+        let continued: Vec<String> = bg_runs
+            .iter()
+            .filter_map(|(_, j)| j.forked_from.clone())
+            .collect();
         let memos = crate::project_memory::load();
         let fresh = |r: &crate::session_index::Row| {
             r.info.modified.is_some_and(|m| {
@@ -4524,6 +4671,12 @@ impl App {
                 _ => true,
             })
             .filter_map(|r| {
+                // An id (or a background run's job id): the id decides.
+                if let Some(q) = &id_q {
+                    let hit = crate::session_ids::id_matches(q, &r.info.id)
+                        || continued.contains(&r.info.id);
+                    return hit.then_some((ID_HIT, r));
+                }
                 let live_name = external.get(&r.info.id).and_then(|l| l.name.as_deref());
                 // Its saved description and the files it touched count too.
                 let memo = memos
@@ -4559,8 +4712,8 @@ impl App {
                 }
             })
             // Headless last, so the hidden count is of otherwise matching rows.
-            .filter(|(_, r)| {
-                let h = crate::sess_sort::headless(&r.info);
+            .filter(|(sc, r)| {
+                let h = crate::sess_sort::headless(&r.info) && *sc != ID_HIT;
                 if h && !with_headless {
                     hidden.set(hidden.get() + 1);
                 }
@@ -4667,6 +4820,20 @@ impl App {
         }
         if let Some(c) = did_you_mean {
             out["did_you_mean"] = json!(c);
+        }
+        if !bg_runs.is_empty() {
+            out["background_runs"] = json!(bg_runs
+                .iter()
+                .map(|(a, j)| json!({
+                    "job": j.short,
+                    "account": a + 1,
+                    "account_label": self.cfg.accounts[*a].display(),
+                    "session": j.session_id,
+                    "continues": j.forked_from,
+                    "state": j.state,
+                }))
+                .collect::<Vec<_>>());
+            out["note"] = json!("A background run is a Claude Code session sent to the background (claude attach/stop <job>). It is not lost: its conversation continues the session in continues, on that account. A tab held by it is fixed with fix_resume, never with a fresh tab.");
         }
         if let Some(c) = text_dym.filter(|c| !c.is_empty()) {
             out["did_you_mean"] = json!(c);

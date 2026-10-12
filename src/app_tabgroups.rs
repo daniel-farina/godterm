@@ -1,6 +1,7 @@
-//! Tab groups, pins and sorting in the app: the tab and group menus, the
-//! dialogs they open, dropping a dragged tab on a group, and the
-//! assistant's tools for all of it.
+//! Tab groups, pins, sorting and the search field in the app: the tab and
+//! group menus, the dialogs they open, dropping a dragged tab on a group,
+//! filtering a tab list as you type, and the assistant's tools for all of
+//! it.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::{json, Value};
@@ -25,9 +26,234 @@ fn ok(v: Value) -> Value {
 /// The marker of a pinned tab (plain, like the rest of the list).
 pub const PIN: &str = "▴";
 
+/// Whether a tab's words (`fields`: its names, folder, status) match what
+/// was typed or said: the query anywhere in them (case, spaces, hyphens
+/// and dots ignored: "bot mesh" finds bot-mesh), else every word of it in
+/// them or close to one of their words ("botmash" finds botmesh).
+pub fn filter_match(query: &str, fields: &[String]) -> bool {
+    let qk = crate::fuzzy::key(query);
+    if qk.is_empty() {
+        return true;
+    }
+    let hay: String = fields
+        .iter()
+        .map(|f| crate::fuzzy::key(f))
+        .collect::<Vec<_>>()
+        .join("|");
+    if hay.contains(&qk) {
+        return true;
+    }
+    let words: Vec<&str> = fields
+        .iter()
+        .flat_map(|f| f.split(|c: char| !c.is_alphanumeric()))
+        .filter(|w| w.chars().count() >= 3)
+        .collect();
+    query.split_whitespace().all(|w| {
+        let wk = crate::fuzzy::key(w);
+        wk.is_empty()
+            || hay.contains(&wk)
+            || (wk.chars().count() >= 5
+                && words.iter().any(|t| crate::fuzzy::similarity(w, t) >= 0.75))
+    })
+}
+
 impl App {
     pub fn ungrouped_top(&self) -> bool {
         self.cfg.ungrouped_tabs == "top"
+    }
+
+    /// The session's own title in Claude Code or Grok (its /rename name,
+    /// else the generated title), when it has one that differs from ours.
+    /// Read from the session index without waiting for it (cached).
+    pub fn native_title(&self, s: usize, t: usize) -> Option<String> {
+        let tab = self.panes.get(s)?.tabs.get(t)?;
+        let sid = tab.session_id.clone()?;
+        let mut cache = self.native_titles.borrow_mut();
+        let fresh = cache
+            .get(&sid)
+            .filter(|(at, _)| at.elapsed() < std::time::Duration::from_secs(5))
+            .map(|(_, v)| v.clone());
+        if let Some(v) = fresh {
+            return v;
+        }
+        let v = match self.session_index.try_lock() {
+            Ok(ix) => ix
+                .rows
+                .iter()
+                .find(|r| r.info.id == sid)
+                .and_then(|r| r.info.name.clone().or_else(|| r.info.title.clone()))
+                .map(|n| n.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|n| !n.is_empty()),
+            // Busy (a scan): the last one known.
+            Err(_) => return cache.get(&sid).and_then(|(_, v)| v.clone()),
+        };
+        cache.insert(sid, (std::time::Instant::now(), v.clone()));
+        v
+    }
+
+    /// The Status sort: blocked or waiting for a confirmation, then
+    /// working, then a limit or an error, then the rest.
+    pub fn status_rank(&self, s: usize, t: usize) -> u8 {
+        use crate::tab_labels::TabLabel;
+        let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
+            return 9;
+        };
+        match self.tab_label(s, t) {
+            Some(TabLabel::Blocked) | Some(TabLabel::Confirm) => 0,
+            _ if tab.activity == crate::pane::Activity::Permission => 0,
+            _ if tab.activity == crate::pane::Activity::Working => 1,
+            Some(TabLabel::Limit) | Some(TabLabel::Error) => 2,
+            _ => 3,
+        }
+    }
+
+    /// What a search looks at for a tab: our name, the session's own
+    /// title, the folder and the status.
+    pub fn tab_search_fields(&self, s: usize, t: usize) -> Vec<String> {
+        let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
+            return vec![];
+        };
+        let labels = crate::slot::tab_labels(&self.panes[s]);
+        let mut v = vec![
+            labels.get(t).cloned().unwrap_or_else(|| tab.name()),
+            crate::paths::tilde(&self.tab_dir(s, t)),
+            tab.activity.label().to_string(),
+        ];
+        if let Some(n) = self.native_title(s, t) {
+            v.push(n);
+        }
+        if let Some(l) = self.tab_label(s, t) {
+            v.push(l.word().to_string());
+        }
+        v
+    }
+
+    /// The tabs of pane `s` its search matches; None when nothing is typed.
+    pub fn tab_filter(&self, s: usize) -> Option<Vec<bool>> {
+        let slot = self.panes.get(s)?;
+        let q = slot.filter.trim();
+        if q.is_empty() {
+            return None;
+        }
+        Some(
+            (0..slot.tabs.len())
+                .map(|t| filter_match(q, &self.tab_search_fields(s, t)))
+                .collect(),
+        )
+    }
+
+    /// The rows pane `s`'s tab list shows: its sort (Status in the app's
+    /// rank), its groups, and its search.
+    pub fn list_rows(&self, s: usize, hold: bool) -> Vec<crate::tab_groups::Row> {
+        let Some(slot) = self.panes.get(s) else {
+            return vec![];
+        };
+        let only = self.tab_filter(s);
+        slot.rows_by(
+            self.ungrouped_top(),
+            hold,
+            &|t| self.status_rank(s, t),
+            only.as_deref(),
+        )
+    }
+
+    /// Ctrl-a / or a click: type in pane `p`'s tab search.
+    pub fn focus_tab_search(&mut self, p: usize) {
+        if p >= self.panes.len() {
+            return;
+        }
+        self.view = crate::app::View::Grid;
+        self.focus = p;
+        if self.tab_pos(p) == crate::slot::TabPos::Top {
+            self.flash("The search is in a side tab list: Ctrl-a S moves the list to the side");
+            return;
+        }
+        if self.panes[p].sidebar_collapsed {
+            self.panes[p].sidebar_collapsed = false;
+            self.state_dirty = true;
+        }
+        self.tab_search = Some(p);
+    }
+
+    /// Keys while a tab search has them: typing filters, Up / Down pick
+    /// among the matches, Enter keeps the pick and gives the keys back,
+    /// Esc clears the search. False: not searching.
+    pub fn on_tab_search_key(&mut self, k: KeyEvent) -> bool {
+        use crossterm::event::KeyModifiers;
+        let Some(p) = self.tab_search else {
+            return false;
+        };
+        if p >= self.panes.len() || self.view != crate::app::View::Grid {
+            self.tab_search = None;
+            return false;
+        }
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        match k.code {
+            KeyCode::Esc => {
+                self.panes[p].filter.clear();
+                self.tab_search = None;
+            }
+            KeyCode::Enter | KeyCode::Tab => {
+                self.tab_search = None;
+                // The pick, else the first match.
+                let rows = self.list_rows(p, true);
+                let active = self.panes[p].active;
+                let tabs: Vec<usize> = rows
+                    .iter()
+                    .filter_map(|r| match r {
+                        crate::tab_groups::Row::Tab(t) => Some(*t),
+                        _ => None,
+                    })
+                    .collect();
+                if !tabs.contains(&active) {
+                    if let Some(&t) = tabs.first() {
+                        self.panes[p].select(t);
+                    }
+                }
+            }
+            KeyCode::Up | KeyCode::Down => {
+                let rows = self.list_rows(p, true);
+                let tabs: Vec<usize> = rows
+                    .iter()
+                    .filter_map(|r| match r {
+                        crate::tab_groups::Row::Tab(t) => Some(*t),
+                        _ => None,
+                    })
+                    .collect();
+                if !tabs.is_empty() {
+                    let at = tabs.iter().position(|&t| t == self.panes[p].active);
+                    let next = match (at, k.code == KeyCode::Down) {
+                        (None, _) => 0,
+                        (Some(i), true) => (i + 1) % tabs.len(),
+                        (Some(i), false) => (i + tabs.len() - 1) % tabs.len(),
+                    };
+                    self.panes[p].select(tabs[next]);
+                }
+            }
+            KeyCode::Backspace => {
+                self.panes[p].filter.pop();
+                self.panes[p].sidebar_scroll = crate::slot::FOLLOW;
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if self.panes[p].filter.chars().count() < 60 {
+                    self.panes[p].filter.push(c);
+                    self.panes[p].sidebar_scroll = crate::slot::FOLLOW;
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// The sidebar's sort dropdown: the Sort tabs menu for pane `p`.
+    pub fn open_sort_menu(&mut self, p: usize, at: (u16, u16)) {
+        if p < self.panes.len() {
+            self.focus = p;
+            self.modal = Modal::Menu(crate::menus::Open::new(
+                crate::menus::MenuId::SortTabs,
+                Some(at),
+            ));
+        }
     }
 
     pub fn set_pinned(&mut self, s: usize, t: usize, on: bool) {
@@ -535,6 +761,8 @@ impl App {
             "unpin_tab",
             "set_tab_color",
             "sort_tabs",
+            "search_tabs",
+            "resize_tab_list",
         ];
         if !TOOLS.contains(&tool) {
             return None;
@@ -695,9 +923,129 @@ impl App {
                     json!({"tabs": self.uids(&tabs), "color": c, "say": say}),
                 ))
             }
+            "resize_tab_list" => {
+                let panes: Vec<usize> = match acct {
+                    Some(a) => (0..self.panes.len())
+                        .filter(|&p| self.panes[p].account == Some(a))
+                        .collect(),
+                    None => vec![self.focus],
+                };
+                if panes.is_empty() {
+                    return Err("that account has no pane open".into());
+                }
+                let w = args.get("width").cloned().unwrap_or(Value::Null);
+                let word = w.as_str().unwrap_or("").trim().to_lowercase();
+                let mut last = 0;
+                for &p in &panes {
+                    last = if let Some(n) = w.as_u64() {
+                        let cur = self.sidebar_now(p).max(crate::ui::SIDEBAR_MIN) as i32;
+                        self.nudge_sidebar(p, n as i32 - cur)
+                    } else if word.contains("hide")
+                        || word.contains("no detail")
+                        || word == "auto"
+                        || word == "normal"
+                    {
+                        self.panes[p].sidebar_w = None;
+                        self.state_dirty = true;
+                        0
+                    } else if word.contains("detail") || word.contains("widest") || word == "wide" {
+                        let want = crate::ui::SIDEBAR_WIDE_AT + 8;
+                        let w = self.panes[p].sidebar_w.unwrap_or(0).max(want);
+                        self.panes[p].sidebar_collapsed = false;
+                        let w = w.min(self.sidebar_max(p));
+                        self.panes[p].sidebar_w = Some(w);
+                        self.state_dirty = true;
+                        w
+                    } else if word.contains("narrow")
+                        || word.contains("smaller")
+                        || word.contains("thin")
+                    {
+                        self.nudge_sidebar(p, -8)
+                    } else if word.contains("wide")
+                        || word.contains("bigger")
+                        || word.contains("larger")
+                    {
+                        self.nudge_sidebar(p, 8)
+                    } else {
+                        return Err(
+                            "width: wider, narrower, details, no details, or a number of columns"
+                                .into(),
+                        );
+                    };
+                }
+                let say = match last {
+                    0 => "The tab list is back to its automatic width.".to_string(),
+                    w if w >= crate::ui::SIDEBAR_WIDE_AT => {
+                        format!("The tab list is {w} columns, with each session's title.")
+                    }
+                    w => format!("The tab list is {w} columns."),
+                };
+                self.flash(say.clone());
+                Ok(ok(json!({"width": last, "say": say})))
+            }
+            "search_tabs" => {
+                let text = s("text").unwrap_or_default();
+                let panes: Vec<usize> = (0..self.panes.len())
+                    .filter(|&p| acct.is_none_or(|a| self.panes[p].account == Some(a)))
+                    .collect();
+                if text.trim().is_empty() {
+                    for &p in &panes {
+                        self.panes[p].filter.clear();
+                    }
+                    self.tab_search = None;
+                    return Ok(ok(json!({"say": "Search cleared; every tab shows."})));
+                }
+                let mut found: Vec<(usize, usize)> = vec![];
+                for &p in &panes {
+                    let hits: Vec<usize> = (0..self.panes[p].tabs.len())
+                        .filter(|&t| filter_match(&text, &self.tab_search_fields(p, t)))
+                        .collect();
+                    // The lists with a match show the search; the others stay.
+                    if !hits.is_empty() || acct.is_some() {
+                        self.panes[p].filter = text.trim().to_string();
+                        self.panes[p].sidebar_scroll = crate::slot::FOLLOW;
+                    }
+                    found.extend(hits.into_iter().map(|t| (p, t)));
+                }
+                let tabs: Vec<Value> = found
+                    .iter()
+                    .map(|&(p, t)| {
+                        let tab = &self.panes[p].tabs[t];
+                        json!({
+                            "tab": crate::control::tab_id(tab.uid),
+                            "account": self.panes[p].account.map(|a| a + 1),
+                            "name": tab.name(),
+                            "title": self.native_title(p, t),
+                            "folder": crate::paths::tilde(&self.tab_dir(p, t)),
+                            "state": tab.activity.label(),
+                        })
+                    })
+                    .collect();
+                let say = match found.as_slice() {
+                    [] => format!("No tab matches {}.", text.trim()),
+                    [(p, t)] => {
+                        let (p, t) = (*p, *t);
+                        let name = self.spoken_tab_name(self.panes[p].tabs[t].uid);
+                        if args.get("focus").and_then(Value::as_bool) != Some(false) {
+                            self.focus = p;
+                            self.panes[p].select(t);
+                            self.view = crate::app::View::Grid;
+                        }
+                        format!("Found it: {name}.")
+                    }
+                    many => format!(
+                        "{} match {}; the tab lists show them.",
+                        crate::control::plural(many.len(), "tab"),
+                        text.trim()
+                    ),
+                };
+                self.flash(say.clone());
+                Ok(ok(json!({"tabs": tabs, "say": say})))
+            }
             _ => {
-                let by = s("by")
-                    .ok_or("by is required: manual, recent, opened, name, folder or state")?;
+                let by = s("by").ok_or(
+                    "by is required: manual, active, recent, name, status, created or folder",
+                )?;
                 let sort = TabSort::parse(&by).ok_or_else(|| {
                     format!(
                         "sort by {}",

@@ -88,6 +88,9 @@ pub struct Arranged {
     pub borders: Vec<Border>,
     /// Cells of a fixed grid on the current page with no pane in them.
     pub empty: Vec<Rect>,
+    /// Where the panes of the current page would go with none collapsed
+    /// (empty when none is): their PTYs keep that size.
+    pub unfolded: Vec<Placed>,
 }
 
 fn auto_shape(n: usize) -> (usize, usize) {
@@ -137,6 +140,7 @@ pub fn arrange(n: usize, area: Rect, mode: Mode, focus: usize, ratios: &RatioMap
             shape: "0".into(),
             borders: vec![],
             empty: vec![],
+            unfolded: vec![],
         };
     }
     if mode == Mode::Focus {
@@ -235,6 +239,7 @@ pub fn arrange(n: usize, area: Rect, mode: Mode, focus: usize, ratios: &RatioMap
         shape,
         borders,
         empty,
+        unfolded: vec![],
     }
 }
 
@@ -288,6 +293,7 @@ fn arrange_focus(n: usize, area: Rect, focus: usize, max_r: usize, ratios: &Rati
         shape: key,
         borders,
         empty: vec![],
+        unfolded: vec![],
     }
 }
 

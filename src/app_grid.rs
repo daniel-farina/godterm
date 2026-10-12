@@ -1,13 +1,15 @@
 //! Which accounts the grid shows, and how: closing an account takes it
 //! out of the grid (it stays configured and logged in, its tabs keep
-//! running), opening brings it back in place, and any split of the panes
-//! is a layout. All of it by voice (close_accounts, open_accounts,
-//! set_layout), from the View menu, and saved in config.toml.
+//! running), opening brings it back in place, collapsing folds its pane
+//! to a one row strip (its siblings take the space), and any split of the
+//! panes is a layout. All of it by voice (close_accounts, open_accounts,
+//! collapse_accounts, expand_accounts, set_layout), from the View menu,
+//! and saved in config.toml.
 
 use serde_json::{json, Value};
 
 use crate::app::App;
-use crate::grid_layout::{self, Node};
+use crate::grid_layout::{self, Fold, Node};
 use crate::harness::Harness;
 
 impl App {
@@ -40,6 +42,9 @@ impl App {
                     }
                 }
             }
+            if let Some(v) = x.as_str().and_then(|s| self.accounts_at(s)) {
+                return Ok(v);
+            }
             Ok(vec![self.account_arg(x)?])
         };
         let mut out = vec![];
@@ -59,6 +64,106 @@ impl App {
         out.sort();
         out.dedup();
         Ok(out)
+    }
+
+    /// Accounts by where their panes are on screen: "top two", "the
+    /// bottom row", "left", "right pane", "the top 3".
+    fn accounts_at(&self, s: &str) -> Option<Vec<usize>> {
+        let low = s.to_lowercase();
+        let words: Vec<&str> = low
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect();
+        let side = words.iter().find_map(|w| match *w {
+            "top" | "upper" => Some(0),
+            "bottom" | "lower" => Some(1),
+            "left" | "leftmost" => Some(2),
+            "right" | "rightmost" => Some(3),
+            _ => None,
+        })?;
+        // Only position words, a count and filler: "top two ones".
+        const FILL: &[&str] = &[
+            "the",
+            "top",
+            "upper",
+            "bottom",
+            "lower",
+            "left",
+            "leftmost",
+            "right",
+            "rightmost",
+            "one",
+            "ones",
+            "pane",
+            "panes",
+            "account",
+            "accounts",
+            "row",
+            "column",
+            "side",
+            "two",
+            "three",
+            "four",
+            "five",
+            "both",
+            "pair",
+            "and",
+            "on",
+            "of",
+        ];
+        if words
+            .iter()
+            .any(|w| !FILL.contains(w) && w.parse::<usize>().is_err())
+        {
+            return None;
+        }
+        let count = words.iter().find_map(|w| match *w {
+            "two" | "both" | "pair" => Some(2),
+            "three" => Some(3),
+            "four" => Some(4),
+            "five" => Some(5),
+            w => w.parse::<usize>().ok().filter(|n| *n > 0),
+        });
+        let area = if self.main_area.width >= 40 && self.main_area.height >= 10 {
+            self.main_area
+        } else {
+            ratatui::layout::Rect::new(0, 0, 200, 50)
+        };
+        let (vis, a) = self.arrange_unfolded(area);
+        let fi = vis.iter().position(|&p| p == self.focus).unwrap_or(0);
+        let page = fi / a.per_page.max(1);
+        let mut on: Vec<(usize, ratatui::layout::Rect)> = a
+            .placed
+            .iter()
+            .filter(|p| p.page == page)
+            .filter_map(|p| vis.get(p.index).map(|&i| (i, p.rect)))
+            .filter(|(i, _)| self.panes[*i].account.is_some())
+            .collect();
+        let key = |r: &ratatui::layout::Rect| -> (i32, i32) {
+            match side {
+                0 => (r.y as i32, r.x as i32),
+                1 => (-((r.y + r.height) as i32), r.x as i32),
+                2 => (r.x as i32, r.y as i32),
+                _ => (-((r.x + r.width) as i32), r.y as i32),
+            }
+        };
+        on.sort_by_key(|(_, r)| key(r));
+        let first = on.first().map(|(_, r)| key(r).0)?;
+        let picked: Vec<usize> = match count {
+            Some(n) => on.iter().take(n).map(|(i, _)| *i).collect(),
+            None => on
+                .iter()
+                .filter(|(_, r)| key(r).0 == first)
+                .map(|(i, _)| *i)
+                .collect(),
+        };
+        let mut out: Vec<usize> = picked
+            .iter()
+            .filter_map(|&i| self.panes[i].account)
+            .collect();
+        out.sort();
+        out.dedup();
+        Some(out)
     }
 
     fn names_of(&self, accts: &[usize]) -> String {
@@ -86,6 +191,170 @@ impl App {
         self.config_mtime = crate::app::config_mtime();
         self.state_dirty = true;
         self.ensure_focus_visible();
+    }
+
+    pub fn account_collapsed(&self, a: usize) -> bool {
+        self.account_fold(a) != Fold::Open
+    }
+
+    /// Which way an account's pane is collapsed (sideways wins if a hand
+    /// edited config names it in both lists).
+    pub fn account_fold(&self, a: usize) -> Fold {
+        let Some(x) = self.cfg.accounts.get(a) else {
+            return Fold::Open;
+        };
+        if self.cfg.collapsed_sideways.contains(&x.name) {
+            Fold::Col
+        } else if self.cfg.collapsed_accounts.contains(&x.name) {
+            Fold::Row
+        } else {
+            Fold::Open
+        }
+    }
+
+    /// How pane `p` is drawn: open, a row strip or a column strip (open
+    /// while zoomed).
+    pub fn pane_fold(&self, p: usize) -> Fold {
+        if self.zoom {
+            return Fold::Open;
+        }
+        self.panes
+            .get(p)
+            .and_then(|s| s.account)
+            .map(|a| self.account_fold(a))
+            .unwrap_or(Fold::Open)
+    }
+
+    /// Pane `p` is drawn as a collapsed strip (not while zoomed).
+    pub fn pane_folded(&self, p: usize) -> bool {
+        self.pane_fold(p) != Fold::Open
+    }
+
+    fn save_collapsed(&mut self) {
+        for (key, list) in [
+            ("collapsed_accounts", self.cfg.collapsed_accounts.clone()),
+            ("collapsed_sideways", self.cfg.collapsed_sideways.clone()),
+        ] {
+            let mut arr = toml_edit::Array::new();
+            for n in &list {
+                arr.push(n.as_str());
+            }
+            let _ = crate::settings::write(
+                &crate::config::Config::path(),
+                &crate::settings::Key::Global(key),
+                Some(toml_edit::value(arr)),
+            );
+        }
+        self.config_mtime = crate::app::config_mtime();
+        self.state_dirty = true;
+    }
+
+    /// Fold accounts' panes to a one row strip (Fold::Row) or sideways to
+    /// a column strip (Fold::Col); their siblings take the space. Nothing
+    /// stops; their PTYs keep their size.
+    pub fn collapse_accounts_dir(&mut self, accts: &[usize], dir: Fold) -> String {
+        let mut done = vec![];
+        for &a in accts {
+            if self.account_fold(a) == dir {
+                continue;
+            }
+            let name = self.cfg.accounts[a].name.clone();
+            self.cfg.collapsed_accounts.retain(|n| *n != name);
+            self.cfg.collapsed_sideways.retain(|n| *n != name);
+            match dir {
+                Fold::Col => self.cfg.collapsed_sideways.push(name),
+                _ => self.cfg.collapsed_accounts.push(name),
+            }
+            done.push(a);
+        }
+        self.save_collapsed();
+        self.view = crate::app::View::Grid;
+        let how = if dir == Fold::Col { " sideways" } else { "" };
+        crate::log::info(&format!("grid: collapsed{how} {}", self.names_of(&done)));
+        if done.is_empty() {
+            return format!(
+                "{} {} already collapsed{how}.",
+                self.names_of(accts),
+                if accts.len() == 1 { "is" } else { "are" }
+            );
+        }
+        let all = (0..self.cfg.accounts.len())
+            .filter(|a| !self.account_closed(*a))
+            .all(|a| self.account_collapsed(a));
+        format!(
+            "Collapsed {}{how}.{}",
+            self.names_of(&done),
+            if all {
+                " Everything is collapsed now."
+            } else {
+                ""
+            }
+        )
+    }
+
+    pub fn expand_accounts(&mut self, accts: &[usize]) -> String {
+        let names: Vec<String> = accts
+            .iter()
+            .map(|a| self.cfg.accounts[*a].name.clone())
+            .collect();
+        let had: Vec<usize> = accts
+            .iter()
+            .copied()
+            .filter(|&a| self.account_collapsed(a))
+            .collect();
+        self.cfg.collapsed_accounts.retain(|n| !names.contains(n));
+        self.cfg.collapsed_sideways.retain(|n| !names.contains(n));
+        self.save_collapsed();
+        self.view = crate::app::View::Grid;
+        crate::log::info(&format!("grid: expanded {}", self.names_of(&had)));
+        if had.is_empty() {
+            return format!(
+                "{} {} not collapsed.",
+                self.names_of(accts),
+                if accts.len() == 1 { "is" } else { "are" }
+            );
+        }
+        format!("Expanded {}.", self.names_of(&had))
+    }
+
+    /// The header's minimize, a row strip's restore, Ctrl-a _: collapse
+    /// the pane to a row strip or expand it.
+    pub fn toggle_fold_pane(&mut self, p: usize) {
+        self.toggle_fold_dir(p, Fold::Row);
+    }
+
+    /// The header's caret, a column strip, Ctrl-a backslash: collapse the
+    /// pane sideways or expand it.
+    pub fn toggle_fold_sideways(&mut self, p: usize) {
+        self.toggle_fold_dir(p, Fold::Col);
+    }
+
+    fn toggle_fold_dir(&mut self, p: usize, dir: Fold) {
+        let Some(a) = self.panes.get(p).and_then(|s| s.account) else {
+            self.flash("This pane has no account to collapse");
+            return;
+        };
+        // A strip of either kind expands from either control.
+        let say = if self.account_collapsed(a) {
+            self.focus = p;
+            self.expand_accounts(&[a])
+        } else {
+            self.collapse_accounts_dir(&[a], dir)
+        };
+        self.flash(say);
+    }
+
+    /// After focus moved by keys or the assistant: expand a collapsed pane
+    /// when the setting asks for it.
+    pub fn expand_on_focus(&mut self, before: usize) {
+        if self.focus == before || !self.cfg.expand_collapsed_on_focus {
+            return;
+        }
+        if let Some(a) = self.panes.get(self.focus).and_then(|s| s.account) {
+            if self.account_collapsed(a) {
+                self.expand_accounts(&[a]);
+            }
+        }
     }
 
     /// Close accounts in the grid (not a logout; nothing stops).
@@ -273,33 +542,54 @@ impl App {
             ("grid", _) => format!("grid {}", self.cfg.grid),
             (n, _) => n.to_string(),
         };
+        let collapsed: Vec<String> = (0..self.cfg.accounts.len())
+            .filter(|a| self.account_collapsed(*a) && !self.account_closed(*a))
+            .map(|a| format!("a{}", a + 1))
+            .collect();
         format!(
-            "grid: open {}{} · layout {layout} (close_accounts hides from the grid, logged in and running; logout_account logs out)\n",
+            "grid: open {}{}{} · layout {layout} (close_accounts hides from the grid, logged in and running; collapse_accounts folds a pane to a one row strip, or sideways to a narrow column with direction column; logout_account logs out)\n",
             if open.is_empty() { "none".to_string() } else { open.join(" ") },
             if closed.is_empty() { String::new() } else { format!(", closed {}", closed.join(" ")) },
+            if collapsed.is_empty() { String::new() } else { format!(", collapsed {}", collapsed.join(" ")) },
         )
     }
 
-    /// close_accounts / open_accounts / set_layout; None for other tools.
+    /// close_accounts / open_accounts / collapse_accounts /
+    /// expand_accounts / set_layout; None for other tools.
     pub fn grid_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         let r = match tool {
-            "close_accounts" | "open_accounts" => (|| {
-                let mut accts = self.grid_targets(
-                    args.get("accounts")
-                        .or(args.get("account"))
-                        .unwrap_or(&Value::Null),
-                )?;
-                if let Some(x) = args.get("except").filter(|x| !x.is_null()) {
-                    let ex = self.grid_targets(x)?;
-                    accts.retain(|a| !ex.contains(a));
-                }
-                let say = if tool == "close_accounts" {
-                    self.close_accounts(&accts)
-                } else {
-                    self.open_accounts(&accts, args["only"].as_bool() == Some(true))
-                };
-                Ok(json!({"ok": true, "result": {"say": say, "open": self.visible_panes().len()}}))
-            })(),
+            "close_accounts" | "open_accounts" | "collapse_accounts" | "expand_accounts" => {
+                (|| {
+                    let mut accts = self.grid_targets(
+                        args.get("accounts")
+                            .or(args.get("account"))
+                            .unwrap_or(&Value::Null),
+                    )?;
+                    if let Some(x) = args.get("except").filter(|x| !x.is_null()) {
+                        let ex = self.grid_targets(x)?;
+                        accts.retain(|a| !ex.contains(a));
+                    }
+                    let say = match tool {
+                        "close_accounts" => self.close_accounts(&accts),
+                        "collapse_accounts" => {
+                            let dir = match args["direction"].as_str() {
+                                Some("column") | Some("sideways") | Some("col") => Fold::Col,
+                                _ => Fold::Row,
+                            };
+                            self.collapse_accounts_dir(&accts, dir)
+                        }
+                        "expand_accounts" => self.expand_accounts(&accts),
+                        _ => self.open_accounts(&accts, args["only"].as_bool() == Some(true)),
+                    };
+                    let collapsed: Vec<usize> = (0..self.cfg.accounts.len())
+                        .filter(|a| self.account_collapsed(*a))
+                        .map(|a| a + 1)
+                        .collect();
+                    Ok(
+                        json!({"ok": true, "result": {"say": say, "open": self.visible_panes().len(), "collapsed": collapsed}}),
+                    )
+                })()
+            }
             "set_layout" => (|| {
                 let say = self.apply_layout(
                     args["mode"].as_str(),

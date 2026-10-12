@@ -48,6 +48,11 @@ impl App {
     /// Apply choice `i` (0: Default) to the target.
     pub fn apply_color(&mut self, t: Target, i: usize) {
         self.modal = Modal::None;
+        self.set_color(t, i);
+    }
+
+    /// Apply choice `i` and leave the dialogs as they are (the tab panel).
+    pub fn set_color(&mut self, t: Target, i: usize) {
         let pick =
             (i > 0).then(|| theme::SWATCHES[(i - 1).min(theme::SWATCHES.len() - 1)].to_string());
         match t {

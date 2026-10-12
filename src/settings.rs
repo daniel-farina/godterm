@@ -188,6 +188,8 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("tab_position", "Tab list position", Kind::Choice(&["left", "right", "top"]), "Where each pane lists its tabs. A pane can override it (Ctrl-a S)."),
             g("layout", "Pane layout", Kind::Choice(&["auto", "grid", "columns", "rows", "focus"]), "auto: 1, 2, 2+1, 2x2, 3x2, 3x3, paging past what fits at 40x10 per pane. grid uses Grid below; focus makes the focused pane large. Ctrl-a L cycles; drag pane borders to resize."),
             g("grid", "Grid (e.g. 3x2)", Kind::Text, "Columns x rows for layout = grid."),
+            g("tab_list_columns", "Tab list width (columns)", Kind::Number { min: 0, max: 64, step: 2 }, "Width of the side tab lists, 22 to 64 columns (0: a share of the pane). From 36 each tab also shows its session's own title. A list dragged or resized with Ctrl-a < / > keeps its own width."),
+            g("expand_collapsed_on_focus", "Expand collapsed panes on focus", Kind::Toggle, "A collapsed pane (a one row strip, Ctrl-a _, or a sideways column, Ctrl-a \\) expands when it gets the focus from keys or the assistant. Off: only a click on its strip or Ctrl-a _ expands it."),
             g("ungrouped_tabs", "Ungrouped tabs", Kind::Choice(&["bottom", "top"]), "Where tabs outside any group sit in a tab list: under the groups, or above them (pinned tabs are always first)."),
             g("usage_colors", "Usage colors", Kind::Choice(&["gradient", "bands", "mono"]), "By percent left: gradient blends sage, sand and clay; bands uses five steps (75+, 50, 25, 10, under 10); mono is gray, bright under 10%. Under 10% is bold, under 5% gets a ▼."),
         ],

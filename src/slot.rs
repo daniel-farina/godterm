@@ -66,6 +66,9 @@ pub struct Slot {
     /// The last order shown, so a sort by activity does not jump around
     /// under the mouse: (when, tab uids).
     pub order_cache: std::cell::RefCell<Option<(std::time::Instant, Vec<u64>)>>,
+    /// What the search field at the top of the tab list filters by
+    /// (empty: every tab). Not saved.
+    pub filter: String,
 }
 
 /// What each tab is called in lists: its name, made unique within the
@@ -108,6 +111,7 @@ impl Slot {
             groups: vec![],
             sort: Default::default(),
             order_cache: Default::default(),
+            filter: String::new(),
         }
     }
 

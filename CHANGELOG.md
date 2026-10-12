@@ -7,6 +7,53 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-10-12
+
+### Assistant
+- The assistant input edits like a text field: a caret that moves by
+  character, word, line and row, selection with Shift and the mouse, and
+  typing and pasting at the caret. Image chips stay whole.
+- The assistant chat takes images: Ctrl-V, an empty paste or a dragged
+  image path attaches one, the assistant sees it, and `send_prompt` and
+  `open_tab` pass it on to tabs. Images are kept owner only and removed
+  after 7 days.
+
+### Resume
+- A resume blocked because Claude Code runs that session in the
+  background now offers attach, stop or fork, in that same tab (the
+  assistant's `fix_resume`). Sessions are matched by their id,
+  `open_session` resumes a session on the account where it lives, and
+  `read_tab` reads exactly the tab asked for.
+
+### Panes
+- Collapse a pane to a one row strip (Ctrl-a _, a click, the View menu
+  or by voice) or sideways to a narrow column (Ctrl-a \ or the caret at
+  the left of its header). The panes next to it take the space and its
+  tabs keep running. View > Expand all brings every pane back, and
+  `expand_collapsed_on_focus` makes a collapsed pane open when it gets
+  the focus.
+- Each pane header has window controls at the top right: minimize (to a
+  strip), maximize (zoom, Ctrl-a z) and close (asks first; the account
+  stays logged in).
+- iTerm2: its cursor guide is turned off while GodTerm runs, so no band
+  crosses every pane at the cursor row.
+
+### Tabs
+- Tab lists have a search field (fuzzy, by name, session title, folder
+  and status) and a Sort menu (including most active and by status);
+  `search_tabs` does the same by voice.
+- Tab lists resize with Ctrl-a < and >, by dragging, by voice or with
+  the `tab_list_columns` setting, up to 64 columns. From 36 columns each
+  tab also shows its session's own title.
+- Double click a tab for one panel with Move on top and every tab option
+  below (rename, session title, color, pin, group, move, duplicate, copy
+  session, restart, interrupt, folder actions, close), the same list as
+  the right click menu.
+
+### Fixed
+- A tab keeps its history when you switch to it from a tab list, so the
+  mouse wheel scrolls back through it again.
+
 ## [0.2.9] - 2026-10-11
 
 ### Terminal

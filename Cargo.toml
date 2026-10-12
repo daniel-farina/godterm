@@ -1,6 +1,6 @@
 [package]
 name = "godterm"
-version = "0.2.9"
+version = "0.2.10"
 edition = "2021"
 description = "Run many Claude Code sessions side by side, each on its own account"
 license = "MIT"
@@ -29,6 +29,7 @@ sha2 = "0.10"
 toml = "0.8"
 toml_edit = "0.22"
 unicode-width = "0.2"
+unicode-segmentation = "1"
 ureq = { version = "3", features = ["json"] }
 vt100 = "0.16"
 ort = { version = "=2.0.0-rc.10", features = ["coreml"] }

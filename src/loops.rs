@@ -646,7 +646,7 @@ mod tests {
         std::fs::write(&p, transcript()).unwrap();
         let mut sc = Scanner::default();
         sc.update(&p);
-        assert!(sc.loops()[0].active(Utc::now() - Duration::days(4)));
+        assert!(sc.loops()[0].active("2026-10-02T00:00:00Z".parse().unwrap()));
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         writeln!(f, "{}", serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t9","name":"CronDelete","input":{"id":"e0e3839a"}}]}})).unwrap();
         writeln!(f, "{}", serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t9","content":"Cancelled job e0e3839a."}]}})).unwrap();

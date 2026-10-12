@@ -63,6 +63,8 @@ pub enum Cmd {
     AssistantLogin,
     /// Open closed accounts (None: all of them).
     OpenAccount(Option<usize>),
+    /// Expand every collapsed pane.
+    ExpandAll,
     AssistantRules,
     AssistantPrompt,
     AssistantAdmin,
@@ -306,6 +308,48 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 );
                 if a.is_none() {
                     e.disabled = Some("no account in this pane".into());
+                }
+                e
+            },
+            {
+                let a = app.panes.get(app.focus).and_then(|p| p.account);
+                let mut e = item(
+                    match a {
+                        Some(a) if app.account_collapsed(a) => {
+                            format!("Expand {}", app.cfg.accounts[a].display())
+                        }
+                        Some(a) => format!("Minimize {} to a strip", app.cfg.accounts[a].display()),
+                        None => "Collapse this account".into(),
+                    },
+                    "C-a _",
+                    UiAction::Key('_'),
+                );
+                if a.is_none() {
+                    e.disabled = Some("no account in this pane".into());
+                }
+                e
+            },
+            {
+                let a = app.panes.get(app.focus).and_then(|p| p.account);
+                let mut e = item(
+                    match a {
+                        Some(a) if app.account_collapsed(a) => {
+                            format!("Expand {}", app.cfg.accounts[a].display())
+                        }
+                        _ => "Collapse sideways".into(),
+                    },
+                    "C-a \\",
+                    UiAction::Key('\\'),
+                );
+                if a.is_none() {
+                    e.disabled = Some("no account in this pane".into());
+                }
+                e
+            },
+            {
+                let mut e = item("Expand all", "", UiAction::Menu(Cmd::ExpandAll));
+                if !(0..app.cfg.accounts.len()).any(|a| app.account_collapsed(a)) {
+                    e.disabled = Some("no pane is collapsed".into());
                 }
                 e
             },
@@ -882,6 +926,13 @@ impl App {
                         .collect(),
                 };
                 let say = self.open_accounts(&list, false);
+                self.flash(say);
+            }
+            Cmd::ExpandAll => {
+                let list: Vec<usize> = (0..self.cfg.accounts.len())
+                    .filter(|a| self.account_collapsed(*a))
+                    .collect();
+                let say = self.expand_accounts(&list);
                 self.flash(say);
             }
             Cmd::AssistantRules => self.open_learned_view(),

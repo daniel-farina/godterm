@@ -339,6 +339,58 @@ fn tab_text(ti: usize, t: &Pane) -> String {
     format!(" {}:{}{mark} ", ti + 1, snippet(&t.name(), 16))
 }
 
+/// Width of the window controls group (three 3 cell buttons).
+pub const CONTROLS_W: u16 = 9;
+
+/// The window controls at the right end of a pane header or a row strip,
+/// ending before `right`: minimize (on a strip: restore), maximize (zoom;
+/// zoomed: restore) and close. Returns where the group starts.
+pub fn window_controls(
+    buf: &mut Buffer,
+    app: &App,
+    i: usize,
+    y: u16,
+    right: u16,
+    strip: bool,
+) -> u16 {
+    let start = right.saturating_sub(CONTROLS_W);
+    let (min_glyph, min_hint) = if strip {
+        ("▭", "Restore this pane to full size (Ctrl-a _)")
+    } else {
+        (
+            "_",
+            "Minimize: collapse this pane to a one row strip; the panes beside it take the space (Ctrl-a _)",
+        )
+    };
+    let (max_glyph, max_hint) = if app.zoom {
+        ("▣", "Restore: show every pane again (Ctrl-a z)")
+    } else {
+        ("□", "Maximize: zoom this pane to full size (Ctrl-a z)")
+    };
+    let close_hint = "Close this window: all its tabs (asks first; Undo brings them back). The account stays logged in";
+    let mut x = start;
+    for (glyph, action, hint, hover_fg) in [
+        (min_glyph, UiAction::FoldAccount(i), min_hint, FG),
+        (max_glyph, UiAction::Zoom(i), max_hint, FG),
+        ("×", UiAction::CloseWindow(i), close_hint, theme::CLAY),
+    ] {
+        let rect = Rect::new(x, y, 3, 1);
+        let hovered = app.mouse_pos.is_some_and(|(c, r)| contains(rect, c, r));
+        let st = if hovered {
+            Style::default()
+                .fg(hover_fg)
+                .bg(SEL_BG)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::SLATE)
+        };
+        text(buf, x, y, x + 3, &format!(" {glyph} "), st);
+        app.hits.borrow_mut().add(rect, action, hint);
+        x += 3;
+    }
+    start
+}
+
 /// Header row of a pane: number, account (opens the account menu), every
 /// tab with a close mark, a new tab mark, and zoom, restart and state on
 /// the right.
@@ -412,25 +464,6 @@ pub fn pane_header(
             Some(format!("→ {} ({l:.0}%)", crate::paths::middle(&name, 10))),
         ));
     }
-    if app.zoom {
-        items.push((
-            "⤡ Unzoom: show all".into(),
-            Some(UiAction::Zoom(i)),
-            "Show every pane again (Ctrl-a z)",
-            theme::SAND,
-            7,
-            Some("⤡".into()),
-        ));
-    } else {
-        items.push((
-            "zoom".into(),
-            Some(UiAction::Zoom(i)),
-            "Zoom this pane to full size, click again to restore (Ctrl-a z)",
-            theme::SLATE,
-            2,
-            None,
-        ));
-    }
     items.push((
         "restart".into(),
         Some(UiAction::Restart(i)),
@@ -470,15 +503,12 @@ pub fn pane_header(
         8,
         Some(format!(" {short_state} ")),
     ));
-    // Far right: close the whole window (asks first). Always there.
-    items.push((
-        "×".into(),
-        Some(UiAction::CloseWindow(i)),
-        "Close this window: all its tabs (asks first; Undo brings it back)",
-        DIM,
-        9,
-        None,
-    ));
+    // Far right: the window controls (minimize, maximize, close). Always
+    // there; everything else fits to their left.
+    let right = window_controls(buf, app, i, y, right, false).saturating_sub(1);
+    if right <= left + 4 {
+        return;
+    }
     // The account label and folder come first (QA-12): what they need on
     // the left decides how much the right side may take. Long forms
     // shorten, then the least needed items go, until it fits.
@@ -497,7 +527,7 @@ pub fn pane_header(
         .and_then(|a| app.email_label(a, 200))
         .map(|e| e.chars().count().min(18) as u16 + 3)
         .unwrap_or(0);
-    let left_need = 4 + label_w + folder_w + email_w + 2 + if show_tabs { 12 } else { 10 };
+    let left_need = 6 + label_w + folder_w + email_w + 2 + if show_tabs { 12 } else { 10 };
     let avail = (right - left).saturating_sub(left_need);
     let iw = |it: &Item| it.0.chars().count() as u16 + if it.1.is_some() { 3 } else { 0 };
     loop {
@@ -548,7 +578,22 @@ pub fn pane_header(
         };
     }
     let limit = rstart.saturating_sub(1);
-    // Left: number, account, tabs.
+    // Left: the sideways collapse mark, number, account, tabs.
+    let left = if slot.account.is_some() {
+        link(
+            buf,
+            app,
+            left,
+            y,
+            limit,
+            "◂",
+            Style::default().fg(theme::SLATE),
+            UiAction::FoldSideways(i),
+            "Collapse sideways to a narrow column; the panes beside it take the width (Ctrl-a \\)",
+        )
+    } else {
+        left
+    };
     let mut x = link(
         buf,
         app,
@@ -603,7 +648,7 @@ pub fn pane_header(
     if let Some(a) = slot.account {
         let room = limit
             .saturating_sub(x)
-            .saturating_sub(if show_tabs { 30 } else { 8 }) as usize;
+            .saturating_sub(if show_tabs { 30 } else { 2 }) as usize;
         let path = app
             .cfg
             .show_path
@@ -655,7 +700,7 @@ pub fn pane_header(
                 &tab_text(ti, t),
                 st,
                 UiAction::SelectTab(i, ti),
-                "Switch to this tab · ✎ rename · double click: move · right click: more",
+                "Switch to this tab · ✎ rename · double click: move and options · right click: options",
             );
             if active {
                 x = link(
@@ -1456,8 +1501,8 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
         } else {
             ex
         };
-        // The sort, when not the manual order.
-        let ex = if slot.sort != crate::tab_groups::TabSort::Manual {
+        // The sort, when not the manual order, and the search has no row.
+        let ex = if slot.sort != crate::tab_groups::TabSort::Manual && bar.height < 6 {
             text(
                 buf,
                 ex,
@@ -1523,23 +1568,42 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
         UiAction::NewTab(i),
         "New tab: pick a folder or resume a session (Ctrl-a t)",
     );
+    // Row 1: the search field and the Sort ▾ dropdown.
+    let search_row = !collapsed && bar.height >= 6;
+    let only = app.tab_filter(i);
+    if search_row {
+        draw_search_row(buf, app, i, x0, bar.y + 1, limit, only.as_deref());
+    }
+    let top = bar.y + 1 + u16::from(search_row);
     // Rows between: the tabs, two lines each (name, then the live folder
     // with the state and time on the right) when not collapsed.
-    let rows = (bar.height - 2) as usize;
+    let rows = (bar.height - 2 - u16::from(search_row)) as usize;
     let two_line = !collapsed && rows >= 2;
+    // Wide: each tab's second line starts with its session's own title.
+    let wide = two_line && bar.width >= crate::ui::SIDEBAR_WIDE_AT;
     let per = if two_line { 2 } else { 1 };
     let cap = rows / per;
     let labels = crate::slot::tab_labels(slot);
     // Pinned, groups (headers; a collapsed one alone) and the rest, in the
     // pane's sort; held still while the mouse is over the list.
     let hold = app.mouse_pos.is_some_and(|(c, r)| contains(bar, c, r));
-    let list = slot.rows(app.ungrouped_top(), hold);
+    let list = app.list_rows(i, hold);
+    if list.is_empty() && only.is_some() && top < last {
+        text(
+            buf,
+            x0 + 1,
+            top,
+            limit,
+            "No tab matches (Esc clears)",
+            Style::default().fg(FAINT),
+        );
+    }
     let at = list
         .iter()
         .position(|r| *r == crate::tab_groups::Row::Tab(slot.active))
         .unwrap_or(0);
     let first = window_start(slot.sidebar_scroll, at, list.len(), cap);
-    let mut y = bar.y + 1;
+    let mut y = top;
     for row in list.iter().skip(first) {
         let ti = match *row {
             crate::tab_groups::Row::Group(g) => {
@@ -1649,7 +1713,7 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
         app.hits.borrow_mut().add(
             row,
             UiAction::SelectTab(i, ti),
-            format!("Switch to this tab: {} · {dir} · ✎ rename · double click: move · right click: more", labels[ti]),
+            format!("Switch to this tab: {} · {dir} · ✎ rename · double click: move and options · right click: options", labels[ti]),
         );
         if collapsed {
             continue;
@@ -1806,6 +1870,36 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
                 (room, false)
             };
             let fst = Style::default().fg(FAINT).bg(bg);
+            // Wide: the session's own title first (when it says more than
+            // our name), then the folder in what is left.
+            let title = wide
+                .then(|| app.native_title(i, ti))
+                .flatten()
+                .filter(|n| !n.eq_ignore_ascii_case(&labels[ti]));
+            let (lx, pw) = match &title {
+                Some(n) => {
+                    let st_room = if show_st { stn + 1 } else { 0 };
+                    let avail = room.saturating_sub(st_room);
+                    // The title first; the folder gets what is left.
+                    let tw = n.chars().count().min(avail);
+                    let end = text(
+                        buf,
+                        lx,
+                        y + 1,
+                        limit,
+                        &crate::paths::middle(n, tw.max(1)),
+                        Style::default().fg(DIM).bg(bg),
+                    );
+                    let left = avail.saturating_sub(tw + 3);
+                    if show_dir && left >= 6 {
+                        let e = text(buf, end, y + 1, limit, " · ", fst);
+                        (e, left)
+                    } else {
+                        (end, 0)
+                    }
+                }
+                None => (lx, pw),
+            };
             if show_dir && pw > 0 {
                 text(
                     buf,
@@ -1816,6 +1910,7 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
                     fst,
                 );
             }
+            let lx = x0 + 5;
             if show_st {
                 text(
                     buf,
@@ -1836,6 +1931,105 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
             "Drag to resize the tab list · double click: back to auto",
         );
     }
+}
+
+/// The row atop a side tab list: "⌕ search" (typing filters; "3 of 27"
+/// and × while it does) and the Sort ▾ dropdown on the right.
+fn draw_search_row(
+    buf: &mut ratatui::buffer::Buffer,
+    app: &App,
+    i: usize,
+    x0: u16,
+    y: u16,
+    limit: u16,
+    only: Option<&[bool]>,
+) {
+    let slot = &app.panes[i];
+    let focused = app.tab_search == Some(i);
+    let sort = format!("↓{} ▾", slot.sort.name());
+    let sw = sort.chars().count() as u16;
+    let sx = limit.saturating_sub(sw + 1);
+    let field_end = sx.saturating_sub(1).max(x0);
+    let bg = if focused { SEL_BG } else { Color::Reset };
+    for x in x0..field_end {
+        if let Some(c) = buf.cell_mut((x, y)) {
+            c.set_char(' ');
+            c.set_style(Style::default().bg(bg));
+        }
+    }
+    let mut x = text(
+        buf,
+        x0,
+        y,
+        field_end,
+        " ⌕ ",
+        Style::default().fg(DIM).bg(bg),
+    );
+    // "3 of 27" and × while filtering, right in the field.
+    let count = only.map(|m| {
+        format!(
+            "{} of {}",
+            m.iter().filter(|b| **b).count(),
+            slot.tabs.len()
+        )
+    });
+    let tail = count
+        .as_ref()
+        .map(|c| c.chars().count() as u16 + 3)
+        .unwrap_or(0);
+    let qroom = field_end.saturating_sub(x).saturating_sub(tail) as usize;
+    if slot.filter.is_empty() && !focused {
+        text(
+            buf,
+            x,
+            y,
+            field_end,
+            "search",
+            Style::default().fg(FAINT).bg(bg),
+        );
+    } else {
+        let shown = if focused {
+            format!(
+                "{}▏",
+                tail_chars(&slot.filter, qroom.saturating_sub(1).max(1))
+            )
+        } else {
+            tail_chars(&slot.filter, qroom.max(1))
+        };
+        x = text(buf, x, y, field_end, &shown, Style::default().fg(FG).bg(bg));
+    }
+    let _ = x;
+    app.hits.borrow_mut().add(
+        Rect::new(x0, y, field_end.saturating_sub(x0), 1),
+        UiAction::TabSearch(i),
+        "Search this account's tabs: names, session titles, folders, status (Ctrl-a /; Esc clears)",
+    );
+    if let Some(c) = count {
+        let cx = field_end.saturating_sub(tail);
+        let end = text(buf, cx, y, field_end, &c, Style::default().fg(DIM).bg(bg));
+        link(
+            buf,
+            app,
+            end + 1,
+            y,
+            field_end,
+            "×",
+            Style::default().fg(DIM).bg(bg),
+            UiAction::TabSearchClear(i),
+            "Clear the search: every tab shows again",
+        );
+    }
+    link(
+        buf,
+        app,
+        sx,
+        y,
+        limit,
+        &sort,
+        Style::default().fg(theme::STONE),
+        UiAction::TabSortMenu(i),
+        "Sort this tab list: manual, most active, most recent, name, status, created, folder",
+    );
 }
 
 /// Horizontal tab strip under the header, scrolling with ‹ › on overflow.
@@ -1866,7 +2060,7 @@ fn draw_tab_strip(f: &mut Frame, app: &App, i: usize, bar: Rect) {
     };
     // In the list's order (pinned first, groups, the sort).
     let hold = app.mouse_pos.is_some_and(|(c, r)| contains(bar, c, r));
-    let order = slot.tab_order(app.ungrouped_top(), hold);
+    let order = slot.tab_order_by(app.ungrouped_top(), hold, &|t| app.status_rank(i, t));
     let tags: Vec<Option<crate::tab_labels::TabLabel>> = (0..slot.tabs.len())
         .map(|ti| app.tab_label(i, ti))
         .collect();
@@ -1953,7 +2147,7 @@ fn draw_tab_strip(f: &mut Frame, app: &App, i: usize, bar: Rect) {
             st,
             UiAction::SelectTab(i, ti),
             &format!(
-                "Switch to this tab: {} · {} · ✎ rename · double click: move · right click: more",
+                "Switch to this tab: {} · {} · ✎ rename · double click: move and options · right click: options",
                 names[ti],
                 crate::paths::tilde(&app.tab_dir(i, ti))
             ),

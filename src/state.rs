@@ -210,7 +210,11 @@ pub fn detect_session(
         let Some(id) = p.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
             continue;
         };
-        if taken.contains(&id) {
+        // A background run's own fork (`/bg`, `claude --bg`) is not this
+        // tab's conversation: adopting it would resume a job id that
+        // claude refuses ("running in the background") or that has no
+        // conversation yet on another account.
+        if taken.contains(&id) || crate::session_ids::is_bg_session(config_dir, &id) {
             continue;
         }
         let Ok(m) = e.metadata().and_then(|m| m.modified()) else {

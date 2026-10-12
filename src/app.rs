@@ -484,6 +484,8 @@ pub struct App {
     pub opened_paths: Vec<String>,
     /// Tab ids that moved, old to new (so plans and queued prompts follow).
     pub moved_ids: std::collections::HashMap<u64, u64>,
+    /// `claude stop` runs for tabs held by a background run (app_bglock).
+    pub bg_stops: Vec<crate::app_bglock::Stopping>,
     pub last_tab_move: Option<crate::app_tabmove::DoneMove>,
     pub sel_overview: usize,
     /// Background tabs that just started waiting or finished.
@@ -538,6 +540,11 @@ pub struct App {
     pub own_usage_at: Option<Instant>,
     /// Background work per tab (uid): when looked, what runs (2 s cache).
     pub bg_cache: std::cell::RefCell<std::collections::HashMap<u64, (Instant, Option<String>)>>,
+    /// Session titles in Claude Code or Grok by session id (5 s cache).
+    pub native_titles:
+        std::cell::RefCell<std::collections::HashMap<String, (Instant, Option<String>)>>,
+    /// The pane whose tab search field has the keys.
+    pub tab_search: Option<usize>,
     /// A tab being dragged in its list: (pane, tab, moved yet).
     pub tab_drag: Option<(usize, usize, bool)>,
     pub undo_toast: Option<(Instant, String)>,
@@ -714,6 +721,7 @@ impl App {
             stop_reqs: vec![],
             pending_moves: vec![],
             moved_ids: Default::default(),
+            bg_stops: vec![],
             opened_paths: vec![],
             takeovers: vec![],
             sess_live: Default::default(),
@@ -747,6 +755,8 @@ impl App {
             prompt_ui: Default::default(),
             tab_drag: None,
             bg_cache: Default::default(),
+            native_titles: Default::default(),
+            tab_search: None,
             main_grok_usage: None,
             own_usage: Default::default(),
             own_usage_at: None,
@@ -1231,6 +1241,24 @@ impl App {
             }
             LaunchKind::Resume(id) => args.extend(h.resume_args(id)),
         }
+        // A tab held by a background run: attach to it, or fork a copy.
+        let next = self.panes[pane].cur_mut().next_launch.take();
+        self.panes[pane].cur_mut().bg_lock = None;
+        match (&next, &kind, h) {
+            (
+                Some(crate::session_ids::NextLaunch::Attach(short)),
+                _,
+                crate::harness::Harness::Claude,
+            ) => {
+                args = vec!["attach".into(), short.clone()];
+            }
+            (
+                Some(crate::session_ids::NextLaunch::Fork),
+                LaunchKind::Resume(_),
+                crate::harness::Harness::Claude,
+            ) => args.push("--fork-session".into()),
+            _ => {}
+        }
         if let LaunchKind::Resume(id) = &kind {
             if let Some(s) = self.accounts[acct].sessions.iter().find(|s| &s.id == id) {
                 let p = std::path::PathBuf::from(&s.cwd);
@@ -1288,11 +1316,15 @@ impl App {
             }
         }
         crate::log::info(&format!(
-            "launch pane {} tab {} account {} {:?} in {}",
+            "launch pane {} tab {} account {} {:?}{} in {}",
             pane + 1,
             self.panes[pane].active + 1,
             a.name,
             kind,
+            match &next {
+                Some(n) => format!(" ({n:?})"),
+                None => String::new(),
+            },
             spec.cwd.display()
         ));
         let ran_before = self.panes[pane].cur().generation > 0;
@@ -1403,7 +1435,11 @@ impl App {
             .map(|s| std::path::PathBuf::from(&s.cwd))
             .filter(|p| p.is_dir())
             .unwrap_or_else(|| self.cfg.accounts[acct].work_dir());
-        if self.panes[pane].cur().is_running() {
+        // A busy tab, or an ended one of another session (its own story,
+        // like a resume that failed), stays: the session gets a new tab.
+        let cur = self.panes[pane].cur();
+        let other = cur.session_id.as_deref().is_some_and(|s| s != session_id);
+        if cur.is_running() || other {
             self.panes[pane].add_tab(cwd);
         } else {
             self.panes[pane].cur_mut().cwd = cwd;
@@ -1711,6 +1747,7 @@ impl App {
         self.restore_step();
         self.continue_tick();
         self.tabmove_tick();
+        self.bglock_tick();
         self.refresh_loops(false);
         self.stop_tick();
         self.memory_tick();
@@ -1949,7 +1986,9 @@ impl App {
                     return;
                 }
                 if k.kind != KeyEventKind::Release {
+                    let before = self.focus;
                     self.on_key(k);
+                    self.expand_on_focus(before);
                 }
             }
             AppEvent::Input(Event::Paste(text)) => {
@@ -2028,6 +2067,11 @@ impl App {
                                     "{who} exited with code {code}; Enter restarts it"
                                 ));
                             }
+                        }
+                        if was_running && !was_login {
+                            // A resume refused by a background run: offer
+                            // attach, stop and resume, or fork.
+                            self.note_bg_lock(si, ti);
                         }
                         if was_login {
                             if let Some(a) = self.panes[si].account {
@@ -2533,6 +2577,10 @@ impl App {
             self.prefix_at = Some(Instant::now());
             return;
         }
+        // A tab list's search field has the keys while it is focused.
+        if self.on_tab_search_key(k) {
+            return;
+        }
         // A key into a pane (or the assistant) drops the selection there;
         // Esc does only that.
         if self.selection_key(&k) {
@@ -2582,6 +2630,12 @@ impl App {
                 let bytes = keys::encode_key(&k, pane.app_cursor());
                 pane.reset_scroll();
                 pane.write(&bytes);
+            }
+            _ if pane.bg_lock.is_some() => {
+                // Held by a background run: a attaches (also Enter), s
+                // stops it (asks y first), f forks a copy.
+                let (p, t) = (self.focus, self.panes[self.focus].active);
+                self.bg_lock_key(p, t, k);
             }
             _ => {
                 if k.code == KeyCode::Enter {
@@ -2654,12 +2708,14 @@ impl App {
             (_, Some('n')) => {
                 self.view = View::Grid;
                 let top = self.ungrouped_top();
-                self.panes[self.focus].step_tab(top, 1);
+                let only = self.tab_filter(self.focus);
+                self.panes[self.focus].step_tab(top, 1, only.as_deref());
             }
             (_, Some('p')) => {
                 self.view = View::Grid;
                 let top = self.ungrouped_top();
-                self.panes[self.focus].step_tab(top, -1);
+                let only = self.tab_filter(self.focus);
+                self.panes[self.focus].step_tab(top, -1, only.as_deref());
             }
             (_, Some('P')) => {
                 let (s, t) = (self.focus, self.panes[self.focus].active);
@@ -2772,6 +2828,25 @@ impl App {
             (_, Some('q')) => self.modal = Modal::ConfirmQuit,
             (_, Some('Q')) => self.quit_by_user(),
             (_, Some('N')) => self.restart_to_update(false),
+            (_, Some('<')) | (_, Some('>')) => {
+                self.view = View::Grid;
+                let p = self.focus;
+                self.nudge_sidebar(p, if ch == Some('>') { 4 } else { -4 });
+            }
+            (_, Some('/')) => {
+                let p = self.focus;
+                self.focus_tab_search(p);
+            }
+            (_, Some('_')) => {
+                self.view = View::Grid;
+                let p = self.focus;
+                self.toggle_fold_pane(p);
+            }
+            (_, Some('\\')) => {
+                self.view = View::Grid;
+                let p = self.focus;
+                self.toggle_fold_sideways(p);
+            }
             (_, Some('C')) => {
                 if let Some(a) = self.panes.get(self.focus).and_then(|p| p.account) {
                     let say = self.close_accounts(&[a]);

@@ -25,6 +25,10 @@
 //!                     runs of this copy
 //!   resume_fail=1     a --resume exits at once with claude's "No
 //!                     conversation found" error
+//!   resume_bg=SHORT   a plain --resume prints claude's "That session is
+//!                     running in the background (SHORT)" and exits 1;
+//!                     `stop` makes later resumes work; attach and
+//!                     --fork-session run normally
 //! Without stdin_to it reads stdin to the end and drops it.
 
 use std::path::{Path, PathBuf};
@@ -109,6 +113,25 @@ fn main() {
     if get("resume_fail").is_some() {
         if let Some(i) = args.iter().position(|a| a == "--resume") {
             eprintln!("No conversation found with session ID: {}", args.get(i + 1).map(String::as_str).unwrap_or(""));
+            std::process::exit(1);
+        }
+    }
+    // A background run holds the session: a plain resume is refused like
+    // claude 2.1.29x refuses it, until `stop` ran; attach and
+    // --fork-session go ahead.
+    if let Some(short) = get("resume_bg") {
+        let stopped = exe.with_extension("stopped");
+        if args.first().map(String::as_str) == Some("stop") {
+            let _ = std::fs::write(&stopped, "1");
+            return;
+        }
+        let plain = args.first().map(String::as_str) != Some("attach")
+            && args.iter().any(|a| a == "--resume")
+            && !args.iter().any(|a| a == "--fork-session");
+        if plain && !stopped.exists() {
+            print!("That session is running in the background ({short}). Run `claude\r\nattach {short}` to open it, or `claude stop {short}` first to\r\nresume it here. Add --fork-session to branch off a copy instead.\r\n");
+            let _ = std::io::stdout().flush();
+            std::thread::sleep(std::time::Duration::from_millis(100));
             std::process::exit(1);
         }
     }

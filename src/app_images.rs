@@ -84,36 +84,78 @@ impl App {
             h,
             at: Instant::now(),
         };
-        let input = &mut self.assistant.input;
-        if !input.is_empty() && !input.ends_with([' ', '\n']) {
-            input.push(' ');
+        // At the caret (over the selection), set off by spaces.
+        let mut ed = self.assistant.ed();
+        ed.delete_selection();
+        let p = ed.pos();
+        let mut s = String::new();
+        if ed.text[..p]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c != ' ' && c != '\n')
+        {
+            s.push(' ');
         }
-        input.push_str(&a.chip());
-        input.push(' ');
+        s.push_str(&a.chip());
+        let after = ed.text[p..].starts_with(' ');
+        if !after {
+            s.push(' ');
+        }
+        ed.insert(&s);
+        if after {
+            let p = ed.pos();
+            ed.go(p + 1, false);
+        }
+        drop(ed);
         self.assistant.hist_pos = None;
         crate::log::info(&format!("assistant: attached {}", a.label()));
         self.assistant.pending_images.push(a);
     }
 
-    /// Backspace at a chip (or the space after it): the whole chip goes,
-    /// and its attachment with it. True when one went.
-    pub fn backspace_chip(&mut self) -> bool {
+    /// The chips in the input: (byte start, end, index in pending_images).
+    pub fn chip_spans(&self) -> Vec<(usize, usize, usize)> {
         let input = &self.assistant.input;
-        let Some(i) = self.assistant.pending_images.iter().position(|a| {
+        let mut v = vec![];
+        for (i, a) in self.assistant.pending_images.iter().enumerate() {
             let c = a.chip();
-            input.ends_with(&c) || input.ends_with(&format!("{c} "))
-        }) else {
+            if let Some(s) = input.find(&c) {
+                v.push((s, s + c.len(), i));
+            }
+        }
+        v
+    }
+
+    /// Backspace at a chip (or the space after it), or Delete just before
+    /// one: the whole chip goes (with that space), and its attachment with
+    /// it. True when one went.
+    fn chip_delete(&mut self, forward: bool) -> bool {
+        let p = self.assistant.ed().pos();
+        let input = &self.assistant.input;
+        let hit = self.chip_spans().into_iter().find_map(|(s, e, i)| {
+            let space = input[e..].starts_with(' ');
+            if forward {
+                (p == s).then_some((s, if space { e + 1 } else { e }, i))
+            } else if p == e {
+                Some((s, e, i))
+            } else {
+                (space && p == e + 1).then_some((s, e + 1, i))
+            }
+        });
+        let Some((s, e, i)) = hit else {
             return false;
         };
         let a = self.assistant.pending_images.remove(i);
-        let c = a.chip();
-        let input = &mut self.assistant.input;
-        if input.ends_with(' ') && !input.ends_with(&c) {
-            input.pop();
-        }
-        input.truncate(input.len() - c.len());
+        self.assistant.ed().remove(s, e);
         let _ = std::fs::remove_file(&a.path);
         true
+    }
+
+    pub fn backspace_chip(&mut self) -> bool {
+        self.chip_delete(false)
+    }
+
+    pub fn delete_chip(&mut self) -> bool {
+        self.chip_delete(true)
     }
 
     /// The attachments whose chips are in the text being sent (the input

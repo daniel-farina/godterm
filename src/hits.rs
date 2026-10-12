@@ -178,6 +178,15 @@ pub enum UiAction {
     MoveBusy(bool),
     /// Tab menu entry.
     TabMenuItem(usize),
+    /// The tab panel (double click): an option row, a Color swatch (0:
+    /// none), a Group choice, the session title field, a section tab when
+    /// both do not fit (false: Move, true: Tab), Copy session only.
+    TabOpt(usize),
+    TabOptColor(usize),
+    TabOptGroup(usize),
+    TabTitleField,
+    TabPanelSec(bool),
+    MoveSessionOnly,
     /// A tab group's header in pane .0's list: click folds, right click
     /// opens its menu, a dragged tab dropped on it joins.
     GroupHeader(usize, usize),
@@ -220,6 +229,16 @@ pub enum UiAction {
     PathClick(usize),
     /// The edge of pane `.0`'s tab list: drag to resize, double click resets.
     SidebarEdge(usize),
+    /// Collapse pane `.0`'s account to a strip, or expand it (▾ / ▸).
+    FoldAccount(usize),
+    /// Collapse pane `.0` sideways to a column strip, or expand it.
+    FoldSideways(usize),
+    /// The search field atop pane `.0`'s tab list: type to filter.
+    TabSearch(usize),
+    /// Clear pane `.0`'s tab search (its ×).
+    TabSearchClear(usize),
+    /// The Sort ▾ dropdown atop pane `.0`'s tab list.
+    TabSortMenu(usize),
     /// A color choice in the color picker (usize::MAX: inside, no-op).
     ColorPick(usize),
     /// Open the color picker.
@@ -268,7 +287,6 @@ pub enum UiAction {
     RenameTab(usize, usize),
     /// Move dialog: focus the tab name field, save the name only.
     MoveName,
-    MoveRenameOnly,
     /// Suggested move of pane .0's tab to account .1.
     SuggestMove(usize, usize),
     /// Account menu: split, hide or close pane `.0`.

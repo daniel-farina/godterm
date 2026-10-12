@@ -21,7 +21,7 @@ pub const TOUR: &[(&str, &str)] = &[
     ),
     (
         "Tabs",
-        "Each pane lists its tabs (left by default; right or top with Ctrl-a S or the account menu). Click a tab to switch, double click to move it to another account (right click: Rename, Move, Duplicate, Close), x to close, + New tab to add one, « to collapse the list.",
+        "Each pane lists its tabs (left by default; right or top with Ctrl-a S or the account menu). Click a tab to switch, double click for its panel (Move to another account plus every option: name, session title, color, pin, group, restart, folder, close), right click for the same options, x to close, + New tab to add one, « to collapse the list.",
     ),
     (
         "Usage footer",
@@ -195,6 +195,10 @@ impl App {
             }
         }
         if self.livemap_mouse(&m) {
+            return;
+        }
+        // In the assistant's input: the caret, or a selection there.
+        if self.input_mouse(&m) {
             return;
         }
         let region = self.region_at(m.column, m.row);
@@ -623,6 +627,13 @@ impl App {
 
     /// Run a clicked action.
     pub fn click(&mut self, action: UiAction, double: bool, m: &MouseEvent) {
+        // A click anywhere else gives the keys back from a tab search.
+        if !matches!(
+            action,
+            UiAction::TabSearch(_) | UiAction::TabSearchClear(_) | UiAction::SelectTab(..)
+        ) {
+            self.tab_search = None;
+        }
         match action {
             // The button of the view on screen toggles back home.
             UiAction::Key(c) if self.active_menu_key() == Some(c) => self.go_home(),
@@ -670,12 +681,14 @@ impl App {
                 self.tab_drag = Some((s, t, false));
                 self.jump_to(s, t);
                 if double {
-                    self.open_move_picker(s, t, false);
+                    self.open_tab_panel(s, t);
                 }
             }
             UiAction::MoveRow(i) => {
+                self.panel_end_edit();
                 if let Modal::MoveTab(p) = &mut self.modal {
                     p.sel = i;
+                    p.opt = None;
                 }
                 if double {
                     self.confirm_move_picker();
@@ -684,6 +697,41 @@ impl App {
             UiAction::MoveCopy(c) => {
                 if let Modal::MoveTab(p) = &mut self.modal {
                     p.copy = c;
+                    p.session_only = false;
+                }
+            }
+            UiAction::MoveSessionOnly => {
+                if let Modal::MoveTab(p) = &mut self.modal {
+                    p.copy = true;
+                    p.session_only = true;
+                }
+            }
+            UiAction::TabOpt(i) => {
+                self.panel_end_edit();
+                self.panel_activate(i);
+            }
+            UiAction::TabOptColor(c) => {
+                self.panel_end_edit();
+                if let Modal::MoveTab(p) = &mut self.modal {
+                    p.color_sel = c;
+                }
+                self.panel_activate_act(crate::app_tabopts::TabAct::Color);
+            }
+            UiAction::TabOptGroup(g) => {
+                self.panel_end_edit();
+                if let Modal::MoveTab(p) = &mut self.modal {
+                    p.group_sel = g;
+                }
+                self.panel_activate_act(crate::app_tabopts::TabAct::Group);
+            }
+            UiAction::TabTitleField => {
+                self.panel_end_edit();
+                self.panel_activate_act(crate::app_tabopts::TabAct::SessionTitle);
+            }
+            UiAction::TabPanelSec(opts) => {
+                self.panel_end_edit();
+                if let Modal::MoveTab(p) = &mut self.modal {
+                    p.opt = opts.then_some(0);
                 }
             }
             UiAction::MoveFolder => {
@@ -872,6 +920,25 @@ impl App {
                 }
             }
             UiAction::SidebarEdge(i) => self.sidebar_drag = Some(i),
+            UiAction::TabSearch(i) => {
+                self.modal = Modal::None;
+                self.focus_tab_search(i);
+            }
+            UiAction::TabSearchClear(i) => {
+                if let Some(p) = self.panes.get_mut(i) {
+                    p.filter.clear();
+                }
+                self.tab_search = None;
+            }
+            UiAction::TabSortMenu(i) => self.open_sort_menu(i, (m.column, m.row)),
+            UiAction::FoldAccount(i) => {
+                self.modal = Modal::None;
+                self.toggle_fold_pane(i);
+            }
+            UiAction::FoldSideways(i) => {
+                self.modal = Modal::None;
+                self.toggle_fold_sideways(i);
+            }
             UiAction::PathClick(i) => {
                 if double {
                     self.open_in_finder(i);
@@ -926,14 +993,10 @@ impl App {
                 self.start_rename(s, t);
             }
             UiAction::MoveName => {
-                if let Modal::MoveTab(p) = &mut self.modal {
-                    p.name_edit = true;
-                }
-            }
-            UiAction::MoveRenameOnly => {
-                if let Modal::MoveTab(p) = self.modal.clone() {
-                    self.apply_picker_name(&p);
-                    self.modal = Modal::None;
+                let editing = matches!(&self.modal, Modal::MoveTab(p) if p.name_edit);
+                if !editing {
+                    self.panel_end_edit();
+                    self.panel_activate_act(crate::app_tabopts::TabAct::Rename);
                 }
             }
             UiAction::LoopStop => self.stop_selected_loop(),

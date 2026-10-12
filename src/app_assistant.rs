@@ -39,6 +39,14 @@ pub struct AssistantState {
     /// Typing goes to the panel (it has the focus); false: to the grid.
     pub focused: bool,
     pub input: String,
+    /// The input's caret and selection (input_edit).
+    pub caret: crate::input_edit::Caret,
+    /// Where the input was drawn last (a click places the caret).
+    pub input_geo: std::cell::Cell<Option<crate::app_input::InputGeo>>,
+    /// The input's first row shown (it scrolls to keep the caret).
+    pub input_top: std::cell::Cell<usize>,
+    /// A drag in the input is selecting.
+    pub input_drag: bool,
     /// Streamed deltas this turn (so whole text blocks are not repeated).
     got_delta: bool,
     /// Spoken replies open a follow up window when speech ends.
@@ -1643,7 +1651,8 @@ impl App {
         self.assistant.show && self.assistant.focused
     }
 
-    /// Keys while the panel is open: typing goes to its input.
+    /// Keys while the panel is open: typing goes to its input, at the
+    /// caret (the editing keys are in app_input).
     pub fn on_assistant_key(&mut self, k: KeyEvent) -> bool {
         // Ctrl-V: the clipboard's image (a terminal paste carries no image).
         if self.assistant_has_focus()
@@ -1654,11 +1663,22 @@ impl App {
             self.paste_clipboard_image(false);
             return true;
         }
-        if !self.assistant_has_focus() || k.modifiers.contains(KeyModifiers::CONTROL) {
+        if !self.assistant_has_focus() {
             return false;
         }
         if self.assistant.history.is_some() {
+            if k.modifiers.contains(KeyModifiers::CONTROL) {
+                return false;
+            }
             return self.on_history_key(k);
+        }
+        // Ctrl-E, -W, -U, -K and Ctrl+arrows edit; every other Ctrl key
+        // goes on as before (Ctrl-a, the prefix, never gets here).
+        if k.modifiers.contains(KeyModifiers::CONTROL) {
+            return self.input_ctrl_key(k);
+        }
+        if self.input_edit_key(k) {
+            return true;
         }
         match k.code {
             // Esc in another view: back to the conversation. In it, Esc
@@ -1678,47 +1698,50 @@ impl App {
                             .is_some_and(|t| t.elapsed() < Duration::from_millis(15))
                     }) =>
             {
-                self.assistant.input.push('\n');
+                self.assistant.ed().insert("\n");
                 self.assistant.last_key_at = Some(Instant::now());
             }
             KeyCode::Enter => self.send_assistant_input(),
-            KeyCode::Tab => self.assistant.input.push_str("    "),
-            KeyCode::Up => {
-                let n = self.assistant.input_hist.len();
-                if n > 0 {
-                    let i = self
-                        .assistant
-                        .hist_pos
-                        .map(|p| p.saturating_sub(1))
-                        .unwrap_or(n - 1);
-                    self.assistant.hist_pos = Some(i);
-                    self.assistant.input = self.assistant.input_hist[i].clone();
-                }
-            }
-            KeyCode::Down => match self.assistant.hist_pos {
-                Some(p) if p + 1 < self.assistant.input_hist.len() => {
-                    self.assistant.hist_pos = Some(p + 1);
-                    self.assistant.input = self.assistant.input_hist[p + 1].clone();
-                }
-                Some(_) => {
-                    self.assistant.hist_pos = None;
-                    self.assistant.input.clear();
-                }
-                None => {}
-            },
-            KeyCode::Backspace => {
-                if !self.backspace_chip() {
-                    self.assistant.input.pop();
-                }
-            }
+            KeyCode::Tab => self.assistant.ed().insert("    "),
             KeyCode::Char(c) => {
-                self.assistant.input.push(c);
+                self.assistant.ed().insert(c.encode_utf8(&mut [0; 4]));
                 self.assistant.last_key_at = Some(Instant::now());
                 self.assistant.hist_pos = None;
             }
             _ => return false,
         }
         true
+    }
+
+    /// Up (older) or Down (newer) in the typed requests, from the input's
+    /// first or last row.
+    pub(crate) fn input_history(&mut self, down: bool) {
+        let n = self.assistant.input_hist.len();
+        if !down {
+            if n > 0 {
+                let i = self
+                    .assistant
+                    .hist_pos
+                    .map(|p| p.saturating_sub(1))
+                    .unwrap_or(n - 1);
+                self.assistant.hist_pos = Some(i);
+                let t = self.assistant.input_hist[i].clone();
+                self.assistant.set_input(t);
+            }
+            return;
+        }
+        match self.assistant.hist_pos {
+            Some(p) if p + 1 < n => {
+                self.assistant.hist_pos = Some(p + 1);
+                let t = self.assistant.input_hist[p + 1].clone();
+                self.assistant.set_input(t);
+            }
+            Some(_) => {
+                self.assistant.hist_pos = None;
+                self.assistant.set_input(String::new());
+            }
+            None => {}
+        }
     }
 
     /// A paste into the panel's input: line ends kept (as \n), other
@@ -1743,11 +1766,15 @@ impl App {
             .chars()
             .filter(|c| *c == '\n' || !c.is_control())
             .collect();
-        let have = self.assistant.input.chars().count();
+        // At the caret, over the selection.
+        let mut ed = self.assistant.ed();
+        ed.delete_selection();
+        let have = ed.text.chars().count();
         let room = PASTE_MAX.saturating_sub(have);
         let n = clean.chars().count();
         let take: String = clean.chars().take(room).collect();
-        self.assistant.input.push_str(&take);
+        ed.insert(&take);
+        drop(ed);
         self.assistant.hist_pos = None;
         if n > room {
             self.flash(format!(
@@ -1763,6 +1790,7 @@ impl App {
     /// the input history.
     pub fn send_assistant_input(&mut self) {
         let t = std::mem::take(&mut self.assistant.input);
+        self.assistant.set_input(String::new());
         self.assistant.hist_pos = None;
         if t.trim().is_empty() {
             return;

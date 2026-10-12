@@ -94,6 +94,8 @@ fn new_file(ext: &str) -> Result<PathBuf> {
 }
 
 /// What the clipboard holds that can be attached.
+// Only the macOS reader builds File, and Windows builds neither yet.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClipImage {
     /// Image data, as PNG.

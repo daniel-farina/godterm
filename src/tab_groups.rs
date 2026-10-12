@@ -24,29 +24,33 @@ pub enum TabSort {
     /// Drag order.
     #[default]
     Manual,
+    /// Working first, then by the latest output.
+    Active,
     /// Last output, input or state change first.
     Recent,
     /// Most recently opened first.
     Opened,
     Name,
     Folder,
-    /// Needs approval, then working, then the rest.
+    /// Blocked or waiting for a confirmation, then working, then the rest.
     State,
 }
 
 pub const SORTS: &[TabSort] = &[
     TabSort::Manual,
+    TabSort::Active,
     TabSort::Recent,
-    TabSort::Opened,
     TabSort::Name,
-    TabSort::Folder,
     TabSort::State,
+    TabSort::Opened,
+    TabSort::Folder,
 ];
 
 impl TabSort {
     pub fn name(self) -> &'static str {
         match self {
             TabSort::Manual => "manual",
+            TabSort::Active => "active",
             TabSort::Recent => "recent",
             TabSort::Opened => "opened",
             TabSort::Name => "name",
@@ -58,11 +62,12 @@ impl TabSort {
     pub fn label(self) -> &'static str {
         match self {
             TabSort::Manual => "Manual (drag order)",
+            TabSort::Active => "Most active (working first)",
             TabSort::Recent => "Most recent activity",
-            TabSort::Opened => "Most recently opened",
+            TabSort::Opened => "Created (newest first)",
             TabSort::Name => "Name",
             TabSort::Folder => "Folder",
-            TabSort::State => "State (needs approval first)",
+            TabSort::State => "Status (blocked and confirm first)",
         }
     }
 
@@ -70,17 +75,21 @@ impl TabSort {
     pub fn parse(s: &str) -> Option<TabSort> {
         let s = s.trim().to_lowercase();
         let has = |w: &[&str]| w.iter().any(|x| s.contains(x));
-        Some(if has(&["manual", "drag", "custom"]) {
+        Some(if has(&["manual", "drag", "custom", "my order"]) {
             TabSort::Manual
-        } else if has(&["open", "newest", "created"]) {
+        } else if has(&["open", "newest", "created", "creation", "oldest"]) {
             TabSort::Opened
-        } else if has(&["recent", "activ", "last used", "latest"]) {
+        } else if has(&["recent", "last used", "latest", "last activity"]) {
+            TabSort::Recent
+        } else if has(&["active", "busy", "busiest", "working"]) {
+            TabSort::Active
+        } else if has(&["activ"]) {
             TabSort::Recent
         } else if has(&["name", "alpha"]) {
             TabSort::Name
         } else if has(&["folder", "path", "dir", "project"]) {
             TabSort::Folder
-        } else if has(&["state", "status", "approval"]) {
+        } else if has(&["state", "status", "approval", "blocked", "confirm", "needs"]) {
             TabSort::State
         } else {
             return None;
@@ -127,15 +136,22 @@ impl Slot {
             .or_else(|| self.group_of(t).and_then(|g| self.groups[g].color.clone()))
     }
 
-    fn sorted(&self, mut ix: Vec<usize>) -> Vec<usize> {
+    fn sorted(&self, mut ix: Vec<usize>, rank: &dyn Fn(usize) -> u8) -> Vec<usize> {
         let t = &self.tabs;
         match self.sort {
             TabSort::Manual => {}
+            TabSort::Active => ix.sort_by_key(|&i| {
+                let out = t[i].last_output_at();
+                (
+                    t[i].activity != Activity::Working,
+                    std::cmp::Reverse(out.max(t[i].activity_since)),
+                )
+            }),
             TabSort::Recent => ix.sort_by_key(|&i| std::cmp::Reverse(t[i].last_activity())),
             TabSort::Opened => ix.sort_by_key(|&i| std::cmp::Reverse(t[i].opened)),
             TabSort::Name => ix.sort_by_key(|&i| t[i].name().to_lowercase()),
             TabSort::Folder => ix.sort_by_key(|&i| t[i].cwd.to_string_lossy().to_lowercase()),
-            TabSort::State => ix.sort_by_key(|&i| state_rank(&t[i])),
+            TabSort::State => ix.sort_by_key(|&i| rank(i)),
         }
         ix
     }
@@ -144,8 +160,19 @@ impl Slot {
     /// `ungrouped_top`) each group, then the ungrouped ones; sorted within
     /// each. `hold` (the mouse is over the list) keeps the last order.
     pub fn tab_order(&self, ungrouped_top: bool, hold: bool) -> Vec<usize> {
-        let fresh = self.fresh_order(ungrouped_top);
-        if self.sort != TabSort::Recent {
+        self.tab_order_by(ungrouped_top, hold, &|i| state_rank(&self.tabs[i]))
+    }
+
+    /// The same with the Status sort's rank of each tab given (the app
+    /// knows which wait for a confirmation).
+    pub fn tab_order_by(
+        &self,
+        ungrouped_top: bool,
+        hold: bool,
+        rank: &dyn Fn(usize) -> u8,
+    ) -> Vec<usize> {
+        let fresh = self.fresh_order(ungrouped_top, rank);
+        if !matches!(self.sort, TabSort::Recent | TabSort::Active) {
             *self.order_cache.borrow_mut() = None;
             return fresh;
         }
@@ -161,24 +188,24 @@ impl Slot {
         fresh
     }
 
-    fn fresh_order(&self, ungrouped_top: bool) -> Vec<usize> {
+    fn fresh_order(&self, ungrouped_top: bool, rank: &dyn Fn(usize) -> u8) -> Vec<usize> {
         let n = self.tabs.len();
         let pinned: Vec<usize> = (0..n).filter(|&i| self.tabs[i].pinned).collect();
         let loose: Vec<usize> = (0..n)
             .filter(|&i| !self.tabs[i].pinned && self.group_of(i).is_none())
             .collect();
-        let mut out = self.sorted(pinned);
+        let mut out = self.sorted(pinned, rank);
         if ungrouped_top {
-            out.extend(self.sorted(loose.clone()));
+            out.extend(self.sorted(loose.clone(), rank));
         }
         for g in 0..self.groups.len() {
             let m: Vec<usize> = (0..n)
                 .filter(|&i| !self.tabs[i].pinned && self.group_of(i) == Some(g))
                 .collect();
-            out.extend(self.sorted(m));
+            out.extend(self.sorted(m, rank));
         }
         if !ungrouped_top {
-            out.extend(self.sorted(loose));
+            out.extend(self.sorted(loose, rank));
         }
         out
     }
@@ -186,7 +213,22 @@ impl Slot {
     /// The list's rows: tabs and group headers; a collapsed group shows
     /// only its header.
     pub fn rows(&self, ungrouped_top: bool, hold: bool) -> Vec<Row> {
-        let order = self.tab_order(ungrouped_top, hold);
+        self.rows_by(ungrouped_top, hold, &|i| state_rank(&self.tabs[i]), None)
+    }
+
+    /// Rows in the Status rank given; `only`: the tabs a search matched
+    /// (groups with a match show it, folded or not; the others go).
+    pub fn rows_by(
+        &self,
+        ungrouped_top: bool,
+        hold: bool,
+        rank: &dyn Fn(usize) -> u8,
+        only: Option<&[bool]>,
+    ) -> Vec<Row> {
+        let mut order = self.tab_order_by(ungrouped_top, hold, rank);
+        if let Some(m) = only {
+            order.retain(|&i| m.get(i).copied().unwrap_or(false));
+        }
         let mut rows = vec![];
         let mut shown = vec![false; self.groups.len()];
         // Headers go where their first member is; empty groups after the
@@ -198,15 +240,17 @@ impl Slot {
                     shown[g] = true;
                     rows.push(Row::Group(g));
                 }
-                if self.groups[g].collapsed {
+                if self.groups[g].collapsed && only.is_none() {
                     continue;
                 }
             }
             rows.push(Row::Tab(i));
         }
-        for (g, s) in shown.iter().enumerate() {
-            if !s {
-                rows.push(Row::Group(g));
+        if only.is_none() {
+            for (g, s) in shown.iter().enumerate() {
+                if !s {
+                    rows.push(Row::Group(g));
+                }
             }
         }
         rows
@@ -287,9 +331,13 @@ impl Slot {
         self.groups[g].name = to;
     }
 
-    /// Next and previous follow the list's order.
-    pub fn step_tab(&mut self, ungrouped_top: bool, dir: isize) {
-        let order = self.tab_order(ungrouped_top, true);
+    /// Next and previous follow the list's order (the tabs a search
+    /// matched, while one is typed).
+    pub fn step_tab(&mut self, ungrouped_top: bool, dir: isize, only: Option<&[bool]>) {
+        let mut order = self.tab_order(ungrouped_top, true);
+        if let Some(m) = only {
+            order.retain(|&i| m.get(i).copied().unwrap_or(false));
+        }
         if order.is_empty() {
             return;
         }
@@ -378,7 +426,7 @@ mod tests {
         assert!(s.groups.is_empty() && s.tabs[4].group.is_none());
         // Next and previous follow the list.
         s.active = 2;
-        s.step_tab(false, 1);
+        s.step_tab(false, 1, None);
         assert_eq!(s.active, 0);
     }
 

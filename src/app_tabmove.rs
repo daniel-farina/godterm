@@ -45,9 +45,23 @@ pub struct MovePicker {
     /// Copy keeps the source tab open.
     pub copy: bool,
     pub same_folder: bool,
-    /// The tab's name, editable at the top of the dialog.
+    /// The tab's name, editable in the Tab section (Esc goes back to
+    /// name_orig).
     pub name: String,
     pub name_edit: bool,
+    pub name_orig: String,
+    /// Focus: None on the Move section's targets, Some(i) on option row i
+    /// (app_tabopts::panel_rows).
+    pub opt: Option<usize>,
+    /// The session's own title, editable.
+    pub title: String,
+    pub title_orig: String,
+    pub title_edit: bool,
+    /// The Color row's swatch (0: none) and the Group row's choice.
+    pub color_sel: usize,
+    pub group_sel: usize,
+    /// Copy only the conversation there (no tab opens).
+    pub session_only: bool,
 }
 
 /// A move waiting for its tab to go idle.
@@ -164,16 +178,10 @@ impl App {
             self.flash("No other logged in account to move this tab to");
             return;
         }
-        let name = self.panes[slot].tabs[tab].name();
-        self.modal = Modal::MoveTab(MovePicker {
-            slot,
-            tab,
-            sel: 0,
-            copy,
-            same_folder: true,
-            name,
-            name_edit: false,
-        });
+        self.open_tab_panel(slot, tab);
+        if let Modal::MoveTab(p) = &mut self.modal {
+            p.copy = copy;
+        }
     }
 
     /// Confirm the picker's selection.
@@ -209,7 +217,54 @@ impl App {
             return;
         }
         self.modal = Modal::None;
+        if p.session_only {
+            return self.copy_session_to(p.slot, p.tab, t.account);
+        }
         self.request_move(p.slot, p.tab, t.account, p.copy, p.same_folder);
+    }
+
+    /// Copy a tab's conversation to `target` so it can be resumed there;
+    /// no tab opens.
+    pub fn copy_session_to(&mut self, slot: usize, tab: usize, target: usize) {
+        self.detect_sessions();
+        match self.copy_transcript(slot, tab, target) {
+            Ok(Some(id)) => self.flash(format!(
+                "Copied the session to {}; resume it there from Sessions ({})",
+                self.cfg.accounts[target].display(),
+                &id[..id.len().min(8)]
+            )),
+            Ok(None) => self.flash("This tab has no conversation to copy yet"),
+            Err(e) => self.flash(format!("Could not copy the session: {e}")),
+        }
+    }
+
+    /// Copy the tab's transcript into `target`'s config dir: the id there,
+    /// or None when the tab has no conversation yet.
+    fn copy_transcript(
+        &self,
+        slot: usize,
+        tab: usize,
+        target: usize,
+    ) -> Result<Option<String>, String> {
+        let Some(src_acct) = self.panes[slot].account else {
+            return Ok(None);
+        };
+        let Some((jsonl, id)) = self.transcript_of(slot, tab) else {
+            return Ok(None);
+        };
+        let sdir = self.cfg.accounts[src_acct].config_dir();
+        let tdir = self.cfg.accounts[target].config_dir();
+        // Already there: reuse it, unless ours is longer (newer turns, e.g.
+        // moving back after an undo), then it wins.
+        let there = jsonl.strip_prefix(&sdir).map(|r| tdir.join(r)).ok();
+        let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        let conflict = match there {
+            Some(t) if t.exists() && size(&jsonl) > size(&t) => Conflict::Overwrite,
+            _ => Conflict::Skip,
+        };
+        session_ops::copy_session(&sdir, &jsonl, &id, &tdir, conflict)
+            .map(|c| Some(c.id))
+            .map_err(|e| format!("{e:#}"))
     }
 
     /// Move now, or ask first when the tab is busy.
@@ -253,6 +308,16 @@ impl App {
             "The tab moves once it finishes"
         });
         self.queued_moves.push(q);
+    }
+
+    /// A move that did not happen: its old id names its own tab again.
+    pub(crate) fn forget_move(&mut self, source: u64, target: u64) {
+        if self.moved_ids.get(&source) == Some(&target) {
+            self.moved_ids.remove(&source);
+            crate::log::info(&format!(
+                "move: t{source} stays t{source} (t{target} failed)"
+            ));
+        }
     }
 
     pub fn find_tab(&self, uid: u64) -> Option<(usize, usize)> {
@@ -310,28 +375,14 @@ impl App {
             self.cfg.accounts[target].work_dir()
         };
         let label = src.name();
-        let kind = match self.transcript_of(slot, tab) {
-            Some((jsonl, id)) => {
-                let sdir = self.cfg.accounts[src_acct].config_dir();
-                let tdir = self.cfg.accounts[target].config_dir();
-                // Already there: reuse it, unless ours is longer (newer
-                // turns, e.g. moving back after an undo), then it wins.
-                let there = jsonl.strip_prefix(&sdir).map(|r| tdir.join(r)).ok();
-                let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-                let conflict = match there {
-                    Some(t) if t.exists() && size(&jsonl) > size(&t) => Conflict::Overwrite,
-                    _ => Conflict::Skip,
-                };
-                match session_ops::copy_session(&sdir, &jsonl, &id, &tdir, conflict) {
-                    Ok(c) => LaunchKind::Resume(c.id),
-                    Err(e) => {
-                        self.flash(format!("Could not copy the session: {e:#}"));
-                        return;
-                    }
-                }
+        let kind = match self.copy_transcript(slot, tab, target) {
+            Ok(Some(id)) => LaunchKind::Resume(id),
+            Err(e) => {
+                self.flash(format!("Could not copy the session: {e}"));
+                return;
             }
             // No conversation yet: a fresh tab in the same folder.
-            None => LaunchKind::Normal,
+            Ok(None) => LaunchKind::Normal,
         };
         crate::log::info(&format!(
             "move tab {label} from {} to {} ({kind:?}, copy {copy})",
@@ -402,6 +453,8 @@ impl App {
         let pending = std::mem::take(&mut self.pending_moves);
         for m in pending {
             let Some((ts, tt)) = self.find_tab(m.target_uid) else {
+                // The new tab is gone: the source is the tab again.
+                self.forget_move(m.source_uid, m.target_uid);
                 continue;
             };
             let t = &self.panes[ts].tabs[tt];
@@ -417,6 +470,11 @@ impl App {
                 .unwrap_or_default();
             let tname = self.cfg.accounts[m.target].display().to_string();
             if failed {
+                // The original stays open and keeps its id: tools that name
+                // it must reach it, not the failed copy.
+                if self.find_tab(m.source_uid).is_some() {
+                    self.forget_move(m.source_uid, m.target_uid);
+                }
                 self.flash(format!(
                     "Could not resume '{}' in {tname}; the original tab is still open (Ctrl-a r restarts it)",
                     m.name
@@ -500,76 +558,24 @@ impl App {
     }
 }
 
-/// Right click menu entries for a tab.
-pub const TAB_MENU: &[&str] = &[
-    "Rename",
-    "Move to...",
-    "Duplicate to...",
-    "Accent color...",
-    "Pin / unpin",
-    "Move to group...",
-    "Close",
-];
-
 impl App {
     pub fn open_tab_menu(&mut self, slot: usize, tab: usize) {
         self.jump_to(slot, tab);
         self.modal = Modal::TabMenu(slot, tab, 0);
     }
 
+    /// Row `i` of the right click menu (app_tabopts::tab_actions).
     pub fn tab_menu_run(&mut self, slot: usize, tab: usize, i: usize) {
-        self.modal = Modal::None;
-        match i {
-            0 => self.start_rename(slot, tab),
-            1 => self.open_move_picker(slot, tab, false),
-            2 => self.open_move_picker(slot, tab, true),
-            3 => {
-                if let Some(uid) = self
-                    .panes
-                    .get(slot)
-                    .and_then(|p| p.tabs.get(tab))
-                    .map(|t| t.uid)
-                {
-                    self.open_color_pick(crate::color_pick::Target::Tab(uid));
-                }
-            }
-            4 => self.toggle_pin(slot, tab),
-            5 => self.modal = Modal::GroupPick(slot, tab, 0),
-            _ => self.request_close(slot, tab),
+        match self.tab_actions(slot, tab).get(i).map(|r| r.act) {
+            Some(a) => self.tab_act_run(slot, tab, a),
+            None => self.modal = Modal::None,
         }
     }
 
     pub fn on_move_modal_key(&mut self, k: crossterm::event::KeyEvent) {
         use crossterm::event::KeyCode;
         match self.modal.clone() {
-            Modal::MoveTab(mut p) => {
-                let n = self.move_targets(p.slot).len();
-                if p.name_edit {
-                    match k.code {
-                        KeyCode::Enter | KeyCode::Esc | KeyCode::Tab => p.name_edit = false,
-                        KeyCode::Backspace => {
-                            p.name.pop();
-                        }
-                        KeyCode::Char(c) if p.name.chars().count() < 40 => p.name.push(c),
-                        _ => {}
-                    }
-                    self.modal = Modal::MoveTab(p);
-                    return;
-                }
-                match k.code {
-                    KeyCode::Esc => return self.cancel_move_picker(),
-                    KeyCode::Tab | KeyCode::Char('n') => p.name_edit = true,
-                    KeyCode::Up => p.sel = p.sel.saturating_sub(1),
-                    KeyCode::Down => p.sel = (p.sel + 1).min(n.saturating_sub(1)),
-                    KeyCode::Char('c') => p.copy = !p.copy,
-                    KeyCode::Char('f') => p.same_folder = !p.same_folder,
-                    KeyCode::Enter => return self.confirm_move_picker(),
-                    _ => {}
-                }
-                if matches!(self.modal, Modal::MoveTab(_)) {
-                    self.modal = Modal::MoveTab(p);
-                }
-            }
+            Modal::MoveTab(_) => self.on_tab_panel_key(k),
             Modal::MoveBusy(_) => match k.code {
                 KeyCode::Char('w') | KeyCode::Char('y') | KeyCode::Enter => {
                     self.move_busy_choice(false)
@@ -577,22 +583,24 @@ impl App {
                 KeyCode::Char('i') => self.move_busy_choice(true),
                 _ => self.modal = Modal::None,
             },
-            Modal::TabMenu(s, t, sel) => match k.code {
-                KeyCode::Esc => self.modal = Modal::None,
-                KeyCode::Up => self.modal = Modal::TabMenu(s, t, sel.saturating_sub(1)),
-                KeyCode::Down => {
-                    self.modal = Modal::TabMenu(s, t, (sel + 1).min(TAB_MENU.len() - 1))
+            Modal::TabMenu(s, t, sel) => {
+                let rows = self.tab_actions(s, t);
+                match k.code {
+                    KeyCode::Esc => self.modal = Modal::None,
+                    KeyCode::Up => self.modal = Modal::TabMenu(s, t, sel.saturating_sub(1)),
+                    KeyCode::Down => {
+                        self.modal =
+                            Modal::TabMenu(s, t, (sel + 1).min(rows.len().saturating_sub(1)))
+                    }
+                    KeyCode::Enter => self.tab_menu_run(s, t, sel),
+                    KeyCode::Char(c) => {
+                        if let Some(i) = rows.iter().position(|r| r.key == c) {
+                            self.tab_menu_run(s, t, i);
+                        }
+                    }
+                    _ => {}
                 }
-                KeyCode::Enter => self.tab_menu_run(s, t, sel),
-                KeyCode::Char('r') => self.tab_menu_run(s, t, 0),
-                KeyCode::Char('m') => self.tab_menu_run(s, t, 1),
-                KeyCode::Char('d') => self.tab_menu_run(s, t, 2),
-                KeyCode::Char('a') => self.tab_menu_run(s, t, 3),
-                KeyCode::Char('p') => self.tab_menu_run(s, t, 4),
-                KeyCode::Char('g') => self.tab_menu_run(s, t, 5),
-                KeyCode::Char('x') => self.tab_menu_run(s, t, 6),
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
