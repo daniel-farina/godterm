@@ -14,7 +14,7 @@ copies the section for a tag into the GitHub release notes.
 
 ## [0.2.11] - 2026-10-15
 
-Platforms: macOS (Apple silicon and Intel, universal) and Linux (x86_64 and aarch64). This release has no Windows build; Windows will return in a later release.
+Platforms: macOS (Apple silicon and Intel, universal), Linux (x86_64 and aarch64) and Windows (x64; built on GitHub Actions). The Windows installer and zip are not code signed, so SmartScreen will warn: click More info, then Run anyway.
 
 Version 0.2.10 was never published, so this release also carries everything listed under 0.2.10 below.
 

@@ -53,9 +53,8 @@ your hands stay on the keyboard (or off it).
   search, sort, group, copy or move between accounts.
 - **Private by design.** No telemetry, no account of its own; everything
   stays in `~/.godterm`. Privacy mode hides emails for screen sharing.
-- **Everywhere.** macOS (Apple silicon and Intel, signed and notarized) and
-  Linux (x86_64 and arm64). Windows (x86_64) was last built for 0.2.9 and
-  returns in a later release.
+- **Everywhere.** macOS (Apple silicon and Intel, signed and notarized),
+  Linux (x86_64 and arm64) and Windows (x86_64, unsigned installer).
 
 ## Install
 
@@ -97,8 +96,7 @@ and run it, or extract `godterm-<version>-<arch>-unknown-linux-gnu.tar.gz`
 and put `godterm` on your `PATH` (it needs `libasound2`). Homebrew on Linux
 works too: `brew install daniel-farina/godterm/godterm`.
 
-**Windows 10 (1803+) and 11, x86_64: last build 0.2.9 (0.2.11 has no
-Windows build; it returns in a later release).** From the 0.2.9 release, run
+**Windows 10 (1803+) and 11, x86_64.** Run
 `GodTerm-<version>-windows-x64-setup.exe` (a per user install: Start menu
 entry, optional PATH), or unzip `godterm-<version>-x86_64-pc-windows-msvc.zip`.
 The installer is not code signed yet, so SmartScreen may say "Windows
