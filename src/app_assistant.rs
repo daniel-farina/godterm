@@ -28,6 +28,28 @@ pub struct Entry {
     pub text: String,
 }
 
+/// The chat area as last drawn: its text, its scrollbar column (the last
+/// column of `area`), and the lines in all and in view.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChatGeo {
+    pub area: ratatui::layout::Rect,
+    pub total: usize,
+    pub view: usize,
+}
+
+impl ChatGeo {
+    pub fn bar(&self) -> ratatui::layout::Rect {
+        crate::scrollbar::bar_rect(self.area)
+    }
+    pub fn contains(&self, col: u16, row: u16) -> bool {
+        crate::hits::contains(self.area, col, row)
+    }
+    /// The first line shown with `off` lines back from the newest.
+    pub fn top(&self, off: usize) -> usize {
+        self.total.saturating_sub(self.view).saturating_sub(off)
+    }
+}
+
 #[derive(Default)]
 pub struct AssistantState {
     pub brain: Option<Brain>,
@@ -47,6 +69,23 @@ pub struct AssistantState {
     pub input_top: std::cell::Cell<usize>,
     /// A drag in the input is selecting.
     pub input_drag: bool,
+    /// The chat's scroll: lines back from the newest (0 follows it).
+    pub chat_off: std::cell::Cell<usize>,
+    /// Lines the chat had when last drawn (a view scrolled back stays on
+    /// the same lines as new ones arrive).
+    pub chat_seen: std::cell::Cell<usize>,
+    /// Where the chat and its scrollbar were drawn last.
+    pub chat_geo: std::cell::Cell<Option<ChatGeo>>,
+    /// The scrollbar's thumb is being dragged (rows from its start).
+    pub bar_drag: Option<u16>,
+    /// The panel's window: normal, minimized to a strip, or maximized.
+    pub win: crate::app_panelwin::PanelWin,
+    /// Its left edge is being dragged (resizing it).
+    pub edge_drag: bool,
+    /// The main area it sits in when drawn last (x, width).
+    pub main_geo: std::cell::Cell<(u16, u16)>,
+    /// When its width changed (it shows the width a moment).
+    pub width_shown: Option<Instant>,
     /// Streamed deltas this turn (so whole text blocks are not repeated).
     got_delta: bool,
     /// Spoken replies open a follow up window when speech ends.
@@ -100,6 +139,10 @@ pub struct AssistantState {
     pub cut_off: Option<Instant>,
     /// "(Listening resumed at 20:37 after a 5 minute pause.)" for the next request.
     pub resume_note: Option<String>,
+    /// What was said in direct mode (app_direct), for the next request.
+    pub direct_note: Option<String>,
+    /// How a brainstorm draft came about (app_brainstorm), for its turn.
+    pub brainstorm_note: Option<String>,
     /// The brain process is new: its first message carries the memory of
     /// recent conversations.
     pub brain_fresh: bool,
@@ -532,6 +575,13 @@ impl App {
                     ) => format!("{state} [{}]", l.word()),
                     _ => state,
                 };
+                // Its model, and a switch waiting for the turn to end.
+                let state = match (self.tab_model_label(si, ti), self.queued_model(t.uid)) {
+                    (Some(m), Some(q)) => format!("{state} {m}, {} queued", q.label),
+                    (None, Some(q)) => format!("{state} {} queued", q.label),
+                    (Some(m), None) => format!("{state} {m}"),
+                    (None, None) => state,
+                };
                 let line = format!(
                     "{} a{} tab{} \"{}\" {}: {state}{}{}{focus}{}\n",
                     crate::control::tab_id(t.uid),
@@ -708,6 +758,16 @@ impl App {
         if self.voice.muted {
             parts.push("mic MUTED (the user unmutes it)".into());
         }
+        if let Some(d) = &self.direct.on {
+            parts.push(format!(
+                "DIRECT MODE with {} ({}): the user's speech goes straight to that tab, not to you",
+                crate::control::tab_id(d.uid),
+                d.name
+            ));
+        }
+        if let Some(b) = self.brainstorm_state_words() {
+            parts.push(b);
+        }
         parts.push(if self.privacy() {
             "privacy ON (never say an email address)".into()
         } else if self.show_email_global() {
@@ -796,6 +856,10 @@ impl App {
         // follows how the user last talked to it.
         if system.is_none() {
             self.assistant.turn_spoken = heard.is_some();
+        }
+        if system.is_none() {
+            // Said something: the chat follows the newest line again.
+            self.assistant.chat_off.set(0);
         }
         self.assistant.log.push(match system {
             Some(note) => Entry {
@@ -894,6 +958,12 @@ impl App {
             earlier.push_str(&format!("(Earlier in this conversation: {c})\n"));
         }
         if let Some(n) = self.assistant.resume_note.take() {
+            earlier.push_str(&format!("{n}\n"));
+        }
+        if let Some(n) = self.assistant.direct_note.take() {
+            earlier.push_str(&format!("{n}\n"));
+        }
+        if let Some(n) = self.assistant.brainstorm_note.take() {
             earlier.push_str(&format!("{n}\n"));
         }
         if self.take_cut_off() {
@@ -1104,28 +1174,26 @@ impl App {
     }
 
     /// Speak the answer: narration dropped (shown dim), at most the
-    /// spoken sentence limit, the rest shown ("more" says it). Returns the reply without
-    /// its narration.
+    /// spoken sentence limit, the rest shown ("more" says it). Returns the
+    /// reply without its narration, its markdown and line breaks kept.
     fn speak_reply(&mut self, reply: &str) -> String {
         let max = self.cfg.assistant.spoken_sentences;
-        let (say, narr, rest) = crate::assistant::spoken_part(reply, max);
-        if !narr.is_empty() {
+        // Speech is plain sentences (a table is "a table of N rows");
+        // what is shown keeps the reply's markdown.
+        let r = crate::md::reply(reply, max);
+        if !r.narration.is_empty() {
             self.assistant.log.push(Entry {
                 who: Who::Preamble,
-                text: narr.join(" "),
+                text: r.narration.join(" "),
             });
         }
-        let shown = match &rest {
-            Some(r) => format!("{say} {r}"),
-            None => say.clone(),
-        };
         // No closing offer: the spoken part ends where it ends. The rest
         // stays shown, and "more" still says it.
-        self.say_part(&say);
-        if let Some(rest) = rest {
+        self.say_part(&r.say);
+        if let Some(rest) = r.rest_say {
             self.assistant.unsaid = Some((Instant::now(), rest));
         }
-        shown
+        r.shown
     }
 
     /// "more", "go on" or "the rest": say what the last
@@ -1339,7 +1407,7 @@ impl App {
                 let reply = if self.assistant.finals.is_empty() {
                     text.trim().to_string()
                 } else {
-                    self.assistant.finals.join(" ")
+                    self.assistant.finals.join("\n")
                 };
                 self.assistant.finals.clear();
                 self.assistant.current.clear();
@@ -1404,7 +1472,7 @@ impl App {
                     if self.assistant.system_turn && !self.tts_on() {
                         self.flash(format!(
                             "Assistant: {}",
-                            crate::sessions::snippet(&reply, 160)
+                            crate::sessions::snippet(&crate::md::speech(&reply), 160)
                         ));
                     }
                     crate::log::info(&format!(
@@ -1413,7 +1481,7 @@ impl App {
                     ));
                     self.voice.action = Some(format!(
                         "assistant: {}",
-                        crate::sessions::snippet(&reply, 80)
+                        crate::sessions::snippet(&crate::md::speech(&reply), 80)
                     ));
                     self.assistant.log.push(Entry {
                         who: if error { Who::Note } else { Who::Reply },
@@ -1635,7 +1703,10 @@ impl App {
     /// Ctrl-a .: open the panel (with the keys), give it the keys back
     /// when it is open without them, close it when it has them.
     pub fn toggle_assistant_panel(&mut self) {
-        if !self.assistant.show {
+        if self.assistant.show && self.assistant.win == crate::app_panelwin::PanelWin::Min {
+            self.assistant.win = crate::app_panelwin::PanelWin::Normal;
+            self.assistant.focused = true;
+        } else if !self.assistant.show {
             self.assistant.show = true;
             self.assistant.focused = true;
         } else if !self.assistant.focused {
@@ -1643,12 +1714,16 @@ impl App {
         } else {
             self.assistant.show = false;
             self.assistant.focused = false;
+            self.assistant.win = crate::app_panelwin::PanelWin::Normal;
         }
     }
 
-    /// The panel is open and typing goes to it.
+    /// The panel is open and typing goes to it (minimized, it never has
+    /// the keys).
     pub fn assistant_has_focus(&self) -> bool {
-        self.assistant.show && self.assistant.focused
+        self.assistant.show
+            && self.assistant.focused
+            && self.assistant.win != crate::app_panelwin::PanelWin::Min
     }
 
     /// Keys while the panel is open: typing goes to its input, at the
@@ -1685,6 +1760,12 @@ impl App {
             // gives the keys back to the grid; the panel stays open.
             KeyCode::Esc if self.panel_view() != crate::panel_views::PanelView::Conversation => {
                 self.back_to_conversation()
+            }
+            // Esc while brainstorming leaves the mode; the draft stays.
+            KeyCode::Esc if self.brainstorm_on() => self.leave_brainstorm(),
+            // Esc with nothing typed ends direct mode first.
+            KeyCode::Esc if self.direct.on.is_some() && self.assistant.input.is_empty() => {
+                self.end_direct("Esc in the panel", true)
             }
             KeyCode::Esc => self.assistant.focused = false,
             // Shift or Alt+Enter, or an Enter inside a burst of keys (a
@@ -1789,6 +1870,11 @@ impl App {
     /// Enter or Send in the panel: the typed request goes out and joins
     /// the input history.
     pub fn send_assistant_input(&mut self) {
+        // Brainstorming: the draft goes out as one message (to the
+        // assistant or the direct tab).
+        if self.brainstorm_on() {
+            return self.finish_brainstorm(false, false);
+        }
         let t = std::mem::take(&mut self.assistant.input);
         self.assistant.set_input(String::new());
         self.assistant.hist_pos = None;

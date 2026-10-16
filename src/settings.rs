@@ -181,6 +181,7 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("suggest_move_below", "Suggest moving tabs below (% 5h left)", Kind::Float { min: 0.0, max: 50.0, step: 5.0 }, "When a tab's account has less than this left, its header offers a one click move to the account with the most left. 0 turns it off."),
             g("refresh_secs", "Usage refresh (seconds)", Kind::Number { min: 60, max: 3600, step: 30 }, "How often usage is fetched per account (never more than once a minute)."),
             g("usage.auto_failover", "When an account runs out", Kind::Choice(&["ask", "auto", "off"]), "ask: a notice offers to move the tab to the account of the same provider with the most left, one yes (Ctrl-a F, a click, or \"move it\") moves it; auto: idle tabs move by themselves and it says so, busy ones are offered; off: nothing."),
+            g("tabs.jobs_tools", "Job tools for tab agents", Kind::Toggle, "Give the agent in each Claude and Grok tab a godterm server with only create_job, list_jobs, update_job, delete_job and adopt_loop, limited to that tab, plus a hint to prefer them over CronCreate and /loop (GodTerm jobs survive restarts and show in Loops & schedules). Each new job asks you first. Applies to tabs started or resumed from now on."),
             g("usage.failover_pct", "Runs out below (% left)", Kind::Float { min: 0.0, max: 50.0, step: 1.0 }, "An account counts as running out under this much left (its binding limit, 5 hour or weekly), or when a tab says it hit its limit."),
         ],
         Section::Layout => vec![
@@ -190,6 +191,9 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("grid", "Grid (e.g. 3x2)", Kind::Text, "Columns x rows for layout = grid."),
             g("tab_list_columns", "Tab list width (columns)", Kind::Number { min: 0, max: 64, step: 2 }, "Width of the side tab lists, 22 to 64 columns (0: a share of the pane). From 36 each tab also shows its session's own title. A list dragged or resized with Ctrl-a < / > keeps its own width."),
             g("expand_collapsed_on_focus", "Expand collapsed panes on focus", Kind::Toggle, "A collapsed pane (a one row strip, Ctrl-a _, or a sideways column, Ctrl-a \\) expands when it gets the focus from keys or the assistant. Off: only a click on its strip or Ctrl-a _ expands it."),
+            g("tab_model_bar", "Model bar in each pane", Kind::Toggle, "A row under each pane's tab with its harness's top models (Haiku, Sonnet, Opus; Grok's for Grok tabs), the current one highlighted. A click switches the tab with its own /model command, at once when it is idle, else after its turn (Ctrl-a # then a number). Hidden on panes under 12 rows."),
+            g("tab_models.claude", "Model bar: Claude models", Kind::List, "Models for Claude tabs' model bar, comma separated (/model aliases, name=Label for a label), at most 4. Empty: Haiku, Sonnet, Opus. Note: Claude Code's /model also saves the model as the account's default for new sessions."),
+            g("tab_models.grok", "Model bar: Grok models", Kind::List, "Models for Grok tabs' model bar, comma separated (model ids, id=Label for a label), at most 4. Empty: grok-4.7-build-fast, grok-4.7, grok-4.6."),
             g("ungrouped_tabs", "Ungrouped tabs", Kind::Choice(&["bottom", "top"]), "Where tabs outside any group sit in a tab list: under the groups, or above them (pinned tabs are always first)."),
             g("usage_colors", "Usage colors", Kind::Choice(&["gradient", "bands", "mono"]), "By percent left: gradient blends sage, sand and clay; bands uses five steps (75+, 50, 25, 10, under 10); mono is gray, bright under 10%. Under 10% is bold, under 5% gets a ▼."),
         ],
@@ -717,6 +721,17 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
         ),
     );
     r.add(g("voice.wake_follow_up_s", "After the wake word alone (s)", Kind::Number { min: 3, max: 30, step: 1 }, "Say the wake word alone and GodTerm answers \"Yes?\"; what you say within this many seconds is the command."));
+    r.add(g("voice.direct_reply", "Direct mode replies", Kind::Choice(&["auto", "sentences"]), "Talking to one tab directly (Ctrl-a K, or \"let me talk to that tab\"): auto says a short reply as it is and has the assistant sum up a long one; sentences always says its first sentences. Code and tables are never read out."));
+    r.add(g(
+        "voice.direct_sentences",
+        "Direct mode: sentences said",
+        Kind::Number {
+            min: 1,
+            max: 10,
+            step: 1,
+        },
+        "How many sentences of a tab's reply are said in direct mode.",
+    ));
     r.add(g("voice.pause_default_s", "Pause: default (s)", Kind::Number { min: 10, max: 3600, step: 30 }, "\"Hold on\" without a duration stops acting on speech this many seconds; the wake word resumes sooner."));
     r.add(g(
         "voice.pause_max_s",
@@ -732,7 +747,7 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
         "voice.enabled",
         "Start at launch",
         Kind::Toggle,
-        "Start listening when GodTerm opens.",
+        "Superseded: the mic starts off and reopens at launch only when it was on the last time GodTerm quit (a restart or relaunch).",
     ));
     r.add(g(
         "voice.mute_on_start",
@@ -1003,6 +1018,32 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
         "Milliseconds of silence that end an utterance.",
     ));
     r.add(g(
+        "voice.connective_hold_ms",
+        "Unfinished sentence wait (ms)",
+        Kind::Number {
+            min: 0,
+            max: 4000,
+            step: 250,
+        },
+        "Extra silence allowed when what you said so far ends with \"and\", \"so\", \"um\" or a comma, so a pause mid sentence does not send it. 0: off.",
+    ));
+    r.add(g(
+        "voice.brainstorm_timeout_min",
+        "Brainstorm ends after (min)",
+        Kind::Number {
+            min: 1,
+            max: 120,
+            step: 1,
+        },
+        "Brainstorm mode (Ctrl-a B, or say \"brainstorm mode\"): silent minutes before it ends; the draft stays in the box.",
+    ));
+    r.add(g(
+        "voice.brainstorm_suggest",
+        "Suggest brainstorm mode",
+        Kind::Toggle,
+        "When speech sounds unfinished, suggest brainstorm mode (at most every few minutes).",
+    ));
+    r.add(g(
         "voice.max_utterance_s",
         "Longest utterance (s)",
         Kind::Number {
@@ -1042,6 +1083,21 @@ fn assistant_rows(cfg: &Config, all: bool) -> Vec<Setting> {
     r.group("Assistant");
     r.when(on, why, g("assistant.provider", "Provider", Kind::Choice(&["claude", "grok"]), "Which model provider runs the assistant: claude (on one of your Claude accounts) or grok (its own Grok login, never your Grok accounts). The conversation carries over when you switch."));
     r.when(on, why, g("assistant.panel", "Panel", Kind::Choice(&["docked", "overlay", "auto"]), "docked: beside the panes, which make room; overlay: floats over the right side and the panes keep their size; auto: docked while every pane keeps about 80 columns, otherwise overlay."));
+    r.when(on, why, g("assistant.panel_width", "Panel width (columns)", Kind::Number { min: 0, max: 200, step: 8 }, "0: automatic (half the screen, 44 to 76 columns). Otherwise kept between 36 and what leaves the panes 40 columns. The < > carets in its title, Ctrl-a { and }, or a drag on its left edge set it too."));
+    r.when(
+        on,
+        why,
+        g(
+            "assistant.input_rows",
+            "Input grows to (rows)",
+            Kind::Number {
+                min: 3,
+                max: 20,
+                step: 1,
+            },
+            "The input starts 3 rows tall and grows with what you type, up to this many rows.",
+        ),
+    );
     r.when(on, why, g("assistant.speak_typed", "Speak replies to typed messages", Kind::Toggle, "off: a typed message gets a text answer only; a spoken one is answered out loud (unless the speaker is muted)."));
     r.when(
         on,

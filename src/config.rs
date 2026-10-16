@@ -227,6 +227,15 @@ pub struct Config {
     /// pane). A width dragged or set with Ctrl-a < / > wins, per pane.
     #[serde(default)]
     pub tab_list_columns: u16,
+    /// A one row model bar in each pane, between the tab and its usage:
+    /// the harness's top models, a click switches the tab (its own
+    /// /model command). Hidden on panes under 12 rows.
+    #[serde(default = "default_true")]
+    pub tab_model_bar: bool,
+    /// The model bar's models per harness, overriding the built in ones
+    /// ("haiku", or "fable=Fable" for a label); empty: the built in list.
+    #[serde(default)]
+    pub tab_models: TabModelsCfg,
     /// Usage colors: gradient, bands or mono.
     #[serde(default = "default_usage_colors")]
     pub usage_colors: String,
@@ -271,6 +280,9 @@ pub struct Config {
     /// `[usage]`: moving work off an account that runs out.
     #[serde(default)]
     pub usage: UsageCfg,
+    /// `[tabs]`: what GodTerm hands the agents running in its tabs.
+    #[serde(default)]
+    pub tabs: TabsCfg,
     /// `[viz]`: the live map.
     #[serde(default)]
     pub viz: crate::livemap::VizCfg,
@@ -362,6 +374,22 @@ impl Default for UsageCfg {
     }
 }
 
+/// `[tabs]`: what the agents running in tabs get from GodTerm.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct TabsCfg {
+    /// Each Claude and Grok tab gets a `godterm mcp` server limited to its
+    /// own jobs (create_job, list_jobs, update_job, delete_job, adopt_loop)
+    /// and a hint to prefer it over CronCreate and /loop.
+    pub jobs_tools: bool,
+}
+
+impl Default for TabsCfg {
+    fn default() -> Self {
+        TabsCfg { jobs_tools: true }
+    }
+}
+
 /// `[assistant]`: the natural language voice assistant, a headless claude
 /// on one of your accounts that drives godterm through its tools.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -428,6 +456,12 @@ pub struct AssistantCfg {
     /// (floats over the right side; the panes keep their size) or "auto"
     /// (docked while every pane keeps about 80 columns).
     pub panel: String,
+    /// The panel's width in columns: 0 is automatic (half the screen, 44
+    /// to 76); otherwise kept between 36 and what leaves the panes 40.
+    /// The carets in its title, Ctrl-a { and }, or a drag on its edge set it.
+    pub panel_width: u16,
+    /// The most rows the input grows to as you type (it starts at 3).
+    pub input_rows: u16,
     /// Keep Claude Code Remote Control on: it turns on whenever the
     /// assistant starts or restarts, and again when it drops (Claude only).
     pub remote_control: bool,
@@ -469,6 +503,8 @@ impl Default for AssistantCfg {
             update_quiet_s: 4,
             speak_typed: false,
             panel: "docked".into(),
+            panel_width: 0,
+            input_rows: 8,
             remote_control: false,
             resume: true,
             auto_switch: "auto".into(),
@@ -554,6 +590,13 @@ pub struct VoiceCfg {
     /// After a bare wake word ("hey god" alone), the next utterance within
     /// this many seconds is the command (no wake word needed).
     pub wake_follow_up_s: u64,
+    /// Direct mode (the voice goes to one tab): how the tab's replies are
+    /// said. "auto": up to direct_sentences sentences as they are, a longer
+    /// one summarized by the assistant; "sentences": always the first
+    /// direct_sentences sentences, never the assistant.
+    pub direct_reply: String,
+    /// Sentences of a tab's reply said in direct mode (1 to 10).
+    pub direct_sentences: usize,
     /// The longest pause (seconds).
     pub pause_max_s: u32,
     /// Talk back at all (confirmations, read backs, announcements).
@@ -650,6 +693,17 @@ pub struct VoiceCfg {
     pub near_field: bool,
     /// How far under the user's usual level counts as far away (dB).
     pub near_field_db: f32,
+    /// End of speech waits this much longer (ms) when what was said so far
+    /// ends with a filler or a connective ("and", "so", "um", a comma):
+    /// the sentence is not over. 0: off.
+    pub connective_hold_ms: u32,
+    /// Brainstorm mode: after this many silent minutes it ends, the draft
+    /// kept in the box (and a "Send it?").
+    pub brainstorm_timeout_min: u32,
+    /// Suggest brainstorm mode when speech sounds unfinished.
+    pub brainstorm_suggest: bool,
+    /// Brainstorm mode was explained once (its card shows on first use).
+    pub brainstorm_explained: bool,
 }
 
 impl Default for VoiceCfg {
@@ -685,6 +739,8 @@ impl Default for VoiceCfg {
             open_mic_sleep_min: 10,
             pause_default_s: 120,
             wake_follow_up_s: 7,
+            direct_reply: "auto".into(),
+            direct_sentences: 3,
             pause_max_s: 3600,
             noise_floor: "auto".into(),
             preroll_ms: 360,
@@ -731,6 +787,10 @@ impl Default for VoiceCfg {
             speaker_margin: 0.0,
             near_field: true,
             near_field_db: 12.0,
+            connective_hold_ms: 1500,
+            brainstorm_timeout_min: 10,
+            brainstorm_suggest: true,
+            brainstorm_explained: false,
             tts_fallback: vec!["kokoro".into(), "say".into()],
             grok: GrokTtsCfg::default(),
             grok_stt: GrokSttCfg::default(),
@@ -904,6 +964,8 @@ impl Default for Config {
             collapsed_sideways: vec![],
             expand_collapsed_on_focus: false,
             tab_list_columns: 0,
+            tab_model_bar: true,
+            tab_models: TabModelsCfg::default(),
             usage_colors: default_usage_colors(),
             suggest_move_below: default_suggest_move(),
             background_scrollback_lines: default_bg_scrollback(),
@@ -936,6 +998,7 @@ impl Default for Config {
             supervisor: Default::default(),
             assistant: AssistantCfg::default(),
             usage: UsageCfg::default(),
+            tabs: TabsCfg::default(),
         }
     }
 }
@@ -1503,5 +1566,23 @@ name = "home"
         let cfg = Config::default();
         let text = toml::to_string_pretty(&cfg).unwrap();
         assert_eq!(Config::parse(&text).unwrap(), cfg);
+    }
+}
+
+/// `[tab_models]`: the model bar's models per harness.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct TabModelsCfg {
+    #[serde(default)]
+    pub claude: Vec<String>,
+    #[serde(default)]
+    pub grok: Vec<String>,
+}
+
+impl TabModelsCfg {
+    pub fn of(&self, h: crate::harness::Harness) -> &[String] {
+        match h {
+            crate::harness::Harness::Claude => &self.claude,
+            crate::harness::Harness::Grok => &self.grok,
+        }
     }
 }

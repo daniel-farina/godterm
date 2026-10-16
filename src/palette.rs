@@ -23,6 +23,8 @@ pub enum Action {
     StopTalking,
     AccountMenu,
     ToggleTrust,
+    /// The focused pane a step wider or narrower, or all equal.
+    PaneWidth(i8),
     /// Permission mode for the focused pane's account.
     Perm(&'static str),
 }
@@ -41,6 +43,9 @@ pub const ACTIONS: &[(&str, Action)] = &[
         Action::Key('G'),
     ),
     ("zoom pane", Action::Key('z')),
+    ("pane wider", Action::PaneWidth(1)),
+    ("pane narrower", Action::PaneWidth(-1)),
+    ("equal pane widths", Action::PaneWidth(0)),
     ("restart tab (resume)", Action::Key('r')),
     ("stop tab", Action::Key('x')),
     ("log in account", Action::Key('I')),
@@ -66,6 +71,8 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("memory saver on / off", Action::Key('Z')),
     ("assistant: open the conversation panel", Action::Key('.')),
     ("assistant: new conversation", Action::AssistantNew),
+    ("assistant: wider panel", Action::Key('{')),
+    ("assistant: narrower panel", Action::Key('}')),
     (
         "free memory now (pause idle background tabs)",
         Action::FreeNow,

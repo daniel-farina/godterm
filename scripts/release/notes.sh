@@ -27,3 +27,11 @@ cat <<'EOT'
 
 Verify downloads with `shasum -a 256 -c SHA256SUMS --ignore-missing`.
 EOT
+# A release whose notes say it has no Windows build must not read like it has one.
+# Only when no Windows asset sits in DIST (all.sh exports it): a later
+# WINDOWS_FROM_CI build of the same version must not be called missing.
+have_windows=
+for f in "${DIST:-$ROOT/dist/release}"/*windows*; do [[ -f "$f" ]] && have_windows=1; done
+if [[ -z "$have_windows" ]] && grep -q 'no Windows build' <<< "$body"; then
+  printf '\nWindows: this release has no Windows installer or zip. The last Windows build is v0.2.9.\n'
+fi

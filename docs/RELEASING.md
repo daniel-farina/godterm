@@ -93,9 +93,29 @@ shasum -a 256 -c dist/SHA256SUMS
 | macOS universal, arm64, x86_64 | a Mac | `scripts/release/macos.sh` (x86_64 cross compiles; checked under Rosetta with `arch -x86_64`) |
 | Linux x86_64, aarch64 | GitHub runners (`build-linux.yml`, `LINUX_FROM_CI=1`) or local Docker | `scripts/release/linux.sh` in `packaging/linux/Dockerfile` (Ubuntu 22.04). Use the runners when local Docker cannot emulate the other architecture |
 | Windows x86_64 | a Windows machine reachable over ssh (OpenSSH server, Rust MSVC, Inno Setup 6), set as `WIN_HOST`, `WIN_USER` and `WIN_SSH_KEY` in `~/.config/godterm/release.env` | `scripts/release/windows-remote.sh` copies the tree, runs `scripts/release/windows.ps1` (cargo + Inno Setup 6) and pulls the zip and installer back. Remote PowerShell goes as `-EncodedCommand`, which survives ssh quoting |
+| Windows x86_64 (and optionally aarch64 zip) | a GitHub hosted `windows-latest` runner (`build-windows.yml`, `WINDOWS_FROM_CI=1`) | the workflow runs `scripts/release/windows.ps1` (Rust MSVC and Inno Setup 6 are preinstalled on the image), smoke tests the installer (silent install, `godterm --version`, uninstall) and uploads `windows-x64` (zip + setup.exe). Use it when the Windows machine is offline |
+
 
 `scripts/release/all.sh` runs all three at once: Linux on the runners and
 Windows on the Windows machine build while macOS builds and notarizes.
+
+Windows from CI:
+
+```sh
+WINDOWS_FROM_CI=1 REF=v0.2.11 scripts/release/all.sh        # whole release, Windows on the runner
+WINDOWS_FROM_CI=1 ONLY=windows KEEP_DIST=1 REF=v0.2.11 scripts/release/all.sh   # only add Windows
+gh workflow run build-windows.yml --repo daniel-farina/godterm -f ref=v0.2.11   # by hand (add -f arm64=true for the aarch64 zip)
+```
+
+`workflow_dispatch` runs the workflow file on the default branch (`main`), so
+`build-windows.yml` must already be on the public `main` (via
+`scripts/release/publish-public.sh`) before it can be dispatched. It checks
+out `ref` for the source, then takes `scripts/release` and `packaging/windows`
+from `main`, so a tag that predates the workflow still builds. The runner
+build is unsigned unless the optional repository secrets
+`WINDOWS_PFX_BASE64` (base64 of the .pfx) and `WINDOWS_PFX_PASSWORD` exist.
+`smoke_windows.py` (ssh, ConPTY) still needs the Windows machine; the
+workflow's own smoke test only checks install, `--version` and uninstall.
 
 Smoke tests:
 

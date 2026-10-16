@@ -216,6 +216,8 @@ impl App {
                 "read last",
                 "memory saver",
                 "approvals",
+                "back to the assistant",
+                "talk to",
                 "Claude",
             ]
             .iter()
@@ -375,15 +377,6 @@ impl App {
         }
     }
 
-    /// The mode voice starts in at launch: the one it ran in before the
-    /// restart (an open mic reopens), else `voice.mode`.
-    pub fn launch_voice_mode(&self) -> String {
-        match self.rt_voice.as_deref() {
-            Some(m @ ("open" | "wake" | "push")) => m.to_string(),
-            _ => self.cfg.voice.mode.clone(),
-        }
-    }
-
     pub fn start_voice(&mut self, always_on: bool) {
         if self.voice.muted {
             return;
@@ -421,6 +414,9 @@ impl App {
         }
         let v = Voice::start(&vc, source, always_on, self.tx.clone());
         v.set_vocabulary(self.vocabulary());
+        if self.brainstorm_on() {
+            v.set_brainstorm(true);
+        }
         self.voice.engine = Some(v);
         self.voice.started_at = Some(Instant::now());
         self.voice.always_on = always_on;
@@ -717,7 +713,9 @@ impl App {
                 self.voice.status = s;
             }
             // No barge-in while paused.
-            VoiceEvent::BargeIn { .. } if self.paused() || self.voice.muted => {}
+            // Nor while brainstorming: nothing is being replied to.
+            VoiceEvent::BargeIn { .. }
+                if self.paused() || self.voice.muted || self.brainstorm_on() => {}
             VoiceEvent::BargeIn { speech_ms, stop_ms } => {
                 self.quiet_user_spoke();
                 self.assistant_barge_in(speech_ms, stop_ms)
@@ -859,6 +857,12 @@ impl App {
             crate::log::info("paused: wake word with a command, resuming and running it");
             return self.run_heard(rest);
         }
+        // Brainstorm mode: everything is drafted (no wake word needed);
+        // only its own phrases do anything (app_brainstorm).
+        if self.brainstorm_on() {
+            let woke = self.strip_wake(&norm).map(str::to_string);
+            return self.brainstorm_heard(text, &norm, woke);
+        }
         // Without a wake word (open mic, or the follow up window) short
         // sounds, whisper's stock hallucinations and audio whisper doubts
         // are not requests.
@@ -866,6 +870,27 @@ impl App {
         let follow_up = self.voice.wake_until.is_some_and(|t| Instant::now() < t);
         let stats = self.voice.cur_stats;
         let woke = self.strip_wake(&norm).map(str::to_string);
+        // "brainstorm mode", an undo of a discarded brainstorm, "wait,
+        // I'm not done": caught before any filter (one word "braindump"
+        // is not too short), when the utterance is for us.
+        let addressed = ptt
+            || woke.is_some()
+            || self.voice.open_mic
+            || follow_up
+            || !self.voice.always_on
+            || self.direct.on.is_some();
+        if addressed {
+            let command = woke.clone().unwrap_or_else(|| norm.clone());
+            if !command.trim().is_empty() && self.brainstorm_intercept(text, &command) {
+                crate::log::info(&format!("voice: brainstorm phrase: {text}"));
+                return;
+            }
+        }
+        // Direct mode: speech goes to one tab (app_direct); the wake word
+        // and a few phrases bring the assistant back.
+        if self.direct.on.is_some() {
+            return self.direct_heard(text, &norm, woke, ptt, stats, &table);
+        }
         // The wake word alone always gets an answer, in every mode (no
         // length or noise filter applies to it).
         if woke.as_deref().is_some_and(|c| c.trim().is_empty()) {
@@ -942,7 +967,7 @@ impl App {
 
     /// Route an utterance: an instant one word command runs at once;
     /// everything else goes to the assistant, which interprets it.
-    fn run_heard(&mut self, command: String) {
+    pub(crate) fn run_heard(&mut self, command: String) {
         let raw = self.voice.heard.clone().unwrap_or_default();
         let inst = if self.cfg.voice.instant_commands {
             crate::instant::match_instant(&command, &crate::instant::table(&self.cfg.voice.instant))
@@ -970,6 +995,8 @@ impl App {
         if let Some(v) = &self.voice.engine {
             v.stop_speaking();
         }
+        // Sounds unfinished: the rare tip to use brainstorm mode.
+        self.brainstorm_suggest_check(&raw);
         self.ask_assistant_from(&command, Some(&raw));
     }
 
@@ -1262,6 +1289,10 @@ impl App {
         if !on {
             return;
         }
+        // Brainstorming: no announcements over the user.
+        if kind == Kind::Announce && self.brainstorm_on() {
+            return;
+        }
         // Heard by the user: recorded for the assistant (told.rs).
         if self.speaker_on() {
             let what = match kind {
@@ -1323,6 +1354,7 @@ impl App {
         }
         self.voice.was_speaking = speaking;
         self.pause_tick();
+        self.brainstorm_tick();
         self.open_mic_tick();
         self.refresh_vocabulary();
         let any_speaking = speaking || self.voice.preview.as_ref().is_some_and(|p| p.speaking());
@@ -1421,7 +1453,7 @@ mod voice_resume_tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = app("open");
         // Nothing saved yet: voice.mode decides.
-        assert_eq!(app.launch_voice_mode(), "push");
+        assert_eq!(app.startup_voice(true).unwrap(), "push");
         // Running with an open mic at quit (shutdown records it before it
         // stops voice): saved, and the next start reopens it.
         app.voice_at_quit = Some("open".into());
@@ -1435,7 +1467,7 @@ mod voice_resume_tests {
         let mut next = App::new(cfg, tx);
         // As main does: the saved state is restored before voice starts.
         next.restore(crate::state::AppState::load().unwrap());
-        assert_eq!(next.launch_voice_mode(), "open");
+        assert_eq!(next.startup_voice(true).unwrap(), "open");
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -1444,11 +1476,11 @@ mod voice_resume_tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = app("modes");
         app.rt_voice = Some("wake".into());
-        assert_eq!(app.launch_voice_mode(), "wake");
+        assert_eq!(app.startup_voice(true).unwrap(), "wake");
         app.rt_voice = Some("off".into());
-        assert_eq!(app.launch_voice_mode(), "push");
+        assert_eq!(app.startup_voice(true).unwrap(), "push");
         app.rt_voice = Some("nonsense".into());
-        assert_eq!(app.launch_voice_mode(), "push");
+        assert_eq!(app.startup_voice(true).unwrap(), "push");
         // Not running: saved as off; a change marks the state for saving.
         assert_eq!(app.voice_mode_now(), "off");
         app.state_dirty = false;

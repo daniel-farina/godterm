@@ -21,6 +21,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.want_cursor.set(None);
     app.hits.borrow_mut().clear();
     *app.assistant_text.borrow_mut() = None;
+    app.assistant.chat_geo.set(None);
+    app.sched_ui.rect.set(Rect::default());
     app.modal_from.set(None);
     app.inline_rename.set(false);
     let area = f.area();
@@ -59,7 +61,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // resize); overlay, it floats over them and they keep their size.
     let full_main = main;
     let panel_w = crate::app_talkback::panel_width(app, main);
-    let docked = panel_w > 0 && app.panel_docked(main, panel_w);
+    app.assistant.main_geo.set((main.x, main.width));
+    // Maximized, it floats over the grid (the panes keep their size).
+    let docked = panel_w > 0
+        && app.assistant.win != crate::app_panelwin::PanelWin::Max
+        && app.panel_docked(main, panel_w);
     app.panel_overlay.set(panel_w > 0 && !docked);
     if docked {
         main = Rect::new(main.x, main.y, main.width - panel_w, main.height);
@@ -84,6 +90,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let size_from = if r.width > 0 && !folded { *r } else { sized[i] };
         let inner = Block::default().borders(Borders::ALL).inner(size_from);
         let (_, term, _) = pane_layout(inner, app.tab_pos(i), app.side(i));
+        let (term, _) = crate::ui_modelbar::split(app, i, inner.height, term);
+        let (term, _) = crate::ui_loopsdrawer::split(app, i, term);
         if term.width > 0 && term.height > 0 {
             app.panes[i].resize(term.height, term.width);
         }
@@ -243,6 +251,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Modal::AddAccount(form) => crate::add_account::draw(f.buffer_mut(), area, app, &form),
         Modal::ColorPick(t, sel) => crate::color_pick::draw(f.buffer_mut(), area, app, t, sel),
         Modal::ConfirmClose => draw_confirm_close(f, area, app),
+        Modal::ConfirmArchive(uid) => draw_confirm_archive(f, area, app, uid),
+        Modal::ArchMenu(id, sel) => draw_arch_menu(f, area, app, &id, sel),
         Modal::NewTab(pk) => draw_picker(f, area, app, &pk),
         Modal::Palette(pl) => draw_palette(f, area, app, &pl),
         Modal::Broadcast(buf) => draw_broadcast(f, area, app, &buf),
@@ -341,6 +351,26 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 &rows,
             );
         }
+        Modal::MicMenu(i) => {
+            let mut rows: Vec<(String, crate::hits::UiAction)> = vec![(
+                "0 · the assistant (bring the mic back)".to_string(),
+                crate::hits::UiAction::MicToAssistant,
+            )];
+            for (k, (uid, label)) in app.mic_targets().into_iter().enumerate().take(9) {
+                rows.push((
+                    format!("{} · {label}", k + 1),
+                    crate::hits::UiAction::MicMoveTo(uid),
+                ));
+            }
+            draw_dropdown(
+                f,
+                area,
+                app,
+                &crate::hits::UiAction::MicMenu(i),
+                " move the mic to ",
+                &rows,
+            );
+        }
         Modal::MenuOverflow => {
             let rows: Vec<(String, crate::hits::UiAction)> = app
                 .menu_overflow
@@ -392,6 +422,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 crate::ui_chrome::draw_message(f, area, app, &title, &body, &b, theme::SLATE);
             }
         }
+        Modal::SchedCard(key) => crate::ui_schedcard::draw(f, area, app, &key),
         Modal::ConfirmStopLoops => crate::ui_chrome::draw_message(
             f,
             area,
@@ -415,6 +446,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             ],
             theme::CLAY,
         ),
+        Modal::ConfirmTabJob(tok) => {
+            let (tab, question) = app
+                .tab_ask_text(&tok)
+                .unwrap_or_else(|| (String::new(), "This request is gone.".into()));
+            crate::ui_chrome::draw_message(
+                f,
+                area,
+                app,
+                "job from a tab",
+                &[question, format!("Asked by the agent in {tab}.")],
+                &[
+                    (
+                        "Allow",
+                        crate::hits::UiAction::ModalOk,
+                        "Make the change (y)",
+                    ),
+                    (
+                        "Decline",
+                        crate::hits::UiAction::ModalCancel,
+                        "Leave the jobs as they are (Esc)",
+                    ),
+                ],
+                theme::CLAY,
+            )
+        }
         Modal::MoveTab(p) => draw_move_picker(f, area, app, &p),
         Modal::MoveBusy(_) => crate::ui_chrome::draw_message(
             f,
@@ -1000,7 +1056,15 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
     let focused = i == app.focus && !app.assistant_has_focus();
     let color = app.account_color(slot.account);
     let state = state_label(pane);
-    let border = if focused { color } else { FAINT };
+    // Direct mode with this pane's tab: a calm sage border, thick.
+    let direct = app.direct_with(pane.uid);
+    let border = if direct {
+        theme::SAGE
+    } else if focused {
+        color
+    } else {
+        FAINT
+    };
     app.hits.borrow_mut().add(
         area,
         crate::hits::UiAction::FocusPane(i),
@@ -1008,7 +1072,9 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
     );
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(if focused {
+        .border_type(if direct {
+            BorderType::Thick
+        } else if focused {
             BorderType::Rounded
         } else {
             BorderType::Plain
@@ -1017,6 +1083,8 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
     let full = block.inner(area);
     f.render_widget(block, area);
     let (bar, inner, foot) = pane_layout(full, app.tab_pos(i), app.side(i));
+    let (inner, model_row) = crate::ui_modelbar::split(app, i, full.height, inner);
+    let (inner, drawer) = crate::ui_loopsdrawer::split(app, i, inner);
     crate::ui_chrome::pane_header(
         f.buffer_mut(),
         app,
@@ -1040,6 +1108,8 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
         );
     }
     crate::ui_chrome::pane_regions(f, app, i, area, inner, foot);
+    crate::ui_modelbar::draw(f.buffer_mut(), app, i, model_row);
+    crate::ui_loopsdrawer::draw(f.buffer_mut(), app, i, drawer);
 
     match &pane.state {
         PaneState::Idle | PaneState::Failed(_) => {
@@ -2058,6 +2128,15 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
             bg,
             action: UiAction::VoiceMenu,
             hint: "Voice mode: click to change",
+        });
+    }
+    // Direct mode: the voice goes to one tab; a click comes back.
+    if let Some(text) = crate::app_direct::indicator(app) {
+        v.push(Chip {
+            text,
+            bg: theme::SLATE,
+            action: UiAction::Key('K'),
+            hint: "Talking to this tab directly by voice: click (or Ctrl-a K, or say \"back to the assistant\") to return to the assistant",
         });
     }
     // An account running out: the move on offer (one yes moves it).
@@ -3260,6 +3339,114 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &App, pk: &Picker) {
     );
 }
 
+fn draw_confirm_archive(f: &mut Frame, area: Rect, app: &App, uid: u64) {
+    let lines = app.archive_lines(uid);
+    let r = centered(area, 72.min(area.width), lines.len() as u16 + 2);
+    f.render_widget(Clear, r);
+    let text: Vec<Line> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            Line::styled(
+                l.clone(),
+                Style::default().fg(if i == 0 { FG } else { DIM }),
+            )
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(theme::SAND)),
+            )
+            .style(Style::default().bg(BAR_BG)),
+        r,
+    );
+    crate::ui_chrome::modal_chrome(
+        f.buffer_mut(),
+        app,
+        r,
+        &[
+            (
+                "Archive",
+                crate::hits::UiAction::ModalOk,
+                "Stop it and archive it (y)",
+            ),
+            (
+                "Cancel",
+                crate::hits::UiAction::ModalCancel,
+                "Keep it running (Esc)",
+            ),
+        ],
+    );
+}
+
+fn draw_arch_menu(f: &mut Frame, area: Rect, app: &App, id: &str, sel: usize) {
+    use crate::hits::UiAction;
+    let Some(e) = app.archive.find(id) else {
+        return;
+    };
+    let rows = App::archive_menu_rows();
+    let w = 56u16.min(area.width);
+    let h = rows.len() as u16 + 2;
+    if w < 16 || h > area.height {
+        return;
+    }
+    let r = centered(area, w, h);
+    f.render_widget(Clear, r);
+    f.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme::SLATE))
+            .title(Span::styled(
+                format!(" archived {} ", snippet(&e.label, 30)),
+                Style::default().fg(FG),
+            ))
+            .style(Style::default().bg(BAR_BG)),
+        r,
+    );
+    let buf = f.buffer_mut();
+    let limit = r.x + r.width - 1;
+    let mut hits = app.hits.borrow_mut();
+    for (i, (label, key, hint)) in rows.iter().enumerate() {
+        let y = r.y + 1 + i as u16;
+        let bg = if i == sel { SEL_BG } else { BAR_BG };
+        for x in r.x + 1..limit {
+            if let Some(c) = buf.cell_mut((x, y)) {
+                c.set_char(' ');
+                c.set_style(Style::default().bg(bg));
+            }
+        }
+        crate::hits::text(
+            buf,
+            r.x + 2,
+            y,
+            limit,
+            &format!("{}{label}", if i == sel { "› " } else { "  " }),
+            Style::default().fg(FG).bg(bg),
+        );
+        crate::hits::text(
+            buf,
+            limit.saturating_sub(2),
+            y,
+            limit,
+            &key.to_string(),
+            Style::default().fg(DIM).bg(bg),
+        );
+        hits.add(
+            Rect::new(r.x + 1, y, r.width - 2, 1),
+            UiAction::ArchMenuItem(i),
+            format!("{hint} ({key})"),
+        );
+    }
+    drop(hits);
+    crate::ui_chrome::modal_chrome(buf, app, r, &[]);
+}
+
 fn draw_confirm_close(f: &mut Frame, area: Rect, app: &App) {
     let slot = &app.panes[app.focus];
     let r = centered(area, 56, 5);
@@ -4350,9 +4537,21 @@ fn draw_loops(f: &mut Frame, app: &App, area: Rect) {
                 x,
                 r.y,
                 limit,
+                "Details",
+                UiAction::LoopCard,
+                "What this loop is, who runs it, and its actions: Manage with GodTerm, Run now, Stop (Enter)",
+                theme::SAGE,
+            ) + 1;
+            x = crate::hits::button(
+                buf,
+                &mut hits,
+                app.mouse_pos,
+                x,
+                r.y,
+                limit,
                 "Jump",
                 UiAction::LoopJump,
-                "Go to the tab running it (Enter)",
+                "Go to the tab running it (g)",
                 theme::SLATE,
             ) + 1;
             x = crate::hits::button(
@@ -4517,7 +4716,7 @@ fn draw_loops(f: &mut Frame, app: &App, area: Rect) {
                 " Session loops end with their claude and expire 7 days after they were made. ~ marks a dynamic /loop (inferred). Stop types a short request into the tab when it is idle.",
                 Style::default().fg(FAINT),
             ),
-            Line::styled(" ↑↓ select  Enter jump  s stop  S stop all  r rescan  Esc back", Style::default().fg(FAINT)),
+            Line::styled(" ↑↓ select  Enter details  g jump  s stop  S stop all  r rescan  Esc back", Style::default().fg(FAINT)),
         ])
         .wrap(Wrap { trim: true }),
         chunks[2],
@@ -4587,6 +4786,17 @@ pub(crate) fn draw_history(
         let mut lines: Vec<Line> = vec![];
         for e in crate::assistant_history::read(&path) {
             let text = e["text"].as_str().unwrap_or("").to_string();
+            // A reply: its markdown laid out as in the conversation.
+            if e["kind"] == "reply" {
+                let pad = "      ";
+                let w = (area.width as usize).saturating_sub(pad.len());
+                for l in crate::md::view(&text, w).iter() {
+                    let mut spans = vec![Span::raw(pad)];
+                    spans.extend(l.iter().map(|(s, st)| Span::styled(s.clone(), *st)));
+                    lines.push(Line::from(spans));
+                }
+                continue;
+            }
             let (prefix, st, body) = match e["kind"].as_str() {
                 Some("user") => {
                     let via = if e["via"] == "voice" {
@@ -4596,7 +4806,6 @@ pub(crate) fn draw_history(
                     };
                     (format!("{via} "), Style::default().fg(theme::SAND), text)
                 }
-                Some("reply") => ("      ".to_string(), Style::default().fg(FG), text),
                 Some("tool") => (
                     "   ".to_string(),
                     Style::default().fg(FAINT),
@@ -5245,6 +5454,10 @@ pub const HELP: &[(&str, &str)] = &[
     ("Ctrl-a t", "new tab: pick a directory or resume a session"),
     ("Ctrl-a w", "close the current tab"),
     (
+        "Ctrl-a f",
+        "archive the current tab: its session stops (frees memory) and it moves to Archived in the tab list; a double click there resumes it",
+    ),
+    (
         "Ctrl-a C",
         "close this pane's account in the grid (stays logged in; View > Closed accounts reopens)",
     ),
@@ -5268,6 +5481,14 @@ pub const HELP: &[(&str, &str)] = &[
     (
         "Ctrl-a < >",
         "narrower / wider tab list (details from 36 columns)",
+    ),
+    (
+        "Ctrl-a { }",
+        "wider / narrower assistant panel (or drag its left edge)",
+    ),
+    (
+        "Ctrl-a : pane wider",
+        "or pane narrower / equal pane widths (also the < > on a pane's header)",
     ),
     ("Ctrl-a S", "tab list position: left, right, top"),
     ("Ctrl-a o", "overview of every account and tab"),
@@ -5320,6 +5541,14 @@ pub const HELP: &[(&str, &str)] = &[
         "Ctrl-a O",
         "mute or unmute the speaker (it stops talking, still hears)",
     ),
+    (
+        "Ctrl-a K",
+        "voice: talk directly to this tab (again: back to the assistant); the ● mic badge on its header moves the mic",
+    ),
+    (
+        "Ctrl-a B",
+        "brainstorm mode: talk as long as you like, nothing is sent until \"send it\" (again: leave it, the draft kept)",
+    ),
     ("Ctrl-a + / -", "talk back volume up or down"),
     (
         "Ctrl-a D",
@@ -5352,6 +5581,14 @@ pub const HELP: &[(&str, &str)] = &[
     (
         "Ctrl-a .",
         "the assistant: talk or type to it in plain language",
+    ),
+    (
+        "Ctrl-a ;",
+        "the loops drawer: this tab's loops (scheduled prompts) in its pane",
+    ),
+    (
+        "Ctrl-a #",
+        "this tab's model: then 1 to 4 picks one (the model bar), # cycles",
     ),
     ("Ctrl-a M", "release / capture the mouse (text selection)"),
     ("Ctrl-a T", "the tour"),
@@ -6011,13 +6248,14 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner())
             .screen()
             .size();
-        // The PTY is the terminal area: minus the footer rows and the tab list.
+        // The PTY is the terminal area: minus the footer rows, the model
+        // bar and the tab list.
         let t = app.term_rects[0];
         assert_eq!((prow, pcol), (t.height, t.width));
         assert_eq!(
             (t.height, t.width),
             (
-                r.height - 2 - 3,
+                r.height - 2 - 3 - 1,
                 r.width - 2 - sidebar_width(r.width - 2, app.side(0))
             )
         );
@@ -9827,6 +10065,120 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The reply from the bug report ("in a table"): spoken as its summary
+    /// line with no markup, kept with its line breaks, drawn in the panel
+    /// as an aligned grid below "more ›" in normal text, and drawn by the
+    /// same renderer in History.
+    #[test]
+    fn markdown_reply_in_panel_and_history() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::app_assistant::Who;
+        use crate::assistant::BrainEvent as B;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let usage = crate::md::tests::USAGE;
+        let (mut app, home) = test_app("mdreply");
+        app.cfg.assistant.spoken_sentences = 2;
+        app.assistant.turn_spoken = true;
+        app.assistant.busy = true;
+        app.on_brain(B::Text(usage.into()));
+        app.on_brain(B::Done {
+            text: usage.into(),
+            cost: None,
+            error: false,
+        });
+        assert_eq!(
+            app.assistant.spoken,
+            vec!["Here is usage per account. Weekly is the binding limit on each."]
+        );
+        let rest = app.assistant.unsaid.as_ref().unwrap().1.clone();
+        assert_eq!(rest, "A table of 6 rows is on screen.");
+        for s in app.assistant.spoken.iter().chain([&rest]) {
+            assert!(!s.contains('|') && !s.contains('*'), "{s}");
+        }
+        let reply = app
+            .assistant
+            .log
+            .iter()
+            .rev()
+            .find(|e| e.who == Who::Reply)
+            .unwrap()
+            .text
+            .clone();
+        assert_eq!(reply, usage.trim(), "line breaks kept");
+        // The panel, docked at two widths: a grid, aligned.
+        app.assistant.show = true;
+        app.assistant.focused = true;
+        for width in [120u16, 160] {
+            let mut term = Terminal::new(TestBackend::new(width, 40)).unwrap();
+            term.draw(|f| draw(f, &mut app)).unwrap();
+            let t = buffer_text(term.backend().buffer());
+            let lines: Vec<&str> = t.lines().collect();
+            let at = |l: &str, p: &str| l.find(p).map(|i| l[..i].chars().count());
+            let h = lines
+                .iter()
+                .position(|l| l.contains("Account ") && l.contains("5 hour"))
+                .unwrap_or_else(|| panic!("{width}: no table header\n{t}"));
+            println!("--- panel at {width} ---");
+            for l in &lines[h.saturating_sub(4)..h + 8] {
+                let i = at(l, "│").unwrap_or(0);
+                println!("{}", l.chars().skip(i).collect::<String>());
+            }
+            assert!(lines[h + 1].contains("──────────"), "{width}\n{t}");
+            assert!(
+                lines[h - 1].contains("more ›") && !lines[h - 1].contains("Account"),
+                "{width}: more › on its own line\n{t}"
+            );
+            let resets = at(lines[h + 2], "Sat 12:00").unwrap();
+            assert_eq!(at(lines[h + 3], "Tue 7:59 AM"), Some(resets), "{t}");
+            assert_eq!(
+                at(lines[h + 7], "not reported  "),
+                at(lines[h + 6], "not reported")
+            );
+            assert!(!t.contains("||") && !t.contains("|---"), "{t}");
+            // Normal text, not dim: a table cell is drawn in FG.
+            let buf = term.backend().buffer();
+            let y = (h + 3) as u16;
+            let x = (0..width)
+                .find(|&x| buf[(x, y)].symbol() == "T" && buf[(x + 1, y)].symbol() == "u")
+                .unwrap();
+            assert_eq!(buf[(x, y)].fg, FG);
+        }
+        // History: the same renderer.
+        let id = "mdreply-test";
+        let dir = crate::assistant_history::dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let rec = |v: serde_json::Value| format!("{v}\n");
+        std::fs::write(
+            dir.join(format!("{id}.jsonl")),
+            rec(serde_json::json!({"kind": "user", "text": "in a table", "via": "typed"}))
+                + &rec(serde_json::json!({"kind": "reply", "text": usage})),
+        )
+        .unwrap();
+        let h = crate::assistant_history::HistoryUi {
+            items: vec![],
+            query: String::new(),
+            sel: 0,
+            open: Some(id.into()),
+            confirm_delete: false,
+        };
+        let mut term = Terminal::new(TestBackend::new(70, 30)).unwrap();
+        term.draw(|f| draw_history(f, &app, &h, Rect::new(0, 0, 70, 30)))
+            .unwrap();
+        let t = buffer_text(term.backend().buffer());
+        let want = crate::md::view(usage, 64);
+        assert!(want.len() > 8);
+        for l in want.iter() {
+            let s: String = l.iter().map(|(s, _)| s.as_str()).collect();
+            assert!(
+                t.lines()
+                    .any(|x| x.trim_end() == format!("      {s}").trim_end()),
+                "History misses {s:?}\n{t}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     /// Narration is never spoken, even inside the answer's own block; a
     /// long answer is cut to two spoken sentences and "more" says the rest.
     #[test]
@@ -11087,7 +11439,12 @@ mod tests {
         let w = (160u16 / 2).clamp(44, 76);
         let px = 160 - w;
         let (cx, cy) = app.want_cursor.get().expect("the input's caret");
-        assert!(cx > px && cy == 44 - 2 - 1, "caret at ({cx},{cy})");
+        // In the composer's field (its first row: the caret is at 0).
+        let g = app.assistant.input_geo.get().expect("the input is drawn");
+        assert!(
+            cx > px && cy == g.y && g.y + g.h == 44 - 2 - 1,
+            "caret at ({cx},{cy})"
+        );
         let b = term.backend().buffer().clone();
         assert_eq!(b[(px, 2)].fg, theme::SLATE, "accent border while focused");
         // Esc: the keys go back to the pane, the panel stays and says how.
@@ -11112,7 +11469,13 @@ mod tests {
             for x in px + 1..159 {
                 let bg = b[(x, row)].bg;
                 assert!(
-                    bg == theme::BAR_BG || bg == Color::Reset || row >= 44 - 8,
+                    // (The quick bar and the composer at its bottom have
+                    // their own field color.)
+                    bg == theme::BAR_BG
+                        || bg == Color::Reset
+                        || row >= 44 - 10
+                        // (The Loops & schedules title is a band.)
+                        || (bg == theme::SEL_BG && app.sched_ui.rect.get().y == row),
                     "row {row} col {x}: {bg:?} crosses the panel"
                 );
             }
@@ -11268,8 +11631,8 @@ mod tests {
             .find(|e| e.who == Who::Reply)
             .unwrap();
         assert_eq!(
-            reply.text, "Tab two is a fresh tab. It is ready.",
-            "blocks joined with a space"
+            reply.text, "Tab two is a fresh tab.\nIt is ready.",
+            "blocks joined, each on its own line"
         );
         // No tools: the text is the answer.
         app.assistant.busy = true;
@@ -12567,8 +12930,14 @@ mod tests {
             .join(crate::state::encode_project_dir(&cwd));
         std::fs::create_dir_all(&pdir).unwrap();
         let sid = "abcd0001-0000-4000-8000-00000000beef";
+        // A loop made an hour ago: well inside the 7 day expiry of session crons.
+        let made = chrono::Utc::now() - chrono::Duration::hours(1);
+        let t0 = made.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let t1 = (made + chrono::Duration::seconds(1))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
         std::fs::write(pdir.join(format!("{sid}.jsonl")), format!(
-            "{{\"type\":\"user\",\"cwd\":{},\"message\":{{\"role\":\"user\",\"content\":\"/loop 5m say hello\"}}}}\n{{\"type\":\"assistant\",\"timestamp\":\"2026-10-06T10:00:00Z\",\"message\":{{\"id\":\"m1\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"CronCreate\",\"input\":{{\"cron\":\"*/5 * * * *\",\"prompt\":\"say hello\",\"recurring\":true}}}}]}}}}\n{{\"type\":\"user\",\"timestamp\":\"2026-10-06T10:00:01Z\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"tu1\",\"content\":\"Scheduled recurring job e0e38390 (Every 5 minutes). Session-only.\"}}]}}}}\n",
+            "{{\"type\":\"user\",\"cwd\":{},\"message\":{{\"role\":\"user\",\"content\":\"/loop 5m say hello\"}}}}\n{{\"type\":\"assistant\",\"timestamp\":\"{t0}\",\"message\":{{\"id\":\"m1\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"CronCreate\",\"input\":{{\"cron\":\"*/5 * * * *\",\"prompt\":\"say hello\",\"recurring\":true}}}}]}}}}\n{{\"type\":\"user\",\"timestamp\":\"{t1}\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"tu1\",\"content\":\"Scheduled recurring job e0e38390 (Every 5 minutes). Session-only.\"}}]}}}}\n",
             serde_json::json!(cwd.to_string_lossy())
         )).unwrap();
         let exe = crate::test_stub::claude(&home.join("bin"), &[("sleep_s", "60".into())]);
@@ -12687,6 +13056,7 @@ mod tests {
             wake_at: None,
             deleted: false,
             confidence: crate::loops::Confidence::High,
+            every: None,
         };
         assert!(crate::takeover::recreate_prompt(&[l]).contains("CronCreate"));
     }

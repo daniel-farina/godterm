@@ -391,6 +391,72 @@ pub fn window_controls(
     start
 }
 
+/// Width of the width carets (" < > ").
+pub const CARETS_W: u16 = 5;
+
+/// The width carets left of the window controls, ending before `right`:
+/// "<" narrower, ">" wider, trading width with the neighbour. Only where
+/// the pane has one and the header has room. Returns the new right edge.
+fn width_carets(
+    buf: &mut Buffer,
+    app: &App,
+    i: usize,
+    y: u16,
+    width: u16,
+    right: u16,
+    label_end: u16,
+) -> u16 {
+    if width < 24 || app.pane_col(i).is_none() || right < CARETS_W + 1 {
+        return right;
+    }
+    // They give way to the account label and folder, unless the widths
+    // were changed (then they stay, to change them back).
+    let resized = app
+        .last_arranged
+        .as_ref()
+        .is_some_and(|a| app.ratios.contains_key(&a.shape));
+    if !resized && right - CARETS_W - 1 < label_end {
+        return right;
+    }
+    let cx = right - CARETS_W;
+    let hint = |grow: bool| -> String {
+        let name = if grow { "Wider" } else { "Narrower" };
+        let now = app.last_arranged.as_ref().and_then(|a| {
+            let pos = app.visible_panes().iter().position(|&p| p == i)?;
+            a.placed.iter().find(|p| p.index == pos).map(|p| p.rect.width)
+        });
+        match (app.pane_width_after(i, grow), now) {
+            (Some(w), Some(n)) if w != n => format!(
+                "{name}: {w} columns, the pane beside it gives the space (Shift-click or double click: equal widths)"
+            ),
+            _ => format!(
+                "Already as {} as it goes (Shift-click or double click: equal widths)",
+                if grow { "wide" } else { "narrow" }
+            ),
+        }
+    };
+    // " < > ": "<" takes the first three cells, ">" the last two.
+    for (r, s, grow) in [
+        (Rect::new(cx, y, 3, 1), " < ", false),
+        (Rect::new(cx + 3, y, 2, 1), "> ", true),
+    ] {
+        let hovered = app.mouse_pos.is_some_and(|(c, row)| contains(r, c, row));
+        let st = if hovered {
+            Style::default()
+                .fg(FG)
+                .bg(SEL_BG)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::SLATE)
+        };
+        text(buf, r.x, r.y, r.x + r.width, s, st);
+        app.hits
+            .borrow_mut()
+            .add(r, UiAction::PaneWidth(i, grow), &hint(grow));
+    }
+    cx.saturating_sub(1)
+}
+
 /// Header row of a pane: number, account (opens the account menu), every
 /// tab with a close mark, a new tab mark, and zoom, restart and state on
 /// the right.
@@ -464,6 +530,42 @@ pub fn pane_header(
             Some(format!("→ {} ({l:.0}%)", crate::paths::middle(&name, 10))),
         ));
     }
+    // The mic: this pane holds the voice in direct mode.
+    if let Some(d) = app
+        .direct
+        .on
+        .as_ref()
+        .filter(|d| slot.tabs.iter().any(|t| t.uid == d.uid))
+    {
+        let live = crate::app_direct::mic_state(app);
+        let here = slot.cur().uid == d.uid;
+        let mut label = String::from("● mic");
+        if !here {
+            label.push_str(&format!(": {}", crate::paths::middle(&d.name, 14)));
+        }
+        // Never dropped (the mic must be findable); roomy panes add the
+        // live state and the tab's name.
+        let roomy = area.width >= 70;
+        if !roomy {
+            label = "● mic".into();
+        }
+        let full = match live.filter(|_| roomy) {
+            Some(l) => format!("{label} · {l}"),
+            None => label,
+        };
+        items.push((
+            full,
+            Some(UiAction::MicMenu(i)),
+            "The mic is here (direct mode): click to move it to another tab or back to the assistant",
+            if live == Some("muted") {
+                theme::MUTED_RED
+            } else {
+                theme::SAGE
+            },
+            9,
+            None,
+        ));
+    }
     items.push((
         "restart".into(),
         Some(UiAction::Restart(i)),
@@ -528,6 +630,8 @@ pub fn pane_header(
         .map(|e| e.chars().count().min(18) as u16 + 3)
         .unwrap_or(0);
     let left_need = 6 + label_w + folder_w + email_w + 2 + if show_tabs { 12 } else { 10 };
+    // The width carets come before the right items but after the label.
+    let right = width_carets(buf, app, i, y, area.width, right, left + left_need);
     let avail = (right - left).saturating_sub(left_need);
     let iw = |it: &Item| it.0.chars().count() as u16 + if it.1.is_some() { 3 } else { 0 };
     loop {
@@ -559,7 +663,9 @@ pub fn pane_header(
     for (t, a, hint, c) in &right_items {
         x = match a {
             // The permission badge and × are colored text, not filled buttons.
-            Some(UiAction::AccountMenu(_)) | Some(UiAction::CloseWindow(_)) => {
+            Some(UiAction::AccountMenu(_))
+            | Some(UiAction::MicMenu(_))
+            | Some(UiAction::CloseWindow(_)) => {
                 let end = link(
                     buf,
                     app,
@@ -1102,6 +1208,7 @@ pub fn help_action(keys: &str) -> Option<UiAction> {
     let c = match k {
         _ if k.starts_with("Ctrl-a t") => 't',
         _ if k.starts_with("Ctrl-a w") => 'w',
+        _ if k.starts_with("Ctrl-a f") => 'f',
         _ if k.starts_with("Ctrl-a n") => 'n',
         _ if k.starts_with("Ctrl-a o") => 'o',
         _ if k.starts_with("Ctrl-a z") => 'z',
@@ -1122,6 +1229,9 @@ pub fn help_action(keys: &str) -> Option<UiAction> {
         _ if k.starts_with("Ctrl-a c") => 'c',
         _ if k.starts_with("Ctrl-a v") => 'v',
         _ if k.starts_with("Ctrl-a M") => 'M',
+        _ if k.starts_with("Ctrl-a #") => '#',
+        _ if k.starts_with("Ctrl-a ;") => ';',
+        _ if k.starts_with("Ctrl-a B") => 'B',
         _ if k.starts_with("Ctrl-a m") => 'm',
         _ if k.starts_with("Ctrl-a q") => 'q',
         _ if k.starts_with("Ctrl-a space") => return Some(UiAction::Mic),
@@ -1368,6 +1478,108 @@ fn group_header(
     );
 }
 
+/// The Archived group's header: "▸ Archived (3)", folded by default; a
+/// click folds or unfolds it.
+fn archive_header(
+    buf: &mut ratatui::buffer::Buffer,
+    app: &App,
+    i: usize,
+    x0: u16,
+    y: u16,
+    limit: u16,
+    n: usize,
+) {
+    let open = !app.archive_collapsed || !app.panes[i].filter.trim().is_empty();
+    let hovered = app
+        .mouse_pos
+        .is_some_and(|(c, r)| contains(Rect::new(x0, y, limit - x0, 1), c, r));
+    let bg = if hovered {
+        Color::Rgb(44, 47, 51)
+    } else {
+        Color::Reset
+    };
+    for xx in x0..limit {
+        if let Some(c) = buf.cell_mut((xx, y)) {
+            c.set_char(' ');
+            c.set_style(Style::default().bg(bg));
+        }
+    }
+    let arrow = if open { "▾" } else { "▸" };
+    let cx = text(buf, x0, y, limit, arrow, Style::default().fg(DIM).bg(bg));
+    text(
+        buf,
+        cx + 1,
+        y,
+        limit,
+        &format!("Archived ({n})"),
+        Style::default().fg(DIM).bg(bg).add_modifier(Modifier::BOLD),
+    );
+    app.hits.borrow_mut().add(
+        Rect::new(x0, y, limit - x0, 1),
+        UiAction::ArchivedHeader(i),
+        "Archived conversations: stopped sessions that cost no memory · click folds or unfolds · double click one to resume it · Ctrl-a f archives the current tab",
+    );
+}
+
+/// One archived conversation: its name, and how long ago it was active.
+fn archived_row(
+    buf: &mut ratatui::buffer::Buffer,
+    app: &App,
+    i: usize,
+    e: &crate::archive::Archived,
+    x0: u16,
+    y: u16,
+    limit: u16,
+) {
+    let row = Rect::new(x0, y, limit - x0, 1);
+    let hovered = app.mouse_pos.is_some_and(|(c, r)| contains(row, c, r));
+    let selected = app.archive_sel.as_deref() == Some(e.id.as_str());
+    let bg = if selected {
+        SEL_BG
+    } else if hovered {
+        Color::Rgb(44, 47, 51)
+    } else {
+        Color::Reset
+    };
+    for xx in x0..limit {
+        if let Some(c) = buf.cell_mut((xx, y)) {
+            c.set_char(' ');
+            c.set_style(Style::default().bg(bg));
+        }
+    }
+    let ago = crate::ui::ago_secs(app.archive_now() - e.last_activity);
+    let ago = ago.replace(" ago", "").replace("just now", "now");
+    let room = (limit.saturating_sub(x0) as usize).saturating_sub(ago.chars().count() + 6);
+    let cx = text(
+        buf,
+        x0 + 2,
+        y,
+        limit,
+        "▫ ",
+        Style::default().fg(FAINT).bg(bg),
+    );
+    text(
+        buf,
+        cx,
+        y,
+        limit,
+        &crate::paths::middle(&e.label, room.max(1)),
+        Style::default().fg(DIM).bg(bg),
+    );
+    let ax = limit.saturating_sub(ago.chars().count() as u16 + 1);
+    text(buf, ax, y, limit, &ago, Style::default().fg(FAINT).bg(bg));
+    app.hits.borrow_mut().add(
+        row,
+        UiAction::ArchivedRow(i, e.id.clone()),
+        format!(
+            "Archived: {} · {} · {} · double click resumes it · right click: restore, delete from archive",
+            e.label,
+            crate::paths::tilde(std::path::Path::new(&e.cwd)),
+            crate::ui::ago_secs(app.archive_now() - e.archived_at)
+        ),
+    );
+}
+
 /// First tab to show so the active one is in view.
 pub fn window_start(scroll: usize, active: usize, n: usize, cap: usize) -> usize {
     if cap == 0 || n <= cap {
@@ -1383,10 +1595,51 @@ pub fn window_start(scroll: usize, active: usize, n: usize, cap: usize) -> usize
 /// The tab list of pane `i`: a vertical list (left or right, collapsible to
 /// a strip of numbers and markers) or a horizontal strip on top.
 pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::slot::TabPos) {
-    use crate::slot::TabPos;
     if bar.width == 0 || bar.height == 0 {
         return;
     }
+    // The whole list first (under its rows): a click in the empty space
+    // focuses the pane as before, and every region from here to the end
+    // belongs to the list, for the wheel.
+    let start = {
+        let mut h = app.hits.borrow_mut();
+        let start = h.regions.len();
+        h.add(
+            bar,
+            UiAction::FocusPane(i),
+            "Click to focus this pane (wheel scrolls the tab list)",
+        );
+        start
+    };
+    draw_tab_list_body(f, app, i, bar, pos);
+    let mut h = app.hits.borrow_mut();
+    let end = h.regions.len();
+    h.tab_lists.push((i, start, end));
+}
+
+/// The last first row of a side tab list: the rows from there to the end
+/// fill the `rows` lines (a group header takes one, a tab `per`).
+pub fn list_max_first(list: &[crate::tab_groups::Row], rows: usize, per: usize) -> usize {
+    let mut used = 0;
+    let mut k = list.len();
+    while k > 0 {
+        let h = match list[k - 1] {
+            crate::tab_groups::Row::Group(_)
+            | crate::tab_groups::Row::ArchHead
+            | crate::tab_groups::Row::Arch(_) => 1,
+            crate::tab_groups::Row::Tab(_) => per,
+        };
+        if used + h > rows {
+            break;
+        }
+        used += h;
+        k -= 1;
+    }
+    k
+}
+
+fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::slot::TabPos) {
+    use crate::slot::TabPos;
     if pos == TabPos::Top {
         return draw_tab_strip(f, app, i, bar);
     }
@@ -1587,7 +1840,16 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
     // Pinned, groups (headers; a collapsed one alone) and the rest, in the
     // pane's sort; held still while the mouse is over the list.
     let hold = app.mouse_pos.is_some_and(|(c, r)| contains(bar, c, r));
-    let list = app.list_rows(i, hold);
+    let mut list = app.list_rows(i, hold);
+    // The Archived group closes the list (not in the narrow strip).
+    let archived = if collapsed {
+        vec![]
+    } else {
+        app.archive_for_pane(i)
+    };
+    if !collapsed {
+        list.extend(app.archive_rows(i));
+    }
     if list.is_empty() && only.is_some() && top < last {
         text(
             buf,
@@ -1602,7 +1864,9 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
         .iter()
         .position(|r| *r == crate::tab_groups::Row::Tab(slot.active))
         .unwrap_or(0);
-    let first = window_start(slot.sidebar_scroll, at, list.len(), cap);
+    let max_first = list_max_first(&list, rows, per);
+    let first = window_start(slot.sidebar_scroll, at, list.len(), cap).min(max_first);
+    slot.list_window.set((first, max_first));
     let mut y = top;
     for row in list.iter().skip(first) {
         let ti = match *row {
@@ -1611,6 +1875,24 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
                     break;
                 }
                 group_header(buf, app, i, g, x0, y, limit, collapsed);
+                y += 1;
+                continue;
+            }
+            crate::tab_groups::Row::ArchHead => {
+                if y >= last {
+                    break;
+                }
+                archive_header(buf, app, i, x0, y, limit, archived.len());
+                y += 1;
+                continue;
+            }
+            crate::tab_groups::Row::Arch(k) => {
+                if y >= last {
+                    break;
+                }
+                if let Some(e) = archived.get(k) {
+                    archived_row(buf, app, i, e, x0, y, limit);
+                }
                 y += 1;
                 continue;
             }
@@ -2071,16 +2353,21 @@ fn draw_tab_strip(f: &mut Frame, app: &App, i: usize, bar: Rect) {
     let pa = order.iter().position(|&t| t == slot.active).unwrap_or(0);
     let room = bar.width.saturating_sub(4 + 5);
     // Start so that the active tab is visible.
+    // The last first tab: from there on every tab fits (after the ‹).
+    let max_first = (0..order.len())
+        .find(|&k| bar.x + if k > 0 { 2 } else { 0 } + widths[k..].iter().sum::<u16>() + 5 <= limit)
+        .unwrap_or(order.len().saturating_sub(1));
     let mut first = if slot.sidebar_scroll == crate::slot::FOLLOW {
         0
     } else {
-        slot.sidebar_scroll.min(slot.tabs.len().saturating_sub(1))
+        slot.sidebar_scroll.min(max_first)
     };
     if slot.sidebar_scroll == crate::slot::FOLLOW {
         while first < pa && widths[first..=pa].iter().sum::<u16>() > room {
             first += 1;
         }
     }
+    slot.list_window.set((first, max_first.max(first)));
     let mut x = bar.x;
     if first > 0 {
         x = link(

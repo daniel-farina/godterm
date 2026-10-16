@@ -420,6 +420,14 @@ impl App {
         } else {
             self.cfg.closed_accounts.retain(|n| !names.contains(n));
         }
+        // A pane hidden from the layout (Hide pane, or closing its last
+        // tab with the header's x) is opened too: open means on screen.
+        for p in self.panes.iter_mut() {
+            if p.hidden && p.account.is_some_and(|a| accts.contains(&a)) {
+                p.hidden = false;
+                self.state_dirty = true;
+            }
+        }
         // An account without a pane gets one.
         for &a in accts {
             if !self.panes.iter().any(|p| p.account == Some(a)) {

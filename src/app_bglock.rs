@@ -60,7 +60,7 @@ pub struct Stopping {
 }
 
 /// Run `claude stop <short>` for `config_dir` and wait (bounded).
-fn run_stop(
+pub(crate) fn run_stop(
     bin: &str,
     short: &str,
     config_dir: &std::path::Path,

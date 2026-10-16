@@ -287,6 +287,16 @@ pub struct Pane {
     pub bg_lock: Option<crate::session_ids::BgLock>,
     /// The next launch attaches or forks instead of a plain resume.
     pub next_launch: Option<crate::session_ids::NextLaunch>,
+    /// The model it runs, as its transcript, session or screen names it
+    /// ("claude-opus-5-5", "Sonnet 5.5", "grok-4.7"); app_tabmodel.
+    pub model: Option<String>,
+    /// Its reasoning effort as its screen shows it ("medium").
+    pub effort: Option<String>,
+    pub model_polled: Option<Instant>,
+    /// The transcript's (size, mtime) when its model was last read.
+    pub model_stamp: Option<(u64, std::time::SystemTime)>,
+    /// A /model just sent (its arg, when): shown until the tab says so.
+    pub model_set: Option<(String, Instant)>,
 }
 
 impl Pane {
@@ -336,6 +346,11 @@ impl Pane {
             bg_wait_unseen: false,
             bg_lock: None,
             next_launch: None,
+            model: None,
+            effort: None,
+            model_polled: None,
+            model_stamp: None,
+            model_set: None,
         }
     }
 
@@ -395,6 +410,11 @@ impl Pane {
 
     #[cfg(test)]
     pub fn history(&self) -> usize {
+        self.history
+    }
+
+    /// History lines this tab keeps now.
+    pub fn history_lines(&self) -> usize {
         self.history
     }
 

@@ -1,0 +1,97 @@
+name: Build Windows
+
+# Manual: build the Windows release artifacts (portable zip and Inno Setup
+# installer) for a ref on a GitHub hosted runner and keep them as a workflow
+# artifact. Used by local releases when the Windows build machine is not
+# reachable (scripts/release/all.sh WINDOWS_FROM_CI=1). Unsigned unless the
+# optional repository secrets WINDOWS_PFX_BASE64 and WINDOWS_PFX_PASSWORD
+# exist; nothing here requires a secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit, branch or tag to build"
+        required: true
+      arm64:
+        description: "Also build the aarch64 zip (cross compiled, no installer)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: windows (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(inputs.arm64 && '["x64","arm64"]' || '["x64"]') }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Packaging scripts from main (the ref's source, today's tooling)
+        shell: bash
+        run: |
+          git fetch -q origin main
+          git checkout origin/main -- scripts/release packaging/windows
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist-${{ matrix.arch }}
+      - name: Build identity (same values scripts/release/common.sh uses)
+        shell: bash
+        run: |
+          echo "GODTERM_GIT_SHA=$(git rev-parse --short=9 HEAD)" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - name: Optional Authenticode certificate (only when the secrets exist)
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          if ($env:PFX_B64 -and $env:PFX_PASSWORD) {
+            $pfx = Join-Path $env:RUNNER_TEMP "godterm-sign.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
+            "WINDOWS_PFX=$pfx" >> $env:GITHUB_ENV
+            "WINDOWS_PFX_PASSWORD=$($env:PFX_PASSWORD)" >> $env:GITHUB_ENV
+          } else {
+            Write-Host "::notice::no signing certificate secrets; building unsigned"
+          }
+      - name: Build zip and installer (scripts/release/windows.ps1)
+        shell: pwsh
+        env:
+          DIST: ${{ github.workspace }}\dist
+        run: |
+          ./scripts/release/windows.ps1 -Arch ${{ matrix.arch }} -Profile dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke test the installer (silent install, godterm --version, uninstall)
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist -Filter 'GodTerm-*-windows-x64-setup.exe' | Select-Object -First 1
+          if (-not $setup) { throw "no installer in dist" }
+          $p = Start-Process -Wait -PassThru $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER'
+          if ($p.ExitCode -ne 0) { throw "installer exit $($p.ExitCode)" }
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\GodTerm\godterm.exe'
+          if (-not (Test-Path $exe)) { throw "godterm.exe not installed" }
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "godterm --version failed" }
+          $u = Join-Path $env:LOCALAPPDATA 'Programs\GodTerm\unins000.exe'
+          $p = Start-Process -Wait -PassThru $u -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
+          if ($p.ExitCode -ne 0) { throw "uninstall exit $($p.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: |
+            dist/*.zip
+            dist/*.exe
+          if-no-files-found: error

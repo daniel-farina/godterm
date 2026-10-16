@@ -97,6 +97,9 @@ pub struct Endpointer {
     calib_frames: Vec<Vec<i16>>,
     /// Force capture regardless of energy (push to talk).
     pub forced: bool,
+    /// Extra silence (ms) before the end, while what was said so far
+    /// sounds unfinished (set by the engine from the partials).
+    pub hold_ms: u32,
 }
 
 /// About half a second of audio to learn the room noise before listening.
@@ -116,6 +119,7 @@ impl Endpointer {
             calib: vec![],
             calib_frames: vec![],
             forced: false,
+            hold_ms: 0,
         }
     }
 
@@ -125,6 +129,7 @@ impl Endpointer {
         self.silence_frames = 0;
         self.buf.clear();
         self.preroll.clear();
+        self.hold_ms = 0;
     }
 
     fn ms(frames: usize) -> u32 {
@@ -220,7 +225,7 @@ impl Endpointer {
         let wait = if self.forced && self.speech_frames == 0 {
             5000
         } else {
-            self.cfg.end_silence_ms
+            self.cfg.end_silence_ms + self.hold_ms
         };
         let ended = Self::ms(self.silence_frames) >= wait;
         if ended || too_long {
@@ -237,6 +242,7 @@ impl Endpointer {
             self.forced = false;
             self.speech_frames = 0;
             self.silence_frames = 0;
+            self.hold_ms = 0;
             return (VadEvent::None, enough.then_some(out));
         }
         (VadEvent::None, None)
@@ -638,6 +644,38 @@ mod tests {
         assert_eq!(utts.len(), 1);
         // Includes the speech plus preroll and trailing silence.
         assert!(utts[0].len() >= 30 * FRAME);
+    }
+
+    /// An unfinished sentence ("and", "um") waits longer for the rest:
+    /// the same pause that ends a plain one keeps a held one open.
+    #[test]
+    fn a_held_end_waits_longer() {
+        // Frames of silence until the end of an utterance, or None.
+        let end_after = |hold: u32| -> Option<usize> {
+            let mut ep = Endpointer::new(VadCfg {
+                end_silence_ms: 600,
+                ..VadCfg::default()
+            });
+            for f in tone(20, 20.0) {
+                ep.push(&f);
+            }
+            for f in tone(30, 8000.0) {
+                ep.push(&f);
+            }
+            ep.hold_ms = hold;
+            for (i, f) in tone(120, 20.0).iter().enumerate() {
+                if ep.push(f).1.is_some() {
+                    return Some(i + 1);
+                }
+            }
+            None
+        };
+        let plain = end_after(0).unwrap();
+        assert_eq!(plain, 20, "600 ms of 30 ms frames");
+        let held = end_after(1500).unwrap();
+        assert_eq!(held, 70, "600 + 1500 ms");
+        // A pause of a second ends the plain one, not the held one.
+        assert!(plain * 30 < 1000 && held * 30 > 1000);
     }
 
     #[test]

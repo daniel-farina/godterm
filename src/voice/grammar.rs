@@ -87,6 +87,40 @@ pub fn strip_wake<'a>(norm: &'a str, wake_words: &[String]) -> Option<&'a str> {
     None
 }
 
+/// Words a sentence does not end on: a filler or a connective means
+/// more is coming.
+pub const CONNECTIVES: &[&str] = &[
+    "and", "so", "but", "or", "um", "uh", "umm", "uhm", "er", "erm", "like", "because", "also",
+    "plus", "if", "the", "a", "an", "to", "of",
+];
+
+/// Words before a final "so" that make it finished ("I think so").
+const SO_FINISHED: &[&str] = &[
+    "think", "hope", "guess", "believe", "suppose", "said", "do", "not", "so", "why", "is", "it's",
+    "say", "seems", "appears",
+];
+
+/// Speech that sounds unfinished: it ends on a comma, an ellipsis or a
+/// dash, or on a filler or connective ("and", "so", "um"), whatever
+/// period the recognizer put after it. A question or exclamation is
+/// finished.
+pub fn ends_unfinished(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() || t.ends_with(['?', '!']) {
+        return false;
+    }
+    if t.ends_with([',', ';', '-', '\u{2026}']) || t.ends_with("...") {
+        return true;
+    }
+    let n = normalize(t);
+    let mut w = n.rsplit(' ');
+    let last = w.next().unwrap_or("");
+    if last == "so" && w.next().is_some_and(|p| SO_FINISHED.contains(&p)) {
+        return false;
+    }
+    CONNECTIVES.contains(&last)
+}
+
 /// Whole word mishearings of the default wake phrases.
 fn compact_alias(heard: &str, squashed_wake: &str) -> bool {
     match squashed_wake {
@@ -164,6 +198,34 @@ mod tests {
         assert_eq!(strip_wake("let's go shopping", &ww), None);
         assert_eq!(strip_wake("we know the answer", &ww), None);
         assert_eq!(strip_wake("go home", &ww), None);
+    }
+
+    #[test]
+    fn unfinished_speech() {
+        for t in [
+            "So I was thinking we could, um",
+            "Let's refactor the parser and",
+            "Let's refactor the parser and.",
+            "first the cache,",
+            "the API so",
+            "maybe we...",
+            "Uh.",
+        ] {
+            assert!(ends_unfinished(t), "{t}");
+        }
+        for t in [
+            "Run the tests.",
+            "What is everyone working on?",
+            "I'm done with the API part",
+            "Yes, do that.",
+            "I think so.",
+            "I don't think so",
+            "Find the cause.",
+            "",
+            "Brand new tab!",
+        ] {
+            assert!(!ends_unfinished(t), "{t}");
+        }
     }
 
     #[test]

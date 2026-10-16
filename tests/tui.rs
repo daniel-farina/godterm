@@ -65,6 +65,11 @@ fn make_home(tag: &str, extra: &str) -> PathBuf {
         ));
     }
     cfg.push_str("[voice]\ntts = false\nchime = false\nwake_model = \"off\"\n");
+    // The tab job tools lengthen every tab's command line (the fake echoes
+    // it): off here, on in the test that is about them.
+    if !extra.contains("[tabs]") {
+        cfg.push_str("[tabs]\njobs_tools = false\n");
+    }
     cfg.push_str(extra);
     std::fs::write(home.join("config.toml"), cfg).unwrap();
     // The first launch tour has its own test; keep it out of the way here.
@@ -328,7 +333,8 @@ fn tabs_overview_and_palette() {
     let mut t = Tui::start(home, &[]);
     // Both logged in panes start the fake claude, in bypass mode by default.
     t.wait_for("fake claude in work", 15);
-    t.wait_for("args:--dangerously-skip-permissions", 5);
+    // (A pane can wrap the flag, so the start of it is enough.)
+    t.wait_for("args:--dangerously", 5);
     t.wait_for("Alpha", 5);
     t.wait_for("Bravo", 5);
 
@@ -353,10 +359,10 @@ fn tabs_overview_and_palette() {
 
     // Overview lists every tab.
     t.cmd(b"o");
-    t.wait_for("Overview: every account and tab", 5);
+    t.wait_for("Overview: every account", 5);
     t.wait_for("projx", 2);
     t.send(b"\x1b");
-    t.wait_gone("Overview: every account and tab", 5);
+    t.wait_gone("Overview: every account", 5);
 
     // Palette action: close tab. It is idle, so no confirmation by
     // default (confirm_close = "busy"), and an Undo toast offers it back.
@@ -613,6 +619,89 @@ fn other_clients_are_read_only() {
     assert!(env.contains("PATH=") && !env.contains("GODTERM_"), "{env}");
 }
 
+/// The agent of a tab gets a `godterm mcp` of its own: five job tools, its
+/// own tab only, nothing of the assistant's; the user's yes comes in
+/// GodTerm, not from the agent.
+#[test]
+fn a_tab_gets_a_job_server_limited_to_itself() {
+    let home = make_home("tabjobs", "[tabs]\njobs_tools = true\n");
+    let t = Tui::start_with(home.clone(), &[], false);
+    t.wait_for("fake claude in work", 15);
+    t.wait_for("create_job tool over CronCreate", 5);
+    // The launch's --mcp-config names the server and this tab's identity.
+    let dir = home.join("tab-mcp");
+    let file = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .next()
+        .expect("a per-tab mcp config");
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let s = &cfg["mcpServers"]["godterm"];
+    assert_eq!(s["env"]["GODTERM_CLIENT"], "tab");
+    let mcp = |calls: &[(&str, &str)]| {
+        let mut input = String::from(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n",
+        );
+        for (i, (tool, args)) in calls.iter().enumerate() {
+            input.push_str(&format!("{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"tools/call\",\"params\":{{\"name\":\"{tool}\",\"arguments\":{args}}}}}\n", i + 2));
+        }
+        input.push_str("{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"tools/list\"}\n");
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_godterm"));
+        c.arg("mcp")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        for (k, v) in s["env"].as_object().unwrap() {
+            c.env(k, v.as_str().unwrap());
+        }
+        let mut c = c.spawn().unwrap();
+        use std::io::Write;
+        c.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        String::from_utf8_lossy(&c.wait_with_output().unwrap().stdout).into_owned()
+    };
+    let out = mcp(&[
+        ("list_jobs", "{}"),
+        ("get_state", "{}"),
+        ("close_tabs", "{\"tab\":\"all\"}"),
+        (
+            "create_job",
+            "{\"prompt\":\"x\",\"every\":\"1 hour\",\"tab\":\"t999\"}",
+        ),
+        ("create_job", "{\"prompt\":\"x\",\"every\":\"1 hour\"}"),
+    ]);
+    let lines: Vec<serde_json::Value> = out
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let text = |id: u64| -> String {
+        lines
+            .iter()
+            .find(|l| l["id"] == id)
+            .map(|l| {
+                l["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .unwrap_or_default()
+    };
+    assert!(text(2).contains("\"ok\":true"), "list_jobs: {out}");
+    assert!(!text(3).contains("\"ok\":true"), "get_state: {out}");
+    assert!(!text(4).contains("\"ok\":true"), "close_tabs: {out}");
+    assert!(text(5).contains("only use its own tab"), "{out}");
+    assert!(text(6).contains("waiting_for_user"), "{out}");
+    let tools = lines.iter().find(|l| l["id"] == 99).unwrap()["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(tools, 5);
+    // Nothing was made: the user has not said yes.
+    let jobs = std::fs::read_to_string(home.join("jobs.json")).unwrap_or_default();
+    assert!(!jobs.contains("\"prompt\""), "{jobs}");
+    assert_eq!(t.quit(), 0);
+}
+
 /// QA-25: Ctrl-C during the first run setup leaves no config behind, so
 /// setup is offered again.
 #[test]
@@ -721,7 +810,7 @@ fn eager_restore_starts_every_tab() {
         "{screen}"
     );
     assert!(
-        screen.contains("args:--dangerously-skip-permissions --resume sess-456"),
+        screen.contains("--resume sess-456"),
         "{screen}"
     );
     // The hidden tab kept its name and resumed its session.
@@ -821,7 +910,7 @@ fn loops_view_and_stop() {
     });
     std::fs::write(home.join("state.json"), state.to_string()).unwrap();
     let mut t = Tui::start(home.clone(), &[]);
-    t.wait_for("--resume cccccccc", 15);
+    t.wait_for("fake claude in work", 15);
     t.wait_for("⟳1", 15);
     t.wait_for("⟳1", 5);
     t.cmd(b"@");

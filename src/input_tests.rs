@@ -323,7 +323,7 @@ fn the_panel_draws_the_caret_and_a_click_places_it() {
     paste(&mut app, &format!("{first}end"));
     draw(&mut app, &mut t);
     let g = app.assistant.input_geo.get().unwrap();
-    assert_eq!(g.h, 2);
+    assert_eq!(g.h, 3, "three rows at least");
     assert_eq!(app.want_cursor.get(), Some((g.tx + 3, g.y + 1)));
     // Home: the start of the line (the first row), after the lead.
     key(&mut app, KeyCode::Home);
@@ -387,7 +387,7 @@ fn the_panel_draws_the_caret_and_a_click_places_it() {
     );
     typed(&mut app, "-");
     assert_eq!(app.assistant.input, "漢-nd");
-    // Many lines: the box shows six and follows the caret up.
+    // Many lines: the box shows eight and follows the caret up.
     app.assistant.set_input(
         (1..=10)
             .map(|i| format!("line {i}"))
@@ -396,7 +396,7 @@ fn the_panel_draws_the_caret_and_a_click_places_it() {
     );
     draw(&mut app, &mut t);
     let g = app.assistant.input_geo.get().unwrap();
-    assert_eq!((g.h, g.top), (6, 4));
+    assert_eq!((g.h, g.top), (8, 2));
     for _ in 0..8 {
         key(&mut app, KeyCode::Up);
     }

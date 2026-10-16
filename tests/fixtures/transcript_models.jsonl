@@ -1,0 +1,4 @@
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"what does this repo do"},"uuid":"u1","sessionId":"5e55a0de-0000-4000-8000-000000000001"}
+{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"It is a terminal for Claude Code accounts."}]},"uuid":"a1","sessionId":"5e55a0de-0000-4000-8000-000000000001"}
+{"type":"assistant","isSidechain":true,"message":{"role":"assistant","model":"claude-haiku-4-5-20251001","content":[{"type":"text","text":"a subagent's reply"}]},"uuid":"a2","sessionId":"5e55a0de-0000-4000-8000-000000000001"}
+{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]},"uuid":"a3","sessionId":"5e55a0de-0000-4000-8000-000000000001"}

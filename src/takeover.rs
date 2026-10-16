@@ -887,6 +887,7 @@ mod tests {
             wake_at: None,
             deleted: false,
             confidence: crate::loops::Confidence::High,
+            every: None,
         };
         let p = recreate_prompt(std::slice::from_ref(&l));
         assert!(

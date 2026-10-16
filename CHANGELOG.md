@@ -7,6 +7,97 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+### Release tooling
+- Windows artifacts can be built on a GitHub hosted runner
+  (`build-windows.yml`, `WINDOWS_FROM_CI=1 scripts/release/all.sh`) when the
+  Windows build machine is not available.
+
+## [0.2.11] - 2026-10-15
+
+Platforms: macOS (Apple silicon and Intel, universal) and Linux (x86_64 and aarch64). This release has no Windows build; Windows will return in a later release.
+
+Version 0.2.10 was never published, so this release also carries everything listed under 0.2.10 below.
+
+### Loops & schedules
+- GodTerm now owns scheduled jobs. A cron manager keeps them in
+  `~/.godterm/jobs.json` and a scheduler tick fires them: it wakes closed
+  and archived tabs, follows a catch-up policy for runs missed while GodTerm
+  was off, warns before an end date and leaves a receipt for every run. The
+  assistant has `create_job`, `list_jobs`, `update_job`, `delete_job`,
+  `run_job_now` and `adopt_loop`.
+- A Loops & schedules section above the assistant chat shows a detail card
+  per row: the prompt in full, the cron in plain words, who runs it, the next
+  and last run, the expiry and the id. Labeled buttons (Manage with GodTerm,
+  Run now, Stop, Pause or Resume, Delete, Open tab, Close), rows grouped by
+  tab with aligned columns, as many rows as fit with wheel and key
+  scrolling ("3 to 9 of 14"), and duplicate loops shown once. The Loops view
+  shows the same card.
+- Each pane has a loops drawer: the tab's loops with next and last run, Run
+  now, Cancel, Copy and New loop (Ctrl-a ;). Grok's scheduled tasks are read
+  too, and `show_tab_loops` opens it by voice.
+- The agents inside Claude and Grok tabs can manage their own GodTerm jobs.
+  Each tab gets a `godterm` MCP server with only `create_job`, `list_jobs`,
+  `update_job`, `delete_job` and `adopt_loop`, limited to that tab's jobs and
+  loops (it cannot name another tab, and has none of the assistant's tools),
+  and a hint to prefer them over CronCreate and /loop. Each new job or change
+  asks you first, in a dialog against that tab. Switch: `tabs.jobs_tools`
+  (default on), applied to tabs started or resumed from then on.
+
+### Assistant
+- The assistant panel is a window: width carets and Ctrl-a { }, edge drag,
+  minimize to a strip, maximize and close, a quick action bar and a framed
+  three row composer that grows. It starts open, and the mic starts off
+  unless it was on at the last quit.
+- Replies render markdown: tables as aligned grids (cards when narrow),
+  lists, code, bold and line breaks. Speech never reads markup.
+- `send_prompt` to a busy tab takes a mode: auto, queue, background or
+  side. A question goes through Claude Code's /btw side channel and the
+  answer is read back; a work request goes to a background session forked
+  from the tab's session; queue stays explicit. The receipt names the mode.
+- Deliveries to a tab that just opened wait up to 40 seconds for Claude's
+  first turn before calling it dropped.
+- `open_accounts` puts a hidden pane back on screen.
+- The Loops & schedules section is set apart from the chat: a shaded
+  title row, its lines and a divider rule, in rows the chat never uses at
+  any panel height. The chat has its own scrollbar on the panel's right
+  border (drag the thumb, click the track, or use the wheel), keeps its
+  place while new lines arrive, and the wheel goes to the area under the
+  pointer.
+
+### Voice
+- Direct mode: talk to one tab by voice and return to the assistant on a
+  phrase or the wake word. A mic badge on the pane that holds the voice has
+  a menu to move it.
+- Brainstorm mode (Ctrl-a B or the quick bar): speech is drafted in the
+  composer until you say send it, done or that's it. Cancel with undo, have
+  it read back or organized. A longer end of speech follows a trailing
+  connective (`voice.connective_hold_ms`).
+
+### Tabs
+- Archive a tab (Ctrl-a f, tab options, the Tabs menu): an Archived group in
+  the tab list, double click to resume, kept in a persistent store. The
+  assistant has `archive_tabs` (with a dry run and a confirm plan),
+  `list_archived` and `restore_archived`.
+- A model bar under each pane switches a tab's model with its own /model,
+  queued until a busy tab is idle (Ctrl-a #, `set_tab_model`).
+
+### Panes
+- Every pane header has `<` `>` carets like the assistant panel's: narrower
+  and wider by a tenth of the row, the neighbour giving or taking the space,
+  kept per shape like a border drag. Shift-click or double click for equal
+  widths; "pane wider", "pane narrower" and "equal pane widths" in the
+  command palette. Hidden when zoomed or with no neighbour.
+
+### Fixed
+- The wheel scrolls a pane's history right after a click or a tab switch.
+  An agent that turned mouse reporting on from the main screen took every
+  wheel event and scrolled nothing, so scrolling only came back after
+  typing. On the main screen the history is GodTerm's to scroll (the
+  agent still gets the wheel when there is none); on the alternate screen
+  the agent gets mouse events, or arrow keys if it did not ask for them.
+- The wheel scrolls the tab list by drawn rows anywhere in the list, and
+  wheel bursts are coalesced.
+
 ## [0.2.10] - 2026-10-12
 
 ### Assistant
@@ -431,7 +522,10 @@ The first public release, under the MIT License. claudego is now GodTerm.
 
 - claudego: config, credentials, usage, sessions, PTY panes and the TUI.
 
-[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/daniel-farina/godterm/compare/v0.2.11...HEAD
+[0.2.11]: https://github.com/daniel-farina/godterm/compare/v0.2.9...v0.2.11
+[0.2.10]: https://github.com/daniel-farina/godterm/compare/v0.2.9...v0.2.10
+[0.2.9]: https://github.com/daniel-farina/godterm/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/daniel-farina/godterm/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/daniel-farina/godterm/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/daniel-farina/godterm/compare/v0.2.5...v0.2.6

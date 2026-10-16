@@ -24,6 +24,7 @@ pub enum MenuId {
     SessSort,
     SessGroup,
     RecentlyClosed,
+    Archived,
     PauseListening,
     AssistantAccount,
     Permissions,
@@ -50,6 +51,7 @@ pub enum Cmd {
     SessSort(u8),
     SessReverse,
     Reopen(u8),
+    RestoreArchived(u8),
     /// Pause listening for this many seconds (0: resume).
     Pause(u32),
     TabHistory,
@@ -77,6 +79,10 @@ pub enum Cmd {
     Permission(u8),
     TrainWake,
     Tour,
+    /// Brainstorm mode's explanation card (the ⓘ).
+    BrainstormInfo,
+    /// Bring a discarded brainstorm back.
+    BrainstormUndo,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -149,6 +155,17 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 }
                 e
             },
+            item("Archive tab", "C-a f", UiAction::Key('f')),
+            {
+                let mut e = sub(
+                    &format!("Archived ({})", app.archive.entries.len()),
+                    MenuId::Archived,
+                );
+                if app.archive.entries.is_empty() {
+                    e.disabled = Some("nothing is archived".into());
+                }
+                e
+            },
             item("Rename", "C-a R", UiAction::Key('R')),
             sep(),
             no_acct(item("Move to...", "C-a m", UiAction::Key('m'))),
@@ -207,6 +224,25 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 })
                 .collect()
         }
+        MenuId::Archived => app
+            .archive
+            .newest_first()
+            .into_iter()
+            .take(12)
+            .enumerate()
+            .map(|(i, e)| {
+                let ago = crate::ui::ago_secs(app.archive_now() - e.last_activity);
+                item(
+                    format!(
+                        "{} · {} · {ago}",
+                        crate::paths::middle(&e.label, 26),
+                        crate::paths::middle(&e.account, 12)
+                    ),
+                    "",
+                    UiAction::Menu(Cmd::RestoreArchived(i as u8)),
+                )
+            })
+            .collect(),
         MenuId::RecentlyClosed => app
             .closed
             .iter()
@@ -434,6 +470,23 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 check: Some(app.cfg.voice.speaker_muted),
                 ..item("Mute the speaker", "C-a O", UiAction::SpeakerToggle)
             });
+            v.push(Entry {
+                check: Some(app.direct.on.is_some()),
+                ..item("Talk directly to this tab", "C-a K", UiAction::Key('K'))
+            });
+            v.push(Entry {
+                check: Some(app.brainstorm_on()),
+                ..item(
+                    "Brainstorm mode (nothing is sent)",
+                    "C-a B",
+                    UiAction::Key('B'),
+                )
+            });
+            v.push(item(
+                "How brainstorm mode works",
+                "",
+                UiAction::Menu(Cmd::BrainstormInfo),
+            ));
             v.push(sub("Pause listening", MenuId::PauseListening));
             {
                 let mut e = item("Resume listening", "", UiAction::Menu(Cmd::Pause(0)));
@@ -646,6 +699,15 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 }
                 e
             },
+            Entry {
+                check: Some(app.brainstorm_on()),
+                ..item("Brainstorm mode", "C-a B", UiAction::Key('B'))
+            },
+            item(
+                "How brainstorm mode works",
+                "",
+                UiAction::Menu(Cmd::BrainstormInfo),
+            ),
             sep(),
             item("Learned rules", "", UiAction::Menu(Cmd::AssistantRules)),
             item("System prompt", "", UiAction::Menu(Cmd::AssistantPrompt)),
@@ -682,6 +744,16 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 check: Some(app.cfg.assistant.panel == "auto"),
                 ..item("Panel: auto", "", UiAction::Menu(Cmd::PanelMode(2)))
             },
+            item(
+                "Wider panel",
+                "C-a {",
+                UiAction::AssistantPanel(crate::app_panelwin::PanelCtl::Wider),
+            ),
+            item(
+                "Narrower panel",
+                "C-a }",
+                UiAction::AssistantPanel(crate::app_panelwin::PanelCtl::Narrower),
+            ),
             sep(),
             item(
                 "Assistant settings",
@@ -870,6 +942,19 @@ impl App {
             Cmd::Pause(s) => {
                 self.pause_listening(Some(s as u64), None);
             }
+            Cmd::RestoreArchived(i) => {
+                let id = self
+                    .archive
+                    .newest_first()
+                    .get(i as usize)
+                    .map(|e| e.id.clone());
+                if let Some(id) = id {
+                    match self.restore_archived(&id, None) {
+                        Ok(m) => self.flash(m),
+                        Err(e) => self.flash(format!("Could not restore it: {e}")),
+                    }
+                }
+            }
             Cmd::Reopen(i) => {
                 if let Err(e) = self.reopen_closed_at(i as usize) {
                     self.flash(format!("Could not reopen it: {e}"));
@@ -988,6 +1073,12 @@ impl App {
                 }
             }
             Cmd::TrainWake => self.start_wake_training(),
+            Cmd::BrainstormInfo => self.toggle_brainstorm_card(),
+            Cmd::BrainstormUndo => {
+                if !self.undo_brainstorm() {
+                    self.flash("Nothing to bring back");
+                }
+            }
             Cmd::Tour => self.on_command(KeyEvent::new(
                 KeyCode::Char('T'),
                 crossterm::event::KeyModifiers::NONE,

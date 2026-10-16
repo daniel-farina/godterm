@@ -328,10 +328,10 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "send_prompt",
-        description: "Give claude in one or more tabs a prompt to work on. Returns per tab a delivery id, status (delivered: typed in and taken; queued: the tab is busy or starting, it is sent once ready; failed, with the reason) and state, the receipt from the tab's own transcript: queued, sending, sent (typed in, not in the transcript yet), received (claude has it, queued behind its current work), started, done, dropped or interrupted (lost: the user should resend), unconfirmed (no transcript to check). Say a tab got a request only when its state is received, started or done; the deliveries in get_state follow each one later. More than one tab needs one confirmation for the whole set. expect_reply true: you are asking the tab's agent a question for the user; GodTerm watches for its answer and starts a turn for you to tell the user when it arrives (default: true when the text or the user's request is a question). The result says will_report: promise the user to report back only when will_report is true; when it is false, say the prompt was sent and that they can ask later. images: attached images (numbers, or paths) the tab gets with the prompt, as files its agent reads; include them when the user asks to pass them on or to work on them in that tab, and never to a tab they did not mean.",
+        description: "Give claude in one or more tabs a prompt to work on. A busy tab is never just left \"queued\": mode picks how it gets the prompt. auto (default): an idle tab gets it typed in; a busy Claude tab gets a question that needs no tools through its side channel (/btw: answered at once from its conversation, without interrupting its work; it cannot read files or run anything) and any other request in a background session (a fork of the tab's session, same folder and account, working in parallel). side: force the side channel. background: force a forked background session (also for an idle tab, to work in parallel). queue: type it in behind the tab's current work (the old behaviour; use it only when the user wants the tab itself to do it after what it is doing). Grok tabs have neither channel and queue. Returns per tab a delivery id, mode (the mode used: direct, queue, side or background; mode_note says why when it differs from what was asked, e.g. the side channel was not available and it was queued instead), status (delivered: typed in and taken; queued: the tab is busy or starting, it is sent once ready; failed, with the reason) and state, the receipt from the tab's own transcript: queued, sending, sent (typed in, not in the transcript yet), received (claude has it, queued behind its current work), started, done, dropped or interrupted (lost: the user should resend), unconfirmed (no transcript to check). Say a tab got a request only when its state is received, started or done; the deliveries in get_state follow each one later. Wording: say \"queued\" only when mode is queue. For side say you asked its side channel; for background say \"<tab> is busy, so I started a background session for it\" (background_session has its id; the user can claude attach it); the answer or result of a side or background run is reported back to you like any other answer (will_report is true). More than one tab needs one confirmation for the whole set. expect_reply true: you are asking the tab's agent a question for the user; GodTerm watches for its answer and starts a turn for you to tell the user when it arrives (default: true when the text or the user's request is a question). The result says will_report: promise the user to report back only when will_report is true; when it is false, say the prompt was sent and that they can ask later. images: attached images (numbers, or paths) the tab gets with the prompt, as files its agent reads; include them when the user asks to pass them on or to work on them in that tab, and never to a tab they did not mean.",
         schema: || {
             props(
-                json!({"tab": tab_prop(), "account": account_prop(), "text": {"type": "string"}, "expect_reply": {"type": "boolean"}, "images": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "Images the user attached that this prompt is about: their numbers (1 for image 1) from the user's messages of the last 30 minutes, or image file paths. Only the images the user means for this tab."}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
+                json!({"tab": tab_prop(), "account": account_prop(), "text": {"type": "string"}, "mode": {"type": "string", "enum": ["auto", "queue", "background", "side"], "description": "auto (default): idle tab types it in; busy tab: a question goes through the side channel, a work request to a background session. queue: behind the tab's current work. background: a forked background session. side: /btw."}, "expect_reply": {"type": "boolean"}, "images": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "Images the user attached that this prompt is about: their numbers (1 for image 1) from the user's messages of the last 30 minutes, or image file paths. Only the images the user means for this tab."}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
                 &["text"],
             )
         },
@@ -352,6 +352,87 @@ pub const TOOLS: &[Tool] = &[
         schema: || {
             props(
                 json!({"tab": tab_prop(), "group": {"type": "string"}, "account": account_prop(), "include_pinned": {"type": "boolean"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "archive_tabs",
+        description: "Archive tabs: stop their sessions (and any loops or background run they hold), close the pane tabs and keep each conversation in the Archived group, from where a double click (or restore_archived) resumes it exactly. This frees memory. Select by tab (ids, a list or \"all\"), or by filter: idle_for_hours (no activity that long: \"idle more than 2 days\" is 48) or older_than (\"2 days\"), account, provider (claude or grok), name (contains), group; filters combine. Working, approval-waiting, queued, background-busy or unsent-text tabs, pinned tabs in a sweep (unless include_pinned) and a tab you talk to directly are skipped and listed with why; force=true archives the busy ones too (never the direct tab). dry_run=true only lists what would be archived and skipped. Several tabs need one confirmation: ask it exactly once, then call again with only confirm_token. The result has the number archived, the memory note and archive ids; say how many were archived and offer to restore.",
+        schema: || {
+            props(
+                json!({"tab": tab_prop(), "group": {"type": "string"}, "account": account_prop(), "provider": {"type": "string", "enum": ["claude", "grok"]}, "name": {"type": "string", "description": "Tab name contains"}, "idle_for_hours": {"type": "number", "description": "Archive tabs with no activity for at least this many hours"}, "older_than": {"type": "string", "description": "Same, as words: \"2 days\", \"36 hours\", \"1 week\""}, "include_pinned": {"type": "boolean"}, "force": {"type": "boolean", "description": "Also archive tabs that are working, waiting, queued or have unsent text"}, "dry_run": {"type": "boolean"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "list_archived",
+        description: "The archived conversations (stopped, kept under Archived in the tab list): id, name, account, provider, folder, session, model, when it was last active and archived. Filters: account, provider, name (contains), older_than (archived at least that long ago, \"2 days\"), limit. get_state shows the count and the latest.",
+        schema: || {
+            props(
+                json!({"account": account_prop(), "provider": {"type": "string", "enum": ["claude", "grok"]}, "name": {"type": "string"}, "older_than": {"type": "string"}, "limit": {"type": "integer"}}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "restore_archived",
+        description: "Bring archived conversations back: each opens in a tab on its own account (or onto another account of the same provider) and resumes its exact session, with its name, color, pin and loops. id is one archive id, a list, a unique prefix, or \"all\" (with the filters of list_archived: name, account, older_than); at most 10 at a time. onto is the account to open it on. Needs no confirmation.",
+        schema: || {
+            props(
+                json!({"id": {"type": ["string", "array"], "items": {"type": "string"}}, "name": {"type": "string"}, "account": account_prop(), "provider": {"type": "string", "enum": ["claude", "grok"]}, "older_than": {"type": "string"}, "onto": account_prop()}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "create_job",
+        description: crate::app_jobs::DESC_CREATE,
+        schema: || {
+            props(
+                json!({"name": {"type": "string"}, "prompt": {"type": "string"}, "tab": tab_prop(), "archived": {"type": "string", "description": "An archive id (list_archived) instead of tab"},
+                    "cron": {"type": "string", "description": "Five fields, local time: 0 9 * * 1-5"}, "every": {"type": ["string", "integer"], "description": "\"30 minutes\", \"2 hours\" or minutes"},
+                    "at": {"type": "string", "description": "One run: \"in 2 hours\" or 2026-10-15 09:00"}, "catch_up": {"type": "string", "enum": ["once", "skip"]},
+                    "until": {"type": "string", "description": "End date: 2026-12-31 or \"in 30 days\""}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "list_jobs",
+        description: crate::app_jobs::DESC_LIST,
+        schema: || props(json!({"tab": {"type": "string"}, "status": {"type": "string", "enum": ["active", "paused", "finished", "failing"]}, "text": {"type": "string"}}), &[]),
+    },
+    Tool {
+        name: "update_job",
+        description: crate::app_jobs::DESC_UPDATE,
+        schema: || {
+            props(
+                json!({"job": {"type": "string"}, "action": {"type": "string", "enum": ["pause", "resume"]}, "name": {"type": "string"}, "prompt": {"type": "string"}, "tab": tab_prop(), "archived": {"type": "string"},
+                    "cron": {"type": "string"}, "every": {"type": ["string", "integer"]}, "at": {"type": "string"}, "catch_up": {"type": "string", "enum": ["once", "skip"]},
+                    "until": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "delete_job",
+        description: crate::app_jobs::DESC_DELETE,
+        schema: || props(json!({"job": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "run_job_now",
+        description: crate::app_jobs::DESC_RUN,
+        schema: || props(json!({"job": {"type": "string"}}), &["job"]),
+    },
+    Tool {
+        name: "adopt_loop",
+        description: crate::app_jobs::DESC_ADOPT,
+        schema: || {
+            props(
+                json!({"tab": tab_prop(), "loop": {"type": "string"}, "name": {"type": "string"}, "cron": {"type": "string"}, "every": {"type": ["string", "integer"]}, "at": {"type": "string"},
+                    "catch_up": {"type": "string", "enum": ["once", "skip"]}, "until": {"type": "string"}, "keep_session_loop": {"type": "boolean"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
                 &[],
             )
         },
@@ -397,6 +478,36 @@ pub const TOOLS: &[Tool] = &[
         schema: || props(json!({"id": {"type": "integer"}, "tab": tab_prop()}), &[]),
     },
     Tool {
+        name: "talk_to_tab",
+        description: "Direct mode: the user talks to one tab's agent by voice without you in between (\"let me talk directly to the trading room\", \"hand me to that agent\", \"put me through to t12\"). No confirmation. From then on GodTerm types what the user says into that tab and speaks its replies; you hear nothing until they say \"back to the assistant\" (or the wake word), and then a (Direct mode ...) note tells you what was said. Say exactly the result's say text, nothing else.",
+        schema: || props(json!({"tab": tab_prop()}), &["tab"]),
+    },
+    Tool {
+        name: "brainstorm",
+        description: "Brainstorm mode (\"brainstorm mode\", \"let me brain dump\", \"I want to think out loud for a while\"): on true, the user talks as long as they like and nothing reaches you; GodTerm drafts every utterance (in direct mode, for that tab) until they say send it, done or that's it, and then the whole draft arrives as one message with a (Brainstorm: ...) note. on false leaves it, the draft kept in the box. No confirmation. Say exactly the result's say text. Suggest it (in a few words) when the user seems to want to talk at length and keeps getting cut off.",
+        schema: || props(json!({"on": {"type": "boolean"}}), &[]),
+    },
+    Tool {
+        name: "set_tab_model",
+        description: "Switch a tab's model (\"switch the trading room to haiku\", \"use opus on that tab\", \"put t12 on the fast grok\"). model: a name as said (haiku, sonnet, opus; for Grok tabs grok-4.7-build-fast, grok-4.7, grok-4.6; \"the quick one\" works). Runs at once, no confirmation: an idle tab gets the harness's own /model now, a busy one after its turn (never interrupted). Say the result's say text; status is applied, queued or already.",
+        schema: || {
+            props(
+                json!({"tab": tab_prop(), "model": {"type": "string"}}),
+                &["model"],
+            )
+        },
+    },
+    Tool {
+        name: "show_tab_loops",
+        description: "Open (or with open false close) the loops drawer inside a tab's pane: the tab's scheduled prompts (Claude Code /loop and cron jobs, Grok scheduled tasks) with their interval, next and last run (\"show the loops on that tab\"). Returns the list too. Runs at once.",
+        schema: || {
+            props(
+                json!({"tab": tab_prop(), "open": {"type": "boolean"}}),
+                &[],
+            )
+        },
+    },
+    Tool {
         name: "rename_tab",
         description: "Rename a tab.",
         schema: || {
@@ -428,11 +539,11 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "assistant_panel",
-        description: "How your panel sits, at once: docked (beside the panes, they make room: \"dock the panel\"), overlay (floats over the right side, the panes keep their size: \"make the panel float\"), auto (docked while every pane keeps about 80 columns).",
+        description: "Your panel, at once. mode: docked (beside the panes, they make room: \"dock the panel\"), overlay (floats over the right side, the panes keep their size: \"make the panel float\"), auto (docked while every pane keeps about 80 columns). width: \"wider\" or \"narrower\" (8 columns: \"make the assistant wider\"), a number of columns, \"+16\", or \"auto\". window: minimize (a thin strip at the right; voice still works), maximize (the whole grid), restore, close.",
         schema: || {
             props(
-                json!({"mode": {"type": "string", "enum": ["docked", "overlay", "auto"]}}),
-                &["mode"],
+                json!({"mode": {"type": "string", "enum": ["docked", "overlay", "auto"]}, "width": {"type": ["string", "integer"]}, "window": {"type": "string", "enum": ["minimize", "maximize", "restore", "close"]}}),
+                &[],
             )
         },
     },
@@ -885,6 +996,10 @@ const ECHO_WAIT: Duration = Duration::from_millis(2500);
 const RETRY_AFTER: Duration = Duration::from_millis(1500);
 /// ...and it fails after this.
 const FAIL_AFTER: Duration = Duration::from_millis(6000);
+/// ...later for a tab that was just opened: claude's first turn there waits
+/// on its start-up (MCP servers, a long paste, rate limits) and can take
+/// over 8 seconds to show any sign of life.
+const FAIL_AFTER_FRESH: Duration = Duration::from_secs(40);
 
 /// The start of a prompt as the tab's input box shows it, to look for:
 /// its first line's first words (long pastes show as "[Pasted text").
@@ -1112,7 +1227,10 @@ impl App {
             match d.stage.clone() {
                 Stage::Queued => {
                     let tab = &self.panes[s].tabs[t];
-                    if tab.activity == Activity::Ready && tab.is_running() {
+                    // Not over a paste still waiting for its Enter (a
+                    // model switch).
+                    let typing = self.pending_enters.iter().any(|p| p.uid == d.uid);
+                    if tab.activity == Activity::Ready && tab.is_running() && !typing {
                         crate::log::info(&format!(
                             "deliver: pasting into {} ({} chars)",
                             tab_id(d.uid),
@@ -1179,7 +1297,13 @@ impl App {
                             retried: true,
                             echoed,
                         };
-                    } else if at.elapsed() >= FAIL_AFTER {
+                    } else if at.elapsed()
+                        >= if at.duration_since(d.created) < Duration::from_secs(20) {
+                            FAIL_AFTER_FRESH
+                        } else {
+                            FAIL_AFTER
+                        }
+                    {
                         crate::log::info(&format!(
                             "deliver: {} never started on the prompt",
                             tab_id(d.uid)
@@ -1220,7 +1344,26 @@ impl App {
         match self.deliveries.iter().find(|d| d.id == id) {
             Some(d) => {
                 let (status, reason) = d.status();
-                let mut v = json!({"id": d.id, "tab": tab_id(d.uid), "status": status, "state": d.state_word()});
+                let mut v = json!({"id": d.id, "tab": tab_id(d.uid), "status": status, "state": d.state_word(), "mode": d.rc.mode.word()});
+                if let Some(n) = &d.rc.note {
+                    v["mode_note"] = json!(n);
+                }
+                if let Some(r) = self.run_json(d.id) {
+                    if let Some(o) = r.as_object() {
+                        for (k, x) in o {
+                            v[k] = x.clone();
+                        }
+                    }
+                }
+                if d.rc.mode == crate::app_busy::Mode::Background {
+                    v["say"] = json!(format!(
+                        "{} is busy, so I started a background session for it.",
+                        self.spoken_tab_name(self.current_uid(d.uid))
+                    ));
+                }
+                if d.rc.mode == crate::app_busy::Mode::Side {
+                    v["say"] = json!(format!("I asked {} through its side channel; it answers without interrupting its work.", self.spoken_tab_name(self.current_uid(d.uid))));
+                }
                 if let Some(r) = d.rc.receipt.reason().map(str::to_string).or(reason) {
                     v["reason"] = json!(r);
                 }
@@ -1237,6 +1380,8 @@ impl App {
     pub fn control_tick(&mut self) {
         self.deliveries_tick();
         self.pending_enters_tick();
+        self.tab_model_tick();
+        self.busy_tick();
         self.receipts_tick();
         let ws = std::mem::take(&mut self.ctl_waits);
         for mut w in ws {
@@ -1288,7 +1433,8 @@ impl App {
                     d.id == *id
                         && (d.in_flight()
                             || (w.wait_queued && d.stage == Stage::Queued)
-                            || d.rc.awaiting_receipt(&d.stage))
+                            || d.rc.awaiting_receipt(&d.stage)
+                            || self.external_starting(d.id))
                 })
             });
             // A take-over is done once its session runs in a tab here, or
@@ -1717,6 +1863,121 @@ impl App {
         Ok(out)
     }
 
+    /// The one place a tab's agent is held to its own tab. `args` as the
+    /// agent sent them become the arguments the job tools run with: only
+    /// the five job tools, only their own arguments, `tab` (if given) its
+    /// own id, a job named only if it is this tab's. Anything that names
+    /// another tab, an archived conversation or an account, or that tries
+    /// to confirm, is refused. Nothing here reveals another tab's jobs.
+    pub(crate) fn tab_scoped(&self, uid: u64, tool: &str, args: &Value) -> Result<Value, String> {
+        use crate::tab_jobs::TAB_TOOLS;
+        if !TAB_TOOLS.contains(&tool) {
+            return Err(format!(
+                "{tool} is not available to a tab's agent (it has {})",
+                TAB_TOOLS.join(", ")
+            ));
+        }
+        if self.find_tab(uid).is_none() {
+            return Err("this tab is gone".into());
+        }
+        let own = tab_id(uid);
+        let allowed: &[&str] = match tool {
+            "create_job" => &[
+                "name", "prompt", "tab", "cron", "every", "at", "catch_up", "until",
+            ],
+            "list_jobs" => &["tab", "status", "text"],
+            "update_job" => &[
+                "job", "id", "action", "name", "prompt", "tab", "cron", "every", "at", "catch_up",
+                "until",
+            ],
+            "delete_job" => &["job", "id"],
+            _ => &[
+                "tab",
+                "loop",
+                "name",
+                "cron",
+                "every",
+                "at",
+                "catch_up",
+                "until",
+                "keep_session_loop",
+            ],
+        };
+        let given = match args {
+            Value::Object(o) => o.clone(),
+            Value::Null => Default::default(),
+            _ => return Err("arguments must be an object".into()),
+        };
+        if let Some(k) = given.keys().find(|k| !allowed.contains(&k.as_str())) {
+            return Err(format!(
+                "{tool} takes no \"{k}\" here: a tab's agent works on its own tab's jobs only, and the user answers confirmations in GodTerm"
+            ));
+        }
+        let mut a = given;
+        // Which tab: this one, or nothing.
+        match a.get("tab") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(t))
+                if t.trim().eq_ignore_ascii_case(&own)
+                    || ["this", "self", "here"].contains(&t.trim().to_lowercase().as_str()) => {}
+            Some(other) => {
+                return Err(format!(
+                    "a tab's agent can only use its own tab ({own}), not {}: leave tab out",
+                    other
+                        .as_str()
+                        .map_or_else(|| other.to_string(), |s| format!("\"{s}\""))
+                ));
+            }
+        }
+        a.remove("tab");
+        match tool {
+            "create_job" | "adopt_loop" => {
+                a.insert("tab".into(), json!(own));
+            }
+            "list_jobs" => {
+                a.insert("_only_uid".into(), json!(uid));
+            }
+            _ => {
+                // update_job, delete_job: one of this tab's jobs.
+                let key = a
+                    .remove("job")
+                    .or_else(|| a.remove("id"))
+                    .and_then(|k| k.as_str().map(|s| s.trim().to_string()))
+                    .filter(|k| !k.is_empty())
+                    .ok_or("job is required (an id or name from list_jobs)")?;
+                a.remove("id");
+                let lk = key.to_lowercase();
+                let mine: Vec<&crate::jobs::Job> = self
+                    .jobs
+                    .jobs
+                    .iter()
+                    .filter(|j| j.target.uid == Some(uid))
+                    .collect();
+                let found = mine
+                    .iter()
+                    .find(|j| j.id == key)
+                    .or_else(|| {
+                        let p: Vec<_> = mine.iter().filter(|j| j.id.starts_with(&key)).collect();
+                        (p.len() == 1).then(|| p[0])
+                    })
+                    .or_else(|| {
+                        let n: Vec<_> = mine
+                            .iter()
+                            .filter(|j| j.name.to_lowercase().contains(&lk))
+                            .collect();
+                        (n.len() == 1).then(|| n[0])
+                    });
+                let Some(j) = found else {
+                    return Err(format!(
+                        "no job of this tab matches \"{key}\" (list_jobs shows this tab's jobs)"
+                    ));
+                };
+                a.insert("job".into(), json!(j.id));
+            }
+        }
+        Ok(Value::Object(a))
+    }
+
     pub(crate) fn one_tab(&mut self, args: &Value) -> Result<(usize, usize), String> {
         let x = self.tab_targets(args, false)?[0];
         self.last_target = Some(self.panes[x.0].tabs[x.1].uid);
@@ -1768,6 +2029,15 @@ impl App {
         if let Some(c) = slot.accent_of(t) {
             v["color"] = json!(c);
         }
+        if let Some(m) = self.tab_model_label(s, t) {
+            v["model"] = json!(m);
+        }
+        if let Some(e) = &tab.effort {
+            v["effort"] = json!(e);
+        }
+        if let Some(q) = self.queued_model(tab.uid) {
+            v["model_queued"] = json!(q.label);
+        }
         if self.last_target == Some(tab.uid) {
             v["last_used"] = json!(true);
         }
@@ -1779,6 +2049,12 @@ impl App {
         if q > 0 {
             v["queued_prompts"] = json!(q);
         }
+        // Background sessions forked from this tab for requests it was too
+        // busy for (its own work and loops are counted above).
+        let bg = self.tab_background_runs(tab.uid);
+        if !bg.is_empty() {
+            v["background_sessions"] = json!(bg);
+        }
         if tab.activity == Activity::Permission {
             if let Some(r) = self.request_of(s, t) {
                 v["waiting_for"] = json!(r.summary());
@@ -1787,7 +2063,7 @@ impl App {
         v
     }
 
-    fn describe_set(&self, tabs: &[(usize, usize)]) -> String {
+    pub(crate) fn describe_set(&self, tabs: &[(usize, usize)]) -> String {
         let accts: std::collections::BTreeSet<Option<usize>> =
             tabs.iter().map(|&(s, _)| self.panes[s].account).collect();
         match tabs {
@@ -2057,7 +2333,11 @@ impl App {
     }
 
     /// (plan, question, needs a yes) for a batch tool's arguments.
-    fn plan_for(&mut self, tool: &str, args: &Value) -> Result<(Value, String, bool), String> {
+    pub(crate) fn plan_for(
+        &mut self,
+        tool: &str,
+        args: &Value,
+    ) -> Result<(Value, String, bool), String> {
         if let Some(r) = self.admin_plan_for(tool, args) {
             return r;
         }
@@ -2066,6 +2346,15 @@ impl App {
         }
         if tool == "fix_resume" {
             return self.fix_resume_plan(args);
+        }
+        if tool == "archive_tabs" {
+            return self.archive_plan_for(args);
+        }
+        if matches!(
+            tool,
+            "create_job" | "update_job" | "delete_job" | "adopt_loop"
+        ) {
+            return self.jobs_plan_for(tool, args);
         }
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
         let listy = |k: &[&str]| {
@@ -2088,8 +2377,9 @@ impl App {
                     n => format!(" with the {n} images"),
                 };
                 let q = format!("Send that prompt{with} to {}?", self.describe_set(&tabs));
+                let mode = crate::app_busy::ModeArg::parse(s("mode").as_deref())?;
                 Ok((
-                    json!({"uids": self.uids(&tabs), "text": text, "images": images}),
+                    json!({"uids": self.uids(&tabs), "text": text, "images": images, "mode": format!("{mode:?}").to_lowercase(), "expect_reply": args.get("expect_reply").and_then(Value::as_bool)}),
                     q,
                     tabs.len() > 1,
                 ))
@@ -2421,7 +2711,7 @@ impl App {
     }
 
     /// Run a (confirmed or harmless) plan. Results carry what happened.
-    fn run_plan(&mut self, tool: &str, plan: &Value) -> Result<Value, String> {
+    pub(crate) fn run_plan(&mut self, tool: &str, plan: &Value) -> Result<Value, String> {
         if let Some(r) = self.admin_run_plan(tool, plan) {
             return r;
         }
@@ -2430,6 +2720,12 @@ impl App {
         }
         if tool == "fix_resume" {
             return self.fix_resume_run(plan);
+        }
+        if tool == "archive_tabs" {
+            return self.archive_run(plan);
+        }
+        if let Some(r) = self.jobs_run_plan(tool, plan) {
+            return r;
         }
         let uids: Vec<u64> = plan["uids"]
             .as_array()
@@ -2471,6 +2767,7 @@ impl App {
                     .flatten()
                     .filter_map(|p| p.as_str().map(PathBuf::from))
                     .collect();
+                let mode = crate::app_busy::ModeArg::parse(plan["mode"].as_str())?;
                 let mut ids = vec![];
                 let mut failed: Vec<Value> = gone(self)
                     .into_iter()
@@ -2485,8 +2782,15 @@ impl App {
                         failed.push(json!({"tab": tab_id(*u), "status": "failed", "reason": "that tab is not running (it ended or was never started)"}));
                         continue;
                     }
-                    let text = self.with_images(sl, &text, &images);
-                    ids.push(self.deliver_request(*u, &text));
+                    let with = self.with_images(sl, &text, &images);
+                    ids.push(self.send_in_mode(
+                        *u,
+                        &with,
+                        &text,
+                        !images.is_empty(),
+                        mode,
+                        plan["expect_reply"].as_bool(),
+                    ));
                     self.last_target = Some(*u);
                 }
                 Ok(
@@ -2895,6 +3199,21 @@ impl App {
             "control: {tool} {}",
             args.to_string().chars().take(300).collect::<String>()
         ));
+        // A tab's agent: scoped to its own tab's jobs, whatever it asks.
+        if let Some(uid) = args
+            .get("_client")
+            .and_then(Value::as_str)
+            .and_then(|c| c.strip_prefix("tab:"))
+        {
+            let Ok(uid) = uid.parse::<u64>() else {
+                return err("bad tab client");
+            };
+            let mut own = args.clone();
+            if let Some(o) = own.as_object_mut() {
+                o.remove("_client");
+            }
+            return self.tab_call(uid, tool, &own);
+        }
         // Who is calling: the assistant's own brain (godterm mcp started by
         // it; in-process calls count as it too) or another client.
         let brain = args
@@ -3033,6 +3352,18 @@ impl App {
         }
         if tool == "resend" {
             return self.resend_tool(args);
+        }
+        if tool == "talk_to_tab" {
+            return self.talk_to_tab_tool(args);
+        }
+        if tool == "set_tab_model" {
+            return self.set_tab_model_tool(args);
+        }
+        if tool == "brainstorm" {
+            return self.brainstorm_tool(args);
+        }
+        if tool == "show_tab_loops" {
+            return self.show_tab_loops_tool(args);
         }
         if let Some(r) = self.admin_tool(tool, args) {
             return r;
@@ -3566,10 +3897,27 @@ impl App {
                     json!({"started": self.start_takeover(live, target, crate::takeover::Mode::Copy, false, false)?}),
                 )
             }
+            "archive_tabs" | "archive_tab"
+                if args
+                    .get("dry_run")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    && args.get("confirm_token").is_none() =>
+            {
+                return self.archive_dry_run(args);
+            }
+            "list_archived" => return self.list_archived_json(args),
+            "list_jobs" => return self.list_jobs_json(args),
+            "run_job_now" => return self.run_job_now_tool(args),
+            "create_job" | "update_job" | "delete_job" | "adopt_loop" => {
+                return self.planned(tool, args);
+            }
+            "restore_archived" => return self.restore_archived_tool(args),
             "send_prompt" | "answer_prompt" | "close_tabs" | "close_tab" | "stop_loops"
-            | "stop_loop" | "broadcast" | "take_over_session" => {
+            | "stop_loop" | "broadcast" | "take_over_session" | "archive_tabs" | "archive_tab" => {
                 let tool = match tool {
                     "close_tab" => "close_tabs",
+                    "archive_tab" => "archive_tabs",
                     "stop_loop" => "stop_loops",
                     "broadcast" => "send_prompt",
                     t => t,
@@ -4855,6 +5203,8 @@ impl App {
             "restart": self.cont.note_text(),
             "assistant_account": self.self_switch_json(),
             "listening_paused": self.voice.paused.as_ref().map(|p| json!({"seconds_left": self.pause_left(), "reason": p.reason, "announcements_held": p.queued.len()})),
+            "archived": self.archive_state_json(),
+            "jobs": self.jobs_state_json(),
             "closed": self.closed.iter().rev().take(10).enumerate().map(|(i, c)| json!({"index": i, "tab": c.label, "account": c.account, "cwd": c.cwd, "loops": c.loops.len()})).collect::<Vec<_>>(),
             "accounts": (0..self.cfg.accounts.len()).map(|a| json!({
                 "account": a + 1,
@@ -5220,6 +5570,33 @@ fn handle(conn: UnixStream, events: Sender<AppEvent>, token: &str, ro_token: &st
     for line in BufReader::new(read).lines() {
         let Ok(line) = line else { break };
         let reply = match serde_json::from_str::<Value>(&line) {
+            // A tab's own client (its agent's godterm mcp): its tab's
+            // token, the five job tools, scoped to that tab in control_call.
+            Ok(req) if req.get("client").and_then(Value::as_str) == Some("tab") => {
+                match crate::tab_jobs::authorize(token, &req) {
+                    Err(e) => {
+                        crate::log::info(&format!("control: tab client refused: {e}"));
+                        err(e)
+                    }
+                    Ok(uid) => {
+                        let tool = req["tool"].as_str().unwrap_or("").to_string();
+                        let mut args = req.get("args").cloned().unwrap_or(json!({}));
+                        if !args.is_object() {
+                            args = json!({});
+                        }
+                        args["_client"] = json!(format!("tab:{uid}"));
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        if events
+                            .send(AppEvent::Control(tool.clone(), args, tx))
+                            .is_err()
+                        {
+                            break;
+                        }
+                        rx.recv_timeout(reply_wait(&tool))
+                            .unwrap_or_else(|_| err("godterm did not answer in time"))
+                    }
+                }
+            }
             // The read-only token: looking only.
             Ok(req)
                 if req
@@ -5302,6 +5679,11 @@ fn handle(conn: UnixStream, events: Sender<AppEvent>, token: &str, ro_token: &st
     }
 }
 
+#[cfg(test)]
+pub(crate) fn handle_for_tests(conn: UnixStream, events: Sender<AppEvent>, token: &str, ro: &str) {
+    handle(conn, events, token, ro)
+}
+
 /// GodTerm was started for scripted tests (GODTERM_TEST_CONTROL=1 or
 /// --test-control): the socket may then carry the user's answers.
 pub fn test_control() -> bool {
@@ -5330,6 +5712,7 @@ pub const READ_ONLY: &[&str] = &[
     "find",
     "search_projects",
     "list_learnings",
+    "list_jobs",
     "learning_history",
     "get_system_prompt",
     "prompt_history",
@@ -5365,11 +5748,14 @@ pub fn call(tool: &str, args: &Value) -> Result<Value> {
     s.set_read_timeout(Some(reply_wait(tool) + Duration::from_secs(5)))?;
     // The assistant's own brain says so (its mcp.json sets GODTERM_CLIENT).
     let client = crate::config::env_var("CLIENT").unwrap_or_else(|| "external".into());
-    writeln!(
-        s,
-        "{}",
-        json!({"token": token, "tool": tool, "args": args, "client": client})
-    )?;
+    let mut req = json!({"token": token, "tool": tool, "args": args, "client": client});
+    if client == "tab" {
+        // Which tab this agent is: its uid, from the launch.
+        req["tab"] = json!(crate::config::env_var("TAB")
+            .and_then(|t| t.trim().parse::<u64>().ok())
+            .unwrap_or(0));
+    }
+    writeln!(s, "{req}")?;
     let mut line = String::new();
     BufReader::new(s).read_line(&mut line)?;
     Ok(serde_json::from_str(&line)?)

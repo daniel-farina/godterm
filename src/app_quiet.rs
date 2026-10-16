@@ -132,6 +132,10 @@ impl App {
         if self.assistant.quiet.queue.is_empty() {
             return;
         }
+        // Brainstorming: updates wait until the draft is sent.
+        if self.brainstorm_on() {
+            return;
+        }
         if self.paused() {
             for u in std::mem::take(&mut self.assistant.quiet.queue) {
                 self.hold_announcement(&u.text);

@@ -568,6 +568,99 @@ impl App {
         self.state_dirty = true;
     }
 
+    /// Which column pane `i` is in and how many columns share its row, when
+    /// it has a neighbour to trade width with (None: zoomed, one column, a
+    /// pane spanning the row, a custom layout, a pane not on this page).
+    pub fn pane_col(&self, i: usize) -> Option<(usize, usize)> {
+        if self.view != View::Grid || self.zoom {
+            return None;
+        }
+        let a = self.last_arranged.as_ref()?;
+        let pos = self.visible_panes().iter().position(|&p| p == i)?;
+        let rect = a.placed.iter().find(|p| p.index == pos)?.rect;
+        // The column borders running along this pane's rows.
+        let along: Vec<&Border> = a
+            .borders
+            .iter()
+            .filter(|b| {
+                b.vertical && b.rect.y <= rect.y && rect.y < b.rect.y + b.rect.height
+            })
+            .collect();
+        if along.is_empty() {
+            return None;
+        }
+        let col = along.iter().filter(|b| b.rect.x < rect.x).count();
+        Some((col, shape_tracks(&a.shape).0))
+    }
+
+    /// The stored column weights of the current shape (the focus layout
+    /// starts at 2 to 1).
+    fn col_weights(&self, shape: &str, n: usize) -> Vec<f32> {
+        match self.ratios.get(shape).map(|r| &r.cols) {
+            Some(c) if c.len() == n && c.iter().all(|x| *x > 0.0) => c.clone(),
+            _ if shape == "focus" => vec![2.0, 1.0],
+            _ => vec![1.0; n],
+        }
+    }
+
+    /// The width pane `i`'s column would have after a caret step.
+    pub fn pane_width_after(&self, i: usize, grow: bool) -> Option<u16> {
+        let (col, n) = self.pane_col(i)?;
+        let shape = &self.last_arranged.as_ref()?.shape;
+        let area = self.main_area;
+        Some(layout::width_after(
+            &self.col_weights(shape, n),
+            n,
+            area.x,
+            area.width,
+            col,
+            grow,
+        ))
+    }
+
+    /// The width carets and their keys: pane `i` wider or narrower by a
+    /// step; the neighbours give or take the space, kept per shape like a
+    /// border drag.
+    pub fn resize_pane_width(&mut self, i: usize, grow: bool) {
+        let Some((col, n)) = self.pane_col(i) else {
+            self.flash("This pane has no neighbour to trade width with");
+            return;
+        };
+        let Some(shape) = self.last_arranged.as_ref().map(|a| a.shape.clone()) else {
+            return;
+        };
+        let area = self.main_area;
+        let cur = self.col_weights(&shape, n);
+        let next = layout::resize_col(&cur, n, area.width, col, grow);
+        if next == cur {
+            self.flash(if grow {
+                "The panes beside it are as narrow as they go"
+            } else {
+                "This pane is as narrow as it goes"
+            });
+            return;
+        }
+        self.ratios.entry(shape).or_default().cols = next;
+        self.state_dirty = true;
+    }
+
+    /// Equal pane widths for the current shape (heights stay).
+    pub fn equal_pane_widths(&mut self) {
+        let Some(shape) = self.last_arranged.as_ref().map(|a| a.shape.clone()) else {
+            return;
+        };
+        if shape == "focus" {
+            self.ratios.entry(shape).or_default().cols = vec![1.0, 1.0];
+        } else if let Some(r) = self.ratios.get_mut(&shape) {
+            r.cols.clear();
+            if r.rows.is_empty() {
+                self.ratios.remove(&shape);
+            }
+        }
+        self.state_dirty = true;
+        self.flash("Pane widths back to equal");
+    }
+
     /// Back to equal sizes for the current shape.
     pub fn reset_ratios(&mut self) {
         if let Some(a) = &self.last_arranged {

@@ -297,6 +297,53 @@ fn arrange_focus(n: usize, area: Rect, focus: usize, max_r: usize, ratios: &Rati
     }
 }
 
+/// The least width a caret step leaves a pane (a border drag may go lower).
+pub const CARET_MIN_W: u16 = 30;
+
+/// How much of the row one step of the width carets moves.
+pub const STEP_FRAC: f32 = 0.10;
+
+/// The weights as `n` usable tracks (equal when they do not fit).
+fn usable(weights: &[f32], n: usize) -> Vec<f32> {
+    if weights.len() == n && weights.iter().all(|x| *x > 0.0) {
+        weights.to_vec()
+    } else {
+        vec![1.0; n]
+    }
+}
+
+/// Column `col` made wider (`grow`) or narrower by a step of about a tenth
+/// of the row, the neighbour on its right giving or taking the space (the
+/// one on its left for the last column). Neither goes under the least a
+/// border drag allows; with no room the weights come back unchanged.
+pub fn resize_col(weights: &[f32], n: usize, len: u16, col: usize, grow: bool) -> Vec<f32> {
+    let mut w = usable(weights, n);
+    if n < 2 || col >= n || len == 0 {
+        return w;
+    }
+    let nb = if col + 1 < n { col + 1 } else { col - 1 };
+    let total: f32 = w.iter().sum();
+    let min_frac = CARET_MIN_W as f32 / len as f32 * total;
+    let (from, to) = if grow { (nb, col) } else { (col, nb) };
+    let room = w[from] - min_frac;
+    let amount = (STEP_FRAC * total).min(room);
+    if amount <= 0.0 {
+        return w;
+    }
+    w[from] -= amount;
+    w[to] += amount;
+    w
+}
+
+/// The width column `col` would have after a step (for the hover text).
+pub fn width_after(weights: &[f32], n: usize, start: u16, len: u16, col: usize, grow: bool) -> u16 {
+    let w = resize_col(weights, n, len, col, grow);
+    tracks(start, len, n, Some(&w))
+        .get(col)
+        .map(|t| t.1)
+        .unwrap_or(0)
+}
+
 /// New weights after dragging border `i` to `pos` (a column or row
 /// coordinate) in a track list of `n` covering `start..start + len`.
 pub fn drag(weights: &[f32], n: usize, start: u16, len: u16, i: usize, pos: u16) -> Vec<f32> {
@@ -449,6 +496,46 @@ mod tests {
         assert_eq!(parse_mode("nonsense", ""), Mode::Auto);
         assert_eq!(next_mode("auto"), "grid");
         assert_eq!(next_mode("focus"), "auto");
+    }
+
+    #[test]
+    fn caret_steps_two_columns() {
+        let w = resize_col(&[], 2, 200, 0, true);
+        assert!((w[0] / (w[0] + w[1]) - 0.6).abs() < 0.001, "{w:?}");
+        let w = resize_col(&[], 2, 200, 1, false);
+        assert!((w[1] / (w[0] + w[1]) - 0.4).abs() < 0.001, "{w:?}");
+        // The last column grows at the left neighbour's cost.
+        let w = resize_col(&[1.0, 1.0], 2, 200, 1, true);
+        assert!(w[1] > w[0]);
+        assert_eq!(width_after(&[], 2, 0, 200, 0, true), 120);
+        assert_eq!(width_after(&[], 2, 0, 200, 0, false), 80);
+    }
+
+    #[test]
+    fn caret_steps_three_columns() {
+        let w = resize_col(&[], 3, 300, 1, true);
+        assert!((w[1] - 1.3).abs() < 0.001 && (w[2] - 0.7).abs() < 0.001 && w[0] == 1.0, "{w:?}");
+        let w = resize_col(&[], 3, 300, 2, true);
+        assert!((w[2] - 1.3).abs() < 0.001 && (w[1] - 0.7).abs() < 0.001, "{w:?}");
+        let w = resize_col(&[], 3, 300, 0, false);
+        assert!((w[0] - 0.7).abs() < 0.001 && (w[1] - 1.3).abs() < 0.001, "{w:?}");
+        let total: f32 = w.iter().sum();
+        assert!((total - 3.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn caret_steps_stop_at_the_minimum() {
+        let mut w = vec![1.0, 1.0];
+        for _ in 0..20 {
+            w = resize_col(&w, 2, 200, 0, false);
+        }
+        let cols = tracks(0, 200, 2, Some(&w));
+        assert!(cols[0].1 >= 30, "{cols:?}");
+        // At the minimum nothing moves any more.
+        assert_eq!(resize_col(&w, 2, 200, 0, false), w);
+        // One column, or a column out of range: unchanged.
+        assert_eq!(resize_col(&[], 1, 200, 0, true), vec![1.0]);
+        assert_eq!(resize_col(&[1.0, 1.0], 2, 200, 5, true), vec![1.0, 1.0]);
     }
 
     #[test]

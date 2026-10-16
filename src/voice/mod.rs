@@ -152,6 +152,9 @@ pub enum Ctl {
     /// The mic off (false) or on again with the engine kept: capture
     /// closes, talk back goes on (the headphone tap).
     Mic(bool),
+    /// Brainstorm mode: every utterance is transcribed (no wake word
+    /// screening), as in open mic.
+    Brainstorm(bool),
     Shutdown,
 }
 
@@ -193,6 +196,7 @@ impl Voice {
             rx,
             events,
             speaking: Arc::clone(&speaking),
+            brainstorm: std::cell::Cell::new(false),
         };
         let _ = std::thread::Builder::new()
             .name("voice".into())
@@ -250,6 +254,11 @@ impl Voice {
     #[cfg(test)]
     pub fn speech_stops(&self) -> u64 {
         self.speaker.stops()
+    }
+
+    /// Brainstorm mode on or off (no wake word screening while on).
+    pub fn set_brainstorm(&self, on: bool) {
+        let _ = self.ctl.send(Ctl::Brainstorm(on));
     }
 
     pub fn set_vocabulary(&self, v: String) {
@@ -336,6 +345,17 @@ struct Engine {
     rx: Receiver<Ctl>,
     events: Sender<AppEvent>,
     speaking: Arc<AtomicBool>,
+    /// Brainstorm mode: transcribe everything, as open mic does.
+    brainstorm: std::cell::Cell<bool>,
+}
+
+/// The extra end of speech wait for what was said so far: `hold_ms` when
+/// the latest partial sounds unfinished ("and", "um", a comma), else 0.
+pub fn partial_hold(last_partial: Option<&str>, hold_ms: u32) -> u32 {
+    match last_partial {
+        Some(t) if hold_ms > 0 && grammar::ends_unfinished(t) => hold_ms.min(4000),
+        _ => 0,
+    }
 }
 
 pub fn vad_cfg(c: &VoiceCfg) -> VadCfg {
@@ -816,6 +836,7 @@ impl Engine {
                             self.status(idle());
                         }
                     }
+                    Ok(Ctl::Brainstorm(on)) => self.brainstorm.set(on),
                     Ok(Ctl::Speaker(c)) => {
                         if let Some(ev) = guard.command(c) {
                             self.send(VoiceEvent::Speaker(ev));
@@ -1071,6 +1092,16 @@ impl Engine {
             if !self.always_on && !ptt {
                 continue;
             }
+            // A sentence that sounds unfinished ("and", "um", a comma at
+            // the end of the latest partial) waits longer for the rest.
+            if ep.snapshot().is_some() && ep.trailing_silence_ms() > 0 {
+                let last = partial_log
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .last()
+                    .and_then(|p| p["text"].as_str().map(str::to_string));
+                ep.hold_ms = partial_hold(last.as_deref(), self.cfg.connective_hold_ms);
+            }
             let (ev, utt) = ep.push(&frame);
             if ev == VadEvent::Start {
                 utt_started = Some(Instant::now());
@@ -1233,7 +1264,8 @@ impl Engine {
             };
             self.send(VoiceEvent::Speaker(ev));
         } else {
-            let check = guard.check(samples, ptt, self.cfg.mode == "open");
+            let open = self.cfg.mode == "open" || self.brainstorm.get();
+            let check = guard.check(samples, ptt, open);
             if check.verdict.is_some() || check.far.is_some() {
                 let why = check.reason();
                 if let Some(v) = check.verdict {
@@ -1267,6 +1299,7 @@ impl Engine {
                 // skip longer speech; short phrases get the large model.
                 let words = norm.split(' ').filter(|w| !w.is_empty()).count();
                 if self.cfg.mode != "open"
+                    && !self.brainstorm.get()
                     && words > 4
                     && wake_profile::strip_wake_with(
                         profile,
@@ -1431,5 +1464,31 @@ mod kill_helpers_tests {
             assert!(t0.elapsed().as_secs() < 3, "still alive after kill_helpers");
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+    }
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::partial_hold;
+
+    /// The engine's end of speech waits longer while the latest partial
+    /// ends on a filler or connective, by the configured amount.
+    #[test]
+    fn connectives_extend_the_end_of_speech() {
+        assert_eq!(
+            partial_hold(Some("so we need to fix the cache and"), 1500),
+            1500
+        );
+        assert_eq!(partial_hold(Some("first the parser, um"), 1500), 1500);
+        assert_eq!(partial_hold(Some("first the parser,"), 2000), 2000);
+        assert_eq!(partial_hold(Some("Run the tests."), 1500), 0);
+        assert_eq!(partial_hold(None, 1500), 0);
+        // Off when set to 0.
+        assert_eq!(partial_hold(Some("and"), 0), 0);
+        assert_eq!(
+            crate::config::VoiceCfg::default().connective_hold_ms,
+            1500,
+            "the default"
+        );
     }
 }

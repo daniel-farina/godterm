@@ -14,6 +14,11 @@
 # instead of local Docker, and download the artifacts into dist/. Needs REF
 # pushed. Use it on Macs whose Docker cannot emulate x86_64.
 #
+# WINDOWS_FROM_CI=1: build Windows on a GitHub hosted runner
+# (build-windows.yml) instead of the Windows machine over ssh, and download
+# the zip and installer into dist/. Needs REF pushed. Unsigned, like the ssh
+# build today. Unset keeps the ssh path; NO_WINDOWS=1 still skips Windows.
+#
 # SHA256SUMS is signed with the self update key (UPDATE_KEY, default
 # ~/.config/godterm-release/minisign.key) into SHA256SUMS.minisig.
 set -euo pipefail
@@ -32,7 +37,7 @@ git -C "$ROOT" worktree prune
 git -C "$ROOT" worktree add --detach "$WT" "$sha" >/dev/null
 trap 'git -C "$ROOT" worktree remove --force "$WT" 2>/dev/null || true' EXIT
 echo "==> building $REF ($sha) in $WT"
-if [[ "$REF" == v* && ( -n "${DRAFT:-}" || -n "${LINUX_FROM_CI:-}" ) ]]; then
+if [[ "$REF" == v* && ( -n "${DRAFT:-}" || -n "${LINUX_FROM_CI:-}" || -n "${WINDOWS_FROM_CI:-}" ) ]]; then
   git -C "$ROOT" push -q origin "refs/tags/$REF"
 fi
 
@@ -40,32 +45,44 @@ fi
 # a macOS run). Otherwise only this script's own artifacts are removed,
 # never the folder itself.
 if [[ -z "${KEEP_DIST:-}" && -d "$DIST" ]]; then
-  rm -rf "$DIST/stage" "$DIST/ci"
+  rm -rf "$DIST/stage" "$DIST/ci" "$DIST/ci-linux" "$DIST/ci-windows"
   find "$DIST" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.tar.gz' \
     -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.exe' \
     -o -name 'SHA256SUMS*' -o -name '.linux.log' -o -name '.windows.log' \) -delete
 fi
 mkdir -p "$DIST"
-linux_from_ci() {
-  local before id
-  before="$(gh run list --repo daniel-farina/godterm --workflow build-linux.yml --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
-  gh workflow run build-linux.yml --repo daniel-farina/godterm -f ref="$sha"
+# Dispatch workflow $1 for $sha, wait, download its artifacts into
+# $DIST/ci-$2 and move the files matching the find tests in the rest of the
+# arguments into $DIST.
+from_ci() {
+  local wf="$1" tag="$2" before id
+  shift 2
+  before="$(gh run list --repo daniel-farina/godterm --workflow "$wf" --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+  gh workflow run "$wf" --repo daniel-farina/godterm -f ref="$sha"
   for _ in $(seq 60); do
-    id="$(gh run list --repo daniel-farina/godterm --workflow build-linux.yml --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+    id="$(gh run list --repo daniel-farina/godterm --workflow "$wf" --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
     [[ "$id" != "$before" ]] && break
     sleep 5
   done
-  [[ "$id" != "$before" ]] || { echo "build-linux.yml did not start" >&2; exit 1; }
-  echo "==> waiting for build-linux run $id"
+  [[ "$id" != "$before" ]] || { echo "$wf did not start" >&2; exit 1; }
+  echo "==> waiting for $wf run $id"
   gh run watch "$id" --repo daniel-farina/godterm --exit-status >/dev/null
-  gh run download "$id" --repo daniel-farina/godterm --dir "$DIST/ci"
-  find "$DIST/ci" -type f \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -exec mv {} "$DIST/" \;
-  rm -rf "$DIST/ci"
+  gh run download "$id" --repo daniel-farina/godterm --dir "$DIST/ci-$tag"
+  find "$DIST/ci-$tag" -type f \( "$@" \) -exec mv {} "$DIST/" \;
+  rm -rf "$DIST/ci-$tag"
+}
+linux_from_ci() {
+  from_ci build-linux.yml linux -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage'
+}
+windows_from_ci() {
+  from_ci build-windows.yml windows -name '*-pc-windows-msvc.zip' -o -name 'GodTerm-*-windows-x64-setup.exe'
 }
 linux() {
   if [[ -n "${LINUX_FROM_CI:-}" ]]; then linux_from_ci; else "$WT/scripts/release/linux.sh"; fi
 }
-windows() { "$WT/scripts/release/windows-remote.sh"; }
+windows() {
+  if [[ -n "${WINDOWS_FROM_CI:-}" ]]; then windows_from_ci; else "$WT/scripts/release/windows-remote.sh"; fi
+}
 case "${ONLY:-all}" in
   macos) "$WT/scripts/release/macos.sh" ;;
   linux) linux ;;

@@ -69,6 +69,10 @@ pub struct Slot {
     /// What the search field at the top of the tab list filters by
     /// (empty: every tab). Not saved.
     pub filter: String,
+    /// The tab list's window as last drawn: (first row shown, the last
+    /// first row there can be). The wheel moves from what is on screen,
+    /// in the list's own rows (headers, pinned, the sort, the search).
+    pub list_window: std::cell::Cell<(usize, usize)>,
 }
 
 /// What each tab is called in lists: its name, made unique within the
@@ -112,6 +116,7 @@ impl Slot {
             sort: Default::default(),
             order_cache: Default::default(),
             filter: String::new(),
+            list_window: Default::default(),
         }
     }
 
