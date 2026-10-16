@@ -54,6 +54,9 @@ pub struct Loop {
     pub wake_at: Option<DateTime<Utc>>,
     pub deleted: bool,
     pub confidence: Confidence,
+    /// Grok Build's interval as it says it ("every 5 minutes"), for its
+    /// scheduler_create tasks (they have no cron).
+    pub every: Option<String>,
 }
 
 impl Loop {
@@ -82,6 +85,13 @@ impl Loop {
     }
 
     pub fn cadence(&self) -> String {
+        if let Some(e) = &self.every {
+            return if self.recurring {
+                e.clone()
+            } else {
+                format!("once: {e}")
+            };
+        }
         match (&self.kind, &self.cron) {
             (Kind::Wakeup, _) => "dynamic (wakes itself)".into(),
             (_, Some(c)) => {
@@ -180,6 +190,35 @@ impl Scanner {
                 }
             }
         }
+        // Grok Build's chat_history.jsonl: tool calls on the assistant
+        // line, results on lines of their own.
+        if let Some(calls) = o.get("tool_calls").and_then(Value::as_array) {
+            for c in calls {
+                let name = c.get("name").and_then(Value::as_str).unwrap_or("");
+                if matches!(name, "scheduler_create" | "scheduler_delete") {
+                    let id = c
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let input = match c.get("arguments") {
+                        Some(Value::String(a)) => serde_json::from_str(a).unwrap_or(Value::Null),
+                        Some(v) => v.clone(),
+                        None => Value::Null,
+                    };
+                    self.pending.insert(id, (name.to_string(), input, ts));
+                }
+            }
+        }
+        if o.get("type").and_then(Value::as_str) == Some("tool_result") {
+            if let Some(id) = o.get("tool_call_id").and_then(Value::as_str) {
+                if let Some((name, input, uts)) = self.pending.remove(id) {
+                    let text = o.get("content").and_then(Value::as_str).unwrap_or("");
+                    self.result(&name, &input, text, uts.or(ts));
+                }
+            }
+            return;
+        }
         let Some(content) = o.pointer("/message/content").and_then(Value::as_array) else {
             return;
         };
@@ -227,7 +266,13 @@ impl Scanner {
                     .strip_prefix("Scheduled ")
                     .and_then(|t| t.split_whitespace().nth(2))
                     .filter(|id| id.chars().all(|c| c.is_ascii_hexdigit()) && id.len() >= 6);
-                let Some(id) = id else { return }; // denied or failed
+                // None: denied or failed.
+                let Some(id) = id else { return };
+                // The same job seen twice (a resumed or copied session
+                // repeats its history): one loop.
+                if self.loops.iter().any(|l| l.id == id) {
+                    return;
+                }
                 self.loops.push(Loop {
                     id: id.to_string(),
                     kind: Kind::Cron,
@@ -248,7 +293,69 @@ impl Scanner {
                     wake_at: None,
                     deleted: false,
                     confidence: Confidence::High,
+                    every: None,
                 });
+            }
+            "scheduler_create" => {
+                // "Scheduled task created (ID: 019ff7d0a2b4, every 2 minutes)."
+                // ("updated" for one it changed).
+                let Some(rest) = text
+                    .strip_prefix("Scheduled task created (ID: ")
+                    .or_else(|| text.strip_prefix("Scheduled task updated (ID: "))
+                else {
+                    return;
+                };
+                let inner = rest.split(')').next().unwrap_or("");
+                let (id, every) = match inner.split_once(", ") {
+                    Some((i, e)) => (i.trim(), Some(e.trim().to_string())),
+                    None => (inner.trim(), None),
+                };
+                if id.is_empty() {
+                    return;
+                }
+                let prompt = s("prompt");
+                let recurring = input
+                    .get("recurring")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                match self.loops.iter_mut().find(|l| l.id == id && !l.deleted) {
+                    Some(l) => {
+                        if let Some(p) = prompt {
+                            l.prompt = p;
+                        }
+                        l.every = every.or(l.every.take());
+                        l.recurring = recurring;
+                    }
+                    None => self.loops.push(Loop {
+                        id: id.to_string(),
+                        kind: Kind::Cron,
+                        cron: None,
+                        prompt: prompt.unwrap_or_default(),
+                        recurring,
+                        durable: input
+                            .get("durable")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        created: ts,
+                        last_fire: None,
+                        fires: 0,
+                        wake_at: None,
+                        deleted: false,
+                        confidence: Confidence::High,
+                        every,
+                    }),
+                }
+            }
+            "scheduler_delete" => {
+                // "Scheduled task <id> cancelled."
+                let id = s("id").or_else(|| s("task_id"));
+                if let Some(id) = id {
+                    if text.contains("cancelled") {
+                        for l in self.loops.iter_mut().filter(|l| l.id == id) {
+                            l.deleted = true;
+                        }
+                    }
+                }
             }
             "CronDelete" => {
                 if let Some(id) = s("id") {
@@ -299,6 +406,7 @@ impl Scanner {
                         wake_at: wake,
                         deleted: false,
                         confidence: Confidence::Medium,
+                        every: None,
                     }),
                 }
             }
@@ -344,13 +452,14 @@ pub fn durable(cwd: &Path) -> Vec<Loop> {
                 wake_at: None,
                 deleted: false,
                 confidence: Confidence::High,
+                every: None,
             })
         })
         .collect()
 }
 
 /// One cron field: does `v` match it?
-fn field_matches(f: &str, v: u32, min: u32) -> bool {
+pub(crate) fn field_matches(f: &str, v: u32, min: u32) -> bool {
     f.split(',').any(|part| {
         let (range, step) = match part.split_once('/') {
             Some((r, s)) => (r, s.parse::<u32>().unwrap_or(1).max(1)),
@@ -445,6 +554,152 @@ pub fn human_cron(expr: &str) -> String {
         }
         _ => expr.to_string(),
     }
+}
+
+/// "a", "a and b", "a, b and c".
+pub fn join_and(v: &[String]) -> String {
+    match v.len() {
+        0 => String::new(),
+        1 => v[0].clone(),
+        n => format!("{} and {}", v[..n - 1].join(", "), v[n - 1]),
+    }
+}
+
+/// A cron field of plain numbers, lists and ranges ("2,4,6", "1-5"),
+/// expanded; None for "*", steps or anything else.
+fn plain_nums(f: &str, lo: u32, hi: u32) -> Option<Vec<u32>> {
+    let mut v = vec![];
+    for part in f.split(',') {
+        if let Some((a, b)) = part.split_once('-') {
+            let (a, b): (u32, u32) = (a.parse().ok()?, b.parse().ok()?);
+            if a > b || b > hi {
+                return None;
+            }
+            v.extend(a..=b);
+        } else {
+            let n: u32 = part.parse().ok()?;
+            if n < lo || n > hi {
+                return None;
+            }
+            v.push(n);
+        }
+    }
+    v.sort_unstable();
+    v.dedup();
+    Some(v)
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+const DAYS: [&str; 7] = [
+    "Sundays",
+    "Mondays",
+    "Tuesdays",
+    "Wednesdays",
+    "Thursdays",
+    "Fridays",
+    "Saturdays",
+];
+
+/// The days part of a cron: "every day", "on weekdays", "on Mondays",
+/// "on day 1 of every month", "on Oct 1".
+fn cron_days(dom: &str, mon: &str, dow: &str) -> Option<String> {
+    match (dom, mon, dow) {
+        ("*", "*", "*") => Some("every day".into()),
+        ("*", "*", d) => {
+            let mut v: Vec<u32> = plain_nums(d, 0, 7)?.into_iter().map(|n| n % 7).collect();
+            v.sort_unstable();
+            v.dedup();
+            if v == [1, 2, 3, 4, 5] {
+                return Some("on weekdays".into());
+            }
+            if v == [0, 6] {
+                return Some("on weekends".into());
+            }
+            let names: Vec<String> = v.iter().map(|&n| DAYS[n as usize].to_string()).collect();
+            Some(format!("on {}", join_and(&names)))
+        }
+        (d, "*", "*") => {
+            let v = plain_nums(d, 1, 31)?;
+            let names: Vec<String> = v.iter().map(|n| n.to_string()).collect();
+            Some(format!(
+                "on day{} {} of every month",
+                if v.len() == 1 { "" } else { "s" },
+                join_and(&names)
+            ))
+        }
+        (d, m, "*") => {
+            let ds = plain_nums(d, 1, 31)?;
+            let ms = plain_nums(m, 1, 12)?;
+            let mut v = vec![];
+            for mo in &ms {
+                for dd in &ds {
+                    v.push(format!("{} {dd}", MONTHS[(*mo - 1) as usize]));
+                }
+            }
+            (v.len() <= 6).then(|| format!("on {}", join_and(&v)))
+        }
+        _ => None,
+    }
+}
+
+/// A cron in plain words, for people: "7 2,4,6 * * *" is "at 2:07, 4:07
+/// and 6:07 every day", "*/15 * * * *" "every 15 minutes", "0 9 * * 1-5"
+/// "at 9:00 on weekdays". Falls back to `human_cron`.
+pub fn describe_cron(expr: &str) -> String {
+    let f: Vec<&str> = expr.split_whitespace().collect();
+    if f.len() != 5 {
+        return expr.to_string();
+    }
+    let Some(days) = cron_days(f[2], f[3], f[4]) else {
+        return human_cron(expr);
+    };
+    let tail = |s: String| {
+        if days == "every day" {
+            s
+        } else {
+            format!("{s}, {days}")
+        }
+    };
+    let mins = plain_nums(f[0], 0, 59);
+    match (f[0], f[1]) {
+        ("*", "*") => return tail("every minute".into()),
+        (m, "*") if m.starts_with("*/") => {
+            return tail(format!("every {} minutes", &m[2..]));
+        }
+        (_, "*") => {
+            if let Some(ms) = &mins {
+                let v: Vec<String> = ms.iter().map(|m| format!(":{m:02}")).collect();
+                return tail(format!("every hour at {}", join_and(&v)));
+            }
+        }
+        (_, h) if h.starts_with("*/") => {
+            if let Some(ms) = &mins {
+                let v: Vec<String> = ms.iter().map(|m| format!(":{m:02}")).collect();
+                return tail(format!("every {} hours at {}", &h[2..], join_and(&v)));
+            }
+        }
+        (_, h) => {
+            if let (Some(ms), Some(hs)) = (&mins, plain_nums(h, 0, 23)) {
+                let at = if ms.len() * hs.len() <= 8 {
+                    let mut v = vec![];
+                    for hh in &hs {
+                        for mm in ms {
+                            v.push(format!("{hh}:{mm:02}"));
+                        }
+                    }
+                    join_and(&v)
+                } else {
+                    let mm: Vec<String> = ms.iter().map(|m| format!(":{m:02}")).collect();
+                    let hh: Vec<String> = hs.iter().map(|h| h.to_string()).collect();
+                    format!("{} past hours {}", join_and(&mm), join_and(&hh))
+                };
+                return format!("at {at} {days}");
+            }
+        }
+    }
+    human_cron(expr)
 }
 
 /// "in 4m", "3h ago".

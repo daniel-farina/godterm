@@ -34,6 +34,9 @@ pub enum AppEvent {
     /// after the previous key (a paste the terminal typed out), timed
     /// when read, not when handled (a busy frame bunches keys up).
     KeyRead(crossterm::event::KeyEvent, bool),
+    /// Wheel events the input thread read in one go, the same way at the
+    /// same place: the event and how many (a trackpad sends bursts).
+    Wheel(crossterm::event::MouseEvent, u16),
     /// A provider's own login's usage (the assistant's Grok).
     OwnUsage(&'static str, Box<Result<crate::usage::Usage, String>>),
     Sessions(usize, Vec<SessionInfo>),
@@ -307,6 +310,10 @@ pub enum Modal {
     GroupMove(usize, usize, usize),
     /// Stop every loop?
     ConfirmStopLoops,
+    /// A tab's agent asks for a job change: the request's token.
+    ConfirmTabJob(String),
+    /// The detail card of a Loops & schedules row (its key).
+    SchedCard(String),
     /// Menu bar buttons that did not fit.
     MenuOverflow,
     None,
@@ -317,11 +324,17 @@ pub enum Modal {
     UpdateRestart,
     ConfirmQuit,
     ConfirmClose,
+    /// Archive this tab (uid) although it is busy or has unsent text?
+    ConfirmArchive(u64),
+    /// An archived entry's menu: its id, the selected row.
+    ArchMenu(String, usize),
     AddAccount(Box<crate::add_account::AddForm>),
     /// Close this pane's window (all its tabs)?
     ConfirmCloseWindow(usize),
     /// "New tab on… ▾" of an empty grid cell.
     EmptySlotMenu(usize),
+    /// Where the mic goes next (the pane whose badge opened it).
+    MicMenu(usize),
     /// Picking a color for an account or a tab: the selected choice.
     ColorPick(crate::color_pick::Target, usize),
     NewTab(Picker),
@@ -448,6 +461,8 @@ pub struct App {
     pub assistant_turn: u64,
     pub assistant_calls: usize,
     pub pending_confirms: Vec<crate::control::Pending>,
+    /// Job requests from the agents in tabs, waiting for the user.
+    pub tab_jobs: crate::tab_jobs::TabJobs,
     /// Confirmation tokens a newer question replaced: (old, new).
     pub superseded: Vec<(String, String)>,
     /// A system_check running off the UI thread, for the reply that waits.
@@ -486,6 +501,8 @@ pub struct App {
     pub moved_ids: std::collections::HashMap<u64, u64>,
     /// `claude stop` runs for tabs held by a background run (app_bglock).
     pub bg_stops: Vec<crate::app_bglock::Stopping>,
+    /// Side questions and background forks for busy tabs (app_busy).
+    pub busy: crate::app_busy::State,
     pub last_tab_move: Option<crate::app_tabmove::DoneMove>,
     pub sel_overview: usize,
     /// Background tabs that just started waiting or finished.
@@ -519,6 +536,14 @@ pub struct App {
     /// Recently closed tabs (newest last) and the Undo toast.
     pub closed: Vec<crate::closed::ClosedTab>,
     pub closed_seq: u64,
+    /// Archived conversations (~/.godterm/archive.json), whether the
+    /// Archived group is folded, the row last clicked, a fixed "now" for
+    /// tests, and memory freed by archiving this run (KB).
+    pub archive: crate::archive::Store,
+    pub archive_collapsed: bool,
+    pub archive_sel: Option<String>,
+    pub archive_clock: Option<i64>,
+    pub freed_kb: u64,
     /// The user said yes to opening a tab in their home folder (set only
     /// while that confirmed plan runs).
     pub open_home_ok: bool,
@@ -552,6 +577,34 @@ pub struct App {
     pub tab_list_width: Option<String>,
     /// Ctrl-a ' then digits: a pane number being typed.
     pub num_entry: Option<String>,
+    /// Ctrl-a # then a number: the pane whose tab's model is being picked.
+    pub model_entry: Option<usize>,
+    /// Model switches waiting for their tab to be idle (app_tabmodel).
+    pub model_switches: Vec<crate::app_tabmodel::ModelSwitch>,
+    /// Open loops drawers: pane -> rows wanted (app_loopsdrawer).
+    pub loops_drawer: std::collections::HashMap<usize, u16>,
+    /// The pane whose drawer has the keys (Esc, Up, Down).
+    pub loops_drawer_focus: Option<usize>,
+    pub loops_drawer_sel: usize,
+    /// A drawer's top edge being dragged (its pane).
+    pub loops_drawer_drag: Option<usize>,
+    /// Where each open drawer was drawn.
+    pub loops_drawer_geo: std::cell::RefCell<std::collections::HashMap<usize, Rect>>,
+    /// Cancel clicked once: (tab, loop id, when).
+    pub loops_confirm: Option<(u64, String, Instant)>,
+    /// GodTerm's own jobs (jobs.rs, app_jobs.rs), the prompts they sent,
+    /// a fixed clock for tests, when the app started and last looked.
+    pub jobs: crate::jobs::Store,
+    pub job_runs: Vec<crate::app_jobs::JobRun>,
+    pub job_clock: Option<i64>,
+    pub jobs_boot: Instant,
+    pub jobs_ticked: Instant,
+    /// The Loops & schedules section of the assistant panel is open, and
+    /// a delete clicked once.
+    pub sched_open: bool,
+    pub sched_confirm: Option<(String, Instant)>,
+    /// Its scroll, selection, folded tab groups (app_sched).
+    pub sched_ui: crate::app_sched::SchedUi,
     pub rt_privacy: Option<bool>,
     /// Eager restore: tabs still to start, (pane, tab uid), one at a time.
     pub restore_queue: std::collections::VecDeque<(usize, u64)>,
@@ -610,6 +663,10 @@ pub struct App {
     pub last_modal_from: Option<usize>,
     /// Last mouse position (for hover highlights and hints).
     pub mouse_pos: Option<(u16, u16)>,
+    /// Wheel events in the burst being handled (see `on_wheel`).
+    pub wheel_n: u16,
+    /// The last wheel event that scrolled a pane: when, and up or down.
+    pub wheel_last: Option<(Instant, bool)>,
     pub last_click: Option<(Instant, crate::hits::UiAction)>,
     /// Text selected by dragging in a pane or the assistant (app_select).
     pub selection: Option<crate::select::Selection>,
@@ -623,6 +680,10 @@ pub struct App {
     pub mouse_capture: bool,
     pub tx: Sender<AppEvent>,
     pub voice: crate::app_voice::VoiceState,
+    /// Direct mode: the voice goes to one tab (app_direct).
+    pub direct: crate::app_direct::DirectState,
+    /// Brainstorm mode (app_brainstorm): speech drafted, not sent.
+    pub brainstorm: crate::app_brainstorm::BrainstormState,
     /// The headphone tap's Now Playing claim (voice.headphone_tap).
     pub media: crate::media_keys::MediaKeys,
     /// config.toml mtime last loaded, for hot reload.
@@ -706,6 +767,7 @@ impl App {
             assistant_turn: 0,
             assistant_calls: 0,
             pending_confirms: vec![],
+            tab_jobs: Default::default(),
             superseded: vec![],
             pending_job: None,
             deliveries: vec![],
@@ -722,6 +784,7 @@ impl App {
             pending_moves: vec![],
             moved_ids: Default::default(),
             bg_stops: vec![],
+            busy: Default::default(),
             opened_paths: vec![],
             takeovers: vec![],
             sess_live: Default::default(),
@@ -747,6 +810,11 @@ impl App {
             output_at: Default::default(),
             closed: vec![],
             closed_seq: 0,
+            archive: crate::archive::Store::load(),
+            archive_collapsed: true,
+            archive_sel: None,
+            archive_clock: None,
+            freed_kb: 0,
             open_home_ok: false,
             corrections: Default::default(),
             th: Default::default(),
@@ -764,6 +832,22 @@ impl App {
             undo_toast: None,
             tab_list_width: None,
             num_entry: None,
+            model_entry: None,
+            model_switches: vec![],
+            loops_drawer: Default::default(),
+            loops_drawer_focus: None,
+            loops_drawer_sel: 0,
+            loops_drawer_drag: None,
+            loops_drawer_geo: Default::default(),
+            loops_confirm: None,
+            jobs: crate::jobs::Store::load(),
+            job_runs: vec![],
+            job_clock: None,
+            jobs_boot: Instant::now(),
+            jobs_ticked: Instant::now(),
+            sched_open: true,
+            sched_confirm: None,
+            sched_ui: Default::default(),
             rt_privacy: None,
             restore_queue: Default::default(),
             restore_next: Instant::now(),
@@ -795,6 +879,8 @@ impl App {
             last_hits: Default::default(),
             last_modal_from: None,
             mouse_pos: None,
+            wheel_n: 1,
+            wheel_last: None,
             last_click: None,
             selection: None,
             sel_press: None,
@@ -803,6 +889,8 @@ impl App {
             mouse_capture: true,
             tx,
             voice: Default::default(),
+            direct: Default::default(),
+            brainstorm: Default::default(),
             media: Default::default(),
             onboard: None,
             settings_section: 0,
@@ -1040,6 +1128,7 @@ impl App {
         self.rt_voice = st.voice.clone();
         self.rt_privacy = st.privacy;
         self.restore_deliveries(&st.deliveries);
+        self.sched_open = !st.sched_collapsed;
     }
 
     pub fn snapshot_state(&self) -> AppState {
@@ -1071,6 +1160,7 @@ impl App {
             },
             ratios: self.ratios.clone(),
             deliveries: self.saved_deliveries(),
+            sched_collapsed: !self.sched_open,
             window: self.window.clone(),
             recents: self.recents.clone(),
             focus: self.focus,
@@ -1151,6 +1241,7 @@ impl App {
                     .flat_map(|s| s.tabs.iter())
                     .filter(|o| o.uid != t.uid)
                     .filter_map(|o| o.session_id.clone())
+                    .chain(self.busy.fork_ids.iter().cloned())
                     .collect();
                 if let Some(id) = state::detect_session(&dir, &t.cwd, t.started, &taken) {
                     if t.session_id.as_deref() != Some(&id) {
@@ -1219,6 +1310,14 @@ impl App {
         let mut args = h.base_args(&dir);
         args.extend(h.permission_args(&self.cfg.mode_for(acct)));
         args.extend(a.args.iter().cloned());
+        // The agent of this tab gets its own job tools and a hint, ahead of
+        // the flags below (a login or an attach replaces the arguments, so
+        // it gets none).
+        let mut tab_env = vec![];
+        if kind != LaunchKind::Login {
+            let uid = self.panes[pane].cur().uid;
+            tab_env = self.tab_jobs_launch(h, uid, &dir, &mut args);
+        }
         let tab_cwd = self.panes[pane].cur().cwd.clone();
         let mut cwd = if tab_cwd.is_dir() {
             tab_cwd
@@ -1267,23 +1366,25 @@ impl App {
                 }
             }
         }
+        let mut extra_env: Vec<(String, String)> = if h == crate::harness::Harness::Grok {
+            crate::harness::grok::write_slot_compat(&dir, &self.cfg.grok_claude_compat);
+            self.cfg
+                .grok_claude_compat
+                .env()
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        } else {
+            vec![]
+        };
+        extra_env.extend(tab_env);
         let spec = LaunchSpec {
             program: match h {
                 crate::harness::Harness::Claude => self.cfg.claude_bin(),
                 crate::harness::Harness::Grok => h.bin(self.cfg.grok_bin.as_deref()),
             },
             home_env: h.home_env(),
-            extra_env: if h == crate::harness::Harness::Grok {
-                crate::harness::grok::write_slot_compat(&dir, &self.cfg.grok_claude_compat);
-                self.cfg
-                    .grok_claude_compat
-                    .env()
-                    .into_iter()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect()
-            } else {
-                vec![]
-            },
+            extra_env,
             args,
             cwd,
             config_dir: dir,
@@ -1755,6 +1856,8 @@ impl App {
         self.update_tick();
         self.admin_tick();
         self.control_tick();
+        self.jobs_tick();
+        self.tab_jobs_tick();
         self.refresh_paths();
         for st in &mut self.accounts {
             while st.usage_hist.len() > self.cfg.usage_history {
@@ -1914,6 +2017,7 @@ impl App {
             self.last_session_scan = Instant::now();
             self.detect_sessions();
         }
+        self.direct_tick();
         self.voice_tick();
         self.onboard_tick();
         // Window bounds, every 5 s, off the UI thread.
@@ -2018,6 +2122,7 @@ impl App {
                 }
             }
             AppEvent::Input(Event::Mouse(m)) => self.on_mouse(m),
+            AppEvent::Wheel(m, n) => self.on_wheel(m, n),
             AppEvent::Input(Event::FocusGained) => self.voice.term_focused = Some(true),
             AppEvent::Input(Event::FocusLost) => self.voice.term_focused = Some(false),
             AppEvent::Input(_) => {}
@@ -2220,9 +2325,31 @@ impl App {
                 }
             }
         }
+        // Ctrl-a # then a model number (any other key goes on as usual).
+        if self.model_entry.is_some() && self.model_entry_key(&k) {
+            return;
+        }
+        // An open loops drawer that has the keys (right after opening or
+        // a click in it): Esc closes it, arrows select.
+        if self.modal == Modal::None
+            && self.view == View::Grid
+            && self.loops_drawer_focus.is_some()
+            && self.loops_drawer_key(&k)
+        {
+            return;
+        }
+        // The Loops & schedules section after a click in it: arrows
+        // select, Enter opens a card.
+        if self.modal == Modal::None && self.sched_ui.focus && self.sched_key(&k) {
+            return;
+        }
         // Modals swallow input first.
         match &mut self.modal {
             Modal::None => {}
+            Modal::SchedCard(_) => {
+                self.on_sched_card_key(k);
+                return;
+            }
             Modal::Help => {
                 self.modal = Modal::None;
                 return;
@@ -2247,6 +2374,37 @@ impl App {
                     self.close_tab_now();
                 } else {
                     self.modal = Modal::None;
+                }
+                return;
+            }
+            Modal::ConfirmArchive(uid) => {
+                let uid = *uid;
+                if matches!(
+                    k.code,
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter
+                ) {
+                    self.confirm_archive(uid);
+                } else {
+                    self.modal = Modal::None;
+                }
+                return;
+            }
+            Modal::ArchMenu(id, sel) => {
+                let (id, sel) = (id.clone(), *sel);
+                let rows = App::archive_menu_rows();
+                match k.code {
+                    KeyCode::Esc => self.modal = Modal::None,
+                    KeyCode::Up => self.modal = Modal::ArchMenu(id, sel.saturating_sub(1)),
+                    KeyCode::Down => {
+                        self.modal = Modal::ArchMenu(id, (sel + 1).min(rows.len() - 1))
+                    }
+                    KeyCode::Enter => self.archive_menu_run(&id, sel),
+                    KeyCode::Char(c) => {
+                        if let Some(i) = rows.iter().position(|r| r.1 == c) {
+                            self.archive_menu_run(&id, i);
+                        }
+                    }
+                    _ => {}
                 }
                 return;
             }
@@ -2482,6 +2640,22 @@ impl App {
                 }
                 return;
             }
+            Modal::MicMenu(_) => {
+                self.modal = Modal::None;
+                match k.code {
+                    KeyCode::Char('0') | KeyCode::Char('a') => {
+                        self.end_direct("mic menu", true);
+                    }
+                    KeyCode::Char(c @ '1'..='9') => {
+                        if let Some((uid, _)) = self.mic_targets().get((c as u8 - b'1') as usize) {
+                            let uid = *uid;
+                            self.mic_move_to(uid);
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
             Modal::MenuOverflow | Modal::PathMenu(_) => {
                 self.modal = Modal::None;
                 return;
@@ -2494,6 +2668,18 @@ impl App {
                 ) {
                     self.stop_all_loops();
                 }
+                return;
+            }
+            Modal::ConfirmTabJob(_) => {
+                let Modal::ConfirmTabJob(tok) = std::mem::replace(&mut self.modal, Modal::None)
+                else {
+                    return;
+                };
+                let yes = matches!(
+                    k.code,
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter
+                );
+                self.tab_ask_answer(&tok, yes);
                 return;
             }
             Modal::SessTarget(_) | Modal::SessConfirm | Modal::SessConflict(_) => {
@@ -2682,6 +2868,11 @@ impl App {
             (KeyCode::Up, _) | (_, Some('k')) => self.move_focus(0, -1),
             (KeyCode::Down, _) | (_, Some('j')) => self.move_focus(0, 1),
             (_, Some(c @ '1'..='9')) => self.focus_number((c as u8 - b'0') as usize),
+            (_, Some('#')) => self.start_model_entry(),
+            (_, Some(';')) => {
+                let p = self.focus;
+                self.toggle_loops_drawer(p);
+            }
             (_, Some('\'')) => {
                 self.num_entry = Some(String::new());
                 self.flash("Pane number: type it, then Enter (Esc cancels)");
@@ -2699,6 +2890,10 @@ impl App {
             (_, Some('w')) => {
                 let (s, t) = (self.focus, self.panes[self.focus].active);
                 self.request_close(s, t);
+            }
+            (_, Some('f')) => {
+                let (s, t) = (self.focus, self.panes[self.focus].active);
+                self.request_archive(s, t);
             }
             (_, Some('W')) => {
                 if let Err(e) = self.reopen_closed() {
@@ -2799,6 +2994,8 @@ impl App {
             (_, Some('Z')) => self.toggle_memory_saver(),
             (_, Some('X')) => self.toggle_mute(),
             (_, Some('O')) => self.toggle_speaker(),
+            (_, Some('K')) => self.toggle_direct(),
+            (_, Some('B')) => self.toggle_brainstorm(),
             (_, Some('D')) => self.open_updates(),
             (_, Some('F')) => {
                 if self.accept_failover(None, false).is_none() {
@@ -2808,6 +3005,12 @@ impl App {
             (_, Some('+')) | (_, Some('=')) => self.nudge_volume(0.1),
             (_, Some('-')) => self.nudge_volume(-0.1),
             (_, Some('.')) => self.toggle_assistant_panel(),
+            (_, Some('{')) => {
+                self.nudge_panel_width(crate::app_panelwin::STEP as i32);
+            }
+            (_, Some('}')) => {
+                self.nudge_panel_width(-(crate::app_panelwin::STEP as i32));
+            }
             (_, Some('M')) => {
                 self.mouse_capture = !self.mouse_capture;
                 self.flash(if self.mouse_capture {
@@ -3578,6 +3781,11 @@ impl App {
                 self.on_command(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
             }
             Action::Broadcast => self.modal = Modal::Broadcast(String::new()),
+            Action::PaneWidth(0) => self.equal_pane_widths(),
+            Action::PaneWidth(d) => {
+                let p = self.focus;
+                self.resize_pane_width(p, d > 0);
+            }
             Action::Perm(m) => {
                 let p = self.focus;
                 if let Some(a) = self.panes[p].account {

@@ -354,3 +354,16 @@ fn focusing_a_collapsed_pane_expands_it_only_when_set() {
     assert!(!app.account_collapsed(1));
     let _ = std::fs::remove_dir_all(home);
 }
+
+#[test]
+fn open_accounts_shows_a_hidden_pane() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("hidden");
+    let p = app.panes.iter().position(|p| p.account == Some(1)).unwrap();
+    app.hide_pane(p);
+    assert_eq!(shown_accounts(&app), vec![0, 2, 3]);
+    app.control_call("open_accounts", &json!({"accounts": [1, 2]}));
+    assert_eq!(shown_accounts(&app), vec![0, 1, 2, 3]);
+    assert!(!app.panes[p].hidden);
+    let _ = std::fs::remove_dir_all(&home);
+}

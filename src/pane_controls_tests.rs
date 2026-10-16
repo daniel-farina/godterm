@@ -289,3 +289,169 @@ fn sideways_collapse_strip_persistence_and_voice() {
         .any(|e| e.label.contains("Expand") || e.label.contains("sideways")));
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// A pane's width caret on its header row.
+fn caret(app: &App, i: usize, grow: bool) -> Option<Rect> {
+    let pane = app.pane_rects[i];
+    app.last_hits
+        .regions
+        .iter()
+        .rev()
+        .find(|r| {
+            r.action == UiAction::PaneWidth(i, grow)
+                && r.rect.y == pane.y
+                && r.rect.x >= pane.x
+                && r.rect.x < pane.x + pane.width
+        })
+        .map(|r| r.rect)
+}
+
+fn click_caret(app: &mut App, i: usize, grow: bool) {
+    let r = caret(app, i, grow).unwrap_or_else(|| panic!("no caret on pane {i}"));
+    app.last_click = None;
+    click_at(app, r.x + r.width - 1, r.y);
+}
+
+#[test]
+fn width_carets_sit_before_the_controls_and_resize_per_shape() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("carets");
+    let mut t = term(200, 50);
+    draw(&mut app, &mut t);
+    let (n, w) = (caret(&app, 0, false).unwrap(), caret(&app, 0, true).unwrap());
+    let close = ctl_region(&app, 0, &UiAction::FoldAccount(0));
+    // " < > " right before the minimize button, with a gap.
+    assert_eq!((n.width, w.width), (3, 2));
+    assert_eq!(w.x, n.x + 3);
+    assert_eq!(w.x + 2 + 1, close.x);
+    assert_eq!(cell(&t, n.x + 1, n.y), "<");
+    assert_eq!(cell(&t, w.x, w.y), ">");
+    let hint = app
+        .last_hits
+        .regions
+        .iter()
+        .find(|r| r.action == UiAction::PaneWidth(0, true))
+        .unwrap()
+        .hint
+        .clone();
+    assert!(hint.starts_with("Wider: "), "{hint}");
+    let row = app.pane_rects[0].width + app.pane_rects[1].width;
+    let before = app.pane_rects[0].width;
+    click_caret(&mut app, 0, true);
+    // A click on a caret starts no text selection and moves the focus there.
+    assert!(app.selection.is_none());
+    assert_eq!(app.focus, 0);
+    draw(&mut app, &mut t);
+    let after = app.pane_rects[0].width;
+    assert!(after > before, "{before} -> {after}");
+    assert_eq!(after + app.pane_rects[1].width, row);
+    // The bottom row follows the column (same weights).
+    assert_eq!(app.pane_rects[2].width, after);
+    let shape = app.last_arranged.as_ref().unwrap().shape.clone();
+    assert_eq!(shape, "2x2");
+    let saved = app.ratios.get(&shape).unwrap().cols.clone();
+    assert_eq!(saved.len(), 2);
+    assert!(saved[0] > saved[1]);
+    // Narrower on the other pane trades back the other way.
+    click_caret(&mut app, 1, false);
+    draw(&mut app, &mut t);
+    assert!(app.pane_rects[1].width < before);
+    // Shift-click: equal again, and the entry is gone.
+    let r = caret(&app, 0, true).unwrap();
+    app.last_click = None;
+    for kind in [
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+    ] {
+        app.on_mouse_event(crossterm::event::MouseEvent {
+            kind,
+            column: r.x + 1,
+            row: r.y,
+            modifiers: KeyModifiers::SHIFT,
+        });
+    }
+    draw(&mut app, &mut t);
+    assert_eq!(app.pane_rects[0].width, before);
+    assert!(app.ratios.get(&shape).is_none());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn width_carets_stop_at_the_minimum_and_double_click_resets() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("caretmin");
+    let mut t = term(200, 50);
+    draw(&mut app, &mut t);
+    for _ in 0..12 {
+        click_caret(&mut app, 0, false);
+        draw(&mut app, &mut t);
+    }
+    assert!(app.pane_rects[0].width >= 29, "{}", app.pane_rects[0].width);
+    let at_min = app.pane_rects[0].width;
+    click_caret(&mut app, 0, false);
+    draw(&mut app, &mut t);
+    assert_eq!(app.pane_rects[0].width, at_min);
+    // A double click on a caret ends equal.
+    let r = caret(&app, 0, true).unwrap();
+    app.last_click = None;
+    click_at(&mut app, r.x, r.y);
+    click_at(&mut app, r.x, r.y);
+    draw(&mut app, &mut t);
+    assert_eq!(app.pane_rects[0].width, app.pane_rects[1].width);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn width_carets_with_three_columns_and_the_keyboard() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("caret3");
+    app.set_layout("columns");
+    let mut t = term(200, 50);
+    draw(&mut app, &mut t);
+    let cols = app.visible_panes().len();
+    assert!(cols >= 3, "{cols}");
+    let total: u16 = (0..cols).map(|i| app.pane_rects[i].width).sum();
+    let w1 = app.pane_rects[1].width;
+    let w2 = app.pane_rects[2].width;
+    // The middle pane takes from its right neighbour only.
+    app.focus = 1;
+    app.resize_pane_width(1, true);
+    draw(&mut app, &mut t);
+    assert!(app.pane_rects[1].width > w1);
+    assert!(app.pane_rects[2].width < w2);
+    assert_eq!((0..cols).map(|i| app.pane_rects[i].width).sum::<u16>(), total);
+    // The palette entries do the same for the focused pane.
+    for name in ["pane wider", "pane narrower", "equal pane widths"] {
+        assert!(crate::palette::ACTIONS.iter().any(|(n, _)| *n == name), "{name}");
+    }
+    app.resize_pane_width(1, false);
+    app.equal_pane_widths();
+    draw(&mut app, &mut t);
+    assert!(app.ratios.is_empty());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn width_carets_are_hidden_without_a_neighbour_or_when_zoomed() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("caretnone");
+    let mut t = term(200, 50);
+    app.set_layout("rows");
+    draw(&mut app, &mut t);
+    assert!(app
+        .last_hits
+        .regions
+        .iter()
+        .all(|r| !matches!(r.action, UiAction::PaneWidth(..))));
+    app.set_layout("auto");
+    draw(&mut app, &mut t);
+    assert!(caret(&app, 0, true).is_some());
+    app.zoom = true;
+    draw(&mut app, &mut t);
+    assert!(app
+        .last_hits
+        .regions
+        .iter()
+        .all(|r| !matches!(r.action, UiAction::PaneWidth(..))));
+    let _ = std::fs::remove_dir_all(&home);
+}

@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::{Backend, Caps, Provider, StartCtx};
+use super::{Backend, Caps, Provider, StartCtx, TabModel};
 use crate::app::AppEvent;
 use crate::assistant::{parse_line, BrainEvent};
 
@@ -40,6 +40,26 @@ pub const PROVIDER: Provider = Provider {
         ("grok-4.7-build-fast", "grok-4.7-build-fast", "quickest"),
         ("grok-4.7", "grok-4.7", "most capable"),
         ("grok-4.6", "grok-4.6", "the previous one"),
+    ],
+    tab_models: &[
+        TabModel {
+            arg: "grok-4.7-build-fast",
+            label: "4.7 fast",
+            desc: "quickest",
+            matches: &["grok-4.7-build-fast", "grok 4.7 build fast"],
+        },
+        TabModel {
+            arg: "grok-4.7",
+            label: "4.7",
+            desc: "most capable",
+            matches: &["grok-4.7", "grok 4.7"],
+        },
+        TabModel {
+            arg: "grok-4.6",
+            label: "4.6",
+            desc: "the previous one",
+            matches: &["grok-4.6", "grok 4.6"],
+        },
     ],
     usage: |u| super::buckets_of(u, &[("seven_day", "wk", "weekly"), ("product:*", "", "")]),
     bin: |c| crate::harness::Harness::Grok.bin(c.grok_bin.as_deref()),

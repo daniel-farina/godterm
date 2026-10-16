@@ -205,7 +205,9 @@ impl App {
     /// Auto sleep after a long silence.
     pub fn open_mic_tick(&mut self) {
         let min = self.cfg.voice.open_mic_sleep_min;
+        // Never in the middle of a brainstorm (long silences are fine).
         if !self.voice.open_mic
+            || self.brainstorm_on()
             || min == 0
             || self.voice.last_heard.elapsed() < Duration::from_secs(min as u64 * 60)
         {

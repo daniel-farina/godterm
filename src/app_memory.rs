@@ -59,6 +59,16 @@ impl App {
         }
         self.mem_ticked = Instant::now() - Duration::from_secs(5);
         self.memory_tick();
+        // Asked for: the tab on screen gets its new size now too (unless
+        // it is scrolled back; then once it is at the bottom).
+        for s in 0..self.panes.len() {
+            for t in 0..self.panes[s].tabs.len() {
+                let lines = self.history_for(s, t);
+                if self.panes[s].tabs[t].scroll == 0 {
+                    self.panes[s].tabs[t].set_history(lines);
+                }
+            }
+        }
     }
 
     /// Writer queue, read buffer, scrollback default and caches.
@@ -131,6 +141,15 @@ impl App {
         }
     }
 
+    /// A new history limit waits: never rebuild a tab scrolled back (the
+    /// wheel is in its history) or shrink the one on screen; it applies
+    /// once the view is back at the bottom or the tab leaves the screen.
+    pub fn history_held(&self, s: usize, t: usize, lines: usize) -> bool {
+        let tab = &self.panes[s].tabs[t];
+        tab.history_lines() != lines
+            && (tab.scroll > 0 || (self.tab_visible(s, t) && lines < tab.history_lines()))
+    }
+
     /// A tab the saver may pause: idle, off screen, its conversation
     /// known, no loops, not waiting for you, not being moved.
     pub fn suspendable(&self, s: usize, t: usize, idle_for: Duration) -> bool {
@@ -179,6 +198,9 @@ impl App {
         for s in 0..self.panes.len() {
             for t in 0..self.panes[s].tabs.len() {
                 let lines = self.history_for(s, t);
+                if self.history_held(s, t, lines) {
+                    continue;
+                }
                 self.panes[s].tabs[t].set_history(lines);
             }
         }

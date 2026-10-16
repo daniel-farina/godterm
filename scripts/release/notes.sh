@@ -27,3 +27,7 @@ cat <<'EOT'
 
 Verify downloads with `shasum -a 256 -c SHA256SUMS --ignore-missing`.
 EOT
+# A release whose notes say it has no Windows build must not read like it has one.
+if grep -q 'no Windows build' <<< "$body"; then
+  printf '\nWindows: this release has no Windows installer or zip. The last Windows build is v0.2.9.\n'
+fi

@@ -5,21 +5,28 @@ mod add_account;
 mod admin;
 mod app;
 mod app_admin;
+mod app_archive;
 mod app_assistant;
 mod app_bglock;
+mod app_brainstorm;
+mod app_busy;
 mod app_continue;
+mod app_direct;
 mod app_failover;
 mod app_followup;
 mod app_grid;
 mod app_headtap;
 mod app_images;
 mod app_input;
+mod app_jobs;
 mod app_layout;
 mod app_learned;
 mod app_loops;
+mod app_loopsdrawer;
 mod app_memory;
 mod app_mouse;
 mod app_openmic;
+mod app_panelwin;
 mod app_pause;
 mod app_privacy;
 mod app_projects;
@@ -28,27 +35,35 @@ mod app_quiet;
 mod app_receipts;
 mod app_remote;
 mod app_resume;
+mod app_sched;
 mod app_select;
 mod app_selfswitch;
 mod app_sessions;
 mod app_settings;
 mod app_setup;
 mod app_speaker;
+mod app_startup;
 mod app_sysprompt;
 mod app_tabgroups;
 mod app_tabhist;
+mod app_tabmodel;
 mod app_tabmove;
 mod app_tabopts;
 mod app_talkback;
 mod app_update;
 mod app_voice;
 mod app_wake;
+mod archive;
+#[cfg(test)]
+mod archive_tests;
 mod assistant;
 mod assistant_history;
 mod assistant_images;
 mod assistant_memory;
 #[cfg(test)]
 mod bglock_tests;
+#[cfg(test)]
+mod busy_tests;
 #[cfg(test)]
 mod click_focus_tests;
 mod clock;
@@ -83,6 +98,7 @@ mod input_tests;
 mod install;
 mod instance;
 mod instant;
+mod jobs;
 mod keys;
 mod layout;
 mod learned;
@@ -92,10 +108,13 @@ mod livemap;
 mod log;
 mod loops;
 mod mcp;
+mod md;
 mod media_keys;
 #[cfg(target_os = "macos")]
 mod media_keys_mac;
 mod menus;
+#[cfg(test)]
+mod mic_badge_tests;
 mod migrate;
 mod migrate_accounts;
 #[cfg(test)]
@@ -109,13 +128,27 @@ mod pane_controls_tests;
 mod panel_view_tests;
 mod panel_views;
 #[cfg(test)]
+mod panel_win_tests;
+#[cfg(test)]
 mod scroll_click_tests;
+#[cfg(test)]
+mod panel_split_tests;
+#[cfg(test)]
+mod wheel_mode_tests;
 mod supervisor;
 #[cfg(test)]
 mod tabopts_tests;
 // A real PTY and a shell script stub: Unix only.
+#[cfg(test)]
+mod brainstorm_tests;
 #[cfg(all(test, unix))]
 mod continue_tests;
+#[cfg(all(test, unix))]
+mod direct_tests;
+#[cfg(test)]
+mod jobs_tests;
+#[cfg(test)]
+mod loopsdrawer_tests;
 #[cfg(all(test, unix))]
 mod paste_enter_tests;
 mod paths;
@@ -138,6 +171,8 @@ mod remote_keep_tests;
 #[cfg(test)]
 mod remote_tests;
 mod risk;
+#[cfg(test)]
+mod schedcard_tests;
 mod select;
 #[cfg(test)]
 mod selfswitch_tests;
@@ -155,11 +190,16 @@ mod slot;
 mod splash;
 #[cfg(test)]
 mod stale_tests;
+#[cfg(test)]
+mod startup_tests;
 mod state;
 mod syscheck;
 mod sysprompt;
 mod tab_groups;
 mod tab_history;
+mod tab_jobs;
+#[cfg(test)]
+mod tab_jobs_tests;
 mod tab_labels;
 #[cfg(test)]
 mod tab_labels_tests;
@@ -168,6 +208,8 @@ mod tab_names;
 mod tab_names_tests;
 #[cfg(test)]
 mod tabgroup_tests;
+#[cfg(test)]
+mod tabmodel_tests;
 mod takeover;
 #[cfg(test)]
 mod talkback_tests;
@@ -184,6 +226,12 @@ mod ui;
 mod ui_assistant;
 mod ui_chrome;
 mod ui_livemap;
+mod ui_loopsdrawer;
+mod ui_modelbar;
+mod ui_panelwin;
+mod ui_schedcard;
+mod scrollbar;
+mod ui_schedules;
 mod ui_settings;
 mod ui_updates;
 mod update;
@@ -1002,13 +1050,33 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         .name("input".into())
         .spawn(move || {
             let mut last_key: Option<Instant> = None;
-            while let Ok(ev) = event::read() {
+            // An event read past a burst of wheel events, handled next.
+            let mut held: Option<event::Event> = None;
+            loop {
+                let ev = match held.take() {
+                    Some(ev) => ev,
+                    None => match event::read() {
+                        Ok(ev) => ev,
+                        Err(_) => break,
+                    },
+                };
                 let ev = match ev {
                     event::Event::Key(k) => {
                         let burst =
                             last_key.is_some_and(|t| t.elapsed() < Duration::from_millis(15));
                         last_key = Some(Instant::now());
                         AppEvent::KeyRead(k, burst)
+                    }
+                    // A burst of wheel events already waiting: one event.
+                    event::Event::Mouse(m) if app_mouse::is_wheel(&m) => {
+                        let (n, next) = app_mouse::coalesce_wheel(&m, &mut || match event::poll(
+                            Duration::ZERO,
+                        ) {
+                            Ok(true) => event::read().ok(),
+                            _ => None,
+                        });
+                        held = next;
+                        AppEvent::Wheel(m, n)
                     }
                     ev => AppEvent::Input(ev),
                 };
@@ -1068,21 +1136,22 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         demo::tune(&mut app);
     }
     log::info(&format!("keyboard enhancement (hold to talk): {enhanced}"));
+    // The panel is open at every start; the mic is off unless it was on
+    // when GodTerm last quit (or --voice).
+    if !demo::active() {
+        app.open_panel_at_start();
+    }
+    let start_voice = app.startup_voice(opts.voice);
     if app.cfg.voice.mute_on_start {
         // Muted, remembering the mode it would have started in.
         app.voice.muted = true;
-        app.voice.muted_prev = if opts.voice || app.cfg.voice.enabled {
-            match app.cfg.voice.mode.as_str() {
-                "open" => 3,
-                "wake" => 2,
-                _ => 1,
-            }
-        } else {
-            0
+        app.voice.muted_prev = match start_voice.as_deref() {
+            Some("open") => 3,
+            Some("wake") => 2,
+            Some(_) => 1,
+            None => 0,
         };
-    } else if opts.voice || app.cfg.voice.enabled {
-        // The mode it ran in before the restart, else voice.mode.
-        let mode = app.launch_voice_mode();
+    } else if let Some(mode) = start_voice {
         log::info(&format!("voice: starting at launch in {mode} mode"));
         if mode == "open" && !opts.wake {
             app.voice.open_mic = true;
@@ -1091,6 +1160,8 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             let wake = opts.wake || mode != "push";
             app.start_voice(wake);
         }
+    } else {
+        log::info("voice: the mic starts off (it was off when GodTerm last quit)");
     }
     log::info("godterm started");
 

@@ -29,6 +29,8 @@
 //!                     running in the background (SHORT)" and exits 1;
 //!                     `stop` makes later resumes work; attach and
 //!                     --fork-session run normally
+//!   env_to=PATH       append "cwd|CLAUDE_CONFIG_DIR" as one line
+//!   bg_print=TEXT    `--bg` prints TEXT and returns at once (bg_fail=MSG: fails)
 //! Without stdin_to it reads stdin to the end and drops it.
 
 use std::path::{Path, PathBuf};
@@ -100,6 +102,20 @@ fn main() {
     if let Some(p) = get("args_to") {
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap();
         let _ = writeln!(f, "{}", args.join(" "));
+    }
+    if let Some(p) = get("env_to") {
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap();
+        let _ = writeln!(f, "{}|{}", std::env::current_dir().unwrap().display(), std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_default());
+    }
+    // `claude --bg ...`: prints a job id (bg_print=TEXT) and returns at
+    // once, or fails (bg_fail=MESSAGE).
+    if args.iter().any(|a| a == "--bg") && (get("bg_print").is_some() || get("bg_fail").is_some()) {
+        if let Some(m) = get("bg_fail") {
+            eprintln!("{m}");
+            std::process::exit(1);
+        }
+        println!("{}", get("bg_print").unwrap_or_default());
+        return;
     }
     if let Some(p) = get("print_file") {
         print!("{}", std::fs::read_to_string(p).unwrap_or_default());

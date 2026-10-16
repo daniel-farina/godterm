@@ -94,7 +94,7 @@ impl App {
         }
     }
 
-    fn snapshot_tab(&self, s: usize, t: usize, group: u64) -> Option<ClosedTab> {
+    pub(crate) fn snapshot_tab(&self, s: usize, t: usize, group: u64) -> Option<ClosedTab> {
         let slot = self.panes.get(s)?;
         let a = slot.account?;
         let tab = slot.tabs.get(t)?;
@@ -483,6 +483,7 @@ fn to_loop(s: &SavedLoop) -> crate::loops::Loop {
         wake_at: None,
         deleted: false,
         confidence: crate::loops::Confidence::High,
+        every: None,
     }
 }
 

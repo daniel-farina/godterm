@@ -13,7 +13,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::App;
-use crate::app_assistant::Who;
+use crate::app_assistant::{ChatGeo, Who};
 use crate::hits::UiAction;
 use crate::input_edit;
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
@@ -24,6 +24,9 @@ pub struct Row {
     pub parts: Vec<(String, Style)>,
     pub action: Option<UiAction>,
     pub indent: u16,
+    /// Already laid out to the panel's width (a reply's markdown): drawn
+    /// as it is, never wrapped again.
+    pub pre: bool,
 }
 
 fn row(parts: Vec<(String, Style)>) -> Row {
@@ -31,6 +34,7 @@ fn row(parts: Vec<(String, Style)>) -> Row {
         parts,
         action: None,
         indent: 0,
+        pre: false,
     }
 }
 
@@ -117,6 +121,14 @@ pub fn chip(app: &App, tool: &str, args: &Value, status: &str) -> (String, Color
             ),
             theme::CLAY,
         ),
+        "archive_tabs" | "archive_tab" => (
+            format!(
+                "▫ archived {}",
+                if tabs.is_empty() { "tabs".into() } else { tabs }
+            ),
+            theme::CLAY,
+        ),
+        "restore_archived" => ("↻ restored archived tabs".to_string(), theme::SAGE),
         "stop_loops" => ("■ stopped loops".to_string(), theme::CLAY),
         "read_tab" | "recent_turns" => (
             format!(
@@ -251,22 +263,14 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
                 ]));
             }
             Who::Reply => {
-                let (say, _, rest) =
-                    crate::assistant::spoken_part(&e.text, app.cfg.assistant.spoken_sentences);
-                out.push(row(vec![
-                    label("◆ ", theme::MAUVE),
-                    (say, Style::default().fg(FG)),
-                ]));
-                if let Some(r) = rest {
-                    out.push(Row {
-                        parts: vec![
-                            ("more › ".into(), Style::default().fg(FAINT)),
-                            (r, Style::default().fg(DIM)),
-                        ],
-                        action: None,
-                        indent: 2,
-                    });
-                }
+                // Its markdown laid out (tables as a grid), the spoken
+                // part first, then "more ›" and the rest, in normal text.
+                let lines = crate::md::reply_view(
+                    &e.text,
+                    app.cfg.assistant.spoken_sentences,
+                    width.saturating_sub(2) as usize,
+                );
+                push_md(&mut out, &lines, label("◆ ", theme::MAUVE));
             }
             Who::Preamble => out.push(Row {
                 parts: vec![(
@@ -275,6 +279,7 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
                 )],
                 action: None,
                 indent: 2,
+                pre: false,
             }),
             Who::Note => {
                 // A delivery result joins the chip it belongs to.
@@ -297,6 +302,7 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
                     parts: vec![(e.text.clone(), Style::default().fg(DIM))],
                     action: None,
                     indent: 2,
+                    pre: false,
                 });
             }
             Who::Tool => {
@@ -348,6 +354,7 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
                     parts,
                     action: Some(UiAction::AssistantChip(i)),
                     indent: 2,
+                    pre: false,
                 });
                 if app.assistant.expanded.contains(&i) {
                     let raw = if args.is_null() {
@@ -359,6 +366,7 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
                         parts: vec![(raw, Style::default().fg(FAINT))],
                         action: Some(UiAction::AssistantChip(i)),
                         indent: 4,
+                        pre: false,
                     });
                 }
             }
@@ -404,6 +412,49 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
             )],
             action: None,
             indent: 2,
+            pre: false,
+        });
+    }
+    // Brainstorm mode's card (first use, or the ⓘ): a click hides it.
+    if app.brainstorm.card {
+        if !out.is_empty() {
+            out.push(row(vec![]));
+        }
+        let mut lines = vec![(
+            "ⓘ Brainstorm mode".to_string(),
+            Style::default()
+                .fg(theme::SAND)
+                .add_modifier(Modifier::BOLD),
+        )];
+        lines.push(("  (click to hide)".into(), Style::default().fg(FAINT)));
+        out.push(Row {
+            parts: lines,
+            action: Some(UiAction::Menu(crate::menus::Cmd::BrainstormInfo)),
+            indent: 0,
+            pre: false,
+        });
+        let body = crate::app_brainstorm::EXPLAIN
+            .trim_start_matches("Brainstorm mode: ")
+            .to_string();
+        let mut cs = body.chars();
+        let body = cs
+            .next()
+            .map(|c| format!("{}{}", c.to_uppercase(), cs.as_str()))
+            .unwrap_or_default();
+        out.push(Row {
+            parts: vec![(body, Style::default().fg(DIM))],
+            action: Some(UiAction::Menu(crate::menus::Cmd::BrainstormInfo)),
+            indent: 2,
+            pre: false,
+        });
+        out.push(Row {
+            parts: vec![(
+                "Ctrl-a B turns it on or off; Esc leaves it and keeps the draft.".into(),
+                Style::default().fg(FAINT),
+            )],
+            action: None,
+            indent: 2,
+            pre: false,
         });
     }
     if app.assistant.busy {
@@ -412,13 +463,14 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
         } else {
             app.assistant.current.clone()
         };
-        out.push(row(vec![
-            label("◆ ", theme::MAUVE),
-            (
-                partial,
-                Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
-            ),
-        ]));
+        // Streaming: laid out as it comes (not cached, it changes).
+        let blocks = crate::md::parse(&partial);
+        let lines = crate::md::render(
+            &blocks,
+            width.saturating_sub(2) as usize,
+            Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+        );
+        push_md(&mut out, &lines, label("◆ ", theme::MAUVE));
     }
     if out.is_empty() {
         out.push(row(vec![(
@@ -426,13 +478,33 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
             Style::default().fg(DIM),
         )]));
     }
-    let _ = width;
     out
+}
+
+/// A reply laid out by `md`: the first line after the ◆ label, the others
+/// under it (two cells in), each drawn as it is.
+fn push_md(out: &mut Vec<Row>, lines: &[crate::md::Line], mark: (String, Style)) {
+    for (k, l) in lines.iter().enumerate() {
+        let mut parts = vec![];
+        if k == 0 {
+            parts.push(mark.clone());
+        }
+        parts.extend(l.iter().cloned());
+        out.push(Row {
+            parts,
+            action: None,
+            indent: if k == 0 { 0 } else { 2 },
+            pre: true,
+        });
+    }
 }
 
 /// Wrap a row to physical lines of at most `w` cells (on spaces when it
 /// can), keeping each piece's style.
 pub fn wrap(r: &Row, w: u16) -> Vec<Vec<(String, Style)>> {
+    if r.pre {
+        return vec![r.parts.clone()];
+    }
     let w = w.saturating_sub(r.indent).max(4) as usize;
     let mut lines: Vec<Vec<(String, Style)>> = vec![vec![]];
     let mut col = 0usize;
@@ -537,7 +609,7 @@ pub fn back_label(app: &App, size: u8) -> String {
     format!("{word}{dot}")
 }
 
-fn cells(s: &str) -> u16 {
+pub fn cells(s: &str) -> u16 {
     unicode_width::UnicodeWidthStr::width(s) as u16
 }
 
@@ -744,13 +816,24 @@ pub fn title_parts(app: &App, room: usize) -> Vec<(String, u8)> {
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
+    app.assistant.chat_geo.set(None);
+    app.sched_ui.rect.set(Rect::default());
+    if app.assistant.win == crate::app_panelwin::PanelWin::Min {
+        crate::ui_panelwin::draw_strip(f, app, area);
+        app.assistant.input_geo.set(None);
+        *app.assistant_text.borrow_mut() = None;
+        return;
+    }
     let acct = app
         .assistant
         .brain
         .as_ref()
         .and_then(|b| b.account)
         .or_else(|| app.assistant_account());
-    let room = area.width.saturating_sub(6) as usize;
+    // The title row's right side: the width carets and window controls.
+    let room =
+        area.width
+            .saturating_sub(6 + crate::ui_panelwin::title_tail(app, area.width)) as usize;
     let title = title_parts(app, room);
     // With the keys, a calm blue border; without, a dim one.
     let focused = app.assistant_has_focus();
@@ -802,13 +885,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             remote_at = Some((x0, tx.saturating_sub(x0)));
         }
     }
+    // Right: the width carets and the window controls; the edge drags.
+    let ctl_x = crate::ui_panelwin::draw_title_controls(buf, &mut hits, app, area);
+    crate::ui_panelwin::edge_region(&mut hits, app, area);
     // What it is doing, in the same calm accent.
     if let Some(chip) = state_chip(app) {
         tx = crate::hits::text(
             buf,
             tx + 1,
             area.y,
-            area.x + area.width.saturating_sub(2),
+            ctl_x.saturating_sub(1),
             &format!(" {chip} "),
             Style::default().fg(BAR_BG).bg(theme::SLATE),
         );
@@ -826,9 +912,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             "Remote Control: click to open its claude.ai link (also copied)",
         );
     }
-    // Toolbar: what fits, then ⋯ (everything) and × (close).
+    // Toolbar: what fits, then ⋯ (everything; close is on the title row).
     let y = inner.y;
-    let tail = cells(" ⋯ ") + 1 + cells(" × ");
+    let tail = cells(" ⋯ ");
     let mut x = inner.x;
     for (k, (mut l, a, hint)) in toolbar(app).into_iter().enumerate() {
         // The way back always fits: shorter, never pushed out.
@@ -858,7 +944,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         ) + 1;
     }
     let mx = limit - tail;
-    let x2 = crate::hits::button(
+    crate::hits::button(
         buf,
         &mut hits,
         app.mouse_pos,
@@ -867,36 +953,42 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         limit,
         "⋯",
         UiAction::MenuOpen(crate::menus::MenuId::AssistantMore),
-        "More: conversation, rules, prompt, admin, timing, settings",
+        "More: conversation, rules, prompt, admin, timing, panel width, settings",
         theme::SLATE,
     );
-    crate::hits::button(
-        buf,
-        &mut hits,
-        app.mouse_pos,
-        x2 + 1,
-        y,
-        limit,
-        "×",
-        UiAction::Key('.'),
-        "Close (Esc, Ctrl-a .)",
-        theme::CLAY,
-    );
-    // Status line.
+    // Status line (direct mode says where the voice goes instead).
+    if let Some(d) = &app.direct.on {
+        let line = format!("● mic at {} · click to bring back", d.name);
+        crate::hits::text(
+            buf,
+            inner.x,
+            y + 1,
+            limit,
+            &crate::sessions::snippet(&line, inner.width as usize),
+            Style::default().fg(theme::SAGE).bg(BAR_BG),
+        );
+        hits.add(
+            Rect::new(inner.x, y + 1, inner.width, 1),
+            UiAction::MicToAssistant,
+            "Back to the assistant (Ctrl-a K, Esc here, or say \"back to the assistant\")",
+        );
+    }
     let st = status_line(app);
     let note = match acct {
         None => "log in an account to use it".to_string(),
         Some(_) if st.is_empty() => String::new(),
         Some(_) => st,
     };
-    crate::hits::text(
-        buf,
-        inner.x,
-        y + 1,
-        limit,
-        &crate::sessions::snippet(&note, inner.width as usize),
-        Style::default().fg(FAINT).bg(BAR_BG),
-    );
+    if app.direct.on.is_none() {
+        crate::hits::text(
+            buf,
+            inner.x,
+            y + 1,
+            limit,
+            &crate::sessions::snippet(&note, inner.width as usize),
+            Style::default().fg(FAINT).bg(BAR_BG),
+        );
+    }
     let mut top = y + 2;
     if app.assistant.show_details {
         if let Some(t) = &app.assistant.last_timing {
@@ -928,9 +1020,25 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     }
     let buf = f.buffer_mut();
     let mut hits = app.hits.borrow_mut();
-    // The input box takes the last row.
-    let iy = inner.y + inner.height - 1;
-    // The input box grows with what is in it (up to 6 rows, its end shown).
+    // Loops & schedules above the conversation: the composer (with its
+    // frame) and four rows of conversation stay.
+    let top = {
+        let avail = (inner.y + inner.height).saturating_sub(top + 5 + 4);
+        top + crate::ui_schedules::draw(
+            buf,
+            &mut hits,
+            app,
+            inner.x,
+            top,
+            inner.width,
+            avail,
+            inner.height,
+        )
+    };
+    // The composer: a framed field at the bottom, 3 rows tall, growing
+    // with what is in it up to assistant.input_rows (its end shown).
+    // Inside the frame: one cell of padding, the "› " lead, the text.
+    let bottom = inner.y + inner.height;
     let send_w = cells(" Send ");
     let mic_label = if app.voice.muted {
         "● muted"
@@ -942,29 +1050,40 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             _ => "● open mic",
         }
     };
-    let mic_w = cells(mic_label) + 1;
     // The speaker: a click (or Ctrl-a O) mutes what it says out loud.
     let spk_label = if app.cfg.voice.speaker_muted {
         "● silent"
     } else {
         "sound on"
     };
-    let spk_w = cells(spk_label) + 2;
-    let right = limit.saturating_sub(send_w + mic_w + spk_w);
+    let tx = inner.x + 4;
+    let right = limit.saturating_sub(2);
     // The input wrapped, the caret's row and column in it, and the rows
     // shown (scrolled to keep the caret in view).
     let in_text = app.assistant.input.as_str();
-    let in_w = right.saturating_sub(inner.x + 2).max(4) as usize;
+    let in_w = right.saturating_sub(tx).max(4) as usize;
     let in_rows = input_edit::rows(in_text, in_w);
     let (caret, sel) = app.assistant.caret.view(in_text);
     let (c_row, c_col) = input_edit::caret_rc(in_text, &in_rows, caret, in_w);
     let in_total = in_rows.len().max(c_row + 1);
+    let grow_to = app
+        .cfg
+        .assistant
+        .input_rows
+        .max(crate::app_panelwin::INPUT_MIN_ROWS);
+    // Three rows of conversation stay above it (and its frame).
+    let fit = bottom.saturating_sub(top + 3 + 2).max(1);
     let in_h = (in_total as u16)
-        .clamp(1, 6)
-        .min(inner.height.saturating_sub(4).max(1));
+        .max(crate::app_panelwin::INPUT_MIN_ROWS)
+        .min(grow_to)
+        .min(fit);
     let in_top = {
         let h = in_h as usize;
-        let mut t = app.assistant.input_top.get().min(in_total - h);
+        let mut t = app
+            .assistant
+            .input_top
+            .get()
+            .min(in_total.saturating_sub(h));
         if c_row < t {
             t = c_row;
         } else if c_row >= t + h {
@@ -973,13 +1092,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         app.assistant.input_top.set(t);
         t
     };
-    let iy0 = iy + 1 - in_h;
+    let frame_bot = bottom - 1;
+    let iy0 = frame_bot - in_h;
+    let frame_top = iy0 - 1;
     app.assistant
         .input_geo
         .set(Some(crate::app_input::InputGeo {
-            x0: inner.x,
-            right,
-            tx: inner.x + 2,
+            x0: inner.x + 1,
+            right: limit.saturating_sub(1),
+            tx,
             y: iy0,
             h: in_h,
             w: in_w,
@@ -989,8 +1110,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // input (a click answers, as typing "yes" would).
     let asking = (!app.pending_confirms.is_empty() || app.assistant.selfswitch.asked.is_some())
         && !app.assistant.show_admin;
-    let ask_y = iy0.saturating_sub(1);
-    let body_h = (if asking { ask_y } else { iy0 }).saturating_sub(top + 1);
+    // The quick bar above the input (and the question): it goes first
+    // when the panel is short.
+    let free = frame_top.saturating_sub(top + u16::from(asking));
+    let quick_h = crate::ui_panelwin::quick_rows(free);
+    let quick_y = frame_top - quick_h;
+    let ask_y = quick_y.saturating_sub(1);
+    let body_h = (if asking { ask_y } else { quick_y }).saturating_sub(top);
     let rows: Vec<Row> = if app.assistant.show_admin {
         let mut v = vec![row(vec![(
             "Admin actions".into(),
@@ -1001,6 +1127,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 parts: vec![(line, Style::default().fg(DIM))],
                 action,
                 indent: 0,
+                pre: false,
             });
         }
         if app.admin.history.is_empty() {
@@ -1015,6 +1142,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 parts: vec![(h.clone(), Style::default().fg(DIM))],
                 action: None,
                 indent: 2,
+                pre: false,
             });
         }
         v
@@ -1023,22 +1151,48 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         app.mark_replies_seen();
         rows(app, inner.width)
     };
+    // The chat's scrollbar sits on the panel's right border, so the text
+    // keeps its whole width.
+    let chat_w = inner.width;
+    let tlimit = limit;
     let mut physical: Vec<(u16, Vec<(String, Style)>, Option<UiAction>)> = vec![];
     for r in &rows {
-        for l in wrap(r, inner.width) {
+        for l in wrap(r, chat_w) {
             physical.push((r.indent, l, r.action.clone()));
         }
     }
-    let skip = physical.len().saturating_sub(body_h as usize);
+    // Scrolled back: the same lines stay in view as new ones arrive.
+    let total = physical.len();
+    let view = body_h as usize;
+    let max_off = total.saturating_sub(view);
+    let mut off = app.assistant.chat_off.get();
+    if off > 0 {
+        off += total.saturating_sub(app.assistant.chat_seen.get());
+    }
+    let off = off.min(max_off);
+    app.assistant.chat_off.set(off);
+    app.assistant.chat_seen.set(total);
+    let skip = max_off - off;
     // What is drawn, for selecting it with the mouse.
     let mut shown: Vec<String> = vec![];
-    for (k, (indent, l, action)) in physical.into_iter().skip(skip).enumerate() {
+    for (k, (indent, l, action)) in physical.into_iter().skip(skip).take(view).enumerate() {
         let ly = top + k as u16;
         let mut cx = inner.x + indent;
         let mut text = " ".repeat(indent as usize);
         for (s, stl) in l {
             text.push_str(&s);
-            cx = crate::hits::text(buf, cx, ly, limit, &s, stl.bg(BAR_BG));
+            cx = crate::hits::text(
+                buf,
+                cx,
+                ly,
+                tlimit,
+                &s,
+                if stl.bg.is_some() {
+                    stl
+                } else {
+                    stl.bg(BAR_BG)
+                },
+            );
         }
         shown.push(text);
         if let Some(a) = action {
@@ -1048,6 +1202,32 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 "Click to show or hide what it ran"
             };
             hits.add(Rect::new(inner.x, ly, inner.width, 1), a, hint);
+        }
+    }
+    // The chat's scrollbar: the right border is its track and a muted thumb
+    // shows where the view is; dragging it or the wheel scrolls the chat
+    // only.
+    let geo = ChatGeo {
+        area: Rect::new(inner.x, top, inner.width + 1, body_h),
+        total,
+        view,
+    };
+    if body_h > 0 && chat_w > 0 {
+        app.assistant.chat_geo.set(Some(geo));
+        if let Some((ts, tl)) = crate::scrollbar::thumb(body_h, total, view, geo.top(off)) {
+            // The track is the border itself; the thumb a muted block on it.
+            let bx = limit;
+            for k in ts..(ts + tl).min(body_h) {
+                if let Some(c) = buf.cell_mut((bx, top + k)) {
+                    c.set_char('█');
+                    c.set_style(Style::default().fg(theme::STONE).bg(BAR_BG));
+                }
+            }
+            hits.add(
+                geo.bar(),
+                UiAction::ChatBar,
+                "Drag to scroll the chat (the wheel works over it too)",
+            );
         }
     }
     if asking {
@@ -1105,7 +1285,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             theme::STONE,
         );
     }
-    let body = Rect::new(inner.x, top, inner.width, body_h);
+    let body = Rect::new(inner.x, top, chat_w, body_h);
     if let Some(sel) = app
         .selection
         .as_ref()
@@ -1125,41 +1305,101 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     *app.assistant_text.borrow_mut() = Some((body, shown));
-    // Input: the text (or the hint), the mic state, Send.
-    for y in iy0..=iy {
+    // The quick actions.
+    if quick_h > 0 {
+        crate::ui_panelwin::draw_quick(buf, &mut hits, app, inner.x, quick_y, limit, quick_h);
+    }
+    // The composer: its frame (calm slate with the keys, faint without),
+    // the field's own background inside, the text (or the placeholder),
+    // and the mic state, the speaker and Send on the frame's bottom edge.
+    let frame_st = Style::default()
+        .fg(if focused { theme::SLATE } else { FAINT })
+        .bg(BAR_BG);
+    let fx1 = limit - 1;
+    for y in frame_top..=frame_bot {
         for cx in inner.x..limit {
+            let edge_row = y == frame_top || y == frame_bot;
+            let ch = match (cx == inner.x, cx == fx1, y == frame_top, y == frame_bot) {
+                (true, _, true, _) => '╭',
+                (_, true, true, _) => '╮',
+                (true, _, _, true) => '╰',
+                (_, true, _, true) => '╯',
+                (true, _, _, _) | (_, true, _, _) => '│',
+                _ if edge_row => '─',
+                _ => ' ',
+            };
             if let Some(c) = buf.cell_mut((cx, y)) {
-                c.set_char(' ');
-                c.set_style(Style::default().bg(SEL_BG));
+                c.set_char(ch);
+                if ch == ' ' {
+                    c.set_style(Style::default().bg(SEL_BG));
+                } else {
+                    c.set_style(frame_st);
+                }
             }
         }
     }
-    let mic = mic_label;
+    // Brainstorm mode: its chip on the frame's top edge.
+    if let Some(chip) = app.brainstorm_chip() {
+        let s = format!(" {chip} ");
+        let cx = inner.x + 2;
+        let end = fx1.saturating_sub(1);
+        let x2 = crate::hits::text(
+            buf,
+            cx,
+            frame_top,
+            end,
+            &s,
+            Style::default()
+                .fg(theme::SAND)
+                .bg(BAR_BG)
+                .add_modifier(Modifier::BOLD),
+        );
+        hits.add(
+            Rect::new(cx, frame_top, x2.saturating_sub(cx), 1),
+            UiAction::Key('B'),
+            "Brainstorm mode: nothing is sent until you say send it or press Enter. Click (or Esc) to leave it; the draft stays",
+        );
+    }
+    let field = Style::default().bg(SEL_BG);
     if app.assistant.input.is_empty() {
-        let hint = if focused {
-            "› Type or speak…"
-        } else {
-            "› click or Ctrl-a . to type"
-        };
         crate::hits::text(
             buf,
-            inner.x,
-            iy,
+            tx - 2,
+            iy0,
             right,
-            hint,
+            "› ",
             Style::default().fg(FAINT).bg(SEL_BG),
         );
+        let lines = wrap(
+            &row(vec![(
+                if app.brainstorm_on() {
+                    PLACEHOLDER_BRAINSTORM
+                } else if focused {
+                    PLACEHOLDER
+                } else {
+                    PLACEHOLDER_AWAY
+                }
+                .to_string(),
+                Style::default().fg(FAINT).bg(SEL_BG),
+            )]),
+            in_w as u16,
+        );
+        for (k, l) in lines.into_iter().take(in_h as usize).enumerate() {
+            let mut cx = tx;
+            for (s, st) in l {
+                cx = crate::hits::text(buf, cx, iy0 + k as u16, right, &s, st);
+            }
+        }
         if focused {
-            app.want_cursor.set(Some((inner.x + 2, iy)));
+            app.want_cursor.set(Some((tx, iy0)));
         }
     } else {
-        let style = Style::default().fg(FG).bg(SEL_BG);
-        let tx = inner.x + 2;
+        let style = field.fg(FG);
         for k in 0..in_h as usize {
             let r = in_top + k;
             let y = iy0 + k as u16;
             if r == 0 {
-                crate::hits::text(buf, inner.x, y, right, "› ", style);
+                crate::hits::text(buf, tx - 2, y, right, "› ", style);
             }
             let Some(row) = in_rows.get(r) else {
                 continue;
@@ -1196,53 +1436,79 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             app.want_cursor.set(Some((x, y)));
         }
     }
-    let spk_style = if app.cfg.voice.speaker_muted {
-        Style::default().fg(theme::SAND).bg(SEL_BG)
-    } else {
-        Style::default().fg(DIM).bg(SEL_BG)
-    };
-    let spk_hover = app
-        .mouse_pos
-        .is_some_and(|(mx, my)| my == iy && mx >= right && mx < right + spk_w - 1);
-    crate::hits::text(
-        buf,
-        right,
-        iy,
-        right + spk_w,
-        spk_label,
-        if spk_hover {
-            spk_style.add_modifier(Modifier::UNDERLINED)
+    // The bottom edge: Send at the right; the speaker and the mic state
+    // at the left while they fit.
+    let send_x = fx1.saturating_sub(1 + send_w);
+    let mut ex = inner.x + 2;
+    let spk_w = cells(spk_label) + 2;
+    if ex + spk_w + 1 < send_x {
+        let spk_style = if app.cfg.voice.speaker_muted {
+            Style::default().fg(theme::SAND).bg(BAR_BG)
         } else {
-            spk_style
-        },
-    );
-    hits.add(
-        Rect::new(right, iy, spk_w - 1, 1),
-        UiAction::SpeakerToggle,
-        if app.cfg.voice.speaker_muted {
-            "The speaker is muted: answers show as text only. Click (or Ctrl-a O) to talk again"
-        } else {
-            "Mute what it says out loud (Ctrl-a O); the mic keeps listening"
-        },
-    );
-    crate::hits::text(
-        buf,
-        right + spk_w,
-        iy,
-        right + spk_w + mic_w,
-        mic,
-        Style::default().fg(DIM).bg(SEL_BG),
-    );
+            Style::default().fg(DIM).bg(BAR_BG)
+        };
+        let rect = Rect::new(ex, frame_bot, spk_w, 1);
+        let spk_hover = app
+            .mouse_pos
+            .is_some_and(|(mx, my)| crate::hits::contains(rect, mx, my));
+        crate::hits::text(
+            buf,
+            ex,
+            frame_bot,
+            ex + spk_w,
+            &format!(" {spk_label} "),
+            if spk_hover {
+                spk_style.add_modifier(Modifier::UNDERLINED)
+            } else {
+                spk_style
+            },
+        );
+        hits.add(
+            rect,
+            UiAction::SpeakerToggle,
+            if app.cfg.voice.speaker_muted {
+                "The speaker is muted: answers show as text only. Click (or Ctrl-a O) to talk again"
+            } else {
+                "Mute what it says out loud (Ctrl-a O); the mic keeps listening"
+            },
+        );
+        ex += spk_w + 1;
+    }
+    let mic_w = cells(mic_label) + 2;
+    if ex + mic_w + 1 < send_x {
+        crate::hits::text(
+            buf,
+            ex,
+            frame_bot,
+            ex + mic_w,
+            &format!(" {mic_label} "),
+            Style::default()
+                .fg(if app.voice.muted {
+                    theme::MUTED_RED
+                } else {
+                    DIM
+                })
+                .bg(BAR_BG),
+        );
+    }
     crate::hits::button(
         buf,
         &mut hits,
         app.mouse_pos,
-        limit - send_w,
-        iy,
-        limit,
+        send_x,
+        frame_bot,
+        fx1,
         "Send",
         UiAction::AssistantSend,
-        "Send what you typed (Enter)",
+        "Send what you typed (Enter; Shift+Enter is a new line)",
         theme::SAGE,
     );
 }
+
+/// The empty input's words.
+pub const PLACEHOLDER: &str = "Type or speak…  (Enter sends, Shift+Enter new line)";
+/// While brainstorming, before anything is said.
+pub const PLACEHOLDER_BRAINSTORM: &str =
+    "Brainstorming: talk as long as you like; say \"send it\" or press Enter to send";
+/// The same without the keys: how to give them to it.
+pub const PLACEHOLDER_AWAY: &str = "click or Ctrl-a . to type  (Enter sends, Shift+Enter new line)";

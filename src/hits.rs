@@ -138,10 +138,20 @@ pub enum UiAction {
     SetupDontShow,
     /// The assistant panel's input (or anywhere in it): give it the keys.
     AssistantFocus,
+    /// The chat's scrollbar column.
+    ChatBar,
+    /// Anywhere in the Loops & schedules section (for the wheel).
+    SchedArea,
     /// The panel's Remote indicator: open (and copy) the link.
     AssistantRemoteLink,
     /// The assistant panel's Send button.
     AssistantSend,
+    /// The assistant panel's window controls, width carets, edge and
+    /// quick actions.
+    AssistantPanel(crate::app_panelwin::PanelCtl),
+    /// A pane's width carets: pane `.0` narrower (false) or wider (true);
+    /// shift-click or a double click: equal widths.
+    PaneWidth(usize, bool),
     /// An action chip in the assistant panel: show or hide its raw call.
     AssistantChip(usize),
     /// Settings > About: check for a new version now.
@@ -190,6 +200,12 @@ pub enum UiAction {
     /// A tab group's header in pane .0's list: click folds, right click
     /// opens its menu, a dragged tab dropped on it joins.
     GroupHeader(usize, usize),
+    /// The Archived group's header in pane `.0`'s tab list.
+    ArchivedHeader(usize),
+    /// An archived conversation (pane, archive id) in that list.
+    ArchivedRow(usize, String),
+    /// A row of an archived entry's menu.
+    ArchMenuItem(usize),
     GroupMenuItem(usize),
     GroupPickItem(usize),
     GroupMoveTo(usize),
@@ -213,6 +229,8 @@ pub enum UiAction {
     /// Loops view: jump to the selected loop's tab, stop it, stop all.
     LoopJump,
     LoopStop,
+    /// Loops view: the selected loop's detail card.
+    LoopCard,
     LoopStopAll,
     /// Memory: free now.
     FreeNow,
@@ -279,6 +297,12 @@ pub enum UiAction {
     Menu(crate::menus::Cmd),
     /// The Voice dropdown (menu bar button, status bar chip), its rows.
     VoiceMenu,
+    /// The mic badge on the pane (which) that holds the voice in direct
+    /// mode: the menu to move it.
+    MicMenu(usize),
+    /// Move the mic to this tab (its uid), or back to the assistant.
+    MicMoveTo(u64),
+    MicToAssistant,
     VoiceMode(u8),
     /// The » menu of buttons that did not fit, its rows.
     MenuOverflow,
@@ -300,6 +324,26 @@ pub enum UiAction {
     RemoveAccount(usize),
     /// Account menu entries.
     SwitchAccount(usize, usize),
+    /// The model bar: (pane, model index).
+    TabModel(usize, usize),
+    /// The loops drawer: open or close it (pane), its top edge (drag),
+    /// New loop…, a loop's row (pane, loop), and a loop's button
+    /// (pane, loop, op).
+    LoopsDrawer(usize),
+    LoopsDrawerEdge(usize),
+    LoopsNew(usize),
+    LoopRow(usize, usize),
+    LoopAction(usize, usize, u8),
+    /// The assistant panel's Loops & schedules section: its header, a row
+    /// (job id, or "tab:loop": opens its card) and a row's button (key, op).
+    SchedToggle,
+    SchedRow(String),
+    SchedAct(String, u8),
+    /// A tab group's header in the section: fold or unfold it.
+    SchedGroup(String),
+    /// The detail card: a button (op), and its inside (keeps it open).
+    SchedCardAct(u8),
+    SchedCardInside,
     Login(usize),
     Logout(usize),
 }
@@ -315,11 +359,17 @@ pub struct Region {
 #[derive(Debug, Default, Clone)]
 pub struct Hits {
     pub regions: Vec<Region>,
+    /// Each pane's tab list: (pane, first region, end), the regions it
+    /// added, its background (the whole list) first. The wheel anywhere
+    /// in a list (a row, a group header, the search row, the empty space
+    /// below, the separator) scrolls that list.
+    pub tab_lists: Vec<(usize, usize, usize)>,
 }
 
 impl Hits {
     pub fn clear(&mut self) {
         self.regions.clear();
+        self.tab_lists.clear();
     }
 
     pub fn add(&mut self, rect: Rect, action: UiAction, hint: impl Into<String>) {

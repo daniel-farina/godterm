@@ -66,6 +66,10 @@ pub struct Track {
     pub restored: bool,
     /// The transcript's length when it was typed in (read from there).
     pub from_offset: Option<u64>,
+    /// How it went into the tab (direct, queue, side, background).
+    pub mode: crate::app_busy::Mode,
+    /// Why that mode, when it is not what was asked (a fallback).
+    pub note: Option<String>,
 }
 
 impl Track {
@@ -87,6 +91,8 @@ impl Track {
             proc_started: None,
             restored: false,
             from_offset: None,
+            mode: crate::app_busy::Mode::Direct,
+            note: None,
         }
     }
 
@@ -137,6 +143,7 @@ impl Delivery {
     pub fn pending_for_save(&self) -> bool {
         matches!(self.rc.receipt, Receipt::Pending | Receipt::Received)
             && !matches!(self.stage, Stage::Failed(_))
+            && !self.rc.mode.external()
     }
 }
 
@@ -148,6 +155,7 @@ struct Change {
     text: String,
     notify: bool,
     busy: bool,
+    mode: crate::app_busy::Mode,
     from: Receipt,
     to: Receipt,
 }
@@ -201,6 +209,7 @@ impl App {
                 text: d.text.clone(),
                 notify: d.rc.notify,
                 busy: d.rc.busy,
+                mode: d.rc.mode,
                 from: d.rc.receipt.clone(),
                 to: to.clone(),
             });
@@ -233,6 +242,9 @@ impl App {
 
     /// The next receipt for one request, from its tab and transcript.
     fn receipt_next(&self, d: &mut Delivery) -> Option<Receipt> {
+        if d.rc.mode.external() {
+            return self.external_receipt(d);
+        }
         let started = d.rc.receipt == Receipt::Started;
         let uid = self.current_uid(d.uid);
         let Some((s, t)) = self.find_tab(uid) else {
@@ -386,6 +398,28 @@ impl App {
             return;
         }
         let words = first_words(&c.text);
+        if c.mode == crate::app_busy::Mode::Background && c.to == Receipt::Received {
+            // The user hears what happened plainly; the result follows.
+            self.say_update(
+                Voice::Reply,
+                &if c.busy {
+                    format!(
+                        "{} is busy, so I started a background session for it.",
+                        c.name
+                    )
+                } else {
+                    format!(
+                        "I started a background session from {}'s conversation.",
+                        c.name
+                    )
+                },
+            );
+            return;
+        }
+        if c.mode.external() && !c.to.lost() {
+            // Side answers and background results arrive as follow-ups.
+            return;
+        }
         match &c.to {
             Receipt::Received if c.busy => {
                 self.say_update(
@@ -447,7 +481,9 @@ impl App {
         let mine: Vec<u64> = self
             .deliveries
             .iter()
-            .filter(|d| !d.rc.receipt.is_final() && self.current_uid(d.uid) == uid)
+            .filter(|d| {
+                !d.rc.receipt.is_final() && !d.rc.mode.external() && self.current_uid(d.uid) == uid
+            })
             .map(|d| d.id)
             .collect();
         for d in self.deliveries.iter_mut().filter(|d| mine.contains(&d.id)) {
@@ -497,7 +533,16 @@ impl App {
                     "sent_at": d.rc.created_at.format("%H:%M:%S").to_string(),
                     "state_since": changed.format("%H:%M:%S").to_string(),
                     "from_user": d.rc.notify,
+                    "mode": d.rc.mode.word(),
                 });
+                if let Some(n) = &d.rc.note {
+                    v["mode_note"] = json!(n);
+                }
+                if let Some(r) = self.run_json(d.id).and_then(|r| r.as_object().cloned()) {
+                    for (k, x) in r {
+                        v[k] = x;
+                    }
+                }
                 if let Some(r) = d.rc.receipt.reason() {
                     v["reason"] = json!(r);
                 } else if let (Stage::Failed(r), Receipt::Pending) = (&d.stage, &d.rc.receipt) {
@@ -536,10 +581,18 @@ impl App {
                 ));
             } else if open {
                 s.push_str(&format!(
-                    "request #{} to {}: {} ({} s) \"{}\"\n",
+                    "request #{} to {}: {} [{}{}] ({} s) \"{}\"\n",
                     d.id,
                     tab_id(self.current_uid(d.uid)),
                     d.state_word(),
+                    d.rc.mode.word(),
+                    self.busy
+                        .runs
+                        .iter()
+                        .find(|r| r.delivery == d.id)
+                        .and_then(|r| r.short())
+                        .map(|s| format!(" {s}"))
+                        .unwrap_or_default(),
                     d.created.elapsed().as_secs(),
                     first_words(&d.text)
                 ));

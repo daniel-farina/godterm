@@ -5,9 +5,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use std::time::{Duration, Instant};
 
 use crate::app::{App, Modal, View};
-use crate::hits::{List, UiAction};
+use crate::hits::{contains, List, UiAction};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(450);
+/// Wheel events closer than this are a stream (a trackpad, a fast spin).
+const WHEEL_STREAM: Duration = Duration::from_millis(60);
 
 /// Tour steps: (title, text).
 pub const TOUR: &[(&str, &str)] = &[
@@ -73,6 +75,50 @@ pub fn encode_mouse(m: &MouseEvent, col: u16, row: u16) -> Option<Vec<u8>> {
     )
 }
 
+/// A wheel event (up or down).
+pub fn is_wheel(m: &MouseEvent) -> bool {
+    matches!(
+        m.kind,
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+    )
+}
+
+/// Most wheel events taken as one.
+pub const WHEEL_BURST: u16 = 64;
+
+/// After wheel event `first`, take the ones already waiting (`next` gives
+/// one, or None when nothing is queued) that go the same way at the same
+/// place. Returns how many there were in all and the first other event
+/// read, which the caller handles next.
+pub fn coalesce_wheel(
+    first: &MouseEvent,
+    next: &mut dyn FnMut() -> Option<crossterm::event::Event>,
+) -> (u16, Option<crossterm::event::Event>) {
+    let mut n = 1;
+    while n < WHEEL_BURST {
+        match next() {
+            Some(crossterm::event::Event::Mouse(m))
+                if m.kind == first.kind
+                    && m.column == first.column
+                    && m.row == first.row
+                    && m.modifiers == first.modifiers =>
+            {
+                n += 1
+            }
+            Some(other) => return (n, Some(other)),
+            None => break,
+        }
+    }
+    (n, None)
+}
+
+/// The assistant panel's areas that scroll on their own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelArea {
+    Schedules,
+    Chat,
+}
+
 fn button_code(b: MouseButton) -> u16 {
     match b {
         MouseButton::Left => 0,
@@ -89,13 +135,16 @@ impl App {
             Modal::Menu(_)
                 | Modal::TakeOver(_)
                 | Modal::TabMenu(..)
+                | Modal::ArchMenu(..)
                 | Modal::AccountMenu(..)
                 | Modal::PathMenu(_)
                 | Modal::AddAccount(_)
                 | Modal::ColorPick(..)
                 | Modal::EmptySlotMenu(_)
+                | Modal::MicMenu(_)
                 | Modal::MenuOverflow
                 | Modal::GrokLogins(_)
+                | Modal::SchedCard(_)
         )
     }
 
@@ -180,6 +229,20 @@ impl App {
                 _ => self.tab_drag = None,
             }
         }
+        // Dragging the top edge of a loops drawer.
+        if let Some(i) = self.loops_drawer_drag {
+            match m.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.drag_loops_drawer(i, m.row);
+                    return;
+                }
+                MouseEventKind::Up(_) => {
+                    self.loops_drawer_drag = None;
+                    return;
+                }
+                _ => self.loops_drawer_drag = None,
+            }
+        }
         // Dragging the edge of a tab list.
         if let Some(i) = self.sidebar_drag {
             match m.kind {
@@ -192,6 +255,34 @@ impl App {
                     return;
                 }
                 _ => self.sidebar_drag = None,
+            }
+        }
+        // Dragging the chat's scrollbar thumb.
+        if let Some(grab) = self.assistant.bar_drag {
+            match m.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.chat_bar_to(m.row, grab);
+                    return;
+                }
+                MouseEventKind::Up(_) => {
+                    self.assistant.bar_drag = None;
+                    return;
+                }
+                _ => self.assistant.bar_drag = None,
+            }
+        }
+        // Dragging the assistant panel's left edge.
+        if self.assistant.edge_drag {
+            match m.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.drag_panel_edge(m.column);
+                    return;
+                }
+                MouseEventKind::Up(_) => {
+                    self.end_panel_drag();
+                    return;
+                }
+                _ => self.assistant.edge_drag = false,
             }
         }
         if self.livemap_mouse(&m) {
@@ -275,6 +366,10 @@ impl App {
                 match region.map(|r| r.action) {
                     Some(UiAction::SelectTab(s, t)) => self.open_tab_menu(s, t),
                     Some(UiAction::GroupHeader(s, g)) => self.open_group_menu(s, g),
+                    Some(UiAction::ArchivedRow(s, id)) => {
+                        self.focus = s;
+                        self.open_archive_menu(id);
+                    }
                     Some(UiAction::Row(List::Overview, i)) => {
                         if let Some(&(s, t)) = self.overview_rows().get(i) {
                             self.open_tab_menu(s, t);
@@ -301,19 +396,42 @@ impl App {
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = m.kind == MouseEventKind::ScrollUp;
-                match region.map(|r| r.action) {
-                    Some(UiAction::PaneBody(i)) | Some(UiAction::FocusPane(i)) => {
-                        if !self.forward_mouse(i, &m) {
-                            self.panes[i].cur_mut().scroll_by(if up { 3 } else { -3 });
+                let n = self.wheel_n.max(1) as isize;
+                let d = if up { -n } else { n };
+                // Anywhere in a pane's tab list (a row, a group header,
+                // the search row, the empty space, the separator): the
+                // list, never the pane beside it.
+                if let Some(s) = self.tab_list_at(m.column, m.row) {
+                    self.scroll_tabs(s, d);
+                    return;
+                }
+                // The Loops & schedules section and the chat each take the
+                // wheel over their own area, and only that area.
+                if let Some(over) = self.panel_region_at(m.column, m.row) {
+                    match over {
+                        PanelArea::Schedules => self.sched_scroll_by(d),
+                        PanelArea::Chat => {
+                            let lines = self.wheel_lines(up, n as usize);
+                            self.chat_scroll_by(if up { lines } else { -lines });
                         }
                     }
-                    Some(UiAction::Row(list, _)) => self.scroll_list(list, if up { -1 } else { 1 }),
+                    return;
+                }
+                match region.map(|r| r.action) {
+                    Some(UiAction::PaneBody(i)) | Some(UiAction::FocusPane(i)) => {
+                        self.wheel_pane(i, &m, up, n as usize);
+                    }
+                    Some(UiAction::Row(list, _)) => self.scroll_list(list, d),
+                    Some(
+                        UiAction::SchedRow(_)
+                        | UiAction::SchedAct(..)
+                        | UiAction::SchedGroup(_)
+                        | UiAction::SchedToggle,
+                    ) => self.sched_scroll_by(d),
                     Some(UiAction::SelectTab(s, _))
                     | Some(UiAction::SidebarToggle(s))
-                    | Some(UiAction::TabsScroll(s, _)) => {
-                        self.scroll_tabs(s, if up { -1 } else { 1 })
-                    }
-                    _ => self.scroll_view(if up { -1 } else { 1 }),
+                    | Some(UiAction::TabsScroll(s, _)) => self.scroll_tabs(s, d),
+                    _ => self.scroll_view(d),
                 }
             }
             MouseEventKind::Up(_) | MouseEventKind::Drag(_) => {
@@ -325,9 +443,174 @@ impl App {
         }
     }
 
+    /// Which of the assistant panel's two scrolling areas is under the
+    /// pointer (as last drawn; none while a popup or dialog is open).
+    pub fn panel_region_at(&self, col: u16, row: u16) -> Option<PanelArea> {
+        if self.modal != Modal::None {
+            return None;
+        }
+        if contains(self.sched_ui.rect.get(), col, row) {
+            return Some(PanelArea::Schedules);
+        }
+        if self
+            .assistant
+            .chat_geo
+            .get()
+            .is_some_and(|g| g.contains(col, row))
+        {
+            return Some(PanelArea::Chat);
+        }
+        None
+    }
+
+    /// Scroll the chat by `d` lines (positive: towards older ones).
+    pub fn chat_scroll_by(&mut self, d: isize) {
+        let Some(g) = self.assistant.chat_geo.get() else {
+            return;
+        };
+        let max = g.total.saturating_sub(g.view);
+        let off = (self.assistant.chat_off.get() as isize + d).clamp(0, max as isize);
+        self.assistant.chat_off.set(off as usize);
+    }
+
+    /// A press on the scrollbar: on the thumb it is grabbed, elsewhere the
+    /// thumb jumps there and is held.
+    fn chat_bar_press(&mut self, row: u16) {
+        let Some(g) = self.assistant.chat_geo.get() else {
+            return;
+        };
+        let bar = g.bar();
+        let y = row.saturating_sub(bar.y);
+        let top = g.top(self.assistant.chat_off.get());
+        let grab = crate::scrollbar::grab(bar.height, g.total, g.view, top, y);
+        let held = grab.unwrap_or_else(|| {
+            crate::scrollbar::thumb(bar.height, g.total, g.view, top).map_or(0, |(_, l)| l / 2)
+        });
+        self.assistant.bar_drag = Some(held);
+        if grab.is_none() {
+            self.chat_bar_to(row, held);
+        }
+    }
+
+    /// The thumb follows the pointer at `row`, held `grab` rows in.
+    fn chat_bar_to(&mut self, row: u16, grab: u16) {
+        let Some(g) = self.assistant.chat_geo.get() else {
+            return;
+        };
+        let bar = g.bar();
+        let y = row.saturating_sub(bar.y).min(bar.height.saturating_sub(1));
+        let top = crate::scrollbar::top_at(bar.height, g.total, g.view, y, grab);
+        let max = g.total.saturating_sub(g.view);
+        self.assistant.chat_off.set(max - top.min(max));
+    }
+
+    /// The wheel over pane `i`'s body. Who scrolls depends on the screen the
+    /// agent is on: on the alternate screen (no history of ours) it gets the
+    /// wheel as mouse events when it asked for them, else as arrow keys (the
+    /// terminal's "alternate scroll"); on the main screen the history is
+    /// ours and the wheel scrolls it, unless the agent reports the mouse and
+    /// there is no history yet. Before, an agent that turned the mouse on
+    /// from the main screen took every wheel event and a pane with history
+    /// never scrolled (until a key reset its state).
+    fn wheel_pane(&mut self, i: usize, m: &MouseEvent, up: bool, n: usize) {
+        let in_body = self
+            .term_rects
+            .get(i)
+            .is_some_and(|t| crate::hits::contains(*t, m.column, m.row))
+            && self.view == View::Grid;
+        let (alt, mode, history, app_cursor, running) = {
+            let t = self.panes[i].cur_mut();
+            let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+            let alt = p.screen().alternate_screen();
+            let mode = p.screen().mouse_protocol_mode();
+            let history = crate::select::scrollback_len(p.screen_mut());
+            let cursor = p.screen().application_cursor();
+            (alt, mode, history, cursor, t.is_running())
+        };
+        let reports = mode != vt100::MouseProtocolMode::None;
+        if in_body && running {
+            if reports && (alt || history == 0) && self.forward_mouse_n(i, m, n) {
+                return;
+            }
+            if alt && !reports {
+                let lines = self.wheel_lines(up, n);
+                let key: &[u8] = match (up, app_cursor) {
+                    (true, true) => b"\x1bOA",
+                    (true, false) => b"\x1b[A",
+                    (false, true) => b"\x1bOB",
+                    (false, false) => b"\x1b[B",
+                };
+                self.panes[i]
+                    .cur_mut()
+                    .write(&key.repeat(lines.max(1) as usize));
+                return;
+            }
+        }
+        let lines = self.wheel_lines(up, n);
+        self.panes[i]
+            .cur_mut()
+            .scroll_by(if up { lines } else { -lines });
+    }
+
+    /// A burst of `n` wheel events read together (a trackpad sends many):
+    /// handled as one, so the pane scrolls once and claude gets them in
+    /// one write.
+    pub fn on_wheel(&mut self, m: MouseEvent, n: u16) {
+        // The live map's zoom and the Updates dialog: one at a time.
+        if n <= 1 || self.view == View::LiveMap || matches!(self.modal, Modal::Updates(_)) {
+            for _ in 0..n.max(1) {
+                self.on_mouse_event(m);
+            }
+            return;
+        }
+        self.wheel_n = n;
+        self.on_mouse_event(m);
+        self.wheel_n = 1;
+    }
+
+    /// Lines of history a wheel event scrolls: 3 for a lone notch, 1 per
+    /// event in a stream of them (a trackpad, a fast spin), so a trackpad
+    /// glides instead of jumping 3 lines a tick.
+    fn wheel_lines(&mut self, up: bool, n: usize) -> isize {
+        let now = Instant::now();
+        let stream = n > 1
+            || self
+                .wheel_last
+                .is_some_and(|(t, u)| u == up && now.duration_since(t) < WHEEL_STREAM);
+        self.wheel_last = Some((now, up));
+        if stream {
+            n as isize
+        } else {
+            3
+        }
+    }
+
+    /// The pane whose tab list (as last drawn) is on top at (col, row).
+    pub fn tab_list_at(&self, col: u16, row: u16) -> Option<usize> {
+        let regions = &self.last_hits.regions;
+        let from = if self.modal != Modal::None {
+            self.last_modal_from.unwrap_or(regions.len())
+        } else {
+            0
+        };
+        let top = (from.min(regions.len())..regions.len())
+            .rev()
+            .find(|&k| crate::hits::contains(regions[k].rect, col, row))?;
+        self.last_hits
+            .tab_lists
+            .iter()
+            .find(|&&(_, a, b)| a <= top && top < b)
+            .map(|&(s, _, _)| s)
+    }
+
     /// Pass a mouse event to the claude in pane `i` if it asked for mouse
     /// reporting. Returns true when forwarded.
     fn forward_mouse(&mut self, i: usize, m: &MouseEvent) -> bool {
+        self.forward_mouse_n(i, m, 1)
+    }
+
+    /// The same, `n` times in one write (a burst of wheel events).
+    fn forward_mouse_n(&mut self, i: usize, m: &MouseEvent, n: usize) -> bool {
         let Some(term) = self.term_rects.get(i).copied() else {
             return false;
         };
@@ -345,7 +628,7 @@ impl App {
             return false;
         }
         if let Some(b) = encode_mouse(m, m.column - term.x, m.row - term.y) {
-            t.write(&b);
+            t.write(&b.repeat(n.max(1)));
             return true;
         }
         false
@@ -487,15 +770,23 @@ impl App {
     }
 
     /// Scroll a pane's tab list.
+    /// By rows of the list as drawn (headers, pinned, the sort and the
+    /// search included), from the window on screen, within its ends.
     pub fn scroll_tabs(&mut self, s: usize, d: isize) {
         if let Some(slot) = self.panes.get_mut(s) {
-            let n = slot.tabs.len().saturating_sub(1) as isize;
+            let (first, max) = slot.list_window.get();
+            if max == 0 {
+                // Everything fits: nothing to scroll, keep following.
+                return;
+            }
             let base = if slot.sidebar_scroll == crate::slot::FOLLOW {
-                slot.active
+                first
             } else {
-                slot.sidebar_scroll
+                slot.sidebar_scroll.min(max)
             };
-            slot.sidebar_scroll = (base as isize + d).clamp(0, n) as usize;
+            let next = (base as isize + d).clamp(0, max as isize) as usize;
+            slot.sidebar_scroll = next;
+            slot.list_window.set((next, max));
         }
     }
 
@@ -634,6 +925,29 @@ impl App {
         ) {
             self.tab_search = None;
         }
+        // A click outside a loops drawer gives the keys back to the tab.
+        if !matches!(
+            action,
+            UiAction::LoopsDrawer(_)
+                | UiAction::LoopsDrawerEdge(_)
+                | UiAction::LoopRow(..)
+                | UiAction::LoopAction(..)
+        ) {
+            self.loops_drawer_focus = None;
+        }
+        // The section keeps the keys only after a click in it (or on
+        // its card).
+        let card = matches!(self.modal, Modal::SchedCard(_));
+        self.sched_ui.focus = (matches!(
+            action,
+            UiAction::SchedToggle
+                | UiAction::SchedRow(_)
+                | UiAction::SchedAct(..)
+                | UiAction::SchedGroup(_)
+                | UiAction::SchedCardAct(_)
+                | UiAction::SchedCardInside
+        ) || (card && action == UiAction::ModalCancel))
+            && self.sched_open;
         match action {
             // The button of the view on screen toggles back home.
             UiAction::Key(c) if self.active_menu_key() == Some(c) => self.go_home(),
@@ -651,6 +965,8 @@ impl App {
                 self.assistant.focused = false;
             }
             UiAction::AssistantFocus => self.assistant.focused = true,
+            UiAction::ChatBar => self.chat_bar_press(m.row),
+            UiAction::SchedArea => {}
             UiAction::AssistantRemoteLink => self.open_remote_link(),
             UiAction::PaneHeader(i) => {
                 self.focus = i;
@@ -750,6 +1066,25 @@ impl App {
                 self.focus = s;
                 self.toggle_group(s, g);
             }
+            UiAction::ArchivedHeader(p) => {
+                self.focus = p;
+                self.toggle_archive_group();
+            }
+            UiAction::ArchivedRow(p, id) => {
+                self.focus = p;
+                self.archive_sel = Some(id.clone());
+                if double {
+                    match self.restore_archived(&id, None) {
+                        Ok(m) => self.flash(m),
+                        Err(e) => self.flash(format!("Could not restore it: {e}")),
+                    }
+                }
+            }
+            UiAction::ArchMenuItem(i) => {
+                if let Modal::ArchMenu(id, _) = self.modal.clone() {
+                    self.archive_menu_run(&id, i);
+                }
+            }
             UiAction::GroupMenuItem(i) => {
                 if let Modal::GroupMenu(s, g, _) = self.modal {
                     self.group_menu_run(s, g, i);
@@ -790,6 +1125,7 @@ impl App {
             }
             UiAction::UndoTabMove => self.undo_tab_move(),
             UiAction::LoopJump => self.jump_to_loop(),
+            UiAction::LoopCard => self.loop_card(),
             UiAction::FreeNow => self.free_now(),
             UiAction::AssistantNew => {
                 self.back_to_conversation();
@@ -817,6 +1153,16 @@ impl App {
                 self.assistant.focused = true;
             }
             UiAction::AssistantSend => self.send_assistant_input(),
+            UiAction::AssistantPanel(c) => self.panel_ctl(c),
+            UiAction::PaneWidth(i, grow) => {
+                self.focus = i;
+                self.view = View::Grid;
+                if double || m.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.equal_pane_widths();
+                } else {
+                    self.resize_pane_width(i, grow);
+                }
+            }
             UiAction::SetupInstall(id) => self.setup_click(&id),
             UiAction::SetupWhisper(m) => {
                 self.setup.whisper_choice = Some(m);
@@ -908,6 +1254,21 @@ impl App {
                 } else {
                     Modal::EmptySlotMenu(k)
                 }
+            }
+            UiAction::MicMenu(i) => {
+                self.modal = if self.modal == Modal::MicMenu(i) || self.direct.on.is_none() {
+                    Modal::None
+                } else {
+                    Modal::MicMenu(i)
+                }
+            }
+            UiAction::MicMoveTo(uid) => {
+                self.modal = Modal::None;
+                self.mic_move_to(uid);
+            }
+            UiAction::MicToAssistant => {
+                self.modal = Modal::None;
+                self.end_direct("mic menu", true);
             }
             UiAction::NewPaneFor(a) => {
                 self.modal = Modal::None;
@@ -1236,6 +1597,26 @@ impl App {
                 self.view = View::Grid;
                 self.modal = Modal::Tour(0);
             }
+            UiAction::TabModel(i, k) => self.click_tab_model(i, k),
+            UiAction::LoopsDrawer(i) => self.toggle_loops_drawer(i),
+            UiAction::LoopsDrawerEdge(i) => {
+                self.focus = i;
+                self.loops_drawer_focus = Some(i);
+                self.loops_drawer_drag = Some(i);
+            }
+            UiAction::LoopsNew(i) => self.new_loop_in(i),
+            UiAction::LoopRow(i, k) => {
+                self.focus = i;
+                self.loops_drawer_focus = Some(i);
+                self.loops_drawer_sel = k;
+            }
+            UiAction::LoopAction(i, k, op) => self.loop_action(i, k, op),
+            UiAction::SchedToggle => self.toggle_sched(),
+            UiAction::SchedRow(key) => self.open_sched_card(&key),
+            UiAction::SchedGroup(key) => self.sched_toggle_group(&key),
+            UiAction::SchedCardAct(op) => self.sched_card_act(op),
+            UiAction::SchedCardInside => {}
+            UiAction::SchedAct(key, op) => self.sched_action(&key, op),
             UiAction::SwitchAccount(s, a) => {
                 self.modal = Modal::None;
                 self.assign(s, a);
@@ -1280,7 +1661,7 @@ impl App {
             List::Loops => {
                 self.sel_loop = i;
                 if double {
-                    self.jump_to_loop();
+                    self.loop_card();
                 }
             }
             List::Sessions => {
@@ -1369,6 +1750,10 @@ impl App {
             Modal::ConfirmClose => {
                 self.modal = Modal::None;
                 self.close_tab_now();
+            }
+            Modal::ConfirmArchive(uid) => {
+                let uid = *uid;
+                self.confirm_archive(uid);
             }
             Modal::ConfirmCloseWindow(s) => {
                 let s = *s;

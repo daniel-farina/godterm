@@ -267,21 +267,40 @@ pub fn token_cap_hit(text: &str) -> bool {
 /// The most a retry may raise the reply limit to.
 pub const MAX_OUTPUT_CAP: u32 = 32000;
 
+#[cfg(test)]
 pub fn sentences(text: &str) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
+    sentence_spans(text)
+        .into_iter()
+        .map(|(a, e)| text[a..e].to_string())
+        .collect()
+}
+
+/// The byte ranges of `sentences` (each trimmed), so a text can be cut
+/// at a sentence with its own line breaks kept.
+pub fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut out = vec![];
-    let mut cur = String::new();
+    let mut start = 0;
+    let trimmed = |a: usize, e: usize| -> Option<(usize, usize)> {
+        let s = &text[a..e];
+        let lead = s.len() - s.trim_start().len();
+        let t = s.trim();
+        (!t.is_empty()).then(|| (a + lead, a + lead + t.len()))
+    };
     for i in 0..chars.len() {
-        cur.push(chars[i]);
-        let end = matches!(chars[i], '.' | '!' | '?' | '\n' | '\u{2026}');
-        let next_space = chars.get(i + 1).is_none_or(|c| c.is_whitespace());
-        if end && next_space && !cur.trim().is_empty() {
-            out.push(cur.trim().to_string());
-            cur.clear();
+        let (at, c) = chars[i];
+        let end = matches!(c, '.' | '!' | '?' | '\n' | '\u{2026}');
+        let next_space = chars.get(i + 1).is_none_or(|(_, c)| c.is_whitespace());
+        let e = at + c.len_utf8();
+        if end && next_space {
+            if let Some(span) = trimmed(start, e) {
+                out.push(span);
+                start = e;
+            }
         }
     }
-    if !cur.trim().is_empty() {
-        out.push(cur.trim().to_string());
+    if let Some(span) = trimmed(start, text.len()) {
+        out.push(span);
     }
     out
 }
@@ -328,23 +347,8 @@ pub fn is_narration(sentence: &str) -> bool {
 /// What of a reply is spoken: narration dropped, at most `max` sentences
 /// (0: all). Returns (spoken, narration, the rest left unsaid).
 pub fn spoken_part(text: &str, max: usize) -> (String, Vec<String>, Option<String>) {
-    let (narr, keep): (Vec<String>, Vec<String>) =
-        sentences(text).into_iter().partition(|s| is_narration(s));
-    // Only narration: nothing else to say, so it is not dropped.
-    if keep.is_empty() {
-        return (narr.join(" "), vec![], None);
-    }
-    let n = if max == 0 {
-        keep.len()
-    } else {
-        max.min(keep.len())
-    };
-    let rest = keep[n..].join(" ");
-    (
-        keep[..n].join(" "),
-        narr,
-        (!rest.trim().is_empty()).then_some(rest),
-    )
+    let r = crate::md::reply(text, max);
+    (r.say, r.narration, r.rest_say)
 }
 
 #[cfg(test)]

@@ -88,6 +88,10 @@ pub struct Provider {
     /// Models offered in the menu (the first is the default): id, name,
     /// a two word description ("quickest").
     pub models: &'static [(&'static str, &'static str, &'static str)],
+    /// What a tab of this harness offers in its pane's model bar (top
+    /// models only, at most 4), switched with the harness's own in-session
+    /// `/model <arg>`. A new harness only declares these.
+    pub tab_models: &'static [TabModel],
     /// Its usage limits from a fetched usage reply, as buckets (none:
     /// it reports no usage). The binding one is marked.
     pub usage: fn(&crate::usage::Usage) -> Vec<Bucket>,
@@ -100,6 +104,26 @@ pub struct Provider {
 }
 
 pub const PROVIDERS: &[Provider] = &[claude::PROVIDER, grok::PROVIDER];
+
+/// A model in a pane's model bar.
+#[derive(Debug, Clone, Copy)]
+pub struct TabModel {
+    /// What `/model` gets ("haiku", "grok-4.7").
+    pub arg: &'static str,
+    /// The button's short label ("Haiku", "4.7 fast").
+    pub label: &'static str,
+    /// A word or two ("quickest").
+    pub desc: &'static str,
+    /// Lowercase pieces naming it in a model id or display name
+    /// ("claude-haiku-4-5", "Sonnet 5.5"); the longest found wins, so
+    /// "grok-4.7-build-fast" is not "grok-4.7".
+    pub matches: &'static [&'static str],
+}
+
+/// The model bar's models for tabs of harness `h`.
+pub fn tab_models(h: Harness) -> &'static [TabModel] {
+    for_harness(h).map(|p| p.tab_models).unwrap_or(&[])
+}
 
 /// One usage limit of an account, whatever the provider calls it.
 #[derive(Debug, Clone, PartialEq)]

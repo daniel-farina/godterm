@@ -53,8 +53,9 @@ your hands stay on the keyboard (or off it).
   search, sort, group, copy or move between accounts.
 - **Private by design.** No telemetry, no account of its own; everything
   stays in `~/.godterm`. Privacy mode hides emails for screen sharing.
-- **Everywhere.** macOS (Apple silicon and Intel, signed and notarized),
-  Linux (x86_64 and arm64) and Windows (x86_64).
+- **Everywhere.** macOS (Apple silicon and Intel, signed and notarized) and
+  Linux (x86_64 and arm64). Windows (x86_64) was last built for 0.2.9 and
+  returns in a later release.
 
 ## Install
 
@@ -96,7 +97,8 @@ and run it, or extract `godterm-<version>-<arch>-unknown-linux-gnu.tar.gz`
 and put `godterm` on your `PATH` (it needs `libasound2`). Homebrew on Linux
 works too: `brew install daniel-farina/godterm/godterm`.
 
-**Windows 10 (1803+) and 11, x86_64.** Run
+**Windows 10 (1803+) and 11, x86_64: last build 0.2.9 (0.2.11 has no
+Windows build; it returns in a later release).** From the 0.2.9 release, run
 `GodTerm-<version>-windows-x64-setup.exe` (a per user install: Start menu
 entry, optional PATH), or unzip `godterm-<version>-x86_64-pc-windows-msvc.zip`.
 The installer is not code signed yet, so SmartScreen may say "Windows
@@ -259,9 +261,9 @@ click the `◆ GodTerm` logo or the `⌂ Grid` button, press Esc, use
 `Ctrl-a g`, or ask for it ("go home"). The menu button of
 the screen you are on is lit, and clicking it again also goes home. Every
 non-grid screen has a breadcrumb (`‹ Back  ◆ GodTerm › Settings › Voice
-and Audio  ×`). A zoomed pane shows `⤡ Unzoom: show all` in its header
-and a `ZOOMED: <account>` chip in the status bar; both bring back every
-pane.
+and Audio  ×`). A zoomed pane's maximize button turns to `▣` (restore)
+and a `ZOOMED: <account>` chip shows in the status bar; both bring back
+every pane.
 
 **The menu bar.** `◆ GodTerm` and `⌂ Grid` go home; `Tabs ▾` (new,
 close, rename, move, duplicate, broadcast, hidden panes, tab list
@@ -285,7 +287,7 @@ and `PERMS MIXED`.
 
 ```
  ◆ GodTerm  ⌂ Grid  Tabs ▾  View ▾  Approvals  1  Voice ▾   Mic   Settings ▾          mouse on, C-a M to select text  <- A
-╭ 1 Work ▾ │ web ───────────── zoom  restart  working ╮┌ 2 Personal ▾ │ docs ────────── needs approval ┐  <- B
+╭ 1 Work ▾ │ web ──────────── restart  working  _ □ × ╮┌ 2 Personal ▾ │ docs ────────── needs approval ┐  <- B
 │ tabs 2      « │ ...claude output...                     ││ tabs 1      « │   rm -rf build                 │
 │  1 ● api      │                                         ││  1 ! docs   × │ Do you want to proceed?        │  <- C
 │     ready 2m  │ ❯ add tests for the parser              ││     approval  │ ❯ 1. Yes                       │
@@ -302,8 +304,8 @@ and `PERMS MIXED`.
 | Area | What it is | Click |
 | --- | --- | --- |
 | A, menu bar | every main action | `Tabs ▾`, `View ▾`, `Voice ▾`, `Settings ▾` menus; `Approvals N` waiting prompts; `Mic` mute; `»` holds what a narrow terminal cannot fit |
-| B, pane header | number, account, active tab, pane buttons | `Work ▾` opens the account menu (switch account, log in, log out, tab position, add); `zoom`, `restart` on the right |
-| H, tab list | every tab of the pane with its state | a row switches, double click moves the tab to another account, right click opens Rename / Move to / Duplicate to / Close, `×` closes, `+ New tab` adds, `«` collapses; the wheel scrolls |
+| B, pane header | number, account, active tab, pane buttons | `Work ▾` opens the account menu (switch account, log in, log out, tab position, add); `restart` and the window controls on the right: `_` minimize to a one row strip, `□` maximize (zoom), `×` close; `◂` at the left collapses the pane sideways to a narrow column |
+| H, tab list | every tab of the pane with its state | a row switches, double click opens the tab panel (move to another account on top, every tab option below), right click opens the same options, `×` closes, `+ New tab` adds, `«` collapses; the wheel scrolls |
 | C, terminal | the claude session | click to focus; typing goes here; the wheel scrolls history (or reaches claude if it asked for the mouse) |
 | D, usage footer | 5 hour and weekly quota left, with reset times | opens the dashboard for that account; on a logged out slot it starts the login |
 | E, approval strip | appears when claude asks for permission | `Approve`, `Always`, `Deny`, using the options actually shown |
@@ -394,10 +396,84 @@ working, `!` waiting for approval in amber, `●` ready, `○` not started,
 `x` ended) and, when there is room, a second line with how long it has
 been in that state. Click a row to switch. The `✎` beside the active (or hovered) tab renames it
 right in its row (Enter saves, Esc cancels, an empty name goes back to the
-folder name); right click opens Rename, Move to, Duplicate to, Close; double
-click moves it to another account (the move dialog can rename it too, with
-Rename only). Rename also with `Ctrl-a R` (or
+folder name); right click opens every tab option (rename, session title,
+color, pin, group, move, duplicate, copy session, restart, interrupt,
+folder actions, archive, close); double click opens one panel with the move to
+another account on top and the same options below. Rename also with `Ctrl-a R` (or
 say "rename tab to api") to rename, `×` to close, `+ New tab` to add one.
+
+**Archived conversations.** `Ctrl-a f` (or Archive in the tab options and
+`Tabs ▾`) puts a tab away: its claude or grok session stops, with its
+loops and any background run holding the session, and the pane tab
+closes, which frees its memory. The conversation moves to a folded
+`Archived (n)` group at the end of that account's tab list (name, how long
+since it was active; the tab search filters it too). A double click on it,
+Enter in the search, or Restore in its right click menu resumes the exact
+session in its folder with its name, color, pin and loops; Delete from
+archive forgets only the entry, never the session's files. A working tab,
+one waiting for approval or with unsent text asks first. Kept in
+`~/.godterm/archive.json`. The assistant can do it in bulk ("archive
+everything idle more than two days") with `archive_tabs` (one question, it
+names what it leaves alone), and `list_archived` / `restore_archived`; the
+archive count and the latest entries are in its state.
+
+**Jobs.** Claude's own loops (`/loop`, `CronCreate`) live in one session's
+memory: they die when it exits and a recurring one expires after 7 days;
+durable ones in `.claude/scheduled_tasks.json` fire only while a claude
+session runs in that project; a closed or archived tab fires nothing. A
+GodTerm job is kept by GodTerm in `~/.godterm/jobs.json` (owner only, written
+atomically) and fired by its own clock: it sends the prompt to its target tab
+(Claude or Grok) through the usual deliveries and receipts, and when the tab
+is closed or archived it first wakes it (restores it from the archive, or
+resumes its session on its account, without taking the screen); a busy tab
+gets it queued after its work. A job has a name, prompt, schedule (a cron
+expression, every N minutes, or once at a time), target, who made it, a
+catch up policy (`once`: a run missed while GodTerm was off or the Mac slept
+runs once; `skip`), an optional end date (warned about a day before, said when
+it stops; none by default so nothing expires silently), and its last result
+(`sent`, `started`, `done`, `failed` with the reason, `skipped`). A failure is
+said to you and the assistant. Archiving a tab keeps its jobs and says they
+will wake it. The assistant has `create_job` (one question), `list_jobs`,
+`update_job` (pause and resume at once; a new prompt, schedule or target asks),
+`delete_job` (asks), `run_job_now` and `adopt_loop` (turns a tab's session
+loop into a job and cancels the original), and prefers jobs to session loops
+for anything that must keep running; `get_state` has a jobs summary.
+
+**Loops & schedules.** Above the assistant chat, an open section lists what
+is scheduled, one line each: a kind badge (`managed` GodTerm job, `session`
+loop that dies with its session and shows when it expires, `durable`,
+`grok`), name or prompt, tab, cadence, next and last run. Click the header
+to collapse it (kept in `state.json`); click a row to go to its tab; the
+buttons run now, pause or resume, or delete (two clicks) a job, and `+`
+adopts a session loop. More than six rows end in `+N more`.
+The section is its own area: a shaded title row, its lines, and a divider
+rule under it, and the chat never draws into it. The chat has its own
+scrollbar on the panel's right border (a muted thumb you can drag, a click
+on the track jumps); the wheel scrolls whichever of the two is under the
+pointer, and sending a message returns the chat to the newest line.
+
+**Jobs made by a tab's agent.** The agent in each Claude and Grok tab gets a
+`godterm` MCP server of its own (a per-tab token, started with the tab) with
+only `create_job`, `list_jobs`, `update_job`, `delete_job` and `adopt_loop`,
+and a line in its system prompt to prefer them over `CronCreate` and `/loop`,
+which die with the session. The server is limited to that tab: it lists and
+changes only that tab's jobs and loops, a request naming another tab, an
+archive entry or an account is refused, and none of the assistant's tools,
+the settings or the accounts are reachable. A new job, or a change to a job's
+prompt, schedule or end date, or a delete, is never confirmed by the agent:
+GodTerm asks you in a dialog naming the tab (`y`/Enter allows, Esc declines;
+unanswered requests lapse after 10 minutes), and the agent sees the outcome
+in `list_jobs`. Pausing and resuming apply at once. Claude tabs get it as a
+per-launch `--mcp-config` next to your own MCP servers (never
+`--strict-mcp-config`) and `--append-system-prompt`; Grok tabs get a
+`godterm` entry in the account's GodTerm-owned `config.toml` and `--rules`.
+Set `[tabs] jobs_tools = false` to turn it off (Settings: "Job tools for tab
+agents"); it applies to tabs started or resumed afterwards.
+
+**Start.** The assistant panel is open at every start (in the docked,
+overlay or auto mode you chose). The mic starts off unless it was on when
+GodTerm last quit (a restart, a relaunch after an update, a crash), and then
+it reopens in the same mode; `voice.enabled` no longer forces it on.
 `«` (or `Ctrl-a s`) collapses the list to a 3 column strip of numbers and
 markers; panes narrower than about 70 columns use the strip automatically.
 
@@ -969,7 +1045,14 @@ twelve" works too. Panes on other pages keep running and keep the right
 size, so they are ready when shown.
 
 Drag a border between panes to resize them (double click a border for
-equal sizes); sizes are kept per shape. The account menu (the `▾` after
+equal sizes); sizes are kept per shape. Each pane header also has `<` `>`
+carets, as the assistant panel does: `<` makes the pane narrower and `>`
+wider by a tenth of the row, the pane beside it giving or taking the
+space (never under 30 columns), kept per shape like a drag; Shift-click
+or a double click makes the widths equal. They are hidden when zoomed and
+where a pane has no neighbour in its row. The command palette
+(`Ctrl-a :`) has the same as "pane wider", "pane narrower" and "equal
+pane widths". The account menu (the `▾` after
 the account name) can split a pane, giving an account a second pane for
 more tabs side by side (`Ctrl-a |`), close such an extra pane, or hide a
 pane: hidden panes keep running in the background, a `Hidden N` chip in
@@ -1296,6 +1379,7 @@ focused pane.
 | `Ctrl-a L` | next layout (auto, grid, columns, rows, focus) |
 | `Ctrl-a \|` | split: another pane for this account |
 | `Ctrl-a t` / `Ctrl-a w` | new tab / close tab |
+| `Ctrl-a f` | archive the current tab (stops it, moves it under Archived in the tab list) |
 | `Ctrl-a n` / `Ctrl-a p` | next / previous tab |
 | `Ctrl-a o` | overview of all accounts and tabs |
 | `Ctrl-a z` | zoom the focused pane to full screen (toggle) |

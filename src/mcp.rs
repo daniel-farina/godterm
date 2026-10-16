@@ -7,9 +7,20 @@ use std::io::{BufRead, Write};
 pub const PROTOCOL: &str = "2025-06-18";
 
 /// Answer one request; None for notifications.
+#[cfg(test)]
 pub fn handle(
     req: &Value,
     call: &mut dyn FnMut(&str, &Value) -> anyhow::Result<Value>,
+) -> Option<Value> {
+    handle_as(req, call, false)
+}
+
+/// `tab`: the server of a tab's agent, which has only the job tools (see
+/// tab_jobs); a call to any other tool is refused here, before the socket.
+pub fn handle_as(
+    req: &Value,
+    call: &mut dyn FnMut(&str, &Value) -> anyhow::Result<Value>,
+    tab: bool,
 ) -> Option<Value> {
     let id = req.get("id").cloned()?;
     let method = req.get("method").and_then(Value::as_str).unwrap_or("");
@@ -23,10 +34,15 @@ pub fn handle(
                 "protocolVersion": v,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "godterm", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "Tools to see and drive godterm: its accounts, tabs, prompts, usage, layout and loops.",
+                "instructions": if tab {
+                    "Manage this tab's own scheduled jobs in GodTerm (they survive restarts and show in Loops & schedules). The user approves each change in GodTerm."
+                } else {
+                    "Tools to see and drive godterm: its accounts, tabs, prompts, usage, layout and loops."
+                },
             })
         }
         "ping" => json!({}),
+        "tools/list" if tab => json!({"tools": crate::tab_jobs::tab_tool_list()}),
         "tools/list" => json!({"tools": crate::control::TOOLS.iter().map(|t| json!({
             "name": t.name,
             "description": t.description,
@@ -41,7 +57,12 @@ pub fn handle(
                 .pointer("/params/arguments")
                 .cloned()
                 .unwrap_or(json!({}));
-            match call(name, &args) {
+            let refused = tab && !crate::tab_jobs::TAB_TOOLS.contains(&name);
+            match if refused {
+                Err(anyhow::anyhow!("unknown tool {name}"))
+            } else {
+                call(name, &args)
+            } {
                 Ok(v) => {
                     let failed =
                         v.get("ok") == Some(&json!(false)) && v.get("needs_confirmation").is_none();
@@ -65,13 +86,14 @@ pub fn handle(
 pub fn run() -> anyhow::Result<()> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
+    let tab = crate::config::env_var("CLIENT").is_some_and(|c| c == "tab");
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
         let reply = match serde_json::from_str::<Value>(&line) {
-            Ok(req) => handle(&req, &mut |t, a| crate::control::call(t, a)),
+            Ok(req) => handle_as(&req, &mut |t, a| crate::control::call(t, a), tab),
             Err(e) => Some(
                 json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}}),
             ),

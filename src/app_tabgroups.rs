@@ -208,6 +208,13 @@ impl App {
                 if !tabs.contains(&active) {
                     if let Some(&t) = tabs.first() {
                         self.panes[p].select(t);
+                    } else if let Some(e) = self.archive_for_pane(p).first().cloned() {
+                        // Only archived conversations match: Enter resumes
+                        // the first.
+                        match self.restore_archived(&e.id, None) {
+                            Ok(m) => self.flash(m),
+                            Err(err) => self.flash(format!("Could not restore it: {err}")),
+                        }
                     }
                 }
             }

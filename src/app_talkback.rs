@@ -14,6 +14,8 @@ pub const INSTANT_KEYS: &[&str] = &[
     "voice.tts_volume",
     "assistant.speak_typed",
     "assistant.panel",
+    "assistant.panel_width",
+    "assistant.input_rows",
     "voice.headphone_tap",
 ];
 
@@ -56,9 +58,23 @@ impl App {
         let r = match tool {
             "speaker" => self.tool_speaker(args),
             "assistant_panel" => {
-                let m = args["mode"].as_str().unwrap_or("");
-                self.set_panel_mode(m)
-                    .map(|say| json!({"ok": true, "result": {"say": say}}))
+                let mut said = vec![];
+                if let Some(m) = args["mode"].as_str().filter(|m| !m.trim().is_empty()) {
+                    match self.set_panel_mode(m) {
+                        Ok(s) => said.push(s),
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+                match self.panel_tool_size(args) {
+                    Ok(Some(s)) => said.push(s),
+                    Ok(None) => {}
+                    Err(e) => return Some(Err(e)),
+                }
+                if said.is_empty() {
+                    Err("say what to change: mode, width or window".into())
+                } else {
+                    Ok(json!({"ok": true, "result": {"say": said.join(" ")}}))
+                }
             }
             "set_setting"
                 if args.get("account").is_none_or(Value::is_null)
@@ -79,6 +95,28 @@ impl App {
                         } else {
                             "Headphone tap is off: play and pause go to your music again."
                         };
+                        return Some(Ok(json!({"ok": true, "result": {"say": say}})));
+                    }
+                    "assistant.panel_width" => {
+                        return Some(
+                            self.panel_tool_size(&json!({"width": v}))
+                                .and_then(|s| {
+                                    s.ok_or_else(|| {
+                                        "assistant.panel_width: a number of columns (0: automatic)"
+                                            .to_string()
+                                    })
+                                })
+                                .map(|say| json!({"ok": true, "result": {"say": say}})),
+                        );
+                    }
+                    "assistant.input_rows" => {
+                        let Some(n) = v
+                            .as_u64()
+                            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+                        else {
+                            return Some(Err("assistant.input_rows: 3 to 20".into()));
+                        };
+                        let say = self.set_input_rows(n.min(20) as u16);
                         return Some(Ok(json!({"ok": true, "result": {"say": say}})));
                     }
                     _ => {
@@ -149,7 +187,7 @@ impl App {
     /// The state block's line on talking back and the panel.
     pub fn speaker_state_line(&self) -> String {
         format!(
-            "speaker: {} (volume {}%), typed replies spoken: {}, this message came {}; panel: {} (speaker mutes your voice, pause_listening stops hearing)\n",
+            "speaker: {} (volume {}%), typed replies spoken: {}, this message came {}; panel: {}, {} (speaker mutes your voice, pause_listening stops hearing)\n",
             if self.cfg.voice.speaker_muted {
                 "muted, your replies show as text only"
             } else {
@@ -159,17 +197,14 @@ impl App {
             if self.cfg.assistant.speak_typed { "yes" } else { "no" },
             if self.assistant.turn_spoken { "by voice" } else { "typed" },
             self.cfg.assistant.panel,
+            self.panel_state_words(),
         )
     }
 }
 
 /// The panel's width in `main` (0: not shown).
 pub fn panel_width(app: &App, main: ratatui::layout::Rect) -> u16 {
-    if app.assistant.show && main.width >= 50 {
-        (main.width / 2).clamp(44, 76)
-    } else {
-        0
-    }
+    crate::app_panelwin::panel_width(app, main)
 }
 
 /// The floating panel's edge: a one column shadow left of it, so it reads

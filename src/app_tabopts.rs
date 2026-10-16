@@ -24,6 +24,8 @@ pub enum TabAct {
     CopyPath,
     Finder,
     Terminal,
+    TalkDirect,
+    Archive,
     Close,
 }
 
@@ -147,6 +149,29 @@ impl App {
                 None,
             ),
             row(
+                TalkDirect,
+                if self.direct_with(tab.uid) {
+                    "Stop talking directly"
+                } else {
+                    "Talk directly by voice"
+                },
+                'v',
+                "Your voice goes to this tab and its replies are said; \"back to the assistant\" returns (Ctrl-a K)",
+                (tab.activity == Activity::Exited
+                    || (!tab.is_running() && tab.pending.is_none() && !tab.suspended))
+                    .then(|| "not running".to_string()),
+            ),
+            row(
+                Archive,
+                "Archive",
+                'f',
+                "Stop its session and put it under Archived; a double click there resumes it (Ctrl-a f)",
+                self.archive_blockers(s, t)
+                    .into_iter()
+                    .find(|b| b.hard)
+                    .map(|b| b.why),
+            ),
+            row(
                 Close,
                 "Close tab",
                 'x',
@@ -229,6 +254,14 @@ impl App {
                 self.jump_to(s, t);
                 self.terminal_here(s);
             }
+            TabAct::TalkDirect => {
+                if self.direct_with(uid) {
+                    self.end_direct("tab menu", true);
+                } else {
+                    self.direct_on_tab(s, t);
+                }
+            }
+            TabAct::Archive => self.request_archive(s, t),
             TabAct::Close => self.request_close(s, t),
         }
     }

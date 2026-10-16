@@ -140,6 +140,10 @@ pub struct AppState {
     /// seen, or in claude's queue): queued again after a restart or crash.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deliveries: Vec<SavedDelivery>,
+    /// The assistant panel's Loops & schedules section is collapsed (it
+    /// is open by default).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sched_collapsed: bool,
 }
 
 /// A request to a tab, saved until it runs.
@@ -326,6 +330,7 @@ mod tests {
                 notify: true,
                 created: 1_700_000_000,
             }],
+            sched_collapsed: true,
         };
         let text = serde_json::to_string(&st).unwrap();
         assert_eq!(serde_json::from_str::<AppState>(&text).unwrap(), st);

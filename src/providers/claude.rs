@@ -7,7 +7,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 
-use super::{Backend, Caps, Provider, StartCtx};
+use super::{Backend, Caps, Provider, StartCtx, TabModel};
 use crate::app::AppEvent;
 use crate::assistant::{allowed_tools, dir, parse_line, write_mcp_config, BrainEvent};
 
@@ -25,6 +25,26 @@ pub const PROVIDER: Provider = Provider {
         ("claude-haiku-4-5", "Haiku", "quickest"),
         ("sonnet", "Sonnet", "balanced"),
         ("opus", "Opus", "most capable"),
+    ],
+    tab_models: &[
+        TabModel {
+            arg: "haiku",
+            label: "Haiku",
+            desc: "quickest",
+            matches: &["haiku"],
+        },
+        TabModel {
+            arg: "sonnet",
+            label: "Sonnet",
+            desc: "balanced",
+            matches: &["sonnet"],
+        },
+        TabModel {
+            arg: "opus",
+            label: "Opus",
+            desc: "most capable",
+            matches: &["opus"],
+        },
     ],
     usage: |u| {
         super::buckets_of(

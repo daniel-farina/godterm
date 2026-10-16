@@ -102,6 +102,9 @@ impl TabSort {
 pub enum Row {
     Tab(usize),
     Group(usize),
+    /// The Archived group's header, and entry `k` of the pane's archive.
+    ArchHead,
+    Arch(usize),
 }
 
 /// Re-sort by activity at most this often (rows do not jump while the

@@ -64,6 +64,9 @@ pub struct FollowUp {
     /// A new tab's first prompt (open_tab): the wait starts once its
     /// first turn does, not while the tab is still coming up.
     pub await_start: bool,
+    /// Answered by a side question or background session (app_busy), not
+    /// found in the tab's transcript: the delivery it follows.
+    pub external: Option<u64>,
 }
 
 /// Finished entries stay in the snapshot this long.
@@ -215,6 +218,7 @@ impl App {
             ended: None,
             told_working: false,
             await_start: false,
+            external: None,
         });
     }
 
@@ -230,14 +234,26 @@ impl App {
             .map(|a| a.iter().filter_map(Value::as_u64).collect())
             .unwrap_or_default();
         for id in ids {
-            let Some((uid, text)) = self
+            let Some((uid, text, mode)) = self
                 .deliveries
                 .iter()
                 .find(|d| d.id == id)
-                .map(|d| (d.uid, d.text.clone()))
+                .map(|d| (d.uid, d.text.clone(), d.rc.mode))
             else {
                 continue;
             };
+            // A side question or background session always reports its
+            // result: it is followed by app_busy, not by the transcript.
+            if mode.external() {
+                self.register_follow_up(uid, &text);
+                if let Some(f) = self.assistant.follow_ups.last_mut() {
+                    f.external = Some(id);
+                    if !watched.contains(&f.tab) {
+                        watched.push(f.tab.clone());
+                    }
+                }
+                continue;
+            }
             let asks = explicit.unwrap_or_else(|| {
                 asks_something(&text) || asks_something(&self.assistant.last_user)
             });
@@ -347,7 +363,7 @@ impl App {
         let mut fus = std::mem::take(&mut self.assistant.follow_ups);
         let mut notices: Vec<(u64, &str, String)> = vec![];
         for f in &mut fus {
-            if f.state != FuState::Waiting {
+            if f.state != FuState::Waiting || f.external.is_some() {
                 continue;
             }
             let first = f.uid;
