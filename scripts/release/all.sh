@@ -110,7 +110,19 @@ esac
 # public key is UPDATE_PUBKEY in src/update.rs. Verified right away.
 UPDATE_KEY="${UPDATE_KEY:-$HOME/.config/godterm-release/minisign.key}"
 if [[ -f "$UPDATE_KEY" ]]; then
-  python3 "$WT/scripts/update-signing/minisign.py" sign "$UPDATE_KEY" "$DIST/SHA256SUMS" >/dev/null
+  # minisign.py needs the `cryptography` package: use the system python when
+  # it has it, else a private venv made once (so a bare machine still signs).
+  SIGN_PY=python3
+  if ! "$SIGN_PY" -c 'import cryptography' 2>/dev/null; then
+    SIGN_VENV="${SIGN_VENV:-$HOME/.cache/godterm-release/venv}"
+    if [[ ! -x "$SIGN_VENV/bin/python" ]] || ! "$SIGN_VENV/bin/python" -c 'import cryptography' 2>/dev/null; then
+      echo "==> installing the python 'cryptography' package into $SIGN_VENV for signing"
+      python3 -m venv "$SIGN_VENV" && "$SIGN_VENV/bin/pip" install --quiet cryptography \
+        || { echo "cannot set up python cryptography for minisign.py (pip install cryptography)" >&2; exit 1; }
+    fi
+    SIGN_PY="$SIGN_VENV/bin/python"
+  fi
+  "$SIGN_PY" "$WT/scripts/update-signing/minisign.py" sign "$UPDATE_KEY" "$DIST/SHA256SUMS" >/dev/null
   pub="$(sed -nE 's/^pub const UPDATE_PUBKEY: &str = "([^"]+)";/\1/p' "$WT/src/update.rs" 2>/dev/null || true)"
   if [[ -n "$pub" ]] && command -v minisign >/dev/null; then
     minisign -Vm "$DIST/SHA256SUMS" -P "$pub" -q || { echo "SHA256SUMS.minisig does not verify" >&2; exit 1; }
