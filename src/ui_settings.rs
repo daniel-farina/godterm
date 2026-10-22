@@ -303,8 +303,41 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
             &s.kind
         };
         let grok_row = s.key == settings::Key::Global("voice.grok.source");
+        let local_row = settings::local_install_row(&s.key);
         match kind {
             _ if grok_row => {}
+            // A local voice: its status and Install… or Remove….
+            _ if local_row.is_some() => {
+                let id = local_row.unwrap_or_default();
+                let st = crate::voice::local_tts::status(id, &app.cfg.voice);
+                let installed = st == "installed";
+                x = text(
+                    buf,
+                    x,
+                    y,
+                    limit.saturating_sub(12),
+                    &format!("{st}  "),
+                    Style::default().fg(if installed { theme::SAGE } else { DIM }).bg(bg),
+                );
+                if !st.starts_with("installing") {
+                    x = button(
+                        buf,
+                        &mut hits,
+                        app.mouse_pos,
+                        x,
+                        y,
+                        limit,
+                        if installed { "Remove…" } else { "Install…" },
+                        UiAction::SettingStep(i, 1),
+                        if installed {
+                            "Remove its model and helper (asks first)"
+                        } else {
+                            "See the size, memory, speed and license, then install (asks first)"
+                        },
+                        if installed { theme::CLAY } else { theme::SAGE },
+                    );
+                }
+            }
             Kind::Toggle => {
                 let on = shown == "on";
                 let label = if s.inherit && shown == "inherit" {
@@ -526,6 +559,8 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
         if s.key == settings::Key::Global("voice.kokoro_voice")
             || s.key == settings::Key::Global("voice.tts_voice")
             || s.key == settings::Key::Global("voice.grok.voice")
+            || s.key == settings::Key::Global("voice.local.chatterbox_ref")
+            || s.key == settings::Key::Global("voice.local.ming_voice")
         {
             x = button(
                 buf,
@@ -540,7 +575,33 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
                 theme::MAUVE,
             );
         }
-        if limit > x + 8 {
+        if s.key == settings::Key::Global("voice.local.chatterbox_ref") {
+            x = button(
+                buf,
+                &mut hits,
+                app.mouse_pos,
+                x + 1,
+                y,
+                limit.saturating_sub(9),
+                "Choose…",
+                UiAction::PickVoiceClip,
+                "Pick a WAV of the voice to clone",
+                theme::MAUVE,
+            );
+        }
+        // What the engine or voice is (local or cloud, memory, speed,
+        // license; a voice's accent and grade).
+        if let Some(d) = settings::describe(&app.cfg, s) {
+            x = text(
+                buf,
+                x + 2,
+                y,
+                limit.saturating_sub(9),
+                &d,
+                Style::default().fg(FAINT).bg(bg),
+            );
+        }
+        if limit > x + 8 && local_row.is_none() {
             button(
                 buf,
                 &mut hits,
@@ -704,6 +765,18 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
             "Train wake word",
             UiAction::TrainWake,
             "Say the wake word and a few normal sentences, so it is recognized in your voice",
+            theme::MAUVE,
+        );
+        x = button(
+            buf,
+            &mut hits,
+            app.mouse_pos,
+            x + 1,
+            y,
+            limit,
+            "Replay voice onboarding",
+            UiAction::Onboarding(crate::app_onboarding::BTN_REPLAY),
+            "The voice welcome again: the pieces, a mic and speaker check, a short spoken tour",
             theme::MAUVE,
         );
         // The device lists come from a background check.

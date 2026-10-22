@@ -1,5 +1,6 @@
-//! Talk back engines behind one interface: Kokoro (local neural), macOS
-//! `say` (local) and Grok (xAI cloud). Each makes PCM that GodTerm plays
+//! Talk back engines behind one interface: Kokoro (local neural, in
+//! process), Chatterbox and Ming (local, a helper process: local_tts.rs),
+//! macOS `say` (local) and Grok (xAI cloud). Each makes PCM that GodTerm plays
 //! itself, so the echo reference, volume and barge-in work the same for
 //! all. `tts_engine` is tried first, then `tts_fallback` in order, when an
 //! engine fails or times out.
@@ -38,6 +39,8 @@ pub fn chain(cfg: &VoiceCfg) -> Vec<&'static str> {
         "grok" => Some("grok"),
         "say" => Some("say"),
         "kokoro" => Some("kokoro"),
+        "chatterbox" => Some("chatterbox"),
+        "ming" => Some("ming"),
         _ => None,
     };
     let mut v: Vec<&'static str> = vec![];
@@ -46,6 +49,11 @@ pub fn chain(cfg: &VoiceCfg) -> Vec<&'static str> {
     {
         let Some(n) = known(e) else { continue };
         if n == "kokoro" && super::tts::kokoro_problem(cfg).is_some() {
+            continue;
+        }
+        // A local helper engine that is not installed (or not on Apple
+        // Silicon) is passed over; Kokoro, then say, speak instead.
+        if matches!(n, "chatterbox" | "ming") && super::local_tts::problem(n, cfg).is_some() {
             continue;
         }
         if !v.contains(&n) {

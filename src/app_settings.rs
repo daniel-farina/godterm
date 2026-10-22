@@ -189,6 +189,9 @@ impl App {
         if s.key == settings::Key::Global("voice.grok.source") {
             return self.open_grok_logins();
         }
+        if let Some(id) = settings::local_install_row(&s.key) {
+            return self.ask_local_voice(id);
+        }
         match s.kind {
             Kind::Text | Kind::List | Kind::Secret => self.setting_edit(row),
             _ => {

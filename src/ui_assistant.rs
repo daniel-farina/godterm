@@ -457,6 +457,50 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
             pre: false,
         });
     }
+    // Update mode's card (first use, or a click on its chip).
+    if app.updates.card {
+        if !out.is_empty() {
+            out.push(row(vec![]));
+        }
+        let info = UiAction::Menu(crate::menus::Cmd::UpdatesInfo);
+        out.push(Row {
+            parts: vec![
+                (
+                    "ⓘ Update mode".to_string(),
+                    Style::default()
+                        .fg(theme::SAGE)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                ("  (click to hide)".into(), Style::default().fg(FAINT)),
+            ],
+            action: Some(info.clone()),
+            indent: 0,
+            pre: false,
+        });
+        let body = crate::app_updates::EXPLAIN
+            .trim_start_matches("Update mode: ")
+            .to_string();
+        let mut cs = body.chars();
+        let body = cs
+            .next()
+            .map(|c| format!("{}{}", c.to_uppercase(), cs.as_str()))
+            .unwrap_or_default();
+        out.push(Row {
+            parts: vec![(body, Style::default().fg(DIM))],
+            action: Some(info),
+            indent: 2,
+            pre: false,
+        });
+        out.push(Row {
+            parts: vec![(
+                "Voice ▾ > Update mode turns it on or off; with the speaker off the updates show here.".into(),
+                Style::default().fg(FAINT),
+            )],
+            action: None,
+            indent: 2,
+            pre: false,
+        });
+    }
     if app.assistant.busy {
         let partial = if app.assistant.current.is_empty() {
             "thinking…".to_string()
@@ -1339,6 +1383,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     // Brainstorm mode: its chip on the frame's top edge.
+    let mut chip_x = inner.x + 2;
     if let Some(chip) = app.brainstorm_chip() {
         let s = format!(" {chip} ");
         let cx = inner.x + 2;
@@ -1359,6 +1404,30 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             UiAction::Key('B'),
             "Brainstorm mode: nothing is sent until you say send it or press Enter. Click (or Esc) to leave it; the draft stays",
         );
+        chip_x = x2 + 1;
+    }
+    // Update mode: its chip next to it.
+    if let Some(chip) = app.updates_chip() {
+        let s = format!(" {chip} ");
+        let end = fx1.saturating_sub(1);
+        if chip_x < end {
+            let x2 = crate::hits::text(
+                buf,
+                chip_x,
+                frame_top,
+                end,
+                &s,
+                Style::default()
+                    .fg(theme::SAGE)
+                    .bg(BAR_BG)
+                    .add_modifier(Modifier::BOLD),
+            );
+            hits.add(
+                Rect::new(chip_x, frame_top, x2.saturating_sub(chip_x), 1),
+                UiAction::Menu(crate::menus::Cmd::UpdatesInfo),
+                "Update mode: progress of the active projects is said as it moves. Click for how it works; say \"stop updates\" to end it",
+            );
+        }
     }
     let field = Style::default().bg(SEL_BG);
     if app.assistant.input.is_empty() {

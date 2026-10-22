@@ -5,7 +5,71 @@ All notable changes to GodTerm are recorded here. The format follows
 follow [Semantic Versioning](https://semver.org/). The release workflow
 copies the section for a tag into the GitHub release notes.
 
-## [Unreleased]
+## [0.2.13] - 2026-10-22
+
+Platforms: macOS (Apple silicon and Intel, universal), Linux (x86_64 and aarch64) and Windows (x64; built on GitHub Actions). The Windows installer and zip are not code signed, so SmartScreen will warn: click More info, then Run anyway.
+
+This release adds a spoken first-run onboarding, update mode, a Kokoro voice picker and optional local voices. The onboarding and the local voices are new, so feedback is welcome.
+
+### Added
+- Update mode: "update mode", "keep me posted" or "give me updates"
+  (also Voice ▾, the command palette and Settings > Voice) and GodTerm
+  tells you, a sentence or two per project, what changed in every active
+  tab as things move: finished work, approvals, errors, to do steps done,
+  subagents and background commands, jobs that ran. Claude tabs are read
+  from the new part of their transcript, the other CLIs from their screen
+  state. Big news comes at once (at most every `[voice] updates_gap_s`,
+  60 s), progress in a roundup every `updates_every_min` (4) minutes and
+  only when something changed; nothing already announced is repeated.
+  It never talks over you and waits while paused, brainstorming or in
+  direct mode; with voice off or muted the same words show in the
+  assistant panel. "What's the latest?" gives a roundup any time. "Stop
+  updates" or "quiet" ends it. No model is called: the wording is built
+  locally, so it costs nothing.
+- Voice onboarding: on a brand new install the first window, before any
+  UI, speaks a short hook and offers "Turn voice on" (Enter, or say
+  "yes") or "Skip" (Esc), with a gentle reminder after 20 s. With a yes it
+  installs what voice still needs (the Settings > Setup installer, after a
+  second yes), checks the mic with a live meter and the speaker with the
+  local Kokoro voice, then walks through five short steps done by voice
+  through the real assistant: ask how something works, log in a Claude
+  session, create a project in account 1, log in a Grok session, change
+  the layout or open loops. Each step is skippable ("skip", "next",
+  Ctrl-a J), "stop onboarding" ends it, and a recap card keeps the most
+  useful phrases (Ctrl-a J, "what can I say", the palette). Logins and
+  new accounts still need their own yes. It runs once; existing users
+  never see it unless they ask: `godterm --onboarding`, the palette,
+  Settings > Voice > Replay voice onboarding, or "voice onboarding".
+- Optional local voices as alternatives to Kokoro, which stays the default
+  (Kokoro af_heart). Apple Silicon Macs only, and nothing is downloaded
+  unless you ask for it:
+  Chatterbox Turbo (more natural, streams its audio, can clone a voice
+  from a short clip, about 5 GB RAM, MIT) and Ming-3.0 (5 English voices
+  or a voice designed from a description, about 4 GB RAM, MIT). Each is
+  installed only after a yes in
+  Settings > Voice and Audio, which shows the download (about 2.9 GB),
+  memory, speed and license first, and can be removed again. They run in
+  a helper process GodTerm manages (kept warm, unloaded when idle,
+  restarted after a crash) over a private pipe; when one fails Kokoro
+  speaks and a note says why once.
+- Kokoro voice choice: Settings lists the 28 English voices, American
+  then British, female then male, with their official grades and a
+  Preview; the engine row shows where each engine runs, its memory,
+  speed and license. Voice commands: "use the Bella voice", "use the
+  local voice", "use chatterbox", "use Kokoro", "use the Grok voice".
+- Demo mode with all six harnesses: `godterm --demo --demo-harnesses`
+  opens a made up world with one account per agent CLI (Claude Code,
+  Grok Build, Codex, Cursor, Antigravity, OpenCode), each tab running its
+  own scenario with that CLI's screens and approval prompts. Plain
+  `godterm --demo` is unchanged.
+
+### Changed
+- Demo mode no longer reads your real Chrome profiles: the Browser button
+  and dialog show made up profiles from the demo home.
+
+### Release
+- The release script signs SHA256SUMS from a private Python venv when the
+  system Python lacks the `cryptography` package.
 
 ## [0.2.12] - 2026-10-21
 

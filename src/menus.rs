@@ -83,6 +83,12 @@ pub enum Cmd {
     BrainstormInfo,
     /// Bring a discarded brainstorm back.
     BrainstormUndo,
+    /// Update mode on or off.
+    UpdateMode,
+    /// Update mode's explanation card.
+    UpdatesInfo,
+    /// An update roundup now ("what's the latest").
+    UpdatesNow,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -487,6 +493,19 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 "",
                 UiAction::Menu(Cmd::BrainstormInfo),
             ));
+            v.push(Entry {
+                check: Some(app.updates_on()),
+                ..item(
+                    "Update mode (keep me posted)",
+                    "",
+                    UiAction::Menu(Cmd::UpdateMode),
+                )
+            });
+            v.push(item(
+                "What's the latest (updates now)",
+                "",
+                UiAction::Menu(Cmd::UpdatesNow),
+            ));
             v.push(sub("Pause listening", MenuId::PauseListening));
             {
                 let mut e = item("Resume listening", "", UiAction::Menu(Cmd::Pause(0)));
@@ -707,6 +726,15 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
                 "How brainstorm mode works",
                 "",
                 UiAction::Menu(Cmd::BrainstormInfo),
+            ),
+            Entry {
+                check: Some(app.updates_on()),
+                ..item("Update mode", "", UiAction::Menu(Cmd::UpdateMode))
+            },
+            item(
+                "How update mode works",
+                "",
+                UiAction::Menu(Cmd::UpdatesInfo),
             ),
             sep(),
             item("Learned rules", "", UiAction::Menu(Cmd::AssistantRules)),
@@ -1074,6 +1102,12 @@ impl App {
             }
             Cmd::TrainWake => self.start_wake_training(),
             Cmd::BrainstormInfo => self.toggle_brainstorm_card(),
+            Cmd::UpdateMode => self.toggle_update_mode(),
+            Cmd::UpdatesInfo => self.toggle_updates_card(),
+            Cmd::UpdatesNow => {
+                self.assistant.show = true;
+                self.updates_roundup_now();
+            }
             Cmd::BrainstormUndo => {
                 if !self.undo_brainstorm() {
                     self.flash("Nothing to bring back");

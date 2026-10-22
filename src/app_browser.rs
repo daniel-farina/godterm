@@ -69,6 +69,7 @@ impl App {
         match &self.browser.env {
             Some(e) => Some(e.clone()),
             None if cfg!(test) => None,
+            None if crate::demo::active() => Some(crate::demo::browser_env()),
             None => Some(Env::real()),
         }
     }

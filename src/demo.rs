@@ -5,7 +5,9 @@
 //! `$GODTERM_DEMO_HOME`): six fake accounts (four Claude, two Grok) with
 //! fake logins, usage read from fixture files (one burns down live),
 //! sixteen tabs running the demo agent (`demo_agent`) instead of claude
-//! or grok, and a scripted assistant brain. The user's real `~/.godterm`,
+//! or grok, and a scripted assistant brain. `--demo-harnesses` builds a
+//! world with one account per agent CLI (Claude Code, Grok Build, Codex,
+//! Cursor, Antigravity, OpenCode) instead. The user's real `~/.godterm`,
 //! `~/.claude`, `~/.grok`, keychain and accounts are never read or
 //! written: the lookups that would reach them check `assert_safe` and
 //! panic in demo mode.
@@ -139,10 +141,16 @@ pub fn say_command(args: &[String]) -> Result<()> {
 /// `godterm --demo`: build the demo world and point this process (and
 /// everything it starts) at it. Options: `--demo-manual` (no automatic
 /// usage burn; a driver script sets usage over the control socket),
-/// `--demo-no-external` (no external session in tmux).
+/// `--demo-no-external` (no external session in tmux), `--demo-harnesses`
+/// (the one account per agent CLI world).
 pub fn enter(args: &[String]) -> Result<()> {
     let home = home();
-    let p = crate::demo_seed::seed(&home)?;
+    let world = if args.iter().any(|a| a == "--demo-harnesses") {
+        crate::demo_seed::World::Harnesses
+    } else {
+        crate::demo_seed::World::Full
+    };
+    let p = crate::demo_seed::seed_world(&home, world)?;
     std::env::set_var(ENV, "1");
     std::env::set_var("GODTERM_HOME", &p.app);
     std::env::set_var("GODTERM_MAIN_DIR", &p.main_claude);
@@ -235,9 +243,24 @@ static TIMELINE: std::sync::Once = std::sync::Once::new();
 
 fn acct(name: &str) -> Option<&'static crate::demo_seed::Acct> {
     let n = name.to_lowercase();
-    crate::demo_seed::ACCOUNTS
-        .iter()
-        .find(|a| a.name == n || a.label.to_lowercase() == n)
+    crate::demo_seed::find_account(&n).or_else(|| {
+        crate::demo_seed::ACCOUNTS
+            .iter()
+            .chain(crate::demo_seed::CLI_ACCOUNTS)
+            .find(|a| a.label.to_lowercase() == n)
+    })
+}
+
+/// Where the Browser button and dialog look in demo mode: the demo's made
+/// up Chrome profiles, no `bsk`, no skill folders. The real Chrome folder
+/// is never read.
+pub fn browser_env() -> crate::browser::Env {
+    crate::browser::Env {
+        bin_dirs: vec![],
+        chrome_root: home().join("chrome"),
+        timeout: std::time::Duration::from_secs(2),
+        skill_sources: vec![],
+    }
 }
 
 /// Write an account's usage fixture now.

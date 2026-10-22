@@ -768,6 +768,9 @@ impl App {
         if let Some(b) = self.brainstorm_state_words() {
             parts.push(b);
         }
+        if let Some(u) = self.updates_state_words() {
+            parts.push(u);
+        }
         parts.push(if self.privacy() {
             "privacy ON (never say an email address)".into()
         } else if self.show_email_global() {
@@ -827,7 +830,8 @@ impl App {
         } else {
             self.quiet_user_typed();
         }
-        if self.self_switch_heard(text)
+        if (heard.is_none() && self.onboarding_typed(text))
+            || self.self_switch_heard(text)
             || self.say_more(text)
             || self.cancel_follow_ups_said(text)
             || self.resend_said(text)
@@ -965,6 +969,9 @@ impl App {
         }
         if let Some(n) = self.assistant.brainstorm_note.take() {
             earlier.push_str(&format!("{n}\n"));
+        }
+        if let Some(n) = self.onboarding_turn_note().filter(|_| system.is_none()) {
+            earlier.push_str(&n);
         }
         if self.take_cut_off() {
             earlier.push_str("(The user talked over your previous answer and cut it off; nothing more of it runs. What they say now takes over: \"no, I meant...\" corrects that request.)\n");

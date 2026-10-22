@@ -1525,6 +1525,7 @@ impl App {
             }
             UiAction::Mic => self.push_to_talk(),
             UiAction::VoicePreview => self.preview_voice(),
+            UiAction::PickVoiceClip => self.pick_voice_clip(),
             UiAction::TrainWake => self.start_wake_training(),
             UiAction::TrainVoice => self.start_voice_training(),
             UiAction::MicModes => self.open_mic_modes(),
@@ -1597,6 +1598,7 @@ impl App {
                 }
             }
             UiAction::TourSkip => self.finish_tour(),
+            UiAction::Onboarding(n) => self.onboarding_click(n),
             UiAction::TourStart => {
                 self.view = View::Grid;
                 self.modal = Modal::Tour(0);
@@ -1773,7 +1775,10 @@ impl App {
                 self.modal = Modal::None;
                 self.close_window(s);
             }
-            Modal::ConfirmBypass(..) | Modal::OfferRestart(_) | Modal::ConfirmRemoveAccount(_) => {
+            Modal::ConfirmBypass(..)
+            | Modal::OfferRestart(_)
+            | Modal::ConfirmRemoveAccount(_)
+            | Modal::ConfirmLocalVoice(..) => {
                 self.on_key(enter)
             }
             Modal::AccountMenu(_, sel) => {

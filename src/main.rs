@@ -29,6 +29,7 @@ mod app_loops;
 mod app_loopsdrawer;
 mod app_memory;
 mod app_mouse;
+mod app_onboarding;
 mod app_openmic;
 mod app_panelwin;
 mod app_pause;
@@ -53,6 +54,8 @@ mod app_tabhist;
 mod app_tabmodel;
 mod app_tabmove;
 mod app_tabopts;
+mod app_updates;
+mod app_voices;
 mod app_talkback;
 mod app_update;
 mod app_voice;
@@ -115,6 +118,8 @@ mod layout;
 mod learned;
 #[cfg(test)]
 mod live_tests;
+#[cfg(test)]
+mod local_voice_tests;
 mod livemap;
 mod log;
 mod loops;
@@ -131,6 +136,9 @@ mod migrate_accounts;
 #[cfg(test)]
 mod newfolder_tests;
 mod notify;
+mod onboarding;
+#[cfg(test)]
+mod onboarding_tests;
 mod palette;
 mod pane;
 #[cfg(test)]
@@ -243,6 +251,7 @@ mod ui_chrome;
 mod ui_livemap;
 mod ui_loopsdrawer;
 mod ui_modelbar;
+mod ui_onboarding;
 mod ui_panelwin;
 mod ui_schedcard;
 mod scrollbar;
@@ -252,6 +261,9 @@ mod ui_updates;
 mod update;
 #[cfg(test)]
 mod update_ui_tests;
+mod updates;
+#[cfg(test)]
+mod updates_tests;
 mod usage;
 mod usage_share;
 mod voice;
@@ -283,8 +295,13 @@ USAGE:
                         start the TUI; --voice starts voice control (push to
                         talk), --wake listens for the wake word, --voice-file
                         feeds a recording through the voice pipeline (testing)
+    godterm --onboarding
+                        start with the voice onboarding (again): turn voice on,
+                        a mic and speaker check, five short spoken steps
     godterm --demo     demo mode: made up accounts and sessions in ~/.godterm-demo
-                        (never touches your real accounts, ~/.claude or ~/.grok)
+                        (never touches your real accounts, ~/.claude or ~/.grok);
+                        --demo-harnesses: one account per agent CLI (Claude Code,
+                        Grok Build, Codex, Cursor, Antigravity, OpenCode)
     godterm setup      guided setup: choose accounts, then log each one in
     godterm doctor     check claude, voice tools, mic, terminal and keychain slots
     godterm window reset|place|show
@@ -347,6 +364,13 @@ fn main() -> Result<()> {
         .skip(1)
         .filter(|a| a != "--test-control" && a != "--control-rw")
         .collect();
+    // --onboarding (any mode, --demo too): the voice onboarding at start.
+    let args: Vec<String> = if args.iter().any(|a| a == "--onboarding") {
+        FORCE_ONBOARDING.store(true, std::sync::atomic::Ordering::Relaxed);
+        args.into_iter().filter(|a| a != "--onboarding").collect()
+    } else {
+        args
+    };
     // Demo mode: its own home with made up accounts (see demo.rs).
     if args.iter().any(|a| a == "--demo") {
         demo::enter(&args)?;
@@ -385,6 +409,7 @@ fn main() -> Result<()> {
     }
     match arg.as_deref() {
         Some("__demo-say") => demo::say_command(&args[1..]),
+        Some("__local-voice-test") => voice::local_tts::bench_command(&args[1..]),
         None => run_tui(TuiOpts::default()),
         Some(a) if a.starts_with("--voice") || a == "--wake" => run_tui(TuiOpts {
             voice: true,
@@ -962,6 +987,7 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     // First run (no config yet), no accounts, or `godterm setup`: ask the
     // questions on the plain terminal, then walk through the logins.
     let first_run = !Config::path().exists();
+    let fresh_home = first_run;
     // On a first run the config is written only once setup completes, so
     // an interrupted setup (Ctrl-C) is offered again next time.
     let will_setup = opts.setup || (first_run && setup::stdin_is_tty());
@@ -1139,11 +1165,19 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     let first_run = !crate::state::AppState::path().exists();
     app.autostart();
     app.start_update_checker();
-    app.maybe_show_setup(first_run);
-    if onboarding {
-        app.start_onboarding();
+    // The voice onboarding: once on a brand new home (no config.toml at
+    // this start), or with --onboarding. It comes first, before the grid;
+    // the account logins and the tour wait for it.
+    let forced = FORCE_ONBOARDING.load(std::sync::atomic::Ordering::Relaxed);
+    if app.voice_onboarding_due(fresh_home, forced) {
+        app.start_voice_onboarding(onboarding);
     } else {
-        app.maybe_start_tour();
+        app.maybe_show_setup(first_run);
+        if onboarding {
+            app.start_onboarding();
+        } else {
+            app.maybe_start_tour();
+        }
     }
     app.voice.file = opts.voice_file.clone();
     app.voice.hold_supported = enhanced;
@@ -1317,6 +1351,9 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     }
     result
 }
+
+/// `--onboarding`: the voice onboarding at this start, whatever was before.
+static FORCE_ONBOARDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The terminal stopped reading and was left as it was at exit.
 static TTY_STUCK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

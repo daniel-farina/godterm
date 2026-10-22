@@ -358,6 +358,9 @@ pub enum Modal {
     EditSetting(usize, String),
     /// Confirm removing account `.0` from config.toml.
     ConfirmRemoveAccount(usize),
+    /// Install (false) or remove (true) a local voice, after a yes
+    /// (app_voices.rs).
+    ConfirmLocalVoice(&'static str, bool),
     /// Rename a tab: (pane, tab, text typed so far).
     Rename(usize, usize, String),
     /// Account menu of a pane: (pane, selected row).
@@ -695,6 +698,10 @@ pub struct App {
     pub direct: crate::app_direct::DirectState,
     /// Brainstorm mode (app_brainstorm): speech drafted, not sent.
     pub brainstorm: crate::app_brainstorm::BrainstormState,
+    /// Update mode (app_updates): spoken progress of active projects.
+    pub updates: crate::app_updates::UpdatesState,
+    /// The voice onboarding (app_onboarding) and its phrases card.
+    pub onb: crate::app_onboarding::OnbState,
     /// The headphone tap's Now Playing claim (voice.headphone_tap).
     pub media: crate::media_keys::MediaKeys,
     /// config.toml mtime last loaded, for hot reload.
@@ -904,6 +911,8 @@ impl App {
             voice: Default::default(),
             direct: Default::default(),
             brainstorm: Default::default(),
+            updates: Default::default(),
+            onb: Default::default(),
             media: Default::default(),
             onboard: None,
             settings_section: 0,
@@ -1875,10 +1884,12 @@ impl App {
         self.assistant_tick();
         self.update_tick();
         self.admin_tick();
+        self.onboarding_tick();
         self.browser_tick();
         self.control_tick();
         self.jobs_tick();
         self.tab_jobs_tick();
+        self.local_voices_tick();
         self.refresh_paths();
         for st in &mut self.accounts {
             while st.usage_hist.len() > self.cfg.usage_history {
@@ -2111,6 +2122,10 @@ impl App {
                 if self.hold_to_talk_key(&k) {
                     return;
                 }
+                // The voice onboarding's welcome and checks take the keys.
+                if k.kind != KeyEventKind::Release && self.onboarding_key(&k) {
+                    return;
+                }
                 if k.kind != KeyEventKind::Release {
                     let before = self.focus;
                     self.on_key(k);
@@ -2143,7 +2158,9 @@ impl App {
                     }
                 }
             }
+            AppEvent::Input(Event::Mouse(m)) if self.onboarding_mouse(&m) => {}
             AppEvent::Input(Event::Mouse(m)) => self.on_mouse(m),
+            AppEvent::Wheel(..) if self.onb_full_screen() => {}
             AppEvent::Wheel(m, n) => self.on_wheel(m, n),
             AppEvent::Input(Event::FocusGained) => self.voice.term_focused = Some(true),
             AppEvent::Input(Event::FocusLost) => self.voice.term_focused = Some(false),
@@ -2740,6 +2757,17 @@ impl App {
                 }
                 return;
             }
+            Modal::ConfirmLocalVoice(id, remove) => {
+                let (id, remove) = (*id, *remove);
+                self.modal = Modal::None;
+                if matches!(
+                    k.code,
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter
+                ) {
+                    self.local_voice_yes(id, remove);
+                }
+                return;
+            }
             Modal::Rename(slot, tab, buf) => {
                 match k.code {
                     KeyCode::Esc => self.modal = Modal::None,
@@ -3081,6 +3109,7 @@ impl App {
                 let p = self.focus;
                 self.toggle_fold_sideways(p);
             }
+            (_, Some('J')) => self.onboarding_ctrl_j(),
             (_, Some('C')) => {
                 if let Some(a) = self.panes.get(self.focus).and_then(|p| p.account) {
                     let say = self.close_accounts(&[a]);
@@ -3817,6 +3846,13 @@ impl App {
                 self.on_command(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
             }
             Action::Broadcast => self.modal = Modal::Broadcast(String::new()),
+            Action::UpdateMode => self.toggle_update_mode(),
+            Action::VoiceOnboarding => self.start_voice_onboarding(false),
+            Action::VoicePhrases => self.onb.card = true,
+            Action::UpdatesNow => {
+                self.assistant.show = true;
+                self.updates_roundup_now();
+            }
             Action::PaneWidth(0) => self.equal_pane_widths(),
             Action::PaneWidth(d) => {
                 let p = self.focus;

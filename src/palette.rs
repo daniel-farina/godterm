@@ -27,6 +27,14 @@ pub enum Action {
     PaneWidth(i8),
     /// Permission mode for the focused pane's account.
     Perm(&'static str),
+    /// Update mode on or off.
+    UpdateMode,
+    /// An update roundup now.
+    UpdatesNow,
+    /// The voice onboarding again.
+    VoiceOnboarding,
+    /// The phrases card of the voice onboarding.
+    VoicePhrases,
 }
 
 pub const ACTIONS: &[(&str, Action)] = &[
@@ -61,6 +69,22 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("voice: train the wake word", Action::VoiceTrain),
     ("voice: preview the talk back voice", Action::VoicePreview),
     ("voice: stop talking", Action::StopTalking),
+    (
+        "voice: update mode on / off (keep me posted on active projects)",
+        Action::UpdateMode,
+    ),
+    (
+        "voice: what's the latest (an update roundup now)",
+        Action::UpdatesNow,
+    ),
+    (
+        "voice: replay voice onboarding (turn voice on, checks, a short spoken tour)",
+        Action::VoiceOnboarding,
+    ),
+    (
+        "voice: voice phrases (the onboarding's card of useful phrases)",
+        Action::VoicePhrases,
+    ),
     (
         "voice: headphone tap on or off (play/pause turns the mic on or off)",
         Action::HeadphoneTap,

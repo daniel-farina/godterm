@@ -503,6 +503,11 @@ pub const TOOLS: &[Tool] = &[
         schema: || props(json!({"on": {"type": "boolean"}}), &[]),
     },
     Tool {
+        name: "update_mode",
+        description: "Update mode (\"keep me posted\", \"give me updates\", \"stop updates\"; GodTerm usually catches these itself): on true, GodTerm says short progress updates of every active project as things move (events at once, at most every minute; a roundup every few minutes only when something changed); on false ends it. now true gives a roundup of what changed since the last update (\"what's the latest\", \"any updates\"), even with the mode off. No confirmation. Say exactly the result's say text.",
+        schema: || props(json!({"on": {"type": "boolean"}, "now": {"type": "boolean"}}), &[]),
+    },
+    Tool {
         name: "set_tab_model",
         description: "Switch a tab's model (\"switch the trading room to haiku\", \"use opus on that tab\", \"put t12 on the fast grok\"). model: a name as said (haiku, sonnet, opus; for Grok tabs grok-4.7-build-fast, grok-4.7, grok-4.6; \"the quick one\" works). Runs at once, no confirmation: an idle tab gets the harness's own /model now, a busy one after its turn (never interrupted). Say the result's say text; status is applied, queued or already.",
         schema: || {
@@ -3405,6 +3410,9 @@ impl App {
         }
         if tool == "brainstorm" {
             return self.brainstorm_tool(args);
+        }
+        if tool == "update_mode" {
+            return self.update_mode_tool(args);
         }
         if tool == "show_tab_loops" {
             return self.show_tab_loops_tool(args);

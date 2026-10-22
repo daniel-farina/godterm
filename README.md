@@ -54,7 +54,8 @@ verified against each real CLI.
   and continue it there, or bring in a session running in another
   terminal (take over or copy).
 - **Voice.** Push to talk, a wake word or open mic. Local by default
-  (whisper.cpp or Apple's on device speech, replies by Kokoro or `say`),
+  (whisper.cpp or Apple's on device speech, replies by Kokoro or `say`, or
+  the optional local Chatterbox Turbo and Ming-3.0 voices on Apple Silicon),
   with optional Grok voice for recognition and spoken replies, and barge in.
 - **An assistant that operates GodTerm.** Ask in plain words: "open a tab
   on account two in the api folder and tell it to run the tests". It plans,
@@ -127,12 +128,49 @@ godterm          # first run asks: how many accounts, their labels and folders
 2. Each pane shows claude's own login: pick "Claude account with
    subscription", open the link in a browser signed in to that account,
    paste the code back. The banner moves to the next account by itself.
-3. You land on the grid with each account's usage, and a short tour shows
+3. Before any UI, the voice onboarding asks one thing: turn voice on
+   (Enter, or say "yes") or skip (Esc). See [Voice onboarding](#voice-onboarding).
+4. You land on the grid with each account's usage, and a short tour shows
    the screen. Everything is clickable: the menu bar, tab names, `+` and
    `×`, the usage footer, Approve buttons. `Ctrl-a ?` lists every key.
-4. Optional voice: run `godterm doctor` to check the mic and the speech
+5. Optional voice: run `godterm doctor` to check the mic and the speech
    tools, then hold `Ctrl-a space` and say what you want ("open a tab on
    account two").
+
+### Voice onboarding
+
+On a brand new install (no `config.toml` yet) the first window, before the
+grid, is a calm welcome. Within a few seconds it says why voice makes
+GodTerm different and offers **Turn voice on** (Enter, or say "yes") or
+**Skip** (Esc, `s`). Nothing is skipped silently; after about 20 seconds a
+gentle reminder shows. With a yes:
+
+1. **Pieces**: what voice needs on this machine (ffmpeg, whisper.cpp and a
+   model, espeak-ng and the Kokoro voice files), with sizes. A second yes
+   installs the missing ones with the same installer as Settings > Setup
+   (pinned, checksummed downloads, spoken progress, never sudo; pieces it
+   cannot install are shown with the command to run by hand). `c` goes on
+   without voice.
+2. **Mic check**: a live level meter; say anything ("hello GodTerm") and it
+   shows what it heard. Tips show when nothing is heard.
+3. **Speaker check**: a sample in the local voice (Kokoro af_heart by
+   default, `say` when Kokoro is not there). Did you hear it?
+4. **Five short steps**, each done by saying a request that the real
+   assistant performs: ask how something works, log in a Claude session,
+   create a project in account 1, log in a Grok session, change the layout
+   or open loops. A card lists the steps with check marks. Say "skip" or
+   "next" (or `Ctrl-a J`), "go back", "repeat", or "stop onboarding" any
+   time. Without voice the same requests are typed to the assistant.
+5. **Recap**: a card with the five most useful phrases (reopen it with
+   `Ctrl-a J`, "what can I say", or the palette > voice phrases).
+
+Adding an account or starting a login always goes through the assistant's
+confirmation: nothing changes until you say yes at that step, and no code
+or secret is spoken or shown. It runs once (the file `voice_onboarding` in
+GodTerm's home records how it ended); existing users never see it on their
+own. Replay it with `godterm --onboarding`, the palette ("replay voice
+onboarding"), Settings > Voice > Replay voice onboarding, or say "voice
+onboarding". `godterm --demo --onboarding` shows it on the demo accounts.
 
 ## Voice in short
 
@@ -367,7 +405,8 @@ show` prints it and the current screens.
 
 The first time you run `godterm` (or with no accounts configured), or any
 time with `godterm setup`, it asks how many accounts you want (any number), a
-label and a default directory for each, then opens the TUI and walks you
+label and a default directory for each, then opens the TUI (on a new install
+with the [voice onboarding](#voice-onboarding) first) and walks you
 through logging each one in. A banner says which account is up ("Account 2
 of 4: Personal ...") with a check mark per account; once one logs in it
 moves to the next, `Ctrl-a S` skips one, and it ends on the dashboard.
@@ -617,6 +656,34 @@ other tabs are held and summarized on resume, and the status bar shows
 15 min. When the time is up the previous mode comes back on its own.
 "Hold on", "hang on" and "pause" alone are instant.
 
+**Update mode.** "Update mode", "keep me posted" or "give me updates"
+turns it on (also Voice ▾ > Update mode, the command palette, or
+Settings > Voice > Update mode); "stop updates", "update mode off" or
+"quiet" turns it off. While it is on, GodTerm tells you in a sentence or
+two per project what changed in every active tab, like a colleague
+keeping you posted: "EXELON finished: the deploy finished the plan.
+Hyper: three of seven steps done, now applying the migration." For
+Claude tabs it reads only the new part of the transcript (the agent's
+text, edits, commands, to do progress, subagents and background
+commands, errors, a turn that ended); Grok, Codex, Cursor, Antigravity
+and OpenCode tabs report their screen state (working, finished, waiting
+for approval). Scheduled jobs that ran and requests that were dropped
+without a word are included. Big news (an approval, an error, finished
+work) comes at the next quiet moment, at most every
+`[voice] updates_gap_s` (60 s); the rest waits for a roundup every
+`updates_every_min` (4) minutes, and only when something changed: no
+news is never said unless you ask. Several projects go in one short
+utterance, approvals and errors first; what the announcer already said
+("hyper finished") is not repeated. It never talks over you, and waits
+while paused, brainstorming or in direct mode. With voice off, the
+speaker or mic muted, every update is a line in the assistant panel
+instead (each one is logged there anyway, one line per update), and the
+composer shows `● updates · 4 projects · next in 2m`. "What's the
+latest?" or "any updates?" gives a roundup at once, even with the mode
+off. The wording is built locally from what was read, with paths,
+hashes, code and anything that looks like a key left out: no model is
+called, so it costs nothing.
+
 A tiny set of **instant one word commands** runs at once, locally,
 without the assistant, but only when it is the whole utterance (Settings
 > Voice > "Instant one-word commands", on by default; the set is
@@ -765,9 +832,11 @@ doctor` says why.
   `barge_margin_db` (15) over the threshold instead. `godterm voice-test --file tts.wav --echo`
   plays a recording as if it were our own voice and reports what got
   through (nothing, by design).
-- Voices: every voice in `voices-v1.0.bin` (54, e.g. af_heart, am_michael,
-  bf_emma) is in Settings, with Preview. Speed, volume and output device
-  are set there too.
+- Voices: the 28 English voices of `voices-v1.0.bin` are in Settings,
+  American then British, female then male, each with its official grade
+  (af_heart, the default, is the only A), with Preview, which speaks a
+  short line. Or say "use the Bella voice". Speed, volume and output
+  device are set there too.
 - Pronunciation fixes: `pronounce = ["godterm=clawed go", "CLI=C L I",
   "JSON=jason"]` (whole words, any case) are applied before phonemizing.
 - Kinds: `speak_confirm`, `speak_readback` and `announce` switch each kind
@@ -778,6 +847,63 @@ doctor` says why.
 godterm tts-test                       # CPU vs CoreML: time to first audio and real-time factor, WAVs saved
 godterm tts-test --say "Hello there"   # speak through the real pipeline (--voice bf_emma, --volume 0.5)
 ```
+
+### Talk back engines
+
+Kokoro is built in and stays the default. The others are alternatives,
+picked in Settings > Voice and Audio > Engine (each shows where it runs,
+its memory, speed and license) or by voice: "use Kokoro", "use the local
+voice", "use chatterbox", "use the Grok voice", "use the Ming voice",
+"use the Mac voice". Measured on an M5 Max:
+
+| Engine | Runs | RAM | First audio | Speed (rtf) | License | Notes |
+|---|---|---|---|---|---|---|
+| Kokoro (`kokoro`) | local, in process | about 1 GB | 0.35 s | 0.14 | Apache 2.0 | built in, default, recommended; 28 English voices |
+| Chatterbox Turbo (`chatterbox`) | local helper, Apple Silicon | about 5 GB | 0.2 s (streamed) | 0.26 | MIT, output watermarked | more natural; clones a voice from a short clip |
+| Ming-3.0 (`ming`) | local helper, Apple Silicon | about 4 GB | 1.5 to 4 s (per sentence) | 0.6 | MIT | 5 English voices, or a voice designed from a description |
+| macOS voices (`say`) | local | none extra | about 1 s | 0.14 | Apple system voices | |
+| Grok (`grok`) | cloud (xAI) | none | streamed | | xAI terms | the spoken text goes to xAI |
+
+Chatterbox and Ming are optional and are installed only from Settings:
+the row "Chatterbox Turbo: install" (or "Ming-3.0: install") shows the
+download (about 2.9 GB each, plus about 0.4 GB for mlx-audio), the memory
+it needs, its speed and license, and installs after you say yes, with
+progress on the row. It makes a Python environment in
+`~/.godterm/voices/venv` (uv when there is one, else python3.12) with
+mlx-audio, and fetches the MLX model into the Hugging Face cache
+(`~/.cache/huggingface`, so a model you already have is reused). Remove,
+on the same row, deletes the model and, when no other local voice uses
+it, the environment. On Intel Macs, Linux and Windows they are not
+offered.
+
+Each runs in a helper process GodTerm starts when the engine is chosen
+and keeps warm: `local_helper.py` talks to GodTerm over its stdin and
+stdout only (a private pipe; nothing listens on the network) and exits
+with GodTerm. It is stopped after `tts_unload_after_s` idle seconds like
+Kokoro, started again on the next phrase, and restarted after a crash
+(three crashes in ten minutes keep it out for five). While its model
+loads (a few seconds) Kokoro speaks. When it fails, the sentence goes
+through `tts_fallback` (Kokoro, then `say`) and a one time note says why.
+The pronunciation list, speed (a time stretch for these two), volume,
+the speaker mute, barge-in and the speak queue work the same for every
+engine.
+
+```toml
+[voice]
+tts_engine = "kokoro"          # or "chatterbox", "ming", "say", "grok", "off"
+
+[voice.local]
+chatterbox_ref = ""            # a WAV over 5 s to clone ("" its own voice); Choose... in Settings
+ming_voice = "US_Emma"         # US_Emma, US_Stella, US_James, UK_George, UK_Charlotte, or "design"
+ming_design = ""               # with "design": e.g. "a calm, warm male narrator in his forties"
+timeout_ms = 8000              # no first audio by then: the fallback speaks (Ming waits twice as long)
+load_timeout_s = 90
+```
+
+`godterm __local-voice-test --engine chatterbox --python PY --out x.wav`
+runs the helper from a temporary copy with an environment you name, says
+three sentences through the same code as talk back, and prints the time
+to first audio of each (it never plays anything).
 
 ### Voice and Audio settings
 
@@ -895,7 +1021,7 @@ partial_model = "auto"     # live partials: auto (small model if any), "main", "
 whisper_threads = 0        # 0: about half the idle cores
 wake_sensitivity = 0.75    # alias matching, 0.5 loose to 1.0 exact
 tts = true                 # talk back at all
-tts_engine = "kokoro"      # or "say", "off"
+tts_engine = "kokoro"      # or "chatterbox", "ming" (local, installed from Settings), "say", "grok", "off"
 kokoro_voice = "af_heart"
 kokoro_model = "~/.cache/kokoro-onnx/kokoro-v1.0.onnx"
 kokoro_voices = "~/.cache/kokoro-onnx/voices-v1.0.bin"
@@ -915,6 +1041,9 @@ barge_in = true
 barge_margin_db = 15.0
 announce = true
 announce_every_s = 20
+updates = false            # update mode: "keep me posted" on active projects
+updates_gap_s = 60         # at least this long between two updates
+updates_every_min = 4      # progress roundup, only when something changed
 chime = true
 dictation_fallback = "confirm"
 capture = "auto"           # "apple" (voice processing via godterm-speech), "ffmpeg"
@@ -1495,6 +1624,7 @@ focused pane.
 | `Ctrl-a M` | release / capture the mouse (for text selection) |
 | click `name ▾` | account menu of a pane (switch, log in, log out, tab position) |
 | `Ctrl-a T` | the tour |
+| `Ctrl-a J` | voice phrases card (in the voice onboarding: skip the step) |
 
 Dashboard: arrows select an account, `Enter` jumps to its pane, `L` logs in,
 `s` opens its sessions, `r` refreshes it, `R` refreshes all, `n` adds an

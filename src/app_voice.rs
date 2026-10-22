@@ -783,10 +783,15 @@ impl App {
     pub fn preview_voice(&mut self) {
         let vc = &self.cfg.voice;
         let (engine, why) = crate::voice::tts::effective_engine(vc);
-        let who = if engine == "kokoro" {
-            vc.kokoro_voice.clone()
-        } else {
-            "the say voice".into()
+        let who = match engine {
+            "kokoro" => crate::voice::catalog::kokoro_name(&vc.kokoro_voice),
+            "chatterbox" | "ming" => format!(
+                "{}, {}",
+                crate::voice::local_tts::info(engine).map(|i| i.name).unwrap_or(engine),
+                crate::voice::local_tts::voice_label(engine, vc)
+            ),
+            "grok" => format!("Grok {}", vc.grok.voice),
+            _ => "the say voice".into(),
         };
         let text = format!(
             "Hi, this is {}. Approved, account two is next.",
@@ -806,7 +811,10 @@ impl App {
             }
         }
         self.flash(match why {
-            Some(w) => format!("Preview with say: kokoro unavailable ({w})"),
+            Some(w) if vc.tts_engine == "kokoro" => {
+                format!("Preview with {engine}: kokoro unavailable ({w})")
+            }
+            Some(w) => format!("Preview with {engine}: {w}"),
             None => format!("Preview: {who} ({engine})"),
         });
     }
@@ -857,6 +865,11 @@ impl App {
             crate::log::info("paused: wake word with a command, resuming and running it");
             return self.run_heard(rest);
         }
+        // The voice onboarding: its welcome and checks take every
+        // utterance, its lesson only its own phrases (app_onboarding).
+        if self.onboarding_heard(text, &norm) {
+            return;
+        }
         // Brainstorm mode: everything is drafted (no wake word needed);
         // only its own phrases do anything (app_brainstorm).
         if self.brainstorm_on() {
@@ -883,6 +896,15 @@ impl App {
             let command = woke.clone().unwrap_or_else(|| norm.clone());
             if !command.trim().is_empty() && self.brainstorm_intercept(text, &command) {
                 crate::log::info(&format!("voice: brainstorm phrase: {text}"));
+                return;
+            }
+            // "update mode", "stop updates", "what's the latest"
+            // (app_updates).
+            if !command.trim().is_empty() && self.updates_intercept(&command) {
+                return;
+            }
+            // "use the Bella voice", "use chatterbox" (app_voices).
+            if !command.trim().is_empty() && self.voice_choice_intercept(&command) {
                 return;
             }
         }
@@ -1387,6 +1409,7 @@ impl App {
         self.listen_after_reply(any_speaking);
         self.quiet_tick();
         if self.attention.is_empty() {
+            self.updates_tick();
             return;
         }
         let items = std::mem::take(&mut self.attention);
@@ -1442,9 +1465,13 @@ impl App {
                 // Said at the next quiet moment, never over the user.
                 if app.voice.spoken.allow(key) {
                     app.say_update(crate::app_quiet::Voice::Announce, &msg);
+                    // Update mode does not say it again.
+                    app.updates_note_announced(a.uid, need);
                 }
             });
         }
+        // After the announcer, so what it said is not said again.
+        self.updates_tick();
     }
 
     pub fn voice_hud_visible(&self) -> bool {

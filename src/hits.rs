@@ -112,6 +112,8 @@ pub enum UiAction {
     TourNext,
     TourSkip,
     TourStart,
+    /// A button of the voice onboarding (app_onboarding::BTN_*).
+    Onboarding(u8),
     /// Collapse or expand pane `i`'s tab list.
     SidebarToggle(usize),
     /// Scroll pane `i`'s tab list by this many tabs.
@@ -174,6 +176,8 @@ pub enum UiAction {
     Install(bool),
     /// Play a sample of the selected talk back voice.
     VoicePreview,
+    /// Settings: pick the Chatterbox voice clip (a file dialog).
+    PickVoiceClip,
     /// Open wake word training.
     TrainWake,
     /// Settings > Voice: "Train my voice" (speaker lock enrollment).

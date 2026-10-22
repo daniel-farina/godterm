@@ -1852,3 +1852,50 @@ fn move_confirmation_buttons_click() {
         }
     }
 }
+
+/// The voice onboarding (`--onboarding`): the welcome comes before any
+/// UI and Esc skips it for good; the steps can be gone through by typing
+/// ("skip", Ctrl-a J, "stop onboarding"). Voice pieces are pointed at
+/// paths that do not exist, so nothing is installed, heard or played.
+#[test]
+fn voice_onboarding_welcome_steps_and_skip() {
+    let home = make_home("onboarding", "");
+    let cfg = home.join("config.toml");
+    let t = std::fs::read_to_string(&cfg).unwrap().replace(
+        "[voice]\n",
+        "[voice]\nengine = \"whisper\"\nffmpeg = \"/nonexistent/ffmpeg\"\nwhisper_server = \"/nonexistent/whisper-server\"\nwhisper_cli = \"/nonexistent/whisper-cli\"\nmodel = \"/nonexistent/ggml.bin\"\nespeak = \"/nonexistent/espeak-ng\"\nkokoro_model = \"/nonexistent/kokoro.onnx\"\nkokoro_voices = \"/nonexistent/voices.bin\"\n",
+    );
+    std::fs::write(&cfg, t).unwrap();
+    // Esc on the welcome: skipped, recorded, the normal UI.
+    let mut t = Tui::start(home.clone(), &["--onboarding"]);
+    t.wait_for("Run every Claude and Grok session just by talking.", 15);
+    t.wait_for("Turn voice on", 5);
+    assert!(!t.text().contains("Alpha"), "nothing of the UI shows yet");
+    t.send(b"\x1b");
+    t.wait_gone("Turn voice on", 5);
+    t.wait_for("Alpha", 10);
+    let marker = std::fs::read_to_string(home.join("voice_onboarding")).unwrap();
+    assert!(marker.starts_with("skipped"), "{marker}");
+    t.quit_keep();
+
+    // Again: Enter shows what voice needs, c goes on by typing.
+    let mut t = Tui::start(home.clone(), &["--onboarding"]);
+    t.wait_for("Turn voice on", 15);
+    t.send(b"\r");
+    t.wait_for("Voice needs a few pieces", 5);
+    t.wait_for("Continue without voice", 5);
+    t.send(b"c");
+    t.wait_for("voice tour · step 1 of 5", 5);
+    t.wait_for("▸ Ask how something works", 5);
+    // Typed "skip" skips the step; Ctrl-a J too.
+    t.ask("skip");
+    t.wait_for("voice tour · step 2 of 5", 5);
+    t.cmd(b"J");
+    t.wait_for("voice tour · step 3 of 5", 5);
+    t.wait_for("– Log in a Claude session", 5);
+    t.ask("stop onboarding");
+    t.wait_gone("voice tour", 5);
+    let marker = std::fs::read_to_string(home.join("voice_onboarding")).unwrap();
+    assert!(marker.starts_with("stopped"), "{marker}");
+    assert_eq!(t.quit(), 0);
+}

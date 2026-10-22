@@ -583,6 +583,22 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             ],
             theme::SAND,
         ),
+        Modal::ConfirmLocalVoice(id, remove) => crate::ui_chrome::draw_message(
+            f,
+            area,
+            app,
+            if remove { "remove local voice" } else { "install local voice" },
+            &crate::app_voices::confirm_lines(id, remove),
+            &[
+                (
+                    if remove { "Remove" } else { "Install" },
+                    crate::hits::UiAction::ModalOk,
+                    "Yes (y)",
+                ),
+                ("Cancel", crate::hits::UiAction::ModalCancel, "Not now (Esc)"),
+            ],
+            theme::SAND,
+        ),
         Modal::ConfirmRemoveAccount(a) => crate::ui_chrome::draw_message(
             f,
             area,
@@ -656,6 +672,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             theme::SLATE,
         ),
     }
+    // The voice onboarding: over everything (the welcome covers it all).
+    crate::ui_onboarding::draw(f, app);
     // What was drawn is what can be clicked.
     app.last_hits = app.hits.take();
     app.last_modal_from = app.modal_from.get();
@@ -5575,6 +5593,10 @@ pub const HELP: &[(&str, &str)] = &[
         "Ctrl-a B",
         "brainstorm mode: talk as long as you like, nothing is sent until \"send it\" (again: leave it, the draft kept)",
     ),
+    (
+        "say \"keep me posted\"",
+        "update mode: what changes in each active project is said as it moves (\"stop updates\" ends it, \"what's the latest\" any time; Voice ▾ > Update mode)",
+    ),
     ("Ctrl-a + / -", "talk back volume up or down"),
     (
         "Ctrl-a D",
@@ -5622,6 +5644,10 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("Ctrl-a M", "release / capture the mouse (text selection)"),
     ("Ctrl-a T", "the tour"),
+    (
+        "Ctrl-a J",
+        "voice phrases card (during the voice onboarding: skip the step); palette > replay voice onboarding",
+    ),
     ("Ctrl-a Ctrl-a", "send a literal Ctrl-a"),
     ("Ctrl-a q / Q", "quit (with / without confirm)"),
 ];
@@ -5641,6 +5667,11 @@ pub const VOICE_HELP: &[(&str, &str)] = &[
         "instant: switch tabs in the focused pane",
     ),
     ("sleep / wake up", "instant: pause or resume listening"),
+    (
+        "voice onboarding",
+        "the guided voice tour again (skip, next, stop onboarding inside it)",
+    ),
+    ("what can I say", "the card of the most useful phrases"),
 ];
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {

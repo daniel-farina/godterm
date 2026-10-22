@@ -1,11 +1,14 @@
-//! The demo agent: a stand in `claude` / `grok` for `godterm --demo`.
+//! The demo agent: a stand in `claude`, `grok`, `codex`, `cursor-agent`,
+//! `agy` and `opencode` for `godterm --demo`.
 //!
-//! `godterm --demo` links the godterm binary as `<demo home>/bin/claude`
-//! and `bin/grok` (next to a marker file); started under one of those
-//! names it runs this instead of GodTerm. It looks like Claude Code (or
-//! Grok Build) in a terminal: a banner, the conversation, a spinner with
-//! "esc to interrupt", tool calls with results and diffs, permission
-//! prompts, the input box. What it does comes from a scenario file per
+//! `godterm --demo` links the godterm binary under those names in
+//! `<demo home>/bin` (next to a marker file); started under one of them
+//! it runs this instead of GodTerm. It looks like that CLI in a terminal
+//! (Claude Code, Grok Build, Codex, Cursor, Antigravity, OpenCode; the
+//! last four drawn after the real captures in tests/fixtures/screens, see
+//! `cli.rs`): a banner, the conversation, a spinner, tool calls with
+//! results and diffs, permission prompts with the keys the real CLI
+//! takes, the input box. What it does comes from a scenario file per
 //! project (`<demo home>/scenarios/<folder name>.json`, see `Scenario`),
 //! and it writes the matching transcript (with token usage), so the
 //! sessions list, token counters, loops and the Live map have real data.
@@ -23,21 +26,83 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[path = "demo_cli.rs"]
+mod cli;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavor {
     Claude,
     Grok,
+    Codex,
+    Cursor,
+    Antigravity,
+    OpenCode,
 }
 
-/// This process is the demo agent: started as `claude` or `grok` from a
-/// folder with the demo marker.
+impl Flavor {
+    /// The program names the demo links (`<demo home>/bin/<name>`).
+    pub const BINS: &'static [(&'static str, Flavor)] = &[
+        ("claude", Flavor::Claude),
+        ("grok", Flavor::Grok),
+        ("codex", Flavor::Codex),
+        ("cursor-agent", Flavor::Cursor),
+        ("agy", Flavor::Antigravity),
+        ("opencode", Flavor::OpenCode),
+    ];
+
+    pub fn of_program(name: &str) -> Option<Flavor> {
+        match name {
+            // Cursor's CLI is also installed as `agent`.
+            "agent" => Some(Flavor::Cursor),
+            n => Self::BINS.iter().find(|(b, _)| *b == n).map(|x| x.1),
+        }
+    }
+
+    pub fn of_harness(h: crate::harness::Harness) -> Flavor {
+        use crate::harness::Harness;
+        match h {
+            Harness::Claude => Flavor::Claude,
+            Harness::Grok => Flavor::Grok,
+            Harness::Codex => Flavor::Codex,
+            Harness::Cursor => Flavor::Cursor,
+            Harness::Antigravity => Flavor::Antigravity,
+            Harness::OpenCode => Flavor::OpenCode,
+        }
+    }
+
+    pub fn harness(self) -> crate::harness::Harness {
+        use crate::harness::Harness;
+        match self {
+            Flavor::Claude => Harness::Claude,
+            Flavor::Grok => Harness::Grok,
+            Flavor::Codex => Harness::Codex,
+            Flavor::Cursor => Harness::Cursor,
+            Flavor::Antigravity => Harness::Antigravity,
+            Flavor::OpenCode => Harness::OpenCode,
+        }
+    }
+
+    /// The program name it is linked as.
+    pub fn bin(self) -> &'static str {
+        Self::BINS
+            .iter()
+            .find(|(_, f)| *f == self)
+            .map(|x| x.0)
+            .unwrap_or("claude")
+    }
+
+    /// GodTerm reads this CLI's transcripts (Claude, Grok): the demo
+    /// writes them. The others get none (GodTerm reads none of theirs).
+    fn writes_transcript(self) -> bool {
+        matches!(self, Flavor::Claude | Flavor::Grok)
+    }
+}
+
+/// This process is the demo agent: started as one of `Flavor::BINS`
+/// from a folder with the demo marker.
 pub fn invoked_as() -> Option<Flavor> {
     let a0 = std::env::args().next()?;
-    let flavor = match crate::procs::program_name(&a0).as_str() {
-        "claude" => Flavor::Claude,
-        "grok" => Flavor::Grok,
-        _ => return None,
-    };
+    let flavor = Flavor::of_program(&crate::procs::program_name(&a0))?;
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     dir.join(crate::demo::AGENT_MARKER)
@@ -252,11 +317,12 @@ pub fn grok_dir_name(cwd: &Path) -> String {
 
 pub fn transcript_path(flavor: Flavor, config: &Path, cwd: &Path, sid: &str) -> PathBuf {
     match flavor {
-        Flavor::Claude => config
+        Flavor::Grok => config.join("sessions").join(grok_dir_name(cwd)).join(sid),
+        // (Only Claude's is written; the others never are.)
+        _ => config
             .join("projects")
             .join(crate::state::encode_project_dir(cwd))
             .join(format!("{sid}.jsonl")),
-        Flavor::Grok => config.join("sessions").join(grok_dir_name(cwd)).join(sid),
     }
 }
 
@@ -303,7 +369,7 @@ impl Transcript {
     }
 
     fn line(&mut self, mut v: Value) {
-        if self.flavor == Flavor::Grok {
+        if self.flavor != Flavor::Claude {
             return;
         }
         let uuid = self.uuid();
@@ -337,6 +403,9 @@ impl Transcript {
     }
 
     fn raw(&mut self, v: Value) {
+        if self.flavor != Flavor::Claude {
+            return;
+        }
         if let Some(d) = self.path.parent() {
             let _ = std::fs::create_dir_all(d);
         }
@@ -412,6 +481,9 @@ impl Transcript {
 fn replay(flavor: Flavor, path: &Path) -> (usize, Vec<Line>) {
     let mut lines = vec![];
     let mut prompts = 0;
+    if !flavor.writes_transcript() {
+        return (prompts, lines);
+    }
     if flavor == Flavor::Grok {
         // grok's demo transcript keeps only totals: show the title.
         if let Ok(s) = std::fs::read_to_string(path.join("summary.json")) {
@@ -567,6 +639,12 @@ enum Mode {
 
 struct Screen {
     flavor: Flavor,
+    /// The folder as shown ("~/code/<name>").
+    shown: String,
+    /// The model the footer names (the scenario's, else the CLI's own).
+    model: String,
+    /// The session's title (OpenCode's header).
+    title: String,
     banner: Vec<String>,
     lines: Vec<Line>,
     input: String,
@@ -663,9 +741,14 @@ impl Screen {
                 format!("{ORANGE}  ▘▘ ▝▝{RESET}    {GRAY}{shown}{RESET}"),
             ],
             Flavor::Grok => vec![format!("{GROK}{BOLD} Grok Build{RESET}")],
+            // Drawn per frame, to the width (cli::head).
+            _ => vec![],
         };
         Screen {
             flavor,
+            model: cli::model(flavor, sc),
+            title: sc.title.clone(),
+            shown,
             banner,
             lines: vec![],
             input: String::new(),
@@ -791,7 +874,7 @@ impl Screen {
                 };
                 out.push(format!("{GRAY}{}{RESET}", fit(&hint, w)));
             }
-            Flavor::Grok => {
+            _ => {
                 let inner = w.saturating_sub(2);
                 out.push(format!("{GRAY}╭{}╮{RESET}", "─".repeat(inner)));
                 let body = if self.input.is_empty() {
@@ -866,7 +949,7 @@ impl Screen {
                     "─".repeat(w.saturating_sub(2))
                 ));
             }
-            Flavor::Grok => {
+            _ => {
                 out.push(format!(
                     " {ORANGE}●{RESET} {BOLD}{}{RESET}",
                     fit(&a.title, w.saturating_sub(4))
@@ -891,11 +974,22 @@ impl Screen {
     fn frame(&self, cols: u16, rows: u16) -> String {
         let w = (cols as usize).max(20);
         let h = (rows as usize).max(5);
-        let foot = self.footer(w);
-        let mut body: Vec<String> = self.banner.clone();
-        body.push(String::new());
+        let native = matches!(self.flavor, Flavor::Claude | Flavor::Grok);
+        let foot = if native {
+            self.footer(w)
+        } else {
+            cli::footer(self, w)
+        };
+        let mut body: Vec<String> = cli::head(self, w);
+        if native {
+            body.push(String::new());
+        }
         for l in &self.lines {
-            body.extend(self.render_line(l, w));
+            body.extend(if native {
+                self.render_line(l, w)
+            } else {
+                cli::render_line(self.flavor, l, w)
+            });
         }
         let room = h.saturating_sub(foot.len());
         let start = body.len().saturating_sub(room);
@@ -1043,10 +1137,11 @@ fn run_task(
         "Architecting",
     ];
     let verb = verbs[(rand_u64() % verbs.len() as u64) as usize];
-    let thinking = if ctx.flavor == Flavor::Grok {
-        "Thinking"
-    } else {
-        verb
+    let thinking = match ctx.flavor {
+        Flavor::Claude => verb,
+        Flavor::Grok => "Thinking",
+        Flavor::Antigravity => "Generating",
+        _ => "Working",
     };
     ctx.work(thinking);
     let tool = |name: &str, input: Value, result: &str, usage: [u64; 4]| {
@@ -1119,12 +1214,15 @@ fn run_task(
             } => {
                 ctx.sleep(0.9)?;
                 let d = parse_diff(diff);
-                if *approve {
+                if *approve && cli::asks_for_edits(ctx.flavor) {
                     let file = Path::new(path)
                         .file_name()
                         .map(|f| f.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     let a = match ctx.flavor {
+                        f @ (Flavor::Codex | Flavor::Antigravity) => {
+                            cli::edit_ask(f, path, d.clone(), false)
+                        }
                         Flavor::Claude => Ask {
                             title: "Edit file".into(),
                             body: vec![path.clone()],
@@ -1137,7 +1235,7 @@ fn run_task(
                             ],
                             sel: 0,
                         },
-                        Flavor::Grok => grok_ask(&format!("Edit({path})"), "Apply this edit"),
+                        _ => grok_ask(&format!("Edit({path})"), "Apply this edit"),
                     };
                     if ask_denied(ctx, a, verb)? {
                         return Ok(());
@@ -1169,8 +1267,11 @@ fn run_task(
                 approve,
             } => {
                 ctx.sleep(0.9)?;
-                if *approve {
+                if *approve && cli::asks_for_edits(ctx.flavor) {
                     let a = match ctx.flavor {
+                        f @ (Flavor::Codex | Flavor::Antigravity) => {
+                            cli::edit_ask(f, path, vec![], true)
+                        }
                         Flavor::Claude => Ask {
                             title: "Create file".into(),
                             body: vec![path.clone()],
@@ -1189,7 +1290,7 @@ fn run_task(
                             ],
                             sel: 0,
                         },
-                        Flavor::Grok => grok_ask(&format!("Write({path})"), "Create this file"),
+                        _ => grok_ask(&format!("Write({path})"), "Create this file"),
                     };
                     if ask_denied(ctx, a, verb)? {
                         return Ok(());
@@ -1215,9 +1316,12 @@ fn run_task(
                 secs,
             } => {
                 ctx.sleep(0.7)?;
-                if *approve {
+                if *approve && cli::asks_for_commands(ctx.flavor) {
                     let first = cmd.split_whitespace().next().unwrap_or("these");
                     let a = match ctx.flavor {
+                        f @ (Flavor::Codex | Flavor::Cursor | Flavor::Antigravity) => {
+                            cli::command_ask(f, cmd, desc)
+                        }
                         Flavor::Claude => Ask {
                             title: "Bash command".into(),
                             body: vec![cmd.clone(), desc.clone()],
@@ -1232,7 +1336,7 @@ fn run_task(
                             ],
                             sel: 0,
                         },
-                        Flavor::Grok => grok_ask(&format!("Bash({cmd})"), desc),
+                        _ => grok_ask(&format!("Bash({cmd})"), desc),
                     };
                     if ask_denied(ctx, a, verb)? {
                         return Ok(());
@@ -1407,29 +1511,41 @@ pub fn run(flavor: Flavor) -> Result<()> {
         return brain(&args);
     }
     if args.iter().any(|a| a == "--version" || a == "-v") {
-        println!("2.1.291 (Claude Code)");
+        println!("{}", cli::version_line(flavor));
         return Ok(());
     }
-    if args.first().map(String::as_str) == Some("login") {
+    if matches!(args.first().map(String::as_str), Some("login"))
+        || (flavor == Flavor::OpenCode && args.first().map(String::as_str) == Some("auth"))
+    {
         println!("Already logged in (demo).");
         return Ok(());
     }
-    let config = std::env::var_os(match flavor {
-        Flavor::Claude => "CLAUDE_CONFIG_DIR",
-        Flavor::Grok => "GROK_HOME",
-    })
-    .map(PathBuf::from)
-    .unwrap_or_else(|| home.join("main").join("claude"));
-    // Never write into the user's real dirs, whatever the environment says.
-    if crate::config::is_real_user_dir(&config) {
+    // The CLI's own home variable (none for Cursor, Antigravity and
+    // OpenCode: they keep a stand in under the demo home, never written).
+    let env_name = flavor.harness().home_env();
+    let config = (!env_name.is_empty())
+        .then(|| std::env::var_os(env_name))
+        .flatten()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join("main").join(flavor.bin()));
+    // Never write into the user's real dirs, whatever the environment
+    // says: only into the demo home.
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if crate::config::is_real_user_dir(&config) || !canon(&config).starts_with(canon(&home)) {
         anyhow::bail!("demo agent: refusing {}", config.display());
     }
     let cwd = std::env::current_dir()?;
     let sc = load_scenario(&home, &cwd);
     let sid = args
         .iter()
-        .position(|a| a == "--resume" || a == "-r" || a == "--session-id")
+        .position(|a| {
+            matches!(
+                a.as_str(),
+                "--resume" | "-r" | "--session-id" | "--conversation" | "--session" | "-s"
+            ) || (flavor == Flavor::Codex && a == "resume")
+        })
         .and_then(|i| args.get(i + 1).cloned())
+        .filter(|s| !s.starts_with('-'))
         .unwrap_or_else(crate::session_ops::new_uuid);
     let tpath = transcript_path(flavor, &config, &cwd, &sid);
     // A fresh session (one started by hand, like the external one) gets
@@ -1455,7 +1571,16 @@ pub fn run(flavor: Flavor) -> Result<()> {
 
     let mut screen = Screen::new(flavor, &sc, &cwd);
     screen.lines = past;
-    if !screen.lines.is_empty() {
+    if !flavor.writes_transcript() {
+        // No transcript to replay: the session's earlier turns on screen.
+        for h in &sc.history {
+            screen.lines.push(Line::User(h.prompt.clone()));
+            screen.lines.push(Line::Blank);
+            screen.lines.push(Line::Text(h.summary.clone()));
+            screen.lines.push(Line::Blank);
+        }
+    }
+    if !screen.lines.is_empty() && flavor.writes_transcript() {
         screen.lines.push(Line::Blank);
     }
 
@@ -1488,7 +1613,8 @@ pub fn run(flavor: Flavor) -> Result<()> {
     let exit = |out: &mut std::io::Stdout| {
         let _ = write!(
             out,
-            "\x1b[?2004l\x1b[?1049l\x1b[?25h{RESET}\r\nResume this session with:\r\n  claude --resume {sid}\r\n"
+            "\x1b[?2004l\x1b[?1049l\x1b[?25h{RESET}\r\n{}\r\n",
+            cli::farewell(flavor, &sid).replace('\n', "\r\n")
         );
         let _ = out.flush();
         crossterm::terminal::disable_raw_mode().ok();
@@ -1537,9 +1663,24 @@ pub fn run(flavor: Flavor) -> Result<()> {
             match crossterm::event::read() {
                 Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => {
                     let asking = matches!(screen.mode, Mode::Asking(_));
+                    // The letter (or tab) an option names: "(y)", "(tab)".
+                    let hot = match &screen.mode {
+                        Mode::Asking(a) if !k.modifiers.contains(KeyModifiers::CONTROL) => {
+                            cli::hotkey_index(a, k.code)
+                        }
+                        _ => None,
+                    };
                     match k.code {
                         KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
                             sigint.store(true, Ordering::SeqCst)
+                        }
+                        _ if hot.is_some() => {
+                            let _ = in_tx.send(Input::Answer(hot.unwrap_or(0)));
+                            screen.mode = Mode::Working {
+                                verb: "Working".into(),
+                                since: Instant::now(),
+                                tokens: 0,
+                            };
                         }
                         KeyCode::Char(c @ '1'..='9') if asking => {
                             let n = c as usize - '1' as usize;
@@ -1844,9 +1985,124 @@ fn spoken_pct(p: f64) -> String {
     format!("{p:.0} percent")
 }
 
+/// A question the demo brain asked (tool, confirm token): a yes runs it.
+static PENDING: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+
+/// Call a tool that may ask first: its question, kept for the yes.
+fn ask_first(name: &str, input: Value) -> String {
+    let out = call_tool(name, input);
+    let r = if out["result"].is_object() {
+        &out["result"]
+    } else {
+        &out
+    };
+    if let Some(tok) = r["confirm_token"].as_str().or(r["token"].as_str()) {
+        let q = r["question"]
+            .as_str()
+            .or(r["say"].as_str())
+            .unwrap_or("Shall I go ahead?")
+            .to_string();
+        *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some((name.into(), tok.into()));
+        return q;
+    }
+    out["error"]
+        .as_str()
+        .map(|e| format!("That didn't work: {e}"))
+        .or_else(|| r["say"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "Done.".into())
+}
+
+/// The voice onboarding's requests: how things work, logins (asked
+/// first), a project in account 1, a layout or a view.
+fn onboarding_turn(q: &str) -> Option<String> {
+    let has = |w: &[&str]| w.iter().any(|x| q.contains(x));
+    let yes = matches!(
+        q.trim().trim_end_matches(['.', '!']),
+        "yes" | "yeah" | "yes please" | "sure" | "go ahead" | "do it" | "ok" | "okay"
+    );
+    if yes {
+        let p = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some((tool, tok)) = p {
+            let out = call_tool(&tool, json!({"confirm_token": tok}));
+            let r = if out["result"].is_object() {
+                &out["result"]
+            } else {
+                &out
+            };
+            return Some(
+                out["error"]
+                    .as_str()
+                    .map(|e| format!("That didn't work: {e}"))
+                    .or_else(|| r["say"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| "Done.".into()),
+            );
+        }
+    }
+    if has(&["how do", "how does", "what is", "what are", "explain"]) {
+        return Some(if has(&["loop"]) {
+            "Loops run a prompt in a tab again and again, like every hour. Say: every hour, run the tests in payments, and I'll set it up.".into()
+        } else if has(&["layout"]) {
+            "The layout arranges the panes: auto, grid, columns, rows or focus. Just say which one."
+                .into()
+        } else {
+            "You talk, I act: I open tabs, send prompts, approve and watch every session. Ask me anything about GodTerm.".into()
+        });
+    }
+    let login = has(&[
+        "log in",
+        "login",
+        "sign in",
+        "add a",
+        "add an",
+        "new account",
+    ]);
+    if login && has(&["grok"]) {
+        return Some(ask_first(
+            "add_account",
+            json!({"label": "Grok", "harness": "grok"}),
+        ));
+    }
+    if login && (has(&["claude"]) || has(&["account"])) {
+        return Some(ask_first(
+            "add_account",
+            json!({"label": "Work", "harness": "claude"}),
+        ));
+    }
+    if has(&["project"]) && has(&["create", "new", "make", "start", "open"]) {
+        let name = q
+            .split_once("called ")
+            .map(|(_, n)| {
+                n.split(" in ")
+                    .next()
+                    .unwrap_or(n)
+                    .trim()
+                    .trim_end_matches(['.', '?', '!'])
+                    .to_string()
+            })
+            .unwrap_or_else(|| "hello world".into());
+        let slug: String = crate::control::slug(&name).chars().take(24).collect();
+        let _ = call_tool("open_tab", json!({"account": 1, "name": slug}));
+        return Some(format!("Opened {name} as a new project on account one."));
+    }
+    for mode in ["columns", "rows", "grid", "focus", "auto"] {
+        if has(&["layout", "switch"]) && q.contains(mode) {
+            let _ = call_tool("set_layout", json!({"mode": mode}));
+            return Some(format!("Switched to the {mode} layout."));
+        }
+    }
+    if has(&["loops", "schedules"]) {
+        let _ = call_tool("show", json!({"view": "loops"}));
+        return Some("Here are the loops and schedules.".into());
+    }
+    None
+}
+
 /// The canned answer to one request (calling the real tools on the way).
 pub fn brain_turn(asked: &str) -> String {
     let q = asked.to_lowercase();
+    if let Some(r) = onboarding_turn(&q) {
+        return r;
+    }
     let has = |w: &[&str]| w.iter().any(|x| q.contains(x));
     if has(&["most left", "most quota", "which account", "best account"]) && !has(&["move", "open"])
     {

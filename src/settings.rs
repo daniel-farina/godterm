@@ -293,6 +293,19 @@ pub fn display(cfg: &Config, s: &Setting) -> String {
     }
 }
 
+/// A dim note beside the value: what an engine or a voice is.
+pub fn describe(cfg: &Config, s: &Setting) -> Option<String> {
+    let v = display(cfg, s);
+    match s.key {
+        Key::Global("voice.tts_engine") => crate::voice::catalog::engine_line(&v).map(str::to_string),
+        Key::Global("voice.kokoro_voice") => crate::voice::catalog::kokoro_label(&v),
+        Key::Global("voice.local.ming_voice") => {
+            crate::voice::catalog::ming_label(&v).map(str::to_string)
+        }
+        _ => None,
+    }
+}
+
 /// Floats as typed: f32 settings come back as 0.800000011920929.
 pub fn fmt_float(f: f64) -> String {
     let s = format!("{f:.3}");
@@ -553,7 +566,7 @@ fn talk_back_rows(r: &mut Rows, cfg: &Config, l: Option<&AudioLists>) {
         Kind::Toggle,
         "Spoken confirmations, read backs and announcements.",
     ));
-    r.when(vc.tts, "talk back is on", g("voice.tts_engine", "Engine", Kind::Choice(&["kokoro", "say", "grok", "off"]), "kokoro: a neural voice, local on this Mac. say: the macOS voice, local. grok: xAI's cloud voices (streamed; the spoken text, the assistant's replies, is sent to xAI). off: silent."));
+    r.when(vc.tts, "talk back is on", g("voice.tts_engine", "Engine", Kind::Choice(crate::voice::catalog::engine_choices()), "kokoro: built in, the default and recommended, local. chatterbox and ming: optional local voices on Apple Silicon (install below). say: the macOS voices, local. grok: xAI's cloud voices (the spoken text is sent to xAI). off: silent."));
     let others: Vec<&str> = ["kokoro", "say", "grok"]
         .into_iter()
         .filter(|e| *e != eng)
@@ -659,13 +672,16 @@ fn talk_back_rows(r: &mut Rows, cfg: &Config, l: Option<&AudioLists>) {
         g(
             "voice.kokoro_voice",
             "Kokoro: voice",
-            pick_or_text(l.map(|l| l.kokoro_voices.clone())),
-            "a = American, b = British; f = female, m = male. Preview plays a sample.",
+            Kind::Pick(crate::voice::catalog::kokoro_choices(
+                &l.map(|l| l.kokoro_voices.clone()).unwrap_or_default(),
+            )),
+            "The 28 English voices, American then British, female then male, with the official grade (A best). Preview speaks a short line. Or say \"use the Bella voice\".",
         ),
     );
+    local_voice_rows(r, cfg);
     r.when(
-        on && (eng == "kokoro" || eng == "say"),
-        "engine = kokoro or say",
+        on && matches!(eng, "kokoro" | "say" | "chatterbox" | "ming"),
+        "engine = kokoro, chatterbox, ming or say",
         g(
             "voice.tts_speed",
             "Speed",
@@ -679,6 +695,8 @@ fn talk_back_rows(r: &mut Rows, cfg: &Config, l: Option<&AudioLists>) {
     );
     r.when(kokoro, "engine = kokoro", g("voice.tts_provider", "Kokoro: runs on", Kind::Choice(&["cpu", "coreml"]), "cpu loads in a fraction of a second; CoreML loads slower and is not faster for this model."));
     r.when(kokoro, "engine = kokoro", g("voice.tts_unload_after_s", "Kokoro: unload after (s)", Kind::Number { min: 0, max: 3600, step: 60 }, "Free the model (about 800 MB) after this many idle seconds; it reloads in a fraction of a second. 0 keeps it loaded."));
+    let local = on && matches!(eng, "chatterbox" | "ming");
+    r.when(local, "engine = chatterbox or ming", g("voice.tts_unload_after_s", "Local voice: unload after (s)", Kind::Number { min: 0, max: 3600, step: 60 }, "Stop the voice helper and free its memory (4 to 5 GB) after this many idle seconds; it starts again in a few seconds when needed (Kokoro speaks meanwhile). 0 keeps it loaded."));
     r.when(
         on && eng == "say",
         "engine = say",
@@ -689,6 +707,40 @@ fn talk_back_rows(r: &mut Rows, cfg: &Config, l: Option<&AudioLists>) {
             "The macOS voice. Preview plays a sample.",
         ),
     );
+}
+
+/// The install rows of the local voices (not config keys: their value is
+/// the install status, Enter installs or removes after a yes).
+pub const LOCAL_INSTALL: &[(&str, &str)] = &[
+    ("chatterbox", "voice.local_install.chatterbox"),
+    ("ming", "voice.local_install.ming"),
+];
+
+/// The local engine an install row is for.
+pub fn local_install_row(key: &Key) -> Option<&'static str> {
+    LOCAL_INSTALL
+        .iter()
+        .find(|(_, k)| *key == Key::Global(k))
+        .map(|(id, _)| *id)
+}
+
+/// Settings > Voice and Audio > Local voices: install or remove each
+/// (Apple Silicon only), and the chosen one's voice.
+fn local_voice_rows(r: &mut Rows, cfg: &Config) {
+    use crate::voice::local_tts;
+    let vc = &cfg.voice;
+    let on = vc.tts && vc.tts_engine != "off";
+    let eng = vc.tts_engine.as_str();
+    if local_tts::supported() || r.all {
+        let help: &'static str = "Optional local voices beside Kokoro, on this Mac only. Enter shows what the install needs (size, memory, speed, license) and asks first; when installed, Enter removes it.";
+        for (i, (_, key)) in LOCAL_INSTALL.iter().enumerate() {
+            let label = format!("{}: install", local_tts::LOCALS[i].name);
+            r.when(local_tts::supported(), "this is a Mac with Apple Silicon", g(key, &label, Kind::Toggle, help));
+        }
+    }
+    r.when(on && eng == "chatterbox", "engine = chatterbox", g("voice.local.chatterbox_ref", "Chatterbox: voice clip", Kind::Text, "A WAV of the voice to clone (over 5 seconds of clear speech); empty for its own voice. Choose... picks a file. Preview speaks a short line."));
+    r.when(on && eng == "ming", "engine = ming", g("voice.local.ming_voice", "Ming: voice", Kind::Pick(crate::voice::catalog::ming_choices()), "US_Emma, US_Stella, US_James, UK_George, UK_Charlotte, or design (a voice made from the description). Preview speaks a short line."));
+    r.when(on && eng == "ming" && vc.local.ming_voice == "design", "engine = ming and voice = design", g("voice.local.ming_design", "Ming: voice description", Kind::Text, "Describe the voice, e.g. a calm, warm male narrator in his forties."));
 }
 
 fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
@@ -1049,6 +1101,32 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
         "Suggest brainstorm mode",
         Kind::Toggle,
         "When speech sounds unfinished, suggest brainstorm mode (at most every few minutes).",
+    ));
+    r.add(g(
+        "voice.updates",
+        "Update mode",
+        Kind::Toggle,
+        "Keep me posted: say what changed in each active project as things move (or say \"update mode\", \"stop updates\"). Voice off: shown in the assistant panel.",
+    ));
+    r.add(g(
+        "voice.updates_gap_s",
+        "Updates at most every (s)",
+        Kind::Number {
+            min: 15,
+            max: 600,
+            step: 15,
+        },
+        "Update mode: the shortest time between two updates, even for big news (approvals, errors, finished work).",
+    ));
+    r.add(g(
+        "voice.updates_every_min",
+        "Updates roundup every (min)",
+        Kind::Number {
+            min: 1,
+            max: 30,
+            step: 1,
+        },
+        "Update mode: progress is told in a roundup this often, only when something changed.",
     ));
     r.add(g(
         "voice.max_utterance_s",

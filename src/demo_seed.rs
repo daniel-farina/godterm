@@ -2,6 +2,12 @@
 //! fake logins and usage, sixteen sessions with scenarios and history,
 //! past sessions to search, and one "external" session in another
 //! terminal. Written into the demo home by `godterm --demo`.
+//!
+//! `godterm --demo --demo-harnesses` builds the other world: one account
+//! per agent CLI GodTerm runs (Claude Code, Grok Build, Codex, Cursor,
+//! Antigravity, OpenCode), each with a tab of the demo agent drawn as
+//! that CLI. Both worlds get made up Chrome profiles for the per-tab
+//! Browser button (the real Chrome folder is never read in demo mode).
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -13,7 +19,8 @@ use crate::demo_agent::{Flavor, Transcript};
 pub struct Acct {
     pub name: &'static str,
     pub label: &'static str,
-    pub grok: bool,
+    /// The account's agent CLI (`harness::Harness::of`).
+    pub harness: &'static str,
     pub color: &'static str,
     pub email: &'static str,
     /// Five hour and weekly % left (grok: weekly only).
@@ -25,7 +32,7 @@ pub const ACCOUNTS: &[Acct] = &[
     Acct {
         name: "work",
         label: "Work",
-        grok: false,
+        harness: "claude",
         color: "sand",
         email: "alex@acme-corp.dev",
         five: 40.0,
@@ -34,7 +41,7 @@ pub const ACCOUNTS: &[Acct] = &[
     Acct {
         name: "personal",
         label: "Personal",
-        grok: false,
+        harness: "claude",
         color: "sage",
         email: "alex.rivera@mailbox.dev",
         five: 63.0,
@@ -43,7 +50,7 @@ pub const ACCOUNTS: &[Acct] = &[
     Acct {
         name: "research",
         label: "Research",
-        grok: false,
+        harness: "claude",
         color: "slate",
         email: "alex@lab.example.org",
         five: 88.0,
@@ -52,7 +59,7 @@ pub const ACCOUNTS: &[Acct] = &[
     Acct {
         name: "client",
         label: "Client",
-        grok: false,
+        harness: "claude",
         color: "clay",
         email: "alex@northwind-studio.dev",
         five: 47.0,
@@ -61,7 +68,7 @@ pub const ACCOUNTS: &[Acct] = &[
     Acct {
         name: "grok-lab",
         label: "Grok Lab",
-        grok: true,
+        harness: "grok",
         color: "mauve",
         email: "alex@grok-lab.dev",
         five: 0.0,
@@ -70,12 +77,106 @@ pub const ACCOUNTS: &[Acct] = &[
     Acct {
         name: "grok-ops",
         label: "Grok Ops",
-        grok: true,
+        harness: "grok",
         color: "stone",
         email: "ops@acme-corp.dev",
         five: 0.0,
         week: 42.0,
     },
+];
+
+/// The other agent CLIs' accounts (the `--demo-harnesses` world). Their
+/// CLIs manage their own logins, so they have no login or usage files.
+pub const CLI_ACCOUNTS: &[Acct] = &[
+    Acct {
+        name: "backend",
+        label: "Backend",
+        harness: "codex",
+        color: "sage",
+        email: "alex@example.com",
+        five: 0.0,
+        week: 0.0,
+    },
+    Acct {
+        name: "frontend",
+        label: "Frontend",
+        harness: "cursor",
+        color: "clay",
+        email: "alex@example.com",
+        five: 0.0,
+        week: 0.0,
+    },
+    Acct {
+        name: "mobile",
+        label: "Mobile",
+        harness: "antigravity",
+        color: "slate",
+        email: "alex@example.com",
+        five: 0.0,
+        week: 0.0,
+    },
+    Acct {
+        name: "local",
+        label: "Local",
+        harness: "opencode",
+        color: "stone",
+        email: "alex@example.com",
+        five: 0.0,
+        week: 0.0,
+    },
+];
+
+impl Acct {
+    pub fn grok(&self) -> bool {
+        self.harness == "grok"
+    }
+
+    pub fn flavor(&self) -> Flavor {
+        Flavor::of_harness(crate::harness::Harness::of(self.harness))
+    }
+
+    /// GodTerm keeps this CLI's login and usage (Claude, Grok).
+    fn integrated(&self) -> bool {
+        crate::harness::Harness::of(self.harness).integrated()
+    }
+}
+
+/// Which world to build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum World {
+    /// Six Claude and Grok accounts, sixteen tabs (the default).
+    Full,
+    /// One account per agent CLI, a tab each.
+    Harnesses,
+}
+
+/// The accounts of a world, in slot order.
+pub fn accounts(world: World) -> Vec<&'static Acct> {
+    match world {
+        World::Full => ACCOUNTS.iter().collect(),
+        World::Harnesses => {
+            let by = |n: &str| ACCOUNTS.iter().find(|a| a.name == n).expect("account");
+            let mut v = vec![by("work"), by("grok-lab")];
+            v.extend(CLI_ACCOUNTS.iter());
+            v
+        }
+    }
+}
+
+/// Any demo account by name.
+pub fn find_account(name: &str) -> Option<&'static Acct> {
+    ACCOUNTS
+        .iter()
+        .chain(CLI_ACCOUNTS.iter())
+        .find(|a| a.name == name)
+}
+
+/// The made up Chrome profiles: (folder, name, email, has the extension
+/// turned on).
+pub const CHROME_PROFILES: &[(&str, &str, &str, bool)] = &[
+    ("Default", "Work", "alex@example.com", true),
+    ("Profile 1", "Personal", "alex.rivera@example.net", false),
+    ("Profile 2", "QA", "", true),
 ];
 
 /// The account that runs out during the demo.
@@ -89,6 +190,8 @@ struct Tab {
     group: Option<&'static str>,
     pinned: bool,
     accent: Option<&'static str>,
+    /// The Chrome profile folder bound to the tab's Browser button.
+    browser: Option<&'static str>,
 }
 
 const fn tab(acct: &'static str, project: &'static str) -> Tab {
@@ -99,14 +202,32 @@ const fn tab(acct: &'static str, project: &'static str) -> Tab {
         group: None,
         pinned: false,
         accent: None,
+        browser: None,
     }
 }
 
-fn tabs() -> Vec<Tab> {
+fn tabs(world: World) -> Vec<Tab> {
+    if world == World::Harnesses {
+        return vec![
+            Tab {
+                browser: Some("Default"),
+                ..tab("work", "payments-api")
+            },
+            tab("grok-lab", "search-indexer"),
+            tab("backend", "api-gateway"),
+            Tab {
+                browser: Some("Profile 2"),
+                ..tab("frontend", "design-system")
+            },
+            tab("mobile", "checkout-app"),
+            tab("local", "cli-tools"),
+        ];
+    }
     vec![
         Tab {
             pinned: true,
             group: Some("Billing"),
+            browser: Some("Default"),
             ..tab("work", "payments-api")
         },
         Tab {
@@ -214,6 +335,13 @@ pub fn scenarios() -> Vec<(&'static str, Value)> {
         let mut v = claude(title, history, tasks, extra);
         v["model"] = json!("grok-4.7-build-fast");
         v["plan"] = json!("SuperGrok Heavy");
+        v
+    };
+    // Codex, Cursor, Antigravity, OpenCode: each CLI names its own model.
+    let cli = |title: &str, history: Vec<Value>, tasks: Vec<Value>, extra: Value| {
+        let mut v = claude(title, history, tasks, extra);
+        v["model"] = json!("");
+        v["plan"] = json!("");
         v
     };
     vec![
@@ -458,6 +586,100 @@ pub fn scenarios() -> Vec<(&'static str, Value)> {
             ], "Purge by tag works and clears about 12k keys a second.")],
             json!({}),
         )),
+        ("api-gateway", cli(
+            "Rate limit the public API",
+            vec![task("add a token bucket per API key", vec![], "Added a token bucket per API key in src/limit.rs, 600 requests a minute by default.")],
+            vec![
+                task("return rate limit headers on every response", vec![
+                    think(2.5),
+                    say("I'll read the limiter, then add the headers in the middleware and cover them with a test."),
+                    read("src/limit.rs", 88),
+                    grep("RateLimit", 5),
+                    edit("src/middleware.rs", &[
+                        " 41     let verdict = limiter.check(&key).await;",
+                        "+42     res.headers_mut().insert(\"RateLimit-Limit\", verdict.limit.into());",
+                        "+43     res.headers_mut().insert(\"RateLimit-Remaining\", verdict.left.into());",
+                    ]),
+                    bash_ask("cargo test --test limits", "Run the rate limit tests", &[
+                        "running 7 tests",
+                        "test headers_on_every_response ... ok",
+                        "test retry_after_when_empty ... ok",
+                        "test result: ok. 7 passed; 0 failed",
+                    ], 3.5),
+                ], "Every response now carries RateLimit-Limit and RateLimit-Remaining, and a 429 adds Retry-After. All 7 tests pass."),
+                task("add a per route override for /search", vec![
+                    think(2.0),
+                    read("config/limits.toml", 24),
+                    edit("config/limits.toml", &["+9 [routes.\"/search\"]", "+10 per_minute = 120"]),
+                    bash("cargo test --test limits", "Run the rate limit tests", &["test result: ok. 8 passed; 0 failed"], 2.5),
+                ], "/search is limited to 120 a minute; the rest keep the default."),
+            ],
+            json!({"start_delay": 1.5, "idle": [8.0, 14.0]}),
+        )),
+        ("design-system", cli(
+            "Tooltip and popover primitives",
+            vec![task("audit the popover for focus traps", vec![], "The popover traps focus correctly; Escape closes it and returns focus.")],
+            vec![
+                task("add a Tooltip component with keyboard support", vec![
+                    think(2.0),
+                    say("I'll build it on the same positioning as the popover, with a delay and focus support."),
+                    read("src/components/Popover.tsx", 142),
+                    write("src/components/Tooltip.tsx", 84),
+                    bash_ask("npm install @floating-ui/react", "Add the positioning library", &["added 3 packages in 2s"], 2.5),
+                    bash("npm test -- Tooltip", "Run the tooltip tests", &["PASS src/components/Tooltip.test.tsx", "Tests: 6 passed, 6 total"], 3.0),
+                ], "Tooltip is in: it opens on hover and focus, closes on Escape, and has 6 passing tests."),
+                task("add tooltip stories to Storybook", vec![
+                    think(2.0),
+                    write("src/components/Tooltip.stories.tsx", 46),
+                    bash("npm run build-storybook", "Build Storybook", &["info => Output directory: storybook-static", "built in 8.1s"], 3.0),
+                ], "Storybook has Tooltip stories for every placement."),
+            ],
+            json!({"start_delay": 2.5, "idle": [8.0, 14.0]}),
+        )),
+        ("checkout-app", cli(
+            "Promo codes in the checkout",
+            vec![task("show the order summary before payment", vec![], "The order summary sits above the pay button with items, tax and total.")],
+            vec![
+                task("add a promo code field to the checkout", vec![
+                    think(2.5),
+                    read("lib/checkout/cart_page.dart", 210),
+                    edit("lib/checkout/cart_page.dart", &[
+                        " 96       OrderSummary(cart: cart),",
+                        "+97       PromoCodeField(onApply: cart.applyPromo),",
+                    ]),
+                    bash_ask("flutter test test/checkout_test.dart", "Run the checkout tests", &[
+                        "00:04 +11: All tests passed!",
+                    ], 4.0),
+                ], "The promo code field validates the code and updates the total. All 11 checkout tests pass."),
+                task("handle expired promo codes", vec![
+                    think(2.0),
+                    edit("lib/checkout/promo.dart", &["+31   if (code.expiresAt.isBefore(now)) return PromoResult.expired;"]),
+                    bash("flutter test test/promo_test.dart", "Run the promo tests", &["00:02 +5: All tests passed!"], 2.5),
+                ], "Expired codes show a clear message instead of failing silently."),
+            ],
+            json!({"start_delay": 3.5, "idle": [8.0, 14.0]}),
+        )),
+        ("cli-tools", cli(
+            "JSON output for the export command",
+            vec![task("list what the export command prints today", vec![], "It prints a table only; no machine readable output yet.")],
+            vec![
+                task("add a --json flag to the export command", vec![
+                    think(3.0),
+                    read("cmd/export.go", 118),
+                    edit("cmd/export.go", &[
+                        "+27 \tcmd.Flags().BoolVar(&asJSON, \"json\", false, \"print JSON\")",
+                        "+64 \tif asJSON { return json.NewEncoder(out).Encode(rows) }",
+                    ]),
+                    bash("go test ./...", "Run the tests", &["ok  \tcli-tools/cmd\t0.412s", "ok  \tcli-tools/export\t0.208s"], 3.5),
+                ], "export --json prints the rows as JSON; the table stays the default."),
+                task("add a golden test for the JSON output", vec![
+                    think(2.0),
+                    write("cmd/testdata/export.golden.json", 22),
+                    bash("go test ./cmd -run Golden", "Run the golden test", &["ok  \tcli-tools/cmd\t0.198s"], 2.0),
+                ], "The JSON output is pinned by a golden file."),
+            ],
+            json!({"start_delay": 1.0, "idle": [6.0, 10.0]}),
+        )),
         ("pricing-page", claude(
             "Build a pricing page",
             vec![],
@@ -570,7 +792,7 @@ fn w(p: &Path, text: impl AsRef<[u8]>) -> Result<()> {
 /// Usage fixture text for an account with these % left.
 pub fn usage_json(a: &Acct, five_left: f64, week_left: f64) -> String {
     let now = chrono::Utc::now();
-    if a.grok {
+    if a.grok() {
         let end = now + chrono::Duration::hours(3 * 24 + 15);
         let used = (100.0 - week_left).clamp(0.0, 100.0);
         return json!({"config": {
@@ -619,7 +841,9 @@ impl Paths {
     }
 }
 
-/// Link (or copy) the running godterm as `bin/claude` and `bin/grok`.
+/// Link (or copy) the running godterm as the demo's agent CLIs
+/// (`bin/claude`, `bin/grok`, `bin/codex`, `bin/cursor-agent`, `bin/agy`,
+/// `bin/opencode`).
 fn link_agents(p: &Paths) -> Result<()> {
     std::fs::create_dir_all(&p.bin)?;
     // In tests the running binary is the test harness: started as an
@@ -635,7 +859,7 @@ fn link_agents(p: &Paths) -> Result<()> {
             exe.display()
         );
     }
-    for name in ["claude", "grok"] {
+    for (name, _) in Flavor::BINS {
         let file = if cfg!(windows) {
             format!("{name}.exe")
         } else {
@@ -649,7 +873,7 @@ fn link_agents(p: &Paths) -> Result<()> {
     }
     w(
         &p.bin.join(crate::demo::AGENT_MARKER),
-        "godterm demo agent: claude and grok here are godterm --demo's stand-ins\n",
+        "godterm demo agent: the agent CLIs here are godterm --demo's stand-ins\n",
     )
 }
 
@@ -685,8 +909,47 @@ fn write_history(
     }
 }
 
-/// Make the demo world in `home` (which must be empty or a demo home).
+/// Made up Chrome profiles for the Browser button (`demo::browser_env`
+/// points GodTerm here instead of the real Chrome folder).
+fn chrome(home: &Path) -> Result<()> {
+    let root = home.join("chrome");
+    let mut cache = serde_json::Map::new();
+    for (dir, name, email, on) in CHROME_PROFILES {
+        cache.insert(
+            dir.to_string(),
+            json!({"name": name, "user_name": email, "gaia_name": ""}),
+        );
+        let d = root.join(dir);
+        if *on {
+            std::fs::create_dir_all(
+                d.join("Extensions")
+                    .join(crate::browser::EXTENSION_ID)
+                    .join("1.0.0"),
+            )?;
+            w(
+                &d.join("Secure Preferences"),
+                json!({"extensions": {"settings": {crate::browser::EXTENSION_ID: {"state": 1}}}})
+                    .to_string(),
+            )?;
+        } else {
+            std::fs::create_dir_all(&d)?;
+        }
+    }
+    w(
+        &root.join("Local State"),
+        json!({"profile": {"info_cache": cache}}).to_string(),
+    )
+}
+
+/// Make the default demo world in `home` (which must be empty or a demo
+/// home).
+#[cfg(test)]
 pub fn seed(home: &Path) -> Result<Paths> {
+    seed_world(home, World::Full)
+}
+
+/// Make `world` in `home` (which must be empty or a demo home).
+pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
     if crate::config::is_real_user_dir(home) {
         bail!("refusing to use {} as the demo home", home.display());
     }
@@ -715,7 +978,17 @@ pub fn seed(home: &Path) -> Result<Paths> {
         std::fs::create_dir_all(d)?;
     }
     // Scenarios.
-    let scen = scenarios();
+    let mut scen = scenarios();
+    if world == World::Harnesses {
+        // Claude keeps working next to the others (no pause after a task).
+        for (name, v) in scen.iter_mut() {
+            if *name == "payments-api" {
+                v["pause_after"] = json!(0);
+                v["repeat"] = json!(true);
+                v["idle"] = json!([6.0, 10.0]);
+            }
+        }
+    }
     for (name, s) in &scen {
         w(
             &home.join("scenarios").join(format!("{name}.json")),
@@ -727,20 +1000,34 @@ pub fn seed(home: &Path) -> Result<Paths> {
         }
     }
     let scenario = |n: &str| scen.iter().find(|(k, _)| *k == n).map(|(_, v)| v.clone());
+    chrome(home)?;
+    let accts = accounts(world);
     // Accounts: config, fake logins, profiles, usage.
     let far = chrono::Utc::now().timestamp_millis() + 30 * 24 * 3600 * 1000;
     let mut toml = String::new();
     toml.push_str(&format!(
         "# GodTerm demo mode (godterm --demo). Made up accounts; rebuilt on each start.\n\
-         claude_bin = {:?}\ngrok_bin = {:?}\nrefresh_secs = 2\nnotifications = false\n\
+         claude_bin = {:?}\ngrok_bin = {:?}\ncodex_bin = {:?}\ncursor_bin = {:?}\n\
+         antigravity_bin = {:?}\nopencode_bin = {:?}\nrefresh_secs = 2\nnotifications = false\n\
          remember_window = false\nauto_trust = true\nrestore = \"eager\"\nlayout = \"auto\"\n\
          new_tab_base = {:?}\nshow_email = false\npermission_mode = \"default\"\nsuggest_move_below = 10.0\n\n",
-        p.bin.join("claude").to_string_lossy(),
-        p.bin.join("grok").to_string_lossy(),
+        p.bin.join(Flavor::Claude.bin()).to_string_lossy(),
+        p.bin.join(Flavor::Grok.bin()).to_string_lossy(),
+        p.bin.join(Flavor::Codex.bin()).to_string_lossy(),
+        p.bin.join(Flavor::Cursor.bin()).to_string_lossy(),
+        p.bin.join(Flavor::Antigravity.bin()).to_string_lossy(),
+        p.bin.join(Flavor::OpenCode.bin()).to_string_lossy(),
         p.work.to_string_lossy(),
     ));
-    toml.push_str("[voice]\nenabled = false\n\n[assistant]\naccount = \"research\"\n\n");
-    for a in ACCOUNTS {
+    let brain = if world == World::Full {
+        "research"
+    } else {
+        "work"
+    };
+    toml.push_str(&format!(
+        "[voice]\nenabled = false\n\n[assistant]\naccount = {brain:?}\n\n"
+    ));
+    for a in accts.iter().copied() {
         let dir = p.app.join("accounts").join(a.name);
         std::fs::create_dir_all(&dir)?;
         toml.push_str(&format!(
@@ -749,9 +1036,15 @@ pub fn seed(home: &Path) -> Result<Paths> {
             a.label,
             a.color,
             p.work.to_string_lossy(),
-            if a.grok { "harness = \"grok\"\n" } else { "" }
+            if a.harness == "claude" {
+                String::new()
+            } else {
+                format!("harness = {:?}\n", a.harness)
+            }
         ));
-        if a.grok {
+        if !a.integrated() {
+            // Codex, Cursor, Antigravity, OpenCode keep their own logins.
+        } else if a.grok() {
             w(
                 &dir.join("auth.json"),
                 json!({"demo": true, "user": {"email": a.email}, "access_token": "demo-not-a-real-token"}).to_string(),
@@ -769,37 +1062,45 @@ pub fn seed(home: &Path) -> Result<Paths> {
                 .to_string(),
             )?;
         }
-        w(
-            &p.usage.join(format!("{}.json", a.name)),
-            usage_json(a, a.five, a.week),
-        )?;
+        if a.integrated() {
+            w(
+                &p.usage.join(format!("{}.json", a.name)),
+                usage_json(a, a.five, a.week),
+            )?;
+        }
     }
     w(&p.app.join("config.toml"), toml)?;
     w(&p.app.join("tour_done"), "")?;
     // Open tabs, with their history.
-    let mut slots: Vec<Value> = ACCOUNTS
+    let mut slots: Vec<Value> = accts
         .iter()
         .map(|a| json!({"account": a.name, "active": 0, "tabs": [], "groups": []}))
         .collect();
     let mut uid = 1u64;
     let now = chrono::Utc::now().timestamp() as u64;
-    for t in tabs() {
-        let ai = ACCOUNTS.iter().position(|a| a.name == t.acct).unwrap_or(0);
-        let a = &ACCOUNTS[ai];
-        let flavor = if a.grok { Flavor::Grok } else { Flavor::Claude };
+    for t in tabs(world) {
+        let ai = accts.iter().position(|a| a.name == t.acct).unwrap_or(0);
+        let a = accts[ai];
         let cwd = p.work.join(t.project);
-        let sid = crate::session_ops::new_uuid();
         let sc = scenario(t.project).unwrap_or_default();
-        let config = p.app.join("accounts").join(a.name);
-        write_history(
-            flavor,
-            &config,
-            &cwd,
-            &sid,
-            sc["title"].as_str().unwrap_or(t.project),
-            sc["history"].as_array().map(Vec::as_slice).unwrap_or(&[]),
-        );
-        let mut tv = json!({"cwd": cwd, "session_id": sid, "uid": uid, "opened": now - 3600 * (uid % 5 + 1)});
+        let mut tv = json!({"cwd": cwd, "uid": uid, "opened": now - 3600 * (uid % 5 + 1)});
+        // GodTerm reads Claude's and Grok's transcripts (the others' tabs
+        // start fresh and show their history on screen).
+        if a.integrated() {
+            let sid = crate::session_ops::new_uuid();
+            write_history(
+                a.flavor(),
+                &p.app.join("accounts").join(a.name),
+                &cwd,
+                &sid,
+                sc["title"].as_str().unwrap_or(t.project),
+                sc["history"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+            );
+            tv["session_id"] = json!(sid);
+        }
+        if let Some(b) = t.browser {
+            tv["browser"] = json!(b);
+        }
         if let Some(n) = t.name {
             tv["name"] = json!(n);
         }
@@ -831,8 +1132,10 @@ pub fn seed(home: &Path) -> Result<Paths> {
     )?;
     // Past sessions (not open).
     for (acct, project, title, prompt) in past_sessions() {
-        let a = ACCOUNTS.iter().find(|a| a.name == acct).expect("account");
-        let flavor = if a.grok { Flavor::Grok } else { Flavor::Claude };
+        let Some(a) = accts.iter().find(|a| a.name == acct) else {
+            continue;
+        };
+        let flavor = a.flavor();
         write_history(
             flavor,
             &p.app.join("accounts").join(acct),
@@ -968,7 +1271,7 @@ mod tests {
             .starts_with(&*home.to_string_lossy()));
         for a in ACCOUNTS {
             let dir = p.app.join("accounts").join(a.name);
-            if a.grok {
+            if a.grok() {
                 assert!(crate::harness::grok::logged_in(&dir));
             } else {
                 // (Read as the file it is: tests never look in the keychain.)
@@ -1014,7 +1317,7 @@ mod tests {
         let home = scratch("links");
         let p = Paths::of(&home);
         link_agents(&p).unwrap();
-        for n in ["claude", "grok"] {
+        for (n, _) in Flavor::BINS {
             let f = p.bin.join(if cfg!(windows) {
                 format!("{n}.exe")
             } else {
@@ -1029,6 +1332,82 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// `--demo-harnesses`: one account per agent CLI, each with a tab run
+    /// by the demo agent under that CLI's name, made up Chrome profiles
+    /// bound to tabs, and nothing outside the demo home.
+    #[test]
+    fn the_harness_world_runs_every_cli() {
+        let home = scratch("harnesses");
+        let p = seed_world(&home, World::Harnesses).unwrap();
+        let mut all = vec![];
+        files(&home, &mut all);
+        assert!(all.iter().all(|f| f.starts_with(&home)));
+        let cfg: crate::config::Config =
+            toml::from_str(&std::fs::read_to_string(p.app.join("config.toml")).unwrap()).unwrap();
+        let hs: Vec<crate::harness::Harness> = cfg.accounts.iter().map(|a| a.harness()).collect();
+        assert_eq!(
+            hs,
+            crate::harness::ALL.to_vec(),
+            "one account per CLI, in order"
+        );
+        for &h in crate::harness::ALL {
+            let bin = cfg.harness_bin(h);
+            assert!(bin.starts_with(&*home.to_string_lossy()), "{bin}");
+            // The link is named so the demo agent knows which CLI to be.
+            let name = crate::procs::program_name(&bin);
+            assert_eq!(
+                Flavor::of_program(&name),
+                Some(Flavor::of_harness(h)),
+                "{name}"
+            );
+            assert!(Path::new(&bin).is_file(), "{bin}");
+        }
+        assert_eq!(cfg.assistant.account, "work");
+        let st: Value =
+            serde_json::from_str(&std::fs::read_to_string(p.app.join("state.json")).unwrap())
+                .unwrap();
+        let slots = st["slots"].as_array().unwrap();
+        assert_eq!(slots.len(), 6);
+        for (i, s) in slots.iter().enumerate() {
+            let tabs = s["tabs"].as_array().unwrap();
+            assert_eq!(tabs.len(), 1, "slot {i}");
+            // Only Claude and Grok tabs have a session GodTerm can read.
+            assert_eq!(tabs[0]["session_id"].is_string(), i < 2, "slot {i}");
+            let name = tabs[0]["cwd"]
+                .as_str()
+                .unwrap()
+                .rsplit('/')
+                .next()
+                .unwrap()
+                .to_string();
+            assert!(
+                home.join("scenarios")
+                    .join(format!("{name}.json"))
+                    .is_file(),
+                "{name}"
+            );
+        }
+        assert_eq!(slots[0]["tabs"][0]["browser"], "Default");
+        // The made up Chrome profiles read as Chrome's: two with the
+        // extension on, one without.
+        let ext = crate::browser::chrome_extensions(&home.join("chrome"));
+        assert_eq!(ext.len(), 3);
+        assert_eq!(
+            ext.iter()
+                .filter(|e| e.installed && e.enabled == Some(true))
+                .count(),
+            2
+        );
+        assert_eq!(ext[0].profile.name, "Work");
+        // No login or usage files for the CLIs that keep their own.
+        for a in CLI_ACCOUNTS {
+            let d = p.app.join("accounts").join(a.name);
+            assert!(!d.join(".credentials.json").exists() && !d.join("auth.json").exists());
+            assert!(!p.usage.join(format!("{}.json", a.name)).exists());
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn usage_fixtures_say_what_is_left() {
         let work = &ACCOUNTS[0];
@@ -1037,7 +1416,7 @@ mod tests {
         assert_eq!(u.get("seven_day").unwrap().left().round(), 31.0);
         let zero = crate::usage::parse_usage(&usage_json(work, 0.0, 31.0)).unwrap();
         assert_eq!(zero.get("five_hour").unwrap().left().round(), 0.0);
-        let grok = ACCOUNTS.iter().find(|a| a.grok).unwrap();
+        let grok = ACCOUNTS.iter().find(|a| a.grok()).unwrap();
         let v: Value = serde_json::from_str(&usage_json(grok, 0.0, 74.0)).unwrap();
         let g = crate::harness::grok::parse_billing(&v);
         assert!(!g.windows.is_empty());

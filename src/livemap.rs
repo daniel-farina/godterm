@@ -1262,6 +1262,10 @@ impl App {
         if self.meter_live() {
             return Some(Duration::from_millis(40));
         }
+        // The voice onboarding's welcome and checks: the mic meter moves.
+        if self.onb_full_screen() {
+            return Some(Duration::from_millis(80));
+        }
         // The new version chip's slow shimmer (10 frames a second).
         if self.update_badge().is_some() && crate::ui_updates::motion(self) {
             return Some(Duration::from_millis(100));

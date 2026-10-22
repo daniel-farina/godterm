@@ -644,11 +644,16 @@ pub struct VoiceCfg {
     /// The speaker mute: nothing is said (answers still show as text).
     /// Separate from the mic mute.
     pub speaker_muted: bool,
-    /// "kokoro" (neural, in process), "say", "grok" (xAI cloud), "off".
-    /// When it fails or times out, `tts_fallback` is tried in order.
+    /// "kokoro" (neural, in process), "chatterbox" or "ming" (local
+    /// helpers, Apple Silicon, installed from Settings), "say", "grok"
+    /// (xAI cloud), "off". When it fails or times out, `tts_fallback` is
+    /// tried in order.
     pub tts_engine: String,
     /// Engines tried after `tts_engine`, in order ("kokoro", "say", "grok").
     pub tts_fallback: Vec<String>,
+    /// `[voice.local]`: Chatterbox Turbo and Ming-3.0, run by a local
+    /// helper process (voice/local_tts.rs).
+    pub local: LocalTtsCfg,
     /// Grok (xAI cloud) talk back, and the xAI login Grok speech
     /// recognition shares.
     pub grok: GrokTtsCfg,
@@ -744,6 +749,16 @@ pub struct VoiceCfg {
     pub brainstorm_suggest: bool,
     /// Brainstorm mode was explained once (its card shows on first use).
     pub brainstorm_explained: bool,
+    /// Update mode: GodTerm says what changed in each active project as
+    /// things move ("keep me posted").
+    pub updates: bool,
+    /// Update mode: at least this many seconds between two updates.
+    pub updates_gap_s: u32,
+    /// Update mode: a roundup every this many minutes, only when
+    /// something changed.
+    pub updates_every_min: u32,
+    /// Update mode was explained once (its card shows on first use).
+    pub updates_explained: bool,
 }
 
 impl Default for VoiceCfg {
@@ -831,9 +846,54 @@ impl Default for VoiceCfg {
             brainstorm_timeout_min: 10,
             brainstorm_suggest: true,
             brainstorm_explained: false,
+            updates: false,
+            updates_gap_s: 60,
+            updates_every_min: 4,
+            updates_explained: false,
             tts_fallback: vec!["kokoro".into(), "say".into()],
+            local: LocalTtsCfg::default(),
             grok: GrokTtsCfg::default(),
             grok_stt: GrokSttCfg::default(),
+        }
+    }
+}
+
+/// `[voice.local]`: the optional local voices beside Kokoro. Their Python
+/// helper and models are installed only from Settings (after a yes).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LocalTtsCfg {
+    /// Chatterbox Turbo: a short WAV of a voice to clone ("": its own
+    /// default voice). `~` is expanded.
+    pub chatterbox_ref: String,
+    /// Ming-3.0: US_Emma, US_Stella, US_James, UK_George, UK_Charlotte,
+    /// or "design" (uses `ming_design`).
+    pub ming_voice: String,
+    /// Ming-3.0 voice design: a description such as "a calm, warm male
+    /// narrator in his forties".
+    pub ming_design: String,
+    /// Where the helper's Python environment lives ("": voices/venv in
+    /// GodTerm's folder, ~/.godterm/voices/venv).
+    pub venv: String,
+    /// Python used to make the environment ("auto": uv, else python3.12,
+    /// 3.13, 3.11, 3.10).
+    pub python: String,
+    /// The first start (model load) may take this long (seconds).
+    pub load_timeout_s: u32,
+    /// No audio within this long: the sentence goes to the fallback.
+    pub timeout_ms: u32,
+}
+
+impl Default for LocalTtsCfg {
+    fn default() -> Self {
+        LocalTtsCfg {
+            chatterbox_ref: String::new(),
+            ming_voice: "US_Emma".into(),
+            ming_design: String::new(),
+            venv: String::new(),
+            python: "auto".into(),
+            load_timeout_s: 90,
+            timeout_ms: 8000,
         }
     }
 }

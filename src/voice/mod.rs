@@ -5,6 +5,7 @@
 pub mod apple;
 pub mod audio;
 pub mod barge;
+pub mod catalog;
 pub mod capture;
 pub mod denoise;
 pub mod devices;
@@ -14,6 +15,7 @@ pub mod grammar;
 pub mod grok_stt;
 pub mod grok_tts;
 pub mod kokoro;
+pub mod local_tts;
 pub mod player;
 pub mod speaker;
 pub mod speaker_cli;

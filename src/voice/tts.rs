@@ -1,5 +1,6 @@
-//! Talking back: Kokoro v1.0 in process (see `kokoro.rs`) or macOS `say`,
-//! sentence by sentence, interruptible. The first sentence starts playing
+//! Talking back: Kokoro v1.0 in process (see `kokoro.rs`), Chatterbox or
+//! Ming in a local helper (`local_tts.rs`), macOS `say` or Grok, sentence
+//! by sentence, interruptible. The first sentence starts playing
 //! as soon as it is synthesized; the next one is made while it plays.
 
 use std::collections::VecDeque;
@@ -136,6 +137,7 @@ pub fn only_tts_changed(a: &VoiceCfg, b: &VoiceCfg) -> bool {
     x.tts = b.tts;
     x.tts_engine = b.tts_engine.clone();
     x.tts_fallback = b.tts_fallback.clone();
+    x.local = b.local.clone();
     x.grok = b.grok.clone();
     x.tts_voice = b.tts_voice.clone();
     x.kokoro_voice = b.kokoro_voice.clone();
@@ -192,6 +194,13 @@ pub fn effective_engine(cfg: &VoiceCfg) -> (&'static str, Option<String>) {
         "off" => ("off", None),
         "say" => ("say", None),
         "grok" => ("grok", None),
+        e @ ("chatterbox" | "ming") => match super::local_tts::problem(e, cfg) {
+            None => (if e == "ming" { "ming" } else { "chatterbox" }, None),
+            Some(why) => match kokoro_problem(cfg) {
+                None => ("kokoro", Some(format!("{e} {why}"))),
+                Some(_) => ("say", Some(format!("{e} {why}"))),
+            },
+        },
         _ => match kokoro_problem(cfg) {
             None => ("kokoro", None),
             Some(why) => ("say", Some(why)),
@@ -311,6 +320,8 @@ impl Speaker {
                     speaking,
                     kokoro: None,
                     grok: None,
+                    chatterbox: None,
+                    ming: None,
                     out: None,
                     seq: 0,
                 }
@@ -394,6 +405,9 @@ struct Worker {
     speaking: Arc<AtomicBool>,
     kokoro: Option<Kokoro>,
     grok: Option<super::engines::GrokEngine>,
+    /// The local helper engines (started when in the chain).
+    chatterbox: Option<super::local_tts::LocalEngine>,
+    ming: Option<super::local_tts::LocalEngine>,
     out: Option<Player>,
     seq: u64,
 }
@@ -423,7 +437,35 @@ impl Worker {
                 Err(e) => kokoro_note = Some(format!("kokoro failed: {e}")),
             }
         }
+        self.load_locals(&chain);
         self.set_engine(self.describe(&chain, kokoro_note));
+    }
+
+    /// Start the local helpers in the chain (their models load in the
+    /// background) and stop the others.
+    fn load_locals(&mut self, chain: &[&str]) {
+        for id in ["chatterbox", "ming"] {
+            let want = chain.contains(&id);
+            let slot = if id == "ming" {
+                &mut self.ming
+            } else {
+                &mut self.chatterbox
+            };
+            if !want {
+                *slot = None;
+                continue;
+            }
+            let e = slot.get_or_insert_with(|| super::local_tts::LocalEngine::new(id, &self.cfg));
+            e.set_cfg(&self.cfg);
+            if !audio_muted() {
+                let _ = e.start();
+            }
+        }
+    }
+
+    fn locals_loaded(&self) -> bool {
+        self.chatterbox.as_ref().is_some_and(|e| e.loaded())
+            || self.ming.as_ref().is_some_and(|e| e.loaded())
     }
 
     /// "grok eve, then kokoro af_heart, say", with why one is out.
@@ -438,6 +480,19 @@ impl Worker {
                     Some(w) => format!("grok {} (unavailable: {w})", self.cfg.grok.voice),
                     None => format!("grok {}", self.cfg.grok.voice),
                 },
+                id @ ("chatterbox" | "ming") => {
+                    let e = if id == "ming" { &self.ming } else { &self.chatterbox };
+                    let voice = super::local_tts::voice_label(id, &self.cfg);
+                    match e {
+                        Some(e) => match e.down_reason() {
+                            Some(w) => format!("{id} {voice} (unavailable: {w})"),
+                            None if e.ready() => format!("{id} {voice}"),
+                            None if e.loaded() => format!("{id} {voice} (loading)"),
+                            None => format!("{id} {voice} (unloaded while idle)"),
+                        },
+                        None => format!("{id} {voice}"),
+                    }
+                }
                 "kokoro" => match (&self.kokoro, &kokoro_note) {
                     (Some(_), Some(n)) => n.clone(),
                     (Some(_), None) => format!("kokoro {}", self.cfg.kokoro_voice),
@@ -459,6 +514,20 @@ impl Worker {
                 out = format!("{out} (kokoro unavailable: {why})");
             }
         }
+        let want = self.cfg.tts_engine.as_str();
+        if matches!(want, "chatterbox" | "ming") && !chain.contains(&want) {
+            if let Some(why) = super::local_tts::problem(want, &self.cfg) {
+                out = format!("{out} ({want} unavailable: {why})");
+                super::local_tts::note_once(
+                    want,
+                    format!(
+                        "{} is unavailable ({why}); speaking with {} instead.",
+                        super::local_tts::info(want).map(|i| i.name).unwrap_or(want),
+                        chain.first().copied().unwrap_or("nothing")
+                    ),
+                );
+            }
+        }
         out
     }
 
@@ -472,10 +541,13 @@ impl Worker {
                     let after = self.cfg.tts_unload_after_s;
                     if after > 0
                         && idle_since.elapsed() >= Duration::from_secs(after as u64)
-                        && (self.kokoro.is_some() || self.out.is_some())
+                        && (self.kokoro.is_some() || self.out.is_some() || self.locals_loaded())
                     {
                         self.kokoro = None;
                         self.out = None;
+                        for e in [&mut self.chatterbox, &mut self.ming].into_iter().flatten() {
+                            e.unload();
+                        }
                         self.set_engine(format!(
                             "kokoro {} (unloaded while idle)",
                             self.cfg.kokoro_voice
@@ -502,6 +574,7 @@ impl Worker {
                         || c.tts_provider != self.cfg.tts_provider
                         || c.tts_threads != self.cfg.tts_threads
                         || c.tts != self.cfg.tts
+                        || c.local.venv != self.cfg.local.venv
                         || (self.kokoro.is_some()
                             && self
                                 .kokoro
@@ -509,6 +582,10 @@ impl Worker {
                                 .is_some_and(|k| k.voices.style(&c.kokoro_voice, 1).is_none()));
                     let device = c.output_device != self.cfg.output_device;
                     self.cfg = *c;
+                    // Voice, clip and speed apply from the next sentence.
+                    for e in [&mut self.chatterbox, &mut self.ming].into_iter().flatten() {
+                        e.set_cfg(&self.cfg);
+                    }
                     if device {
                         self.out = None;
                     }
@@ -618,9 +695,17 @@ impl Worker {
             let mut grok = self.grok.as_mut();
             let mut kslot = kk.as_mut();
             let mut sslot = Some(&mut say);
+            let mut cslot = self.chatterbox.as_mut();
+            let mut mslot = self.ming.as_mut();
             for e in &chain {
                 let next: Option<&mut dyn super::engines::TtsEngine> = match *e {
                     "grok" => grok.take().map(|g| g as &mut dyn super::engines::TtsEngine),
+                    "chatterbox" => cslot
+                        .take()
+                        .map(|c| c as &mut dyn super::engines::TtsEngine),
+                    "ming" => mslot
+                        .take()
+                        .map(|m| m as &mut dyn super::engines::TtsEngine),
                     "kokoro" => kslot
                         .take()
                         .map(|k| k as &mut dyn super::engines::TtsEngine),
@@ -635,6 +720,19 @@ impl Worker {
             drop(engines);
             for (name, why) in &failed {
                 crate::log::info(&format!("tts: {name} failed on {sentence:?}: {why}"));
+                // A local voice that fails says so once, in plain words
+                // (loading the model the first time is not a failure).
+                let id = name.split(' ').next().unwrap_or("");
+                if matches!(id, "chatterbox" | "ming") && !why.contains("still loading") {
+                    super::local_tts::note_once(
+                        id,
+                        format!(
+                            "{} could not speak ({why}); {} speaks instead.",
+                            super::local_tts::info(id).map(|i| i.name).unwrap_or(id),
+                            who.as_deref().unwrap_or("nothing")
+                        ),
+                    );
+                }
             }
             if !failed.is_empty() {
                 let note = match &who {
@@ -642,6 +740,28 @@ impl Worker {
                     None => format!("nothing spoke ({})", failed[0].1),
                 };
                 self.set_engine(note);
+            } else if who
+                .as_deref()
+                .is_some_and(|w| w.starts_with("chatterbox") || w.starts_with("ming"))
+            {
+                // Loaded now (or back after a fallback): the HUD says so.
+                let now = self
+                    .engine
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if now.contains("loading") || now.contains("unavailable") {
+                    let chain = super::engines::chain(&self.cfg);
+                    self.set_engine(self.describe(&chain, None));
+                }
+                let ms = [&self.chatterbox, &self.ming]
+                    .into_iter()
+                    .flatten()
+                    .find(|e| who.as_deref().is_some_and(|w| w.starts_with(e.id)))
+                    .and_then(|e| e.last_first_audio_ms);
+                if let Some(ms) = ms {
+                    crate::log::info(&format!("tts: local first audio {ms} ms after the request"));
+                }
             }
             if let Some(ms) = self.grok.as_ref().and_then(|g| g.last_first_audio_ms) {
                 if who.as_deref().is_some_and(|w| w.starts_with("grok")) {
@@ -675,6 +795,9 @@ impl Worker {
                 out.clear();
                 if let Some(g) = &self.grok {
                     super::engines::TtsEngine::cancel(g);
+                }
+                for e in [&self.chatterbox, &self.ming].into_iter().flatten() {
+                    super::engines::TtsEngine::cancel(e);
                 }
                 break;
             }

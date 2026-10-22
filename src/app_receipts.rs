@@ -396,6 +396,8 @@ impl App {
         if !c.notify {
             if c.to.lost() {
                 self.assistant_note(format!("Prompt #{} to {tab} {}{why}", c.id, word(&c.to)));
+                // Nothing was said: update mode tells it.
+                self.updates_note_dropped(c.uid);
             }
             return;
         }
