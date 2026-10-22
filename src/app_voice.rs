@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::app::{App, Modal, View};
 use crate::keys;
 use crate::pane::Activity;
-use crate::prompt::{parse_prompt, Choice};
+use crate::prompt::Choice;
 use crate::voice::audio::Source;
 use crate::voice::grammar;
 use crate::voice::tts::Kind;
@@ -1194,7 +1194,10 @@ impl App {
             .unwrap_or_else(|e| e.into_inner())
             .screen()
             .contents();
-        crate::prompt::describe_request(&screen)
+        let h = self
+            .pane_harness(slot)
+            .unwrap_or(crate::harness::Harness::Claude);
+        crate::prompt_cli::describe_request_for(h, &screen)
     }
 
     /// Answer one waiting tab. Only ever called on an explicit request.
@@ -1202,6 +1205,25 @@ impl App {
         let who = self.describe(slot, tab);
         if self.panes[slot].tabs[tab].activity != Activity::Permission {
             return format!("{who} is not waiting for approval");
+        }
+        if let Some(h) = self.pane_harness(slot).filter(|h| !h.integrated()) {
+            // The 1 / 2 / Esc fallback is Claude's. Another CLI is only
+            // answered with keys read off its own prompt.
+            let screen = self.panes[slot].tabs[tab]
+                .parser
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .screen()
+                .contents();
+            if crate::prompt_cli::parse_prompt_for(h, &screen)
+                .and_then(|p| p.index_for(choice))
+                .is_none()
+            {
+                return format!(
+                    "{who} runs {}: I cannot read its approval prompt, answer it with the keyboard",
+                    h.label()
+                );
+            }
         }
         let (key, picked) = self.answer_keys(slot, tab, choice);
         self.send_keys(slot, tab, &key);
@@ -1233,7 +1255,10 @@ impl App {
             .unwrap_or_else(|e| e.into_inner())
             .screen()
             .contents();
-        if let Some(p) = parse_prompt(&screen) {
+        let h = self
+            .pane_harness(slot)
+            .unwrap_or(crate::harness::Harness::Claude);
+        if let Some(p) = crate::prompt_cli::parse_prompt_for(h, &screen) {
             if let Some(i) = p.index_for(choice) {
                 return (
                     p.keys_for(i, t.app_cursor()),

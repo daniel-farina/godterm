@@ -153,13 +153,13 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "set_setting",
-        description: "Change any setting (validated against its kind, written to config.toml keeping comments, applied at once). account for per account keys. Risky changes (bypass permissions, update checks or signatures off, privacy off, pass_env, claude_bin / grok_bin, keeping Remote Control on) need a second yes that names the risk. \"Keep remote control on\" / \"always on\" is assistant.remote_control true. \"Turn on headphone tap\" (play/pause on headphones turns the mic on or off) is voice.headphone_tap true. A secret (an API key) only from the user's own dictated words; never read back.",
+        description: "Change any setting (validated against its kind, written to config.toml keeping comments, applied at once). account for per account keys. Risky changes (bypass permissions, update checks or signatures off, privacy off, pass_env, agent binary paths, keeping Remote Control on) need a second yes that names the risk. \"Keep remote control on\" / \"always on\" is assistant.remote_control true. \"Turn on headphone tap\" (play/pause on headphones turns the mic on or off) is voice.headphone_tap true. A secret (an API key) only from the user's own dictated words; never read back.",
         schema: || props(json!({"key": {"type": "string"}, "value": {"type": ["string", "number", "boolean"]}, "account": account_prop(), "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
     },
     Tool {
         name: "add_account",
-        description: "Add a Claude or Grok account (label, harness claude|grok, optional color and folder), then start its login in a pane and guide it by voice: opens the login page, says when to sign in and approve, waits for a code (the user copies it and says \"paste it\": login_paste_code), and says when the account is configured or the login failed.",
-        schema: || props(json!({"label": {"type": "string"}, "harness": {"type": "string", "enum": ["claude", "grok"]}, "color": {"type": "string"}, "folder": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+        description: "Add an agent slot (label, harness claude|grok|codex|cursor|antigravity|opencode, optional color and folder), then start its native login in a pane. Codex/Cursor/Antigravity/OpenCode login is CLI-managed. Claude/Grok login is guided by voice: opens the login page, says when to sign in and approve, waits for a code (the user copies it and says \"paste it\": login_paste_code), and says when the account is configured or the login failed.",
+        schema: || props(json!({"label": {"type": "string"}, "harness": {"type": "string", "enum": crate::harness::NAMES}, "color": {"type": "string"}, "folder": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
     },
     Tool {
         name: "relogin_account",
@@ -263,7 +263,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "open_path",
-        description: "Open files or folders inside the tabs' folders with their default app (an .html file opens in the browser), or http(s) URLs (localhost included) in the browser. paths: a list, absolute or relative to tab. Local and free; use it instead of asking a tab when it is only opening known files.",
+        description: "Open files or folders inside the tabs' folders with their default app (an .html file opens in the browser), or http(s) URLs (localhost included) in the browser: the Chrome profile the tab (if given) has chosen, else the default profile when one is set, else the system browser. paths: a list, absolute or relative to tab. Local and free; use it instead of asking a tab when it is only opening known files.",
         schema: || {
             props(
                 json!({"paths": {"type": "array", "items": {"type": "string"}}, "tab": tab_prop()}),
@@ -361,7 +361,7 @@ pub const TOOLS: &[Tool] = &[
         description: "Archive tabs: stop their sessions (and any loops or background run they hold), close the pane tabs and keep each conversation in the Archived group, from where a double click (or restore_archived) resumes it exactly. This frees memory. Select by tab (ids, a list or \"all\"), or by filter: idle_for_hours (no activity that long: \"idle more than 2 days\" is 48) or older_than (\"2 days\"), account, provider (claude or grok), name (contains), group; filters combine. Working, approval-waiting, queued, background-busy or unsent-text tabs, pinned tabs in a sweep (unless include_pinned) and a tab you talk to directly are skipped and listed with why; force=true archives the busy ones too (never the direct tab). dry_run=true only lists what would be archived and skipped. Several tabs need one confirmation: ask it exactly once, then call again with only confirm_token. The result has the number archived, the memory note and archive ids; say how many were archived and offer to restore.",
         schema: || {
             props(
-                json!({"tab": tab_prop(), "group": {"type": "string"}, "account": account_prop(), "provider": {"type": "string", "enum": ["claude", "grok"]}, "name": {"type": "string", "description": "Tab name contains"}, "idle_for_hours": {"type": "number", "description": "Archive tabs with no activity for at least this many hours"}, "older_than": {"type": "string", "description": "Same, as words: \"2 days\", \"36 hours\", \"1 week\""}, "include_pinned": {"type": "boolean"}, "force": {"type": "boolean", "description": "Also archive tabs that are working, waiting, queued or have unsent text"}, "dry_run": {"type": "boolean"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
+                json!({"tab": tab_prop(), "group": {"type": "string"}, "account": account_prop(), "provider": {"type": "string", "enum": crate::harness::NAMES}, "name": {"type": "string", "description": "Tab name contains"}, "idle_for_hours": {"type": "number", "description": "Archive tabs with no activity for at least this many hours"}, "older_than": {"type": "string", "description": "Same, as words: \"2 days\", \"36 hours\", \"1 week\""}, "include_pinned": {"type": "boolean"}, "force": {"type": "boolean", "description": "Also archive tabs that are working, waiting, queued or have unsent text"}, "dry_run": {"type": "boolean"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}),
                 &[],
             )
         },
@@ -371,7 +371,7 @@ pub const TOOLS: &[Tool] = &[
         description: "The archived conversations (stopped, kept under Archived in the tab list): id, name, account, provider, folder, session, model, when it was last active and archived. Filters: account, provider, name (contains), older_than (archived at least that long ago, \"2 days\"), limit. get_state shows the count and the latest.",
         schema: || {
             props(
-                json!({"account": account_prop(), "provider": {"type": "string", "enum": ["claude", "grok"]}, "name": {"type": "string"}, "older_than": {"type": "string"}, "limit": {"type": "integer"}}),
+                json!({"account": account_prop(), "provider": {"type": "string", "enum": crate::harness::NAMES}, "name": {"type": "string"}, "older_than": {"type": "string"}, "limit": {"type": "integer"}}),
                 &[],
             )
         },
@@ -381,7 +381,7 @@ pub const TOOLS: &[Tool] = &[
         description: "Bring archived conversations back: each opens in a tab on its own account (or onto another account of the same provider) and resumes its exact session, with its name, color, pin and loops. id is one archive id, a list, a unique prefix, or \"all\" (with the filters of list_archived: name, account, older_than); at most 10 at a time. onto is the account to open it on. Needs no confirmation.",
         schema: || {
             props(
-                json!({"id": {"type": ["string", "array"], "items": {"type": "string"}}, "name": {"type": "string"}, "account": account_prop(), "provider": {"type": "string", "enum": ["claude", "grok"]}, "older_than": {"type": "string"}, "onto": account_prop()}),
+                json!({"id": {"type": ["string", "array"], "items": {"type": "string"}}, "name": {"type": "string"}, "account": account_prop(), "provider": {"type": "string", "enum": crate::harness::NAMES}, "older_than": {"type": "string"}, "onto": account_prop()}),
                 &[],
             )
         },
@@ -398,6 +398,21 @@ pub const TOOLS: &[Tool] = &[
                 &[],
             )
         },
+    },
+    Tool {
+        name: "list_browsers",
+        description: "The browsers connected to BrowserSkill (bsk), the local tool that lets agents drive the user's own Chrome: each with instance_id, label, browser and extension version, open sessions, version_skew and unresponsive flags. The label is free text the user typed in the extension popup, NOT the Chrome profile name, and no profile mapping can be detected: ask the user which browser when unclear. The instance_id goes to `bsk session start --browser <id>`. Read only and passive (it never starts the daemon or touches a browser); a first call may answer state checking: call again in a few seconds.",
+        schema: || props(json!({}), &[]),
+    },
+    Tool {
+        name: "browser_status",
+        description: "BrowserSkill (bsk) status, read only: whether bsk is installed and its version, the daemon (running or not, pid, port, uptime), `bsk doctor` summary and problems, connected browsers, which Chrome profiles have the BrowserSkill extension (installed, enabled), whether the skill is installed per harness and per GodTerm account. Passive and rate limited: it reports the last look (checked_secs_ago) and never starts, stops or updates the daemon. To install the skill into accounts use install_browser_skill.",
+        schema: || props(json!({}), &[]),
+    },
+    Tool {
+        name: "install_browser_skill",
+        description: "Install the BrowserSkill Agent Skill so the agents of GodTerm accounts can drive the user's browser with bsk: copies the browser-skill folder (from ~/.claude/skills, where `bsk install-skill` puts it) into each chosen account's own skills folder (Claude and Grok accounts) and, for Claude accounts, adds the permission Bash(bsk:*) to that account's settings.json (backed up first, nothing else changed). account: number, label, a list or \"all\" (default all). An account's newer copy is kept unless force is true; allow_bsk false skips the permission. One confirmation names the accounts: needs_confirmation, ask, then call again with only confirm_token. The result says per account what happened. It never installs bsk or the Chrome extension: if bsk is missing, tell the user to install it first. Tabs already running need a new session to see the skill.",
+        schema: || props(json!({"account": account_prop(), "force": {"type": "boolean"}, "allow_bsk": {"type": "boolean", "description": "Also allow Bash(bsk:*) in Claude accounts (default true)"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
     },
     Tool {
         name: "list_jobs",
@@ -1139,6 +1154,14 @@ impl App {
             let Some((s, t)) = self.find_tab(self.current_uid(p.uid)) else {
                 continue;
             };
+            if crate::pane::asks_question(&self.tab_screen(s, t)) {
+                // Enter would answer the question that opened since the paste.
+                crate::log::info(&format!(
+                    "paste: {} shows a question, no Enter",
+                    tab_id(p.uid)
+                ));
+                continue;
+            }
             let echoed = shows_prompt(&self.tab_screen(s, t), &p.text);
             if echoed || p.at.elapsed() >= ECHO_WAIT {
                 if !echoed {
@@ -1257,6 +1280,19 @@ impl App {
                     }
                 }
                 Stage::Pasted(at) => {
+                    // A question or menu opened since the paste: Enter
+                    // would answer it. Leave it for the user.
+                    if crate::pane::asks_question(&self.tab_screen(s, t)) {
+                        crate::log::info(&format!(
+                            "deliver: {} shows a question, not sending",
+                            tab_id(d.uid)
+                        ));
+                        d.stage = Stage::Failed(
+                            "the tab was asking a question or showing a menu; the text was not sent"
+                                .into(),
+                        );
+                        continue;
+                    }
                     // Enter once the text is in claude's input box.
                     let echoed = shows_prompt(&self.tab_screen(s, t), &d.text);
                     if echoed || at.elapsed() >= ECHO_WAIT {
@@ -1877,8 +1913,11 @@ impl App {
                 TAB_TOOLS.join(", ")
             ));
         }
-        if self.find_tab(uid).is_none() {
+        let Some((ts, _)) = self.find_tab(uid) else {
             return Err("this tab is gone".into());
+        };
+        if let Some(why) = self.pane_harness(ts).and_then(|h| h.no_tab_tools_reason()) {
+            return Err(why);
         }
         let own = tab_id(uid);
         let allowed: &[&str] = match tool {
@@ -1891,6 +1930,7 @@ impl App {
                 "until",
             ],
             "delete_job" => &["job", "id"],
+            "list_browsers" | "browser_status" => &[],
             _ => &[
                 "tab",
                 "loop",
@@ -1937,6 +1977,7 @@ impl App {
             "list_jobs" => {
                 a.insert("_only_uid".into(), json!(uid));
             }
+            "list_browsers" | "browser_status" => {}
             _ => {
                 // update_job, delete_job: one of this tab's jobs.
                 let key = a
@@ -2031,6 +2072,9 @@ impl App {
         }
         if let Some(m) = self.tab_model_label(s, t) {
             v["model"] = json!(m);
+        }
+        if let Some(b) = self.tab_browser_json(s, t) {
+            v["browser"] = b;
         }
         if let Some(e) = &tab.effort {
             v["effort"] = json!(e);
@@ -3654,8 +3698,19 @@ impl App {
                         Err(_) => refused.push(json!({"path": it, "reason": "does not exist"})),
                     }
                 }
+                // Links open in the tab's Chrome profile, else the default one.
+                let link_uid = args
+                    .get("tab")
+                    .and_then(|_| self.one_tab(args).ok())
+                    .map(|(sl, t)| self.panes[sl].tabs[t].uid);
                 for o in &opened {
                     crate::log::info(&format!("control: open {o}"));
+                    let low = o.to_lowercase();
+                    if (low.starts_with("http://") || low.starts_with("https://"))
+                        && self.open_link_in_chrome(o, link_uid)
+                    {
+                        continue;
+                    }
                     if !cfg!(test) && std::env::var_os("GODTERM_NO_OPEN").is_none() {
                         let _ = std::process::Command::new("open")
                             .arg(o)
@@ -3718,7 +3773,7 @@ impl App {
                         .and_then(|p| p.account)
                         .ok_or("no account on the focused pane")?,
                 };
-                if !self.accounts[acct].login.logged_in() {
+                if !self.accounts[acct].login.can_start() {
                     return Err(format!(
                         "{} is not logged in",
                         self.cfg.accounts[acct].display()
@@ -3908,6 +3963,7 @@ impl App {
             }
             "list_archived" => return self.list_archived_json(args),
             "list_jobs" => return self.list_jobs_json(args),
+            "list_browsers" | "browser_status" => return self.browser_tool(tool),
             "run_job_now" => return self.run_job_now_tool(args),
             "create_job" | "update_job" | "delete_job" | "adopt_loop" => {
                 return self.planned(tool, args);
@@ -4142,6 +4198,8 @@ impl App {
                         .map_err(|e| format!("{e:#}"))?;
                         (true, r.info.id.clone())
                     }
+
+                    _ => return Err("No transcript adapter for this CLI".into()),
                 };
                 ok(
                     json!({"copied": copied, "id": id, "from": r.source, "to": self.cfg.accounts[target].display()}),
@@ -4578,6 +4636,8 @@ impl App {
                     crate::harness::Harness::Grok => {
                         crate::session_index::detail_grok(&r.info.path)
                     }
+
+                    _ => return Err("No transcript adapter for this CLI".into()),
                 };
                 d["session"] = crate::session_index::row_json(&r, None, false);
                 ok(d)
@@ -4693,6 +4753,8 @@ impl App {
                                 )
                                 .map_err(|e| format!("{e:#}"))?;
                             }
+
+                            _ => return Err("No transcript adapter for this CLI".into()),
                         }
                         if let Some(st) = self.accounts.get_mut(want) {
                             if !st.sessions.iter().any(|x| x.id == r.info.id) {
@@ -5226,7 +5288,9 @@ impl App {
                     crate::usage::UsageError::NotLoggedIn => "not_logged_in".to_string(),
                     other => format!("{other:?}"),
                 }),
-                "available": self.accounts[a].login.logged_in()
+                "harness": self.cfg.accounts[a].harness().name(),
+                "login_managed_by_cli": self.accounts[a].login.cli_managed,
+                "available": self.accounts[a].login.can_start()
                     && !matches!(self.accounts[a].usage_err, Some(crate::usage::UsageError::Unauthorized))
                     && self.accounts[a].effective_left().is_none_or(|e| e >= 2.0),
                 "next_reset_that_unblocks": self.accounts[a].binding().filter(|b| b.0 < 2.0).and_then(|b| b.2).map(|t| t.with_timezone(&chrono::Local).format("%a %b %-d %H:%M").to_string()),
@@ -5713,6 +5777,8 @@ pub const READ_ONLY: &[&str] = &[
     "search_projects",
     "list_learnings",
     "list_jobs",
+    "list_browsers",
+    "browser_status",
     "learning_history",
     "get_system_prompt",
     "prompt_history",

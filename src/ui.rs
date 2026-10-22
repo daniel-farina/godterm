@@ -330,7 +330,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 .map(|(a, left)| {
                     let c = app.account_cfg(a);
                     let l = left.map(|l| format!("{l:.0}% left")).unwrap_or_else(|| {
-                        if app.accounts[a].login.logged_in() {
+                        if app.accounts[a].login.cli_managed {
+                            "CLI-managed login".into()
+                        } else if app.accounts[a].login.logged_in() {
                             "usage ?".into()
                         } else {
                             "not logged in".into()
@@ -422,6 +424,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 crate::ui_chrome::draw_message(f, area, app, &title, &body, &b, theme::SLATE);
             }
         }
+        Modal::Browser(d) => crate::ui_browser::draw(f, area, app, &d),
         Modal::SchedCard(key) => crate::ui_schedcard::draw(f, area, app, &key),
         Modal::ConfirmStopLoops => crate::ui_chrome::draw_message(
             f,
@@ -1324,11 +1327,8 @@ fn draw_idle(f: &mut Frame, app: &App, i: usize, area: Rect) {
             ));
             lines.push(Line::raw(""));
             if let Some(id) = app.agent_missing(Some(a)) {
-                let (name, key) = if id == "grok" {
-                    ("Grok Build", "grok_bin")
-                } else {
-                    ("Claude Code", "claude_bin")
-                };
+                let h = crate::harness::Harness::of(id);
+                let (name, key) = (h.label(), h.bin_key());
                 lines.push(Line::styled(
                     format!(
                         "{name} isn't installed. Press I to install it, or set {key} in Settings."
@@ -1343,7 +1343,15 @@ fn draw_idle(f: &mut Frame, app: &App, i: usize, area: Rect) {
                 ));
                 lines.push(Line::raw(""));
             }
-            if st.login.logged_in() {
+            if st.login.cli_managed {
+                lines.push(Line::styled(
+                    format!(
+                        "Press Enter to start {} (login managed by the CLI).",
+                        cfg.harness().label()
+                    ),
+                    Style::default().fg(FG),
+                ));
+            } else if st.login.logged_in() {
                 lines.push(Line::styled(
                     "Logged in. Press Enter to start claude.",
                     Style::default().fg(FG),
@@ -1512,7 +1520,12 @@ fn account_card(app: &App, idx: usize) -> (Vec<Line<'static>>, Color) {
         info.push(Span::styled(format!("  ·  {r}"), Style::default().fg(DIM)));
     }
     lines.push(Line::from(info));
-    if st.login.logged_in() {
+    if st.login.cli_managed {
+        lines.push(Line::styled(
+            "Login and usage managed by the CLI",
+            Style::default().fg(DIM),
+        ));
+    } else if st.login.logged_in() {
         let exp_color = if st.login.expired() { theme::SAND } else { DIM };
         lines.push(Line::from(vec![
             Span::styled("● logged in", Style::default().fg(theme::SAGE)),
@@ -2345,6 +2358,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                         };
                         Span::styled(txt, base.patch(theme::remaining_style(left)))
                     }
+                    None if st.login.cli_managed => Span::styled("CLI-managed ", base.fg(DIM)),
                     None if !st.login.logged_in() => Span::styled(
                         if level == 2 {
                             "-- ".to_string()
@@ -2610,6 +2624,12 @@ pub fn footer_lines(
         )];
     };
     let st = &app.accounts[a];
+    if st.login.cli_managed {
+        return vec![Line::styled(
+            " login and usage managed by the CLI",
+            Style::default().fg(DIM),
+        )];
+    }
     if !st.login.logged_in() {
         let msg = if pane.kind == LaunchKind::Login && pane.is_running() {
             " logging in: finish the steps above, usage appears once you are in"
@@ -2742,6 +2762,12 @@ fn exact_time(t: DateTime<Utc>) -> String {
 /// Full table of every bucket for the dashboard.
 fn usage_breakdown(st: &AccountState, now: DateTime<Utc>) -> Vec<Line<'static>> {
     let mut lines = vec![];
+    if st.login.cli_managed {
+        return vec![Line::styled(
+            "Usage is available in the CLI",
+            Style::default().fg(DIM),
+        )];
+    }
     if !st.login.logged_in() {
         lines.push(Line::styled(
             "usage needs a login",
@@ -5587,6 +5613,10 @@ pub const HELP: &[(&str, &str)] = &[
         "the loops drawer: this tab's loops (scheduled prompts) in its pane",
     ),
     (
+        "Ctrl-a i",
+        "the browser dialog: this tab's Chrome profile for BrowserSkill (the Browser button on the bottom bar)",
+    ),
+    (
         "Ctrl-a #",
         "this tab's model: then 1 to 4 picks one (the model bar), # cycles",
     ),
@@ -6869,6 +6899,9 @@ mod tests {
             "{t}"
         );
         assert!(t.contains("Grok Build") && t.contains("grok not found"));
+        for name in ["Codex CLI", "Cursor CLI", "Antigravity CLI", "OpenCode"] {
+            assert!(t.contains(name), "{t}");
+        }
         assert!(t.contains("Add & log in") && t.contains("Cancel") && t.contains("bypass"));
         // Grok is disabled: its card does not pick it.
         click_on(&mut app, &mut term, &UiAction::AddAcct(AddUi::Agent(1)));
@@ -8259,7 +8292,7 @@ mod tests {
             vec!["jarvis".to_string(), "computer".to_string()]
         );
         // Keys and About render.
-        for sec in [7, 8] {
+        for sec in [8, 9] {
             click_on(
                 &mut app,
                 &mut term,

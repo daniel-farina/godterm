@@ -1,0 +1,33 @@
+
+  Cursor Agent
+  v2026.10.19-6bbf2c4
+  Tip: Use /config to customize Cursor settings and behavior.
+
+  Which skills mention PINEAPPLE? Answer with the skill name only.
+
+  I'll search skill files for PINEAPPLE and report only the matching skill name.
+
+    Grepped 4 greps
+    Grepped "PINEAPPLE" in /home/user/.cursor/skills-cursor
+    Grepped "PINEAPPLE" in /home/user/.claude/skills
+    Grepped "PINEAPPLE" in /tmp/plugin
+    Grepped "PINEAPPLE" in /home/user/.cursor/plugins
+
+  godterm-tab
+
+  Call the godterm list_jobs MCP tool once and report briefly.
+
+  I'll look up the list_jobs schema, then call it once and summarize the result.
+
+    Explored available MCP tools plugin-godterm-tab-godterm · list_jobs
+
+    plugin-godterm-tab-godterm list_jobs
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ plugin-godterm-tab-godterm: list_jobs
+
+ Run this MCP tool?
+  → Run (once) (y)
+    Allowlist MCP Tool (tab)
+    Reject & propose changes (p)
+    Skip (esc or n)

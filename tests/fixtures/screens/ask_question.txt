@@ -1,0 +1,14 @@
+────────────────────────────────────────────────────────────────────────────────
+ ← ☐ Test exposure  ✔ Submit →
+
+Deploying code alone doesn't make the app public. How should I open it for the test?
+
+❯ 1. Allow only this Mac's IP
+     Restrict the app to this machine's public address.
+  2. Open to everyone
+     Anyone with the URL can reach it.
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

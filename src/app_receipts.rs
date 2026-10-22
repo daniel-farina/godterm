@@ -262,9 +262,11 @@ impl App {
             };
         };
         let tab = &self.panes[s].tabs[t];
+        // Only Claude's transcript gives queue records; Grok and the other
+        // CLIs: delivered or not.
         let grok = self.panes[s]
             .account
-            .is_some_and(|a| self.cfg.accounts[a].harness() == crate::harness::Harness::Grok);
+            .is_some_and(|a| self.cfg.accounts[a].harness() != crate::harness::Harness::Claude);
         if grok {
             // Grok's session files give no queue records: delivered or not.
             return match &d.stage {

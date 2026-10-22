@@ -1268,8 +1268,14 @@ impl App {
         }
         // A spinner on screen (a visible tab working, waiting or running
         // background jobs): 8 frames a second; nothing when all is idle.
-        self.spinner_on_screen()
-            .then_some(Duration::from_millis(125))
+        let spin = self
+            .spinner_on_screen()
+            .then_some(Duration::from_millis(125));
+        // The Approvals blink: wake at the next phase change only.
+        match (spin, crate::attention::next_flip(self)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Some pane on screen has a working, waiting or background tab.

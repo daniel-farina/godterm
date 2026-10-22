@@ -66,6 +66,7 @@ pub const ACTIONS: &[(&str, Action)] = &[
         Action::HeadphoneTap,
     ),
     ("approvals queue", Action::Key('y')),
+    ("browser: Chrome profile for this tab", Action::Key('i')),
     ("loops: scheduled prompts in running tabs", Action::Key('@')),
     ("stop all loops", Action::StopAllLoops),
     ("memory saver on / off", Action::Key('Z')),

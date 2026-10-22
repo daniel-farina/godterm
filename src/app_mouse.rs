@@ -795,7 +795,9 @@ impl App {
         let mut v = vec![];
         for (i, a) in self.cfg.accounts.iter().enumerate() {
             let here = self.panes[slot].account == Some(i);
-            let state = if self.accounts[i].login.logged_in() {
+            let state = if self.accounts[i].login.cli_managed {
+                "  (CLI-managed login)"
+            } else if self.accounts[i].login.logged_in() {
                 ""
             } else {
                 "  (not logged in)"
@@ -908,7 +910,7 @@ impl App {
                 UiAction::OpenColor(crate::color_pick::Target::Account(a)),
             ));
             v.push(("Log in this account".into(), UiAction::Login(slot)));
-            if self.accounts[a].login.logged_in() {
+            if self.accounts[a].login.can_start() {
                 v.push(("Log out of this account".into(), UiAction::Logout(a)));
             }
         }
@@ -1164,6 +1166,8 @@ impl App {
                 }
             }
             UiAction::SetupInstall(id) => self.setup_click(&id),
+            UiAction::BrowserRefresh => self.browser_refresh(true),
+            UiAction::BrowserSkill => self.browser_skill_click(),
             UiAction::SetupWhisper(m) => {
                 self.setup.whisper_choice = Some(m);
                 self.deps_changed();
@@ -1599,6 +1603,15 @@ impl App {
             }
             UiAction::TabModel(i, k) => self.click_tab_model(i, k),
             UiAction::LoopsDrawer(i) => self.toggle_loops_drawer(i),
+            UiAction::TabBrowser(i) => self.open_browser_dialog(i),
+            UiAction::BrowserRow(i) => {
+                if let Modal::Browser(d) = &mut self.modal {
+                    d.sel = i;
+                }
+                self.browser_choose(i);
+            }
+            UiAction::BrowserClear => self.browser_clear(),
+            UiAction::BrowserDefault => self.browser_default_cycle(),
             UiAction::LoopsDrawerEdge(i) => {
                 self.focus = i;
                 self.loops_drawer_focus = Some(i);
@@ -1788,10 +1801,14 @@ impl App {
         let acfg = self.cfg.accounts[a].clone();
         let dir = acfg.config_dir();
         let h = acfg.harness();
-        let bin = match h {
-            crate::harness::Harness::Claude => self.cfg.claude_bin(),
-            crate::harness::Harness::Grok => h.bin(self.cfg.grok_bin.as_deref()),
-        };
+        if !h.integrated() {
+            self.flash(format!(
+                "Manage {} login in its CLI; native stores may be shared",
+                h.label()
+            ));
+            return;
+        }
+        let bin = self.cfg.harness_bin(h);
         let label = acfg.display().to_string();
         for s in self.panes.iter_mut() {
             if s.account == Some(a) {
@@ -1803,6 +1820,7 @@ impl App {
             let args: &[&str] = match h {
                 crate::harness::Harness::Claude => &["auth", "logout"],
                 crate::harness::Harness::Grok => &["logout"],
+                _ => return,
             };
             let _ = std::process::Command::new(bin)
                 .args(args)

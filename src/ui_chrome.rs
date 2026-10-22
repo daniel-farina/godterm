@@ -12,7 +12,7 @@ use ratatui::Frame;
 use crate::app::App;
 use crate::hits::{button, contains, text, List, UiAction};
 use crate::pane::{Activity, Pane};
-use crate::prompt::{parse_prompt, Choice};
+use crate::prompt::Choice;
 use crate::sessions::snippet;
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 
@@ -270,6 +270,16 @@ pub fn draw_menu_bar(f: &mut Frame, app: &App, area: Rect) {
                             .bg(theme::MUTED_RED)
                             .add_modifier(Modifier::BOLD),
                     );
+                }
+            }
+        }
+        // Something waits for approval: brick red, blinking slowly.
+        if it.action == UiAction::Key('y') {
+            if let Some(st) = crate::attention::approvals_style(app) {
+                for cx in start..x.saturating_sub(1) {
+                    if let Some(c) = buf.cell_mut((cx, y)) {
+                        c.set_style(st);
+                    }
                 }
             }
         }
@@ -871,7 +881,7 @@ pub fn pane_regions(f: &mut Frame, app: &App, i: usize, area: Rect, term: Rect, 
     );
     let slot = &app.panes[i];
     match slot.account {
-        Some(a) if app.accounts[a].login.logged_in() => {
+        Some(a) if app.accounts[a].login.can_start() => {
             hits.add(
                 foot,
                 UiAction::UsageOf(a),
@@ -902,7 +912,7 @@ pub fn pane_regions(f: &mut Frame, app: &App, i: usize, area: Rect, term: Rect, 
         .unwrap_or_else(|e| e.into_inner())
         .screen()
         .contents();
-    let prompt = parse_prompt(&screen);
+    let prompt = crate::prompt_cli::parse_prompt_for(t.harness, &screen);
     let y = foot.y + foot.height - 1;
     let buf = f.buffer_mut();
     for x in foot.x..foot.x + foot.width {
@@ -1269,7 +1279,10 @@ pub fn tab_marker(t: &Pane) -> (String, Color) {
         Activity::Working => (SPIN[anim_frame() % 10].to_string(), theme::ACTIVE),
         Activity::Permission => {
             let on = anim_frame() / 4 % 2 == 0;
-            ("!".into(), if on { theme::SAND } else { theme::CLAY })
+            (
+                "!".into(),
+                if on { theme::ATTN_GLYPH } else { theme::ATTN_GLYPH_DIM },
+            )
         }
         Activity::Ready => ("○".into(), FAINT),
         Activity::Starting => ("◌".into(), DIM),

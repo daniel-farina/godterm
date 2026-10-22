@@ -26,6 +26,19 @@ pub const RUST: Color = Color::Rgb(170, 106, 86);
 /// clear against the calm palette without glowing.
 pub const ACTIVE: Color = Color::Rgb(104, 176, 166);
 
+/// Needs your approval, lit phase: a muted brick red fill (not neon).
+pub const ATTN_RED: Color = Color::Rgb(184, 74, 71);
+/// Needs your approval, quiet phase of the blink: a darker brick, the text
+/// stays readable and the button never disappears.
+pub const ATTN_RED_DIM: Color = Color::Rgb(112, 54, 52);
+/// Text on the red fill.
+pub const ATTN_TEXT: Color = Color::Rgb(246, 236, 230);
+/// Text on the dim red fill.
+pub const ATTN_TEXT_DIM: Color = Color::Rgb(226, 204, 198);
+/// A red glyph on the dark bar (a tab's waiting marker), lit and quiet.
+pub const ATTN_GLYPH: Color = Color::Rgb(206, 98, 92);
+pub const ATTN_GLYPH_DIM: Color = Color::Rgb(146, 72, 68);
+
 pub const ROTATION: [&str; 6] = ["sage", "sand", "slate", "clay", "mauve", "stone"];
 
 /// Account colors to pick from: the rotation plus four more muted ones.

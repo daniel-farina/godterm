@@ -323,7 +323,7 @@ pub fn all(cfg: &crate::config::Config, whisper_choice: Option<&str>, probe: &Pr
             "curl -fsSL https://claude.ai/install.sh | bash",
             "irm https://claude.ai/install.ps1 | iex",
         )],
-        why: "every tab runs it",
+        why: "Claude accounts and the default assistant",
     });
     // Grok Build: its documented installer.
     let grok = crate::harness::Harness::Grok.bin(cfg.grok_bin.as_deref());
@@ -342,6 +342,32 @@ pub fn all(cfg: &crate::config::Config, whisper_choice: Option<&str>, probe: &Pr
         )],
         why: "Grok accounts, and the assistant on Grok",
     });
+    for &h in crate::harness::ALL.iter().filter(|h| !h.integrated()) {
+        let bin = cfg.harness_bin(h);
+        let url = match h {
+            crate::harness::Harness::Codex => "https://developers.openai.com/codex/cli/",
+            crate::harness::Harness::Cursor => "https://cursor.com/docs/cli/overview",
+            crate::harness::Harness::Antigravity => {
+                "https://antigravity.google/docs/getting-started?tab=cli"
+            }
+            _ => "https://opencode.ai/docs/",
+        };
+        v.push(Dep {
+            id: h.name(),
+            name: h.label(),
+            group: Group::Optional,
+            status: match have(&bin) {
+                Some(p) => Status::Ok(p),
+                None => Status::Missing(format!("{bin} not found")),
+            },
+            steps: vec![manual(&format!(
+                "Install {} from {url}, or set {} in config.toml",
+                h.label(),
+                h.bin_key()
+            ))],
+            why: "interactive coding agent slots (login managed by the CLI)",
+        });
+    }
     let or_manual = |s: Option<Step>, t: &str| s.unwrap_or_else(|| manual(t));
     v.push(Dep {
         id: "ffmpeg",

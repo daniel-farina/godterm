@@ -1,7 +1,7 @@
-//! Harnesses: the coding agent CLI an account runs. Claude Code is the
-//! first; Grok Build (`grok`) the second. Everything harness specific
-//! lives here (binary, launch flags, the isolated home, env hygiene, login
-//! detection, usage, sessions); the rest of GodTerm is harness agnostic.
+//! Coding agent CLIs: Claude, Grok, Codex, Cursor, Antigravity and OpenCode.
+//! Launch flags and home policy live here. Claude/Grok also have usage,
+//! credential and transcript adapters; native integrations let their CLIs
+//! manage those features (see docs/CLI_HARNESSES.md).
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -14,14 +14,37 @@ use crate::usage::{Usage, UsageError, Window};
 pub enum Harness {
     Claude,
     Grok,
+    Codex,
+    Cursor,
+    Antigravity,
+    OpenCode,
 }
 
-pub const NAMES: &[&str] = &["claude", "grok"];
+pub const NAMES: &[&str] = &[
+    "claude",
+    "grok",
+    "codex",
+    "cursor",
+    "antigravity",
+    "opencode",
+];
+pub const ALL: &[Harness] = &[
+    Harness::Claude,
+    Harness::Grok,
+    Harness::Codex,
+    Harness::Cursor,
+    Harness::Antigravity,
+    Harness::OpenCode,
+];
 
 impl Harness {
     pub fn of(name: &str) -> Harness {
         match name.trim().to_lowercase().as_str() {
             "grok" => Harness::Grok,
+            "codex" => Harness::Codex,
+            "cursor" | "cursor-agent" => Harness::Cursor,
+            "antigravity" | "agy" => Harness::Antigravity,
+            "opencode" => Harness::OpenCode,
             _ => Harness::Claude,
         }
     }
@@ -30,6 +53,10 @@ impl Harness {
         match self {
             Harness::Claude => "claude",
             Harness::Grok => "grok",
+            Harness::Codex => "codex",
+            Harness::Cursor => "cursor",
+            Harness::Antigravity => "antigravity",
+            Harness::OpenCode => "opencode",
         }
     }
 
@@ -38,6 +65,11 @@ impl Harness {
         match self {
             Harness::Claude => "CLAUDE_CONFIG_DIR",
             Harness::Grok => "GROK_HOME",
+            Harness::Codex => "CODEX_HOME",
+            // These CLIs use their native config and credential stores.
+            // An empty key means no home override; never invent an env var
+            // and claim it isolates logins.
+            Harness::Cursor | Harness::Antigravity | Harness::OpenCode => "",
         }
     }
 
@@ -73,6 +105,16 @@ impl Harness {
                     "grok".into()
                 }
             }
+            Harness::Codex => "codex".into(),
+            Harness::Cursor => {
+                if crate::deps::which("cursor-agent").is_some() {
+                    "cursor-agent".into()
+                } else {
+                    "agent".into()
+                }
+            }
+            Harness::Antigravity => "agy".into(),
+            Harness::OpenCode => "opencode".into(),
         }
     }
 
@@ -92,13 +134,68 @@ impl Harness {
                 };
                 vec!["--permission-mode".into(), m.into()]
             }
+            Harness::Codex => match mode {
+                "bypass" => vec!["--dangerously-bypass-approvals-and-sandbox".into()],
+                "accept-edits" | "acceptEdits" => vec![
+                    "--sandbox".into(),
+                    "workspace-write".into(),
+                    "--ask-for-approval".into(),
+                    "on-request".into(),
+                ],
+                "plan" => vec!["--sandbox".into(), "read-only".into()],
+                "manual" => vec!["--ask-for-approval".into(), "on-request".into()],
+                "dont-ask" | "dontAsk" => vec!["--ask-for-approval".into(), "never".into()],
+                _ => vec![],
+            },
+            Harness::Cursor => match mode {
+                "bypass" => vec!["--force".into()],
+                "plan" => vec!["--mode".into(), "plan".into()],
+                _ => vec![],
+            },
+            Harness::Antigravity => match mode {
+                "bypass" => vec!["--dangerously-skip-permissions".into()],
+                "accept-edits" | "acceptEdits" => vec!["--mode".into(), "accept-edits".into()],
+                "plan" => vec!["--mode".into(), "plan".into()],
+                _ => vec![],
+            },
+            // OpenCode 2.x has no flag for an agent (`opencode --agent plan`
+            // is "Unrecognized flag", verified against 2.0.32): plan mode
+            // goes in the per-launch config file (see `opencode_config`).
+            // Its permission policy belongs in its own config; --auto
+            // approves what is not explicitly denied.
+            Harness::OpenCode => match mode {
+                "bypass" => vec!["--auto".into()],
+                _ => vec![],
+            },
         }
     }
 
+    /// Whether `id` may follow a resume flag: letters, digits and `._:-`,
+    /// not starting with `-`, so a stored or imported id can never be read
+    /// by the CLI as an option (for example a sandbox switch).
+    pub fn safe_session_id(id: &str) -> bool {
+        !id.is_empty()
+            && id.len() <= 128
+            && !id.starts_with('-')
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+    }
+
+    /// The flags that resume session `id`; none (a fresh conversation)
+    /// when `id` is not a plain identifier.
     pub fn resume_args(self, id: &str) -> Vec<String> {
+        if !Self::safe_session_id(id) {
+            crate::log::error("resume: refusing a session id that is not a plain identifier");
+            return vec![];
+        }
         match self {
             Harness::Claude => vec!["--resume".into(), id.into()],
             Harness::Grok => vec!["--resume".into(), id.into()],
+            Harness::Codex => vec!["resume".into(), id.into()],
+            Harness::Cursor => vec!["--resume".into(), id.into()],
+            Harness::Antigravity => vec!["--conversation".into(), id.into()],
+            Harness::OpenCode => vec!["--session".into(), id.into()],
         }
     }
 
@@ -106,7 +203,11 @@ impl Harness {
     /// never share one (and its login).
     pub fn base_args(self, home: &Path) -> Vec<String> {
         match self {
-            Harness::Claude => vec![],
+            Harness::Claude
+            | Harness::Codex
+            | Harness::Cursor
+            | Harness::Antigravity
+            | Harness::OpenCode => vec![],
             Harness::Grok => vec![
                 "--leader-socket".into(),
                 home.join("leader.sock").to_string_lossy().into_owned(),
@@ -119,6 +220,10 @@ impl Harness {
         match self {
             Harness::Claude => None, // claude's own onboarding / /login
             Harness::Grok => Some(vec!["login".into()]),
+            Harness::Codex | Harness::Cursor => Some(vec!["login".into()]),
+            Harness::OpenCode => Some(vec!["auth".into(), "login".into()]),
+            // agy has no login subcommand: its onboarding and /login do it.
+            Harness::Antigravity => None,
         }
     }
 
@@ -126,7 +231,7 @@ impl Harness {
     pub fn badge(self) -> Option<&'static str> {
         match self {
             Harness::Claude => None,
-            Harness::Grok => Some("grok"),
+            _ => Some(self.name()),
         }
     }
 
@@ -135,7 +240,82 @@ impl Harness {
         match self {
             Harness::Claude => crate::session_ops::main_dir(),
             Harness::Grok => crate::config::dirs().main_grok,
+            Harness::Codex => crate::config::home_dir().join(".codex"),
+            Harness::Cursor => crate::config::home_dir().join(".cursor"),
+            Harness::Antigravity => crate::config::home_dir().join(".gemini/antigravity-cli"),
+            Harness::OpenCode => crate::config::home_dir().join(".config/opencode"),
         }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
+            Self::Grok => "Grok Build",
+            Self::Codex => "Codex CLI",
+            Self::Cursor => "Cursor CLI",
+            Self::Antigravity => "Antigravity CLI",
+            Self::OpenCode => "OpenCode",
+        }
+    }
+
+    pub fn bin_key(self) -> &'static str {
+        match self {
+            Self::Claude => "claude_bin",
+            Self::Grok => "grok_bin",
+            Self::Codex => "codex_bin",
+            Self::Cursor => "cursor_bin",
+            Self::Antigravity => "antigravity_bin",
+            Self::OpenCode => "opencode_bin",
+        }
+    }
+
+    /// Only these harnesses have GodTerm transcript, usage and admin adapters.
+    pub fn integrated(self) -> bool {
+        matches!(self, Self::Claude | Self::Grok)
+    }
+
+    /// Whether tabs of this CLI get GodTerm's tab-scoped job and browser
+    /// tools: it needs a per-launch MCP server that edits no global config.
+    /// Claude (`--mcp-config`), Grok (its slot's config.toml), Codex (`-c
+    /// mcp_servers...`), Cursor (`--plugin-dir`) and OpenCode
+    /// (`OPENCODE_CONFIG` with `--standalone`) have one, verified against
+    /// the real CLIs; Antigravity only reads its global mcp_config.json.
+    pub fn has_tab_tools(self) -> bool {
+        !matches!(self, Harness::Antigravity)
+    }
+
+    /// Why a tab of this CLI has no job or browser tools (None: it has them).
+    pub fn no_tab_tools_reason(self) -> Option<String> {
+        (!self.has_tab_tools()).then(|| {
+            format!(
+                "{} tabs have no GodTerm job or browser tools: the CLI only takes MCP servers from its global mcp_config.json, which GodTerm does not edit",
+                self.label()
+            )
+        })
+    }
+
+    /// Whether the CLI has a model picker GodTerm drives from the model bar
+    /// (`/model` with a name). The others get a bar with only the loops and
+    /// Browser buttons; the model is chosen inside the CLI.
+    pub fn has_model_picker(self) -> bool {
+        self.integrated()
+    }
+
+    /// Why conversations of this CLI cannot be moved or copied between
+    /// slots (None: they can). GodTerm reads no transcripts or session ids
+    /// for the CLIs without an adapter, so a move would open an empty tab
+    /// and close the real one.
+    pub fn no_move_reason(self) -> Option<String> {
+        (!self.integrated()).then(|| {
+            format!(
+                "{} conversations cannot be moved or copied yet (GodTerm does not read that CLI's sessions)",
+                self.label()
+            )
+        })
+    }
+
+    pub fn installed(self, cfg: &crate::config::Config) -> bool {
+        crate::deps::which(&cfg.harness_bin(self)).is_some()
     }
 }
 

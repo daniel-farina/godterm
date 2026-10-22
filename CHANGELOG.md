@@ -5,12 +5,112 @@ All notable changes to GodTerm are recorded here. The format follows
 follow [Semantic Versioning](https://semver.org/). The release workflow
 copies the section for a tag into the GitHub release notes.
 
-## [Unreleased]
+## [0.2.12] - 2026-10-21
+
+Platforms: macOS (Apple silicon and Intel, universal), Linux (x86_64 and aarch64) and Windows (x64; built on GitHub Actions). The Windows installer and zip are not code signed, so SmartScreen will warn: click More info, then Run anyway.
+
+This release adds Codex, Cursor, Antigravity and OpenCode as tab harnesses (thanks to Waylon Brown, #1) and a per tab Browser button.
+
+### Coding agents: Codex, Cursor, Antigravity and OpenCode
+- What is supported: launching and resuming them in a tab, typing into them,
+  permission modes, approvals answered with each CLI's own keys, and
+  voice-driven tab creation. What is not: usage meters, a model picker,
+  transcript browsing and transcript based message receipts (a send is
+  reported only as delivered or not), moving, copying and failover to
+  another slot (refused), and archiving until a session id is recorded.
+  Antigravity has no tab job or browser tools.
+- Interactive Codex CLI, Cursor CLI, Antigravity CLI (`agy`) and OpenCode
+  slots, with agent selection in Add account and setup, binary overrides,
+  native launch/resume flags and supported permission modes, by Waylon
+  Brown (#1). Codex uses an isolated `CODEX_HOME`; the other three use
+  native shared login stores. Login, usage, transcript browsing and
+  MCP/plugin administration stay CLI-managed for these harnesses; see
+  docs/CLI_HARNESSES.md.
+- Making them fit the rest of GodTerm: voice approvals only press keys read
+  off the prompt (never Claude's 1 / 2 / Esc guess); a slot of these CLIs
+  does not inherit the global `bypass` default (it would switch off their
+  sandbox or approvals), only its own `permission_mode = "bypass"` does;
+  session ids that could be read as an option are refused in resume flags.
+- Checked against the real CLIs (codex 0.153.4, cursor-agent 2026.10.19,
+  agy 1.4.4, opencode 2.0.32) with captured screens as test fixtures:
+  - OpenCode 2.x rejects `--agent` ("Unrecognized flag"), so plan mode is
+    now a per-launch config file (`OPENCODE_CONFIG`, `default_agent`) read
+    by a private `--standalone` server; `bypass` maps to `--auto`; a login
+    tab runs `opencode auth login`.
+  - Approvals, folder trust and "working / waiting / ready" are read from
+    each CLI's own screen: Codex answers `y` / `p` / Esc (and 1-4 on its MCP
+    prompt), Cursor `y` / Tab / `n` (never "Run Everything"), Antigravity
+    1-4 and arrows for folder trust, with the command or tool named in the
+    approvals queue.
+  - Tab job and browser tools now reach Codex (`-c mcp_servers.godterm...`
+    with the tab's identity from the environment, its tools pre-approved
+    because GodTerm asks you itself, and the hint as
+    `developer_instructions`), Cursor (a per-tab `--plugin-dir`) and
+    OpenCode (a per-tab config file), without touching your own config.
+    Antigravity only reads its global `mcp_config.json`, so its tabs keep
+    refusing, and say why.
+  - Their panes get the bar again, without a model picker: the loops and
+    Browser buttons stay and the model is chosen in the CLI. The Browser
+    button says what Antigravity cannot do.
+  - A tab you quit (not one GodTerm closes) keeps the session id the CLI
+    prints on exit, so Enter, a restart or "reopen closed tab" resume it.
+
+### Fixed
+- A prompt is never pasted into a question dialog. A screen that waits for
+  Enter to select or Esc to cancel (a question from the agent, a menu) counts
+  as needing an answer, and a delivery that finds one open fails with a
+  reason instead of answering it.
+- A scheduled job follows its tab when the tab is moved: the job takes the
+  tab's new id and account.
 
 ### Release tooling
 - Windows artifacts can be built on a GitHub hosted runner
   (`build-windows.yml`, `WINDOWS_FROM_CI=1 scripts/release/all.sh`) when the
   Windows build machine is not available.
+
+### Menu bar
+- The Approvals button in the menu bar turns brick red and blinks slowly (once a second) while anything waits for your yes, so it is hard to miss; a waiting tab's `!` marker is red too. `ui.blink_attention` (Settings > General, default on) turns the blinking off and leaves it solid red. It pauses while the terminal window is not in front.
+
+### Browser (BrowserSkill)
+- A Browser section in Settings and the tools `list_browsers` and
+  `browser_status` show BrowserSkill (`bsk`): version, daemon state,
+  `bsk doctor`, connected browsers, which Chrome profiles have the extension
+  and which accounts have the skill. The look is passive and rate limited,
+  runs on a background thread with a timeout on every call and never starts
+  the daemon.
+- `install_browser_skill` (and a Settings button) copies the BrowserSkill
+  skill into chosen Claude and Grok accounts after one confirmation, keeps a
+  newer copy unless forced, and allows `Bash(bsk:*)` in a Claude account's
+  settings.json (backed up first, other keys kept). Tab agents get the two
+  read only tools and a hint on how to pick a browser. GodTerm does not
+  install `bsk` or the extension.
+- A Browser button at the right end of each pane's bottom bar (next to the
+  loops button), also Ctrl-a i and "browser: Chrome profile for this tab" in
+  the palette. It opens a small dialog for that tab: the Chrome profiles
+  with name, email and the extension's state (not installed, installed but
+  off, on). Choosing a profile binds it to the tab and makes it the default
+  profile for links. If the extension is missing the dialog offers (after a
+  yes) to open its Chrome Web Store page in that profile, and says that
+  Chrome makes you press Add to Chrome yourself; if it is installed but off
+  it offers to open chrome://extensions there. GodTerm then looks every few
+  seconds, only while the dialog or a pending enable is open, and marks the
+  tab ready when the extension is on. The button shows the state: browser,
+  browser: Work (add), browser: Work (turn on), and a check mark when ready.
+  GodTerm only reads Chrome's profile files and never writes to them.
+- The binding is per tab: saved with the tab, kept when the tab is moved or
+  copied to another account, and scoped. A tab's own `list_browsers` and
+  `browser_status` answer with its bound profile and the connected browser
+  that is it (matched by the extension's Browser name, or the only one), and
+  nothing about other tabs; the tab's hint says to use only that browser.
+  The assistant sees it as `browser` in `get_state`.
+- `[browser] default_profile` is the Chrome profile folder where links open
+  when asked ("open this link in Chrome", `open_path` with http(s) links).
+  The profile last chosen on a tab's Browser button sets it; Settings >
+  Browser shows it with a Change button that steps through the profiles. A
+  tab with its own profile uses it for links opened for that tab. Command:
+  `open -na "Google Chrome" --args --profile-directory=<dir> <url>` on macOS,
+  `google-chrome --profile-directory=<dir> <url>` on Linux, `start chrome`
+  on Windows.
 
 ## [0.2.11] - 2026-10-15
 

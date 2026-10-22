@@ -901,3 +901,60 @@ fn many_rows_fill_the_panel_height_and_a_small_screen_still_fits() {
     assert!(find(&app, &UiAction::AssistantFocus).is_some());
     let _ = std::fs::remove_dir_all(home);
 }
+
+#[test]
+fn a_prompt_is_not_sent_into_a_question_dialog() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = setup("jobs-question");
+    let t = running(&mut app, 0, "asker", "sess-q");
+    add(&mut app, 0, t, "check", "run the check", 5);
+    app.job_clock = Some(T0 + 5 * 60);
+    app.jobs_tick();
+    // The paste is in; then a question opens: Enter would answer it.
+    let screen = std::fs::read_to_string(format!(
+        "{}/tests/fixtures/screens/ask_question.txt",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    app.panes[0].tabs[t]
+        .parser
+        .lock()
+        .unwrap()
+        .process(format!("\x1b[2J\x1b[H{}", screen.replace('\n', "\r\n")).as_bytes());
+    let d = app
+        .deliveries
+        .iter_mut()
+        .find(|d| d.text == "run the check")
+        .unwrap();
+    d.stage = Stage::Pasted(std::time::Instant::now());
+    app.deliveries_tick();
+    let d = app
+        .deliveries
+        .iter()
+        .find(|d| d.text == "run the check")
+        .unwrap();
+    assert!(
+        matches!(&d.stage, Stage::Failed(w) if w.contains("question")),
+        "{:?}",
+        d.stage
+    );
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_moved_tabs_jobs_follow_it_to_its_new_id_and_account() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = setup("jobs-move");
+    let t = running(&mut app, 0, "mover", "sess-m");
+    let uid = app.panes[0].tabs[t].uid;
+    let id = add(&mut app, 0, t, "check", "run the check", 5);
+    let t2 = running(&mut app, 0, "other", "sess-o");
+    let other = add(&mut app, 0, t2, "o", "x", 5);
+    app.jobs_follow_move(uid, 9001, "account3");
+    let j = app.jobs.find(&id).unwrap();
+    assert_eq!(j.target.uid, Some(9001));
+    assert_eq!(j.target.account, "account3");
+    assert_ne!(app.jobs.find(&other).unwrap().target.uid, Some(9001));
+    assert_eq!(crate::jobs::Store::load().find(&id).unwrap().target.uid, Some(9001));
+    let _ = std::fs::remove_dir_all(home);
+}

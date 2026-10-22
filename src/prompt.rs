@@ -29,6 +29,13 @@ pub struct Prompt {
     pub options: Vec<PromptOption>,
     /// Index of the highlighted option.
     pub selected: usize,
+    /// Keys that pick an option directly, by index (a shortcut the CLI
+    /// shows next to it, such as Codex "(y)"); empty or `None`: the
+    /// number, or arrows and Enter.
+    pub hotkeys: Vec<Option<Vec<u8>>>,
+    /// Which option means approve, always and deny, when the CLI's own
+    /// wording is not what `index_for` reads.
+    pub pick: Option<[Option<usize>; 3]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +188,8 @@ pub fn parse_prompt(screen: &str) -> Option<Prompt> {
         kind,
         options,
         selected,
+        hotkeys: vec![],
+        pick: None,
     })
 }
 
@@ -200,6 +209,13 @@ fn looks_like_choice(label: &str) -> bool {
 impl Prompt {
     /// Which option a spoken or typed answer means.
     pub fn index_for(&self, c: Choice) -> Option<usize> {
+        if let Some(p) = self.pick {
+            return match c {
+                Choice::Approve => p[0],
+                Choice::Always => p[1],
+                Choice::Deny => p[2],
+            };
+        }
         let low: Vec<String> = self
             .options
             .iter()
@@ -236,6 +252,9 @@ impl Prompt {
     /// Key bytes that select option `idx`: its number when shown, otherwise
     /// arrow presses from the highlighted option followed by Enter.
     pub fn keys_for(&self, idx: usize, app_cursor: bool) -> Vec<u8> {
+        if let Some(Some(k)) = self.hotkeys.get(idx) {
+            return k.clone();
+        }
         if let Some(n) = self.options.get(idx).and_then(|o| o.number) {
             if n < 10 {
                 return n.to_string().into_bytes();
@@ -459,6 +478,23 @@ mod tests {
         assert!(parse_prompt(&screen("security_notes")).is_none());
         // The theme picker is not a yes/no prompt.
         assert!(parse_prompt(&screen("theme")).is_none_or(|p| p.kind == PromptKind::Other));
+    }
+
+    /// A question dialog (AskUserQuestion) is waiting for a pick: it is not
+    /// "ready for a prompt", so nothing may be pasted into it.
+    #[test]
+    fn a_question_dialog_is_not_ready() {
+        let q = screen("ask_question");
+        assert!(crate::pane::asks_question(&q));
+        assert_eq!(
+            crate::pane::detect_activity(&q),
+            crate::pane::Activity::Permission
+        );
+        assert!(!crate::pane::asks_question(&screen("input_ready")));
+        assert_eq!(
+            crate::pane::detect_activity(&screen("input_ready")),
+            crate::pane::Activity::Ready
+        );
     }
 
     #[test]

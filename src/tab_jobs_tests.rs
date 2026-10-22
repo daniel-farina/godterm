@@ -337,7 +337,10 @@ fn the_tab_mcp_server_lists_five_tools_and_refuses_the_others_before_the_socket(
         true,
     )
     .unwrap();
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        tools["result"]["tools"].as_array().unwrap().len(),
+        TAB_TOOLS.len()
+    );
     let r = crate::mcp::handle_as(
         &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "get_state", "arguments": {}}}),
         &mut call,
@@ -645,12 +648,12 @@ fn the_launch_adds_the_tools_only_while_the_switch_is_on() {
     let dir = home.join("slot");
     std::fs::create_dir_all(&dir).unwrap();
     let mut args = vec!["--resume".to_string(), "abc".to_string()];
-    let env = app.tab_jobs_launch(Harness::Claude, 5, &dir, &mut args);
+    let env = app.tab_jobs_launch(Harness::Claude, 5, &dir, &mut args, false);
     assert!(env.is_empty());
     assert!(args.contains(&"--mcp-config".to_string()) && args.len() > 2);
     app.cfg.tabs.jobs_tools = false;
     let mut args = vec!["--resume".to_string(), "abc".to_string()];
-    let env = app.tab_jobs_launch(Harness::Claude, 5, &dir, &mut args);
+    let env = app.tab_jobs_launch(Harness::Claude, 5, &dir, &mut args, false);
     assert!(env.is_empty());
     assert_eq!(
         args,
@@ -678,7 +681,7 @@ fn a_grok_launch_gets_the_hint_its_identity_and_the_server_in_its_slot_config() 
         "--rules".into(),
         "be brief".into(),
     ];
-    let env = app.tab_jobs_launch(Harness::Grok, 21, &slot, &mut args);
+    let env = app.tab_jobs_launch(Harness::Grok, 21, &slot, &mut args, false);
     assert_eq!(&args[..2], ["--resume", "sess-1"]);
     let i = args.iter().position(|a| a == "--rules").unwrap();
     assert_eq!(args[i + 1], format!("be brief\n\n{HINT}"));
@@ -712,7 +715,7 @@ fn a_grok_launch_gets_the_hint_its_identity_and_the_server_in_its_slot_config() 
     app.cfg.tabs.jobs_tools = false;
     let mut args: Vec<String> = vec![];
     assert!(app
-        .tab_jobs_launch(Harness::Grok, 21, &slot, &mut args)
+        .tab_jobs_launch(Harness::Grok, 21, &slot, &mut args, false)
         .is_empty());
     assert!(args.is_empty());
     let doc: toml::Value =
@@ -731,7 +734,7 @@ fn a_grok_server_of_the_users_own_called_godterm_is_not_overwritten() {
     let own = "[mcp_servers.godterm]\ncommand = \"/opt/my-godterm\"\n";
     std::fs::write(slot.join("config.toml"), own).unwrap();
     let mut args = vec![];
-    app.tab_jobs_launch(Harness::Grok, 2, &slot, &mut args);
+    app.tab_jobs_launch(Harness::Grok, 2, &slot, &mut args, false);
     assert_eq!(
         std::fs::read_to_string(slot.join("config.toml")).unwrap(),
         own

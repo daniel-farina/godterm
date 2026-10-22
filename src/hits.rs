@@ -136,6 +136,18 @@ pub enum UiAction {
     SetupWhisper(String),
     /// Settings > Setup: do not open it at start.
     SetupDontShow,
+    /// Settings > Browser: look again now.
+    BrowserRefresh,
+    /// Settings > Browser: copy the skill into the accounts (two clicks).
+    BrowserSkill,
+    /// Settings > Browser: the next Chrome profile as the default for links.
+    BrowserDefault,
+    /// The Browser button on pane `.0`'s bottom bar: its dialog.
+    TabBrowser(usize),
+    /// A profile row of the Browser dialog.
+    BrowserRow(usize),
+    /// The Browser dialog's "No browser".
+    BrowserClear,
     /// The assistant panel's input (or anywhere in it): give it the keys.
     AssistantFocus,
     /// The chat's scrollbar column.

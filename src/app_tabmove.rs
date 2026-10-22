@@ -134,7 +134,11 @@ impl App {
                 let same_harness = from.is_none_or(|f| {
                     self.cfg.accounts[f].harness() == self.cfg.accounts[a].harness()
                 });
-                let disabled = if !same_harness {
+                let disabled = if let Some(why) =
+                    from.and_then(|f| self.cfg.accounts[f].harness().no_move_reason())
+                {
+                    Some(why)
+                } else if !same_harness {
                     Some(format!(
                         "a {} account (conversations move within one harness)",
                         self.cfg.accounts[a].harness().name()
@@ -172,6 +176,15 @@ impl App {
     /// Double click on a tab, Ctrl-a m, the tab menu, voice.
     pub fn open_move_picker(&mut self, slot: usize, tab: usize, copy: bool) {
         if self.panes.get(slot).and_then(|s| s.tabs.get(tab)).is_none() {
+            return;
+        }
+        if let Some(why) = self
+            .panes
+            .get(slot)
+            .and_then(|s| s.account)
+            .and_then(|a| self.cfg.accounts[a].harness().no_move_reason())
+        {
+            self.flash(why);
             return;
         }
         if self.move_targets(slot).iter().all(|t| t.disabled.is_some()) {
@@ -362,11 +375,15 @@ impl App {
         copy: bool,
         same_folder: bool,
     ) {
-        // Learn the session id if the tab started recently.
-        self.detect_sessions();
         let Some(src_acct) = self.panes[slot].account else {
             return;
         };
+        if let Some(why) = self.cfg.accounts[src_acct].harness().no_move_reason() {
+            self.flash(why);
+            return;
+        }
+        // Learn the session id if the tab started recently.
+        self.detect_sessions();
         let src = &self.panes[slot].tabs[tab];
         let (cwd, name, uid) = (src.cwd.clone(), src.custom_name.clone(), src.uid);
         let cwd = if same_folder {
@@ -375,6 +392,8 @@ impl App {
             self.cfg.accounts[target].work_dir()
         };
         let label = src.name();
+        // The browser binding goes with the conversation.
+        let browser = src.browser.clone();
         let kind = match self.copy_transcript(slot, tab, target) {
             Ok(Some(id)) => LaunchKind::Resume(id),
             Err(e) => {
@@ -408,6 +427,7 @@ impl App {
             LaunchKind::Resume(id) => Some(id.clone()),
             _ => None,
         };
+        self.panes[p].tabs[ti].browser = browser;
         self.launch_tab(p, ti, kind);
         self.panes[p].active = ti;
         self.focus = p;
@@ -424,6 +444,8 @@ impl App {
         if !copy {
             self.moved_ids.insert(uid, target_uid);
             crate::log::info(&format!("move: t{uid} is now t{target_uid}"));
+            let account = self.cfg.accounts[target].name.clone();
+            self.jobs_follow_move(uid, target_uid, &account);
         }
         self.pending_moves.push(PendingMove {
             source_uid: uid,

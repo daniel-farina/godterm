@@ -372,6 +372,8 @@ pub fn screen_model(h: Harness, screen: &str) -> Option<String> {
                     .map(str::to_string)
             })
         }
+        // No model line is read from the other CLIs' screens.
+        _ => None,
     }
 }
 
@@ -395,6 +397,7 @@ pub fn screen_effort(h: Harness, screen: &str) -> Option<String> {
                 .to_lowercase();
             known(&inner)
         }
+        _ => None,
     }
 }
 
@@ -447,6 +450,8 @@ pub fn input_empty(h: Harness, screen: &vt100::Screen) -> Option<bool> {
             }
             None
         }
+        // Their input boxes are not read.
+        _ => None,
     }
 }
 
@@ -473,9 +478,12 @@ impl App {
         let Some(slot) = self.panes.get(i) else {
             return false;
         };
+        // A CLI without a model picker still gets the bar, for the loops
+        // and Browser buttons (the model is chosen inside the CLI).
         slot.account.is_some()
             && slot.cur().kind != LaunchKind::Login
-            && !self.bar_models(i).is_empty()
+            && (!self.bar_models(i).is_empty()
+                || self.pane_harness(i).is_some_and(|h| !h.has_model_picker()))
     }
 
     /// Which bar model tab (s, t) runs (a switch just sent counts until
@@ -623,7 +631,13 @@ impl App {
         let p = self.focus;
         let models = self.bar_models(p);
         if models.is_empty() {
-            self.flash("No models to pick for this pane (it needs an account)");
+            self.flash(match self.pane_harness(p) {
+                Some(h) => format!(
+                    "{} tabs have no model bar; pick the model inside the CLI",
+                    h.label()
+                ),
+                None => "No models to pick for this pane (it needs an account)".to_string(),
+            });
             return;
         }
         self.model_entry = Some(p);
@@ -714,7 +728,7 @@ impl App {
                 }
                 None => None,
             },
-            Harness::Grok => None,
+            _ => None,
         };
         let tab_model = self.panes[s].tabs[t].model.clone();
         let found = match h {
@@ -732,6 +746,8 @@ impl App {
                     .and_then(|d| grok_session_model(&d))
                     .or(tab_model)
             }),
+            // No model is read from the other CLIs.
+            _ => tab_model,
         };
         let models = self.bar_models(s);
         let tab = &mut self.panes[s].tabs[t];
@@ -802,7 +818,13 @@ impl App {
             .ok_or("model is required")?;
         let models = self.bar_models(s);
         if models.is_empty() {
-            return Err("that tab has no account, so no models".into());
+            return Err(match self.pane_harness(s) {
+                Some(h) => format!(
+                    "{} tabs have no GodTerm model bar; change the model inside the CLI",
+                    h.label()
+                ),
+                None => "that tab has no account, so no models".into(),
+            });
         }
         let list = models
             .iter()

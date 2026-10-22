@@ -118,6 +118,7 @@ fn list(h: Harness, home: &Path) -> Vec<Item> {
                 }
             }
         }
+        _ => {}
     }
     out
 }

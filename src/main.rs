@@ -2,12 +2,16 @@
 
 mod activity;
 mod add_account;
+mod attention;
+#[cfg(test)]
+mod attention_tests;
 mod admin;
 mod app;
 mod app_admin;
 mod app_archive;
 mod app_assistant;
 mod app_bglock;
+mod app_browser;
 mod app_brainstorm;
 mod app_busy;
 mod app_continue;
@@ -62,6 +66,11 @@ mod assistant_images;
 mod assistant_memory;
 #[cfg(test)]
 mod bglock_tests;
+mod browser;
+mod browser_skill;
+#[cfg(test)]
+mod browser_tests;
+mod ui_browser;
 #[cfg(test)]
 mod busy_tests;
 #[cfg(test)]
@@ -87,6 +96,8 @@ mod grid_tests;
 mod grok_logins;
 mod guard;
 mod harness;
+#[cfg(test)]
+mod harness_tests;
 #[cfg(test)]
 mod headtap_tests;
 mod hits;
@@ -158,6 +169,7 @@ mod procs;
 mod project_index;
 mod project_memory;
 mod prompt;
+mod prompt_cli;
 #[cfg(test)]
 mod provider_tests;
 mod providers;
@@ -197,6 +209,9 @@ mod syscheck;
 mod sysprompt;
 mod tab_groups;
 mod tab_history;
+mod tab_browser;
+#[cfg(test)]
+mod tab_browser_tests;
 mod tab_jobs;
 #[cfg(test)]
 mod tab_jobs_tests;

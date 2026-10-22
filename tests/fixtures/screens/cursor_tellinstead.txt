@@ -1,0 +1,24 @@
+
+  Cursor Agent
+  v2026.10.19-6bbf2c4
+  Tip: Use /config to customize Cursor settings and behavior.
+
+  run the shell command: ls -la (use your shell tool)
+
+  I'll run ls -la in the workspace now.
+
+  $ ls -la 416ms
+
+  ls -la finished with exit code 0. It printed no output, so the listing was empty from this session’s working
+  directory.
+
+  now run: curl -sI https://example.com (shell tool)
+
+  $ curl -sI https://example.com Waiting for approval...
+
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ $  curl -sI https://example.com in .                                                                               │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+  → Tell the agent what to do instead (Enter to send, empty to skip, Esc to cancel)                     ctrl+c to stop
+ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀

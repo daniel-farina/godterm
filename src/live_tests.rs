@@ -1156,6 +1156,8 @@ fn tab_states_stand_out() {
         text.contains("needs you") && text.contains("working") && text.contains("2 agents"),
         "{text}"
     );
+    // (The approval blink wakes at its own flips; pin the clock far from one.)
+    app.attn_clock_ms.set(Some(0));
     assert_eq!(
         app.anim_interval(),
         Some(std::time::Duration::from_millis(125))

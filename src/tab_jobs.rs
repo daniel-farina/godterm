@@ -1,9 +1,11 @@
-//! Jobs for the agents inside tabs. Each Claude and Grok tab GodTerm starts
-//! gets a `godterm mcp` server of its own (GODTERM_CLIENT=tab, the tab's
-//! uid and a token derived from the control token and that uid) with only
-//! create_job, list_jobs, update_job, delete_job and adopt_loop, all
-//! limited to that tab's jobs and loops, and a hint to prefer them over
-//! CronCreate and /loop (which die with the session).
+//! Jobs for the agents inside tabs. Each tab GodTerm starts (Claude, Grok,
+//! Codex, Cursor, OpenCode; not Antigravity, which has no per-launch MCP
+//! config) gets a `godterm mcp` server of its own (GODTERM_CLIENT=tab, the
+//! tab's uid and a token derived from the control token and that uid) with
+//! only create_job, list_jobs, update_job, delete_job, adopt_loop and the
+//! two browser tools, all limited to that tab, and (where the CLI has a
+//! channel for it) a hint to prefer the job tools over CronCreate and /loop
+//! (which die with the session).
 //!
 //! The scoping lives in one place, `App::tab_scoped` (control.rs). A job a
 //! tab's agent asks for is never confirmed by the agent: GodTerm shows the
@@ -29,10 +31,12 @@ pub const TAB_TOOLS: &[&str] = &[
     "update_job",
     "delete_job",
     "adopt_loop",
+    "list_browsers",
+    "browser_status",
 ];
 
 /// Appended to the agent's system prompt.
-pub const HINT: &str = "Prefer the godterm create_job tool over CronCreate or /loop for anything recurring or scheduled; it survives restarts and shows in GodTerm's Loops & schedules.";
+pub const HINT: &str = "Prefer the godterm create_job tool over CronCreate or /loop for anything recurring or scheduled; it survives restarts and shows in GodTerm's Loops & schedules. To use the browser, run `bsk browsers --json`, ask the user which browser if unclear, and use `bsk session start --browser <id>`; GodTerm's list_browsers shows what is connected. If list_browsers shows a bound_profile, this tab has its own Chrome profile: use only that browser with bsk and no other; if none is set, ask the user to click Browser on this tab's bottom bar.";
 
 /// How long a job request waits for the user's answer.
 const ASK_FOR: Duration = Duration::from_secs(600);
@@ -138,9 +142,12 @@ pub struct Extras {
 
 /// Add the tab's job tools and the hint to a launch: Claude gets
 /// `--mcp-config` (next to the user's own, never `--strict-mcp-config`),
-/// `--allowedTools` for these five and `--append-system-prompt`; Grok gets
+/// `--allowedTools` for these tools and `--append-system-prompt`; Grok gets
 /// `--rules` and the tab's identity in its environment (its `godterm`
-/// server is in the account's config.toml, see `harness::grok`).
+/// server is in the account's config.toml, see `harness::grok`); Codex gets
+/// `-c` overrides, Cursor `--plugin-dir`, OpenCode a config file and
+/// `--standalone` (see the functions below).
+#[cfg(test)]
 pub fn extend_launch(
     h: Harness,
     exe: &Path,
@@ -148,7 +155,162 @@ pub fn extend_launch(
     uid: u64,
     args: &mut Vec<String>,
 ) -> Result<Extras> {
+    extend_launch_for(h, exe, shared, uid, args, Path::new("/nonexistent"), false)
+}
+
+/// A TOML basic string (also what `codex -c key=value` parses).
+fn toml_str(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+}
+
+/// Codex: the tab's server as `-c` overrides (nothing is written to its
+/// config.toml), its identity forwarded from the launch environment with
+/// `env_vars` so the token never shows on a command line, the server's
+/// tools approved up front (GodTerm asks the user itself, as for Claude's
+/// --allowedTools), and the hint as `developer_instructions` appended to
+/// the slot's own, if its config.toml has one.
+fn codex_launch(exe: &Path, shared: &str, uid: u64, home: &Path, args: &mut Vec<String>) -> Extras {
+    let srv = mcp_server(exe, shared, uid);
+    let mut env = vec![format!(
+        "GODTERM_HOME={}",
+        toml_str(&crate::config::app_home().to_string_lossy())
+    )];
+    env.push(format!("GODTERM_CLIENT={}", toml_str("tab")));
+    if let Some(g) = srv["env"].get(crate::test_guard::ENV).and_then(Value::as_str) {
+        env.push(format!("{}={}", crate::test_guard::ENV, toml_str(g)));
+    }
+    let mut c = |kv: String| {
+        args.push("-c".into());
+        args.push(kv);
+    };
+    c(format!(
+        "mcp_servers.godterm.command={}",
+        toml_str(&exe.to_string_lossy())
+    ));
+    c("mcp_servers.godterm.args=[\"mcp\"]".into());
+    c(format!("mcp_servers.godterm.env={{{}}}", env.join(",")));
+    c("mcp_servers.godterm.env_vars=[\"GODTERM_TAB\",\"GODTERM_TOKEN\"]".into());
+    c("mcp_servers.godterm.default_tools_approval_mode=\"approve\"".into());
+    let own = std::fs::read_to_string(home.join("config.toml"))
+        .ok()
+        .and_then(|t| t.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|d| {
+            d.get("developer_instructions")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        });
+    let hint = match own {
+        Some(o) if !o.trim().is_empty() => format!("{o}\n\n{HINT}"),
+        _ => HINT.to_string(),
+    };
+    c(format!("developer_instructions={}", toml_str(&hint)));
+    Extras {
+        env: vec![
+            ("GODTERM_TAB".into(), uid.to_string()),
+            ("GODTERM_TOKEN".into(), tab_token(shared, uid)),
+        ],
+    }
+}
+
+/// Cursor: a plugin directory per tab (`--plugin-dir`), holding only the
+/// tab's MCP server. The server shows in the CLI as "plugin-<dir>-godterm"
+/// and needs no entry in ~/.cursor/mcp.json.
+pub fn write_cursor_plugin(exe: &Path, shared: &str, uid: u64) -> Result<PathBuf> {
+    let d = crate::config::app_home()
+        .join("tab-mcp")
+        .join(format!("cursor-t{uid}"));
+    std::fs::create_dir_all(d.join(".cursor-plugin"))?;
+    let manifest = json!({
+        "name": format!("godterm-tab-{uid}"),
+        "description": "GodTerm job and browser tools for this tab",
+        "version": "1.0.0",
+    });
+    crate::config::write_private(
+        &d.join(".cursor-plugin").join("plugin.json"),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
+    let cfg = json!({"mcpServers": {"godterm": mcp_server(exe, shared, uid)}});
+    crate::config::write_private(&d.join("mcp.json"), serde_json::to_string_pretty(&cfg)?)?;
+    Ok(d)
+}
+
+/// OpenCode: the config file `OPENCODE_CONFIG` names for one launch. It
+/// layers over the user's own config (nothing there is edited): the tab's
+/// MCP server when `server` is given, and the plan agent as the default
+/// when `plan` (2.x has no flag for an agent). Only a `--standalone`
+/// process reads it; the shared background service does not.
+pub fn write_opencode_config(
+    uid: u64,
+    server: Option<(&Path, &str)>,
+    plan: bool,
+) -> Result<PathBuf> {
+    let d = crate::config::app_home().join("tab-mcp");
+    std::fs::create_dir_all(&d)?;
+    let p = d.join(format!("opencode-t{uid}.json"));
+    let mut cfg = json!({});
+    if plan {
+        cfg["default_agent"] = json!("plan");
+    }
+    if let Some((exe, shared)) = server {
+        let s = mcp_server(exe, shared, uid);
+        cfg["mcp"] = json!({"servers": {"godterm": {
+            "type": "local",
+            "command": [s["command"].clone(), "mcp"],
+            "environment": s["env"].clone(),
+        }}});
+    }
+    crate::config::write_private(&p, serde_json::to_string_pretty(&cfg)?)?;
+    Ok(p)
+}
+
+/// What OpenCode gets besides its flags: the config file (when its tools
+/// or plan mode need one) and `--standalone`. Not when the user's own
+/// environment already names an OPENCODE_CONFIG: that is theirs.
+pub fn opencode_launch(
+    uid: u64,
+    server: Option<(&Path, &str)>,
+    plan: bool,
+    args: &mut Vec<String>,
+) -> Vec<(String, String)> {
+    if server.is_none() && !plan {
+        return vec![];
+    }
+    if std::env::var_os("OPENCODE_CONFIG").is_some() {
+        crate::log::info("OPENCODE_CONFIG is set: not adding GodTerm's tab config to opencode");
+        return vec![];
+    }
+    match write_opencode_config(uid, server, plan) {
+        Ok(p) => {
+            args.insert(0, "--standalone".into());
+            vec![("OPENCODE_CONFIG".into(), p.to_string_lossy().into_owned())]
+        }
+        Err(e) => {
+            crate::log::error(&format!("opencode config for t{uid}: {e:#}"));
+            vec![]
+        }
+    }
+}
+
+pub fn extend_launch_for(
+    h: Harness,
+    exe: &Path,
+    shared: &str,
+    uid: u64,
+    args: &mut Vec<String>,
+    home: &Path,
+    plan: bool,
+) -> Result<Extras> {
     match h {
+        Harness::Codex => Ok(codex_launch(exe, shared, uid, home, args)),
+        Harness::Cursor => {
+            let d = write_cursor_plugin(exe, shared, uid)?;
+            args.push("--plugin-dir".into());
+            args.push(d.to_string_lossy().into_owned());
+            Ok(Extras::default())
+        }
+        Harness::OpenCode => Ok(Extras {
+            env: opencode_launch(uid, Some((exe, shared)), plan, args),
+        }),
         Harness::Claude => {
             let p = write_mcp_config(exe, shared, uid)?;
             args.push("--mcp-config".into());
@@ -168,6 +330,9 @@ pub fn extend_launch(
                 ],
             })
         }
+        // No tab server and no hint: GodTerm cannot scope tools for these
+        // CLIs (see Harness::has_tab_tools).
+        _ => Ok(Extras::default()),
     }
 }
 
@@ -246,6 +411,8 @@ pub fn tab_description(tool: &str) -> &'static str {
         "update_job" => "Change one of this tab's GodTerm jobs (job: id or name): action pause or resume; or name, prompt, cron / every / at, catch_up, until (an end date, or \"none\"). Pause, resume, name and catch_up apply at once; the rest waits for the user's approval in GodTerm (state waiting_for_user).",
         "delete_job" => "Delete one of this tab's GodTerm jobs for good (job: id or name). Waits for the user's approval in GodTerm (state waiting_for_user). To stop it for a while use update_job with action pause.",
         "adopt_loop" => "Turn this tab's own session loop (a /loop or CronCreate job; see session_loops in list_jobs) into a GodTerm job so it survives restarts: copies its prompt and schedule (a dynamic /loop has none: pass cron or every). By default you should then cancel the session loop yourself so it does not fire twice (CronDelete), unless keep_session_loop is true. loop: the loop id (optional when there is one). Also name, catch_up, until. Waits for the user's approval in GodTerm (state waiting_for_user).",
+        "list_browsers" => "THIS tab's browser for BrowserSkill (bsk): the Chrome profile the user bound to this tab (bound_profile) and the connected browser that is it (instance_id, label, versions, open sessions). Use only that browser; the instance_id goes to `bsk session start --browser <id>`. No bound_profile: the user has not set one, ask them to click Browser on this tab's bottom bar. Read only.",
+        "browser_status" => "BrowserSkill (bsk) status for THIS tab, read only: installed and version, daemon state, doctor summary, this tab's bound Chrome profile and its extension state, and the connected browser that is it.",
         _ => "",
     }
 }
@@ -317,6 +484,9 @@ impl App {
 
     fn tab_call_inner(&mut self, uid: u64, tool: &str, args: &Value) -> Result<Value, String> {
         let a = self.tab_scoped(uid, tool, args)?;
+        if matches!(tool, "list_browsers" | "browser_status") {
+            return self.browser_tool_for(uid, tool);
+        }
         if tool == "list_jobs" {
             let mut v = self.list_jobs_json(&a)?;
             let said: Vec<&str> = self
@@ -485,7 +655,20 @@ impl App {
         uid: u64,
         config_dir: &Path,
         args: &mut Vec<String>,
+        plan: bool,
     ) -> Vec<(String, String)> {
+        if !h.has_tab_tools() {
+            return vec![];
+        }
+        // OpenCode has no plan flag: plan mode is a config file, with or
+        // without the tab's tools.
+        let off = |args: &mut Vec<String>| {
+            if h == Harness::OpenCode && plan {
+                opencode_launch(uid, None, true, args)
+            } else {
+                vec![]
+            }
+        };
         if h == Harness::Grok {
             // Switched off: the server entry we added goes again.
             write_grok_server(
@@ -495,17 +678,17 @@ impl App {
             );
         }
         if !self.cfg.tabs.jobs_tools {
-            return vec![];
+            return off(args);
         }
         let Some(shared) = shared_token() else {
-            return vec![];
+            return off(args);
         };
         let exe = std::env::current_exe().unwrap_or_else(|_| "godterm".into());
-        match extend_launch(h, &exe, &shared, uid, args) {
+        match extend_launch_for(h, &exe, &shared, uid, args, config_dir, plan) {
             Ok(x) => x.env,
             Err(e) => {
                 crate::log::error(&format!("tab job tools for t{uid}: {e:#}"));
-                vec![]
+                off(args)
             }
         }
     }

@@ -73,7 +73,17 @@ impl App {
         if self.panes[s].account.is_none() {
             v.push(hard("the pane has no account"));
         }
-        if !tab.is_running() && tab.session_id.is_none() {
+        if tab.session_id.is_none()
+            && self.panes[s]
+                .account
+                .is_some_and(|a| !self.cfg.accounts[a].harness().integrated())
+        {
+            // Nothing to resume by: archiving would stop the tab and keep
+            // only an empty record.
+            v.push(hard(
+                "GodTerm cannot see this CLI's session id, so it could not resume it; resume it from the CLI's own picker",
+            ));
+        } else if !tab.is_running() && tab.session_id.is_none() {
             v.push(hard("it never ran, so there is nothing to resume"));
         }
         if self.direct_with(uid) {

@@ -44,6 +44,9 @@ pub struct TabState {
     /// Its row said "finished" (a turn ended unseen) at this save.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub finished: bool,
+    /// The Chrome profile folder bound to this tab's browser button.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -274,6 +277,7 @@ mod tests {
                     working_at: Some(1_700_000_100),
                     last_prompt: Some("fix the build".into()),
                     finished: true,
+                    browser: Some("Profile 1".into()),
                 }],
                 sidebar_collapsed: true,
                 tab_pos: Some(crate::slot::TabPos::Right),

@@ -29,6 +29,19 @@ sessions are a click away, and a voice assistant can open tabs, send
 prompts, answer approvals and move a conversation to another account while
 your hands stay on the keyboard (or off it).
 
+Interactive slots also support **Codex CLI, Cursor CLI, Antigravity CLI
+(`agy`) and OpenCode**. Choose one in Add account, or set an account's
+`harness` in config.toml. These integrations support terminal input,
+launch/resume flags and voice-driven tab creation. Codex gets its own
+`CODEX_HOME`; Cursor, Antigravity and OpenCode use their native shared
+login stores. A slot of one of the four never gets the global `bypass`
+default unless its own `permission_mode` says so. They have no usage meters,
+model picker (the bar keeps the loops and Browser buttons) or move/copy. Tab
+job tools and the Browser binding reach Codex, Cursor and OpenCode, not
+Antigravity; approvals are answered with each CLI's own keys. See
+[CLI harnesses](docs/CLI_HARNESSES.md) for configuration and what was
+verified against each real CLI.
+
 ## Features
 
 - **Many accounts, many tabs.** Any number of Claude accounts (and Grok
@@ -275,7 +288,10 @@ hover for a submenu, Esc or a click outside to close (that click does
 nothing else). Toggles show ✓, choices •, unavailable items are dimmed
 and say why on hover, and every item shows its shortcut. `Approvals  3`
 (a fixed width badge, also in View) and the `Mic` mute (solid red `● MUTED` when muted) are direct
-buttons. Every title keeps its place and width whatever the state; a
+buttons. While something waits for your yes, `Approvals` turns brick red and
+blinks slowly (Settings > General "Blink when approval is needed",
+`ui.blink_attention`; off keeps it solid red; the blink pauses while the
+terminal is not in front). Every title keeps its place and width whatever the state; a
 narrow terminal drops whole buttons from the right into `»`. Modes are
 chips at the left of the status bar, always in this order and only
 while on: the voice mode (`MIC OFF`, `PTT`, `WAKE "hey god"`, `● OPEN
@@ -466,7 +482,12 @@ per-launch `--mcp-config` next to your own MCP servers (never
 `--strict-mcp-config`) and `--append-system-prompt`; Grok tabs get a
 `godterm` entry in the account's GodTerm-owned `config.toml` and `--rules`.
 Set `[tabs] jobs_tools = false` to turn it off (Settings: "Job tools for tab
-agents"); it applies to tabs started or resumed afterwards.
+agents"); it applies to tabs started or resumed afterwards. Codex, Cursor and
+OpenCode tabs get the same server per launch without touching your own
+config (Codex `-c mcp_servers...`, Cursor `--plugin-dir`, OpenCode a config
+file in `OPENCODE_CONFIG` with `--standalone`), and Codex the hint as
+`developer_instructions`; Antigravity only reads its global
+`mcp_config.json`, so its tab tools refuse with that reason.
 
 **Start.** The assistant panel is open at every start (in the docked,
 overlay or auto mode you chose). The mic starts off unless it was on when
@@ -1247,7 +1268,7 @@ is changed in Settings or config.toml.
 
 `Ctrl-a ,`, the `Settings` button in the menu bar, the palette or saying
 "settings" opens a full screen settings page: sections on the left
-(General, Layout, Accounts, Voice, Memory, Keys, About) and the options on
+(General, Layout, Accounts, Voice, Memory, Setup, Browser, Keys, About) and the options on
 the right. Every control works with the mouse and the keyboard: toggles,
 `‹ value ›` pickers, `- n +` steppers and text fields (Enter edits; lists
 are comma separated), and `reset` brings back the default (for account
@@ -1259,6 +1280,67 @@ Accounts has add, log in and remove buttons; Memory shows live memory
 use of godterm and every tab; About lists paths and runs the doctor.
 Options for features that are still being built are marked "soon": they
 are saved now and used once the feature lands.
+
+## Browser (BrowserSkill)
+
+GodTerm can show and set up [BrowserSkill](https://github.com/Tencent/BrowserSkill)
+(`bsk`, MIT), a local daemon plus a Chrome extension that lets agents drive
+your own Chrome. There is no MCP server: agents get an Agent Skill and run
+`bsk` from Bash. GodTerm never installs `bsk` or the extension, never runs
+`bsk daemon` or `bsk update`, and never drives a browser.
+
+- **Settings > Browser** shows `bsk`'s version, whether its daemon runs, the
+  `bsk doctor` result, the connected browsers (instance id and the label you
+  typed in the extension popup, which is not the Chrome profile name), which
+  Chrome profiles have the extension (installed, enabled; read from Chrome's
+  `Local State`, each profile's `Extensions` folder and `Secure Preferences`,
+  read only) and, per account, whether the skill is installed. The look is
+  passive: a background thread, at most one per 30 seconds, a timeout on
+  every call, `BSK_AUTO_START=0` so a look never starts the daemon.
+- **Assistant tools.** `list_browsers` and `browser_status` are read only
+  (the tab agents have them too, with a hint to run `bsk browsers --json`,
+  ask which browser, and use `bsk session start --browser <id>`).
+  `install_browser_skill` is assistant only and asks once: it copies (not
+  links) the `browser-skill` folder from `~/.claude/skills` into each chosen
+  account's own `skills/` folder, through a temp folder and a rename, keeps
+  an account's newer copy unless you say force, and for Claude accounts adds
+  `Bash(bsk:*)` to that account's `settings.json` (backed up first, other
+  keys untouched; a file that is not valid JSON is refused and left alone).
+  The Settings button does the same with two clicks.
+- **Grok accounts.** Grok Build's user guide documents `$GROK_HOME/skills/`
+  (`~/.grok/skills/` by default) as the user skill folder, and GodTerm's
+  Grok accounts are their own `GROK_HOME`, so they get the skill folder only.
+  Grok's permission rules live in `config.toml` and are not changed.
+- Running tabs see a new skill in their next session.
+- **A browser per tab.** The Browser button at the right end of each pane's
+  bottom bar (the model bar's row, left of the loops button; Ctrl-a i, or
+  "browser: Chrome profile for this tab" in the palette) picks the Chrome
+  profile that tab's agent drives. The dialog lists the profiles with name,
+  email and the extension's state. Choosing one binds it to the tab. If the
+  extension is missing, a yes opens its Chrome Web Store page in that
+  profile (Chrome needs you to press Add to Chrome); if it is off, a yes
+  opens `chrome://extensions` there. While the dialog or a pending enable is
+  open GodTerm looks every few seconds and marks the tab ready when the
+  extension is on (then open the extension popup and turn on the local
+  connection; naming the browser after the profile helps `bsk` tell them
+  apart). The button reads `browser`, `browser: Work (add)`, `browser: Work
+  (turn on)` or `✓ browser: Work`. Chrome's profile files are only read.
+- **Scoped to the tab.** The binding is saved with the tab and follows it
+  when it is moved. A tab's own `list_browsers` and `browser_status` return
+  its profile and the connected browser matched to it, never another tab's,
+  and its hint says to use only that browser. The assistant sees it as
+  `browser` in `get_state`.
+- **Links open there.** The profile last chosen becomes
+  `[browser] default_profile` (Settings > Browser shows it with a Change
+  button). When you ask GodTerm to open a link in Chrome (`open_path`, also
+  by voice) it opens in that profile with `--profile-directory`; a tab with
+  its own profile uses it for links opened for that tab. Empty: the system
+  browser.
+
+```toml
+[browser]
+default_profile = "Profile 1"   # Chrome's folder name, not the display name
+```
 
 ## Permission mode
 

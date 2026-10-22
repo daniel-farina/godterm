@@ -38,6 +38,9 @@ pub fn should_scrub(key: &str, pass: &[String]) -> bool {
         || key.starts_with("GODTERM_")
         || key.starts_with("CLAUDEGO_")
         || crate::harness::scrub_grok(key)
+        || key == "CODEX_HOME"
+        || key.starts_with("CODEX_INTERNAL_")
+        || key == "CODEX_THREAD_ID"
 }
 
 /// Most bytes a second one tab's output is read at (see the reader).
@@ -92,7 +95,7 @@ pub enum LaunchKind {
 pub struct LaunchSpec {
     pub program: String,
     /// The variable that names the account's isolated home
-    /// (CLAUDE_CONFIG_DIR, or GROK_HOME for grok).
+    /// (CLAUDE_CONFIG_DIR, GROK_HOME or CODEX_HOME). Empty for native stores.
     pub home_env: &'static str,
     pub args: Vec<String>,
     pub cwd: PathBuf,
@@ -104,6 +107,8 @@ pub struct LaunchSpec {
     pub type_when_idle: Option<Vec<u8>>,
     /// More variables for the child (grok's compat switches).
     pub extra_env: Vec<(String, String)>,
+    /// The CLI this runs (its screens are read by `prompt_cli`).
+    pub harness: crate::harness::Harness,
 }
 
 struct Proc {
@@ -143,6 +148,13 @@ impl Activity {
     }
 }
 
+/// A question or menu dialog waits for a pick (the AskUserQuestion tool,
+/// pickers): Enter selects, Esc cancels. Whatever is typed or pasted
+/// there answers it, so nothing may be sent into it.
+pub fn asks_question(text: &str) -> bool {
+    text.contains("Enter to select") && text.contains("Esc to cancel")
+}
+
 /// Classify a claude screen. Pure, so it is easy to test.
 pub fn detect_activity(text: &str) -> Activity {
     if let Some(p) = crate::prompt::parse_prompt(text) {
@@ -157,7 +169,7 @@ pub fn detect_activity(text: &str) -> Activity {
     let permission = text.contains("No, and tell Claude what to do")
         || (text.contains("Do you want to")
             && (text.contains("1. Yes") || text.contains("❯ Yes") || text.contains("2. No")));
-    if permission {
+    if permission || asks_question(text) {
         Activity::Permission
     } else if text.contains("esc to interrupt") || text.contains("Ctrl+c to cancel the turn") {
         Activity::Working
@@ -269,6 +281,9 @@ pub struct Pane {
     /// Pinned: first in the list, asks before closing, left out of
     /// "close all".
     pub pinned: bool,
+    /// The Chrome profile folder this tab's browser is bound to (the
+    /// Browser button; see tab_browser).
+    pub browser: Option<String>,
     /// When the tab was first opened (kept across restarts).
     pub opened: std::time::SystemTime,
     /// The user's last keystroke or prompt into it.
@@ -297,6 +312,8 @@ pub struct Pane {
     pub model_stamp: Option<(u64, std::time::SystemTime)>,
     /// A /model just sent (its arg, when): shown until the tab says so.
     pub model_set: Option<(String, Instant)>,
+    /// The CLI the tab last ran (set at launch).
+    pub harness: crate::harness::Harness,
 }
 
 impl Pane {
@@ -339,6 +356,7 @@ impl Pane {
             suspended: false,
             group: None,
             pinned: false,
+            browser: None,
             opened: std::time::SystemTime::now(),
             last_input: Instant::now(),
             finished: false,
@@ -351,6 +369,7 @@ impl Pane {
             model_polled: None,
             model_stamp: None,
             model_set: None,
+            harness: crate::harness::Harness::Claude,
         }
     }
 
@@ -453,6 +472,7 @@ impl Pane {
         self.parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, self.history)));
         self.scroll = 0;
         self.suspended = false;
+        self.harness = spec.harness;
         self.kind = spec.kind.clone();
         self.cwd = spec.cwd.clone();
         self.started = std::time::SystemTime::now();
@@ -485,7 +505,9 @@ impl Pane {
         if spec.home_env != "CLAUDE_CONFIG_DIR" {
             cmd.env_remove("CLAUDE_CONFIG_DIR");
         }
-        cmd.env(spec.home_env, &spec.config_dir);
+        if !spec.home_env.is_empty() {
+            cmd.env(spec.home_env, &spec.config_dir);
+        }
         for (k, v) in &spec.extra_env {
             cmd.env(k, v);
         }
@@ -639,7 +661,8 @@ impl Pane {
             .unwrap_or_else(|e| e.into_inner())
             .screen()
             .contents();
-        let next = detect_activity(&text);
+        let next = crate::prompt_cli::activity_for(self.harness, &text)
+            .unwrap_or_else(|| detect_activity(&text));
         let old = self.activity;
         if next != old {
             self.set_activity(next);

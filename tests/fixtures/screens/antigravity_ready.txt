@@ -1,0 +1,15 @@
+
+      ▄▀▀▄        Antigravity CLI 1.4.4
+     ▀▀▀▀▀▀       user@example.com (Antigravity Starter Quota)
+    ▀▀▀▀▀▀▀▀      Gemini 3.8 Flash (High)
+   ▄▀▀    ▀▀▄     /tmp/work
+  ▄▀▀      ▀▀▄
+
+ ┃ Verbosity now defaults to medium
+ ┃ Verbosity is now medium by default, so tool calls and thoughts roll up into summaries. You can change your
+ ┃ preferred verbosity anytime in /config > Verbosity.
+ ┃ esc to dismiss
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> Plan mode: research & plan only (shift+tab to cycle)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+? for shortcuts                                                                           plan · Gemini 3.8 Flash · high

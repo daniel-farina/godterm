@@ -337,7 +337,7 @@ fn a_busy_tab_is_queued_and_switched_when_its_turn_ends() {
     );
     let mut term = Terminal::new(TestBackend::new(240, 50)).unwrap();
     term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-    assert!(buffer_text(term.backend().buffer()).contains("switching to Haiku after this turn"));
+    assert!(buffer_text(term.backend().buffer()).contains("switching to Haiku after this turn"), "{}", buffer_text(term.backend().buffer()));
     // The assistant's state says so.
     assert!(
         app.state_preamble().contains("Opus, Haiku queued"),

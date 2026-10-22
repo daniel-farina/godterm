@@ -65,6 +65,8 @@ pub enum AppEvent {
 /// Login state as derived from stored credentials (no secrets kept here).
 #[derive(Debug, Clone, Default)]
 pub struct LoginInfo {
+    /// Login is handled by the CLI; GodTerm has no credential adapter.
+    pub cli_managed: bool,
     pub source: Option<CredSource>,
     pub expires_at: Option<i64>,
     pub has_refresh: bool,
@@ -73,6 +75,9 @@ pub struct LoginInfo {
 }
 
 impl LoginInfo {
+    pub fn can_start(&self) -> bool {
+        self.cli_managed || self.logged_in()
+    }
     pub fn logged_in(&self) -> bool {
         self.source.is_some()
     }
@@ -312,6 +317,8 @@ pub enum Modal {
     ConfirmStopLoops,
     /// A tab's agent asks for a job change: the request's token.
     ConfirmTabJob(String),
+    /// The Browser dialog of a tab (tab_browser).
+    Browser(crate::tab_browser::BrowserDlg),
     /// The detail card of a Loops & schedules row (its key).
     SchedCard(String),
     /// Menu bar buttons that did not fit.
@@ -598,6 +605,8 @@ pub struct App {
     pub job_runs: Vec<crate::app_jobs::JobRun>,
     pub job_clock: Option<i64>,
     pub jobs_boot: Instant,
+    /// Tests: the clock (ms) the attention blink reads instead of the wall clock.
+    pub attn_clock_ms: std::cell::Cell<Option<u64>>,
     pub jobs_ticked: Instant,
     /// The Loops & schedules section of the assistant panel is open, and
     /// a delete clicked once.
@@ -629,6 +638,8 @@ pub struct App {
     pub admin: crate::app_admin::AdminState,
     /// What is installed and the installs running (Settings > Setup).
     pub setup: crate::app_setup::SetupState,
+    /// BrowserSkill status and skill sync (Settings > Browser).
+    pub browser: crate::app_browser::BrowserState,
     /// Restore every tab at once this start (after a restart to update).
     pub force_eager: bool,
     pub pane_rects: Vec<Rect>,
@@ -844,6 +855,7 @@ impl App {
             job_runs: vec![],
             job_clock: None,
             jobs_boot: Instant::now(),
+            attn_clock_ms: std::cell::Cell::new(None),
             jobs_ticked: Instant::now(),
             sched_open: true,
             sched_confirm: None,
@@ -862,6 +874,7 @@ impl App {
             update: Default::default(),
             admin: Default::default(),
             setup: Default::default(),
+            browser: Default::default(),
             force_eager: false,
             pane_rects: vec![],
             term_rects: vec![],
@@ -943,7 +956,7 @@ impl App {
         for p in 0..self.panes.len() {
             if let Some(a) = self.panes[p].account {
                 let t = self.panes[p].cur();
-                if self.accounts[a].login.logged_in() && t.state == PaneState::Idle {
+                if self.accounts[a].login.can_start() && t.state == PaneState::Idle {
                     let kind = t.pending.clone().unwrap_or(LaunchKind::Normal);
                     self.launch(p, kind);
                 }
@@ -961,7 +974,7 @@ impl App {
         let mut rest = vec![];
         for (p, slot) in self.panes.iter().enumerate() {
             let Some(a) = slot.account else { continue };
-            if !self.accounts.get(a).is_some_and(|x| x.login.logged_in()) {
+            if !self.accounts.get(a).is_some_and(|x| x.login.can_start()) {
                 continue;
             }
             for (ti, t) in slot.tabs.iter().enumerate() {
@@ -1078,6 +1091,7 @@ impl App {
                 tab.accent = t.accent.clone();
                 tab.group = t.group.clone();
                 tab.pinned = t.pinned;
+                tab.browser = t.browser.clone();
                 tab.finished = t.finished;
                 if let Some(o) = t.opened {
                     tab.opened = std::time::UNIX_EPOCH + std::time::Duration::from_secs(o);
@@ -1194,6 +1208,7 @@ impl App {
                             uid: Some(t.uid),
                             group: t.group.clone(),
                             pinned: t.pinned,
+                            browser: t.browser.clone(),
                             finished: t.finished,
                             opened: t
                                 .opened
@@ -1229,6 +1244,9 @@ impl App {
             let Some(a) = self.panes[si].account else {
                 continue;
             };
+            if !self.cfg.accounts[a].harness().integrated() {
+                continue;
+            }
             let dir = self.cfg.accounts[a].config_dir();
             for ti in 0..self.panes[si].tabs.len() {
                 let t = &self.panes[si].tabs[ti];
@@ -1316,7 +1334,8 @@ impl App {
         let mut tab_env = vec![];
         if kind != LaunchKind::Login {
             let uid = self.panes[pane].cur().uid;
-            tab_env = self.tab_jobs_launch(h, uid, &dir, &mut args);
+            let plan = self.cfg.mode_for(acct) == "plan";
+            tab_env = self.tab_jobs_launch(h, uid, &dir, &mut args, plan);
         }
         let tab_cwd = self.panes[pane].cur().cwd.clone();
         let mut cwd = if tab_cwd.is_dir() {
@@ -1327,17 +1346,17 @@ impl App {
         let mut type_when_idle = None;
         match &kind {
             LaunchKind::Normal => {}
-            LaunchKind::Login if h == crate::harness::Harness::Grok => {
-                // `grok login` in the slot's own GROK_HOME.
+            LaunchKind::Login if h.login_args().is_some() => {
                 args = h.login_args().unwrap_or_default();
             }
-            LaunchKind::Login => {
+            LaunchKind::Login if h == crate::harness::Harness::Claude => {
                 // A fresh dir runs onboarding, which includes the OAuth login.
                 // An onboarded but logged out dir needs /login typed in.
                 if creds::load_profile(&dir).onboarded {
                     type_when_idle = Some(b"/login\r".to_vec());
                 }
             }
+            LaunchKind::Login => {} // native onboarding / login picker
             LaunchKind::Resume(id) => args.extend(h.resume_args(id)),
         }
         // A tab held by a background run: attach to it, or fork a copy.
@@ -1379,10 +1398,7 @@ impl App {
         };
         extra_env.extend(tab_env);
         let spec = LaunchSpec {
-            program: match h {
-                crate::harness::Harness::Claude => self.cfg.claude_bin(),
-                crate::harness::Harness::Grok => h.bin(self.cfg.grok_bin.as_deref()),
-            },
+            program: self.cfg.harness_bin(h),
             home_env: h.home_env(),
             extra_env,
             args,
@@ -1391,6 +1407,7 @@ impl App {
             kind: kind.clone(),
             pass_env: self.cfg.pass_env.clone(),
             type_when_idle,
+            harness: h,
         };
         self.state_dirty = true;
         // Trust the folder up front, unless another claude of this account is
@@ -1470,6 +1487,7 @@ impl App {
             kind: LaunchKind::Normal,
             pass_env: self.cfg.pass_env.clone(),
             type_when_idle: None,
+            harness: crate::harness::Harness::Claude,
         };
         self.focus = pane;
         if let Err(e) = self.panes[pane].cur_mut().spawn(spec, self.tx.clone()) {
@@ -1740,14 +1758,16 @@ impl App {
         }
         st.sessions_loading = true;
         let dir = self.cfg.accounts[idx].config_dir();
-        let grok = self.cfg.accounts[idx].harness() == crate::harness::Harness::Grok;
+        let h = self.cfg.accounts[idx].harness();
         let cache = Arc::clone(&st.cache);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let list = if grok {
-                crate::harness::grok::scan_sessions(&dir)
-            } else {
-                cache.lock().unwrap_or_else(|e| e.into_inner()).scan(&dir)
+            let list = match h {
+                crate::harness::Harness::Grok => crate::harness::grok::scan_sessions(&dir),
+                crate::harness::Harness::Claude => {
+                    cache.lock().unwrap_or_else(|e| e.into_inner()).scan(&dir)
+                }
+                _ => vec![],
             };
             let _ = tx.send(AppEvent::Sessions(idx, list));
         });
@@ -1855,6 +1875,7 @@ impl App {
         self.assistant_tick();
         self.update_tick();
         self.admin_tick();
+        self.browser_tick();
         self.control_tick();
         self.jobs_tick();
         self.tab_jobs_tick();
@@ -1975,8 +1996,9 @@ impl App {
                         .unwrap_or_else(|e| e.into_inner())
                         .screen()
                         .contents();
-                    if crate::prompt::parse_prompt(&screen)
-                        .is_some_and(|p| p.kind == crate::prompt::PromptKind::Trust)
+                    if self.cfg.accounts[a].harness().integrated()
+                        && crate::prompt::parse_prompt(&screen)
+                            .is_some_and(|p| p.kind == crate::prompt::PromptKind::Trust)
                     {
                         to_trust.push((si, ti));
                     }
@@ -2005,7 +2027,7 @@ impl App {
             let Some(a) = self.panes[p].account else {
                 continue;
             };
-            if self.accounts[a].login.logged_in() {
+            if self.accounts[a].login.can_start() {
                 if let Some(kind) = self.panes[p].cur().pending.clone() {
                     if self.panes[p].cur().state == PaneState::Idle {
                         self.launch(p, kind);
@@ -2177,6 +2199,7 @@ impl App {
                             // A resume refused by a background run: offer
                             // attach, stop and resume, or fork.
                             self.note_bg_lock(si, ti);
+                            self.learn_exit_session(si, ti);
                         }
                         if was_login {
                             if let Some(a) = self.panes[si].account {
@@ -2702,6 +2725,10 @@ impl App {
                 self.on_grok_logins_key(k);
                 return;
             }
+            Modal::Browser(_) => {
+                self.on_browser_key(k);
+                return;
+            }
             Modal::ConfirmRemoveAccount(a) => {
                 let a = *a;
                 self.modal = Modal::None;
@@ -2827,7 +2854,7 @@ impl App {
                 if k.code == KeyCode::Enter {
                     let p = self.focus;
                     let logged_in = account
-                        .map(|a| self.accounts[a].login.logged_in())
+                        .map(|a| self.accounts[a].login.can_start())
                         .unwrap_or(false);
                     let kind = match pane.pending.clone() {
                         Some(k) if logged_in => k,
@@ -2872,6 +2899,10 @@ impl App {
             (_, Some(';')) => {
                 let p = self.focus;
                 self.toggle_loops_drawer(p);
+            }
+            (_, Some('i')) => {
+                let p = self.focus;
+                self.open_browser_dialog(p);
             }
             (_, Some('\'')) => {
                 self.num_entry = Some(String::new());
@@ -3619,6 +3650,11 @@ impl App {
         self.cfg.restore_continue_working = new.restore_continue_working;
         self.cfg.autostart = new.autostart;
         self.cfg.claude_bin = new.claude_bin;
+        self.cfg.grok_bin = new.grok_bin;
+        self.cfg.codex_bin = new.codex_bin;
+        self.cfg.cursor_bin = new.cursor_bin;
+        self.cfg.antigravity_bin = new.antigravity_bin;
+        self.cfg.opencode_bin = new.opencode_bin;
         self.cfg.pass_env = new.pass_env;
         self.cfg.auto_trust = new.auto_trust;
         self.cfg.trusted_dirs = new.trusted_dirs;
@@ -3693,7 +3729,7 @@ impl App {
         };
         let next = (ob.pos..ob.queue.len()).find(|&i| {
             let a = ob.queue[i];
-            !self.accounts[a].login.logged_in() && !ob.skipped.contains(&a)
+            !self.accounts[a].login.can_start() && !ob.skipped.contains(&a)
         });
         match next {
             None => {
@@ -4009,6 +4045,14 @@ pub fn snapshot_of(a: &AccountCfg, with_usage: bool) -> StatusSnapshot {
                 usage,
             }
         }
+        _ => StatusSnapshot {
+            profile: Profile::default(),
+            login: LoginInfo {
+                cli_managed: true,
+                ..Default::default()
+            },
+            usage: None,
+        },
     }
 }
 
@@ -4020,6 +4064,7 @@ pub fn snapshot(dir: &std::path::Path, with_usage: bool) -> StatusSnapshot {
     let login = found
         .as_ref()
         .map(|(c, src)| LoginInfo {
+            cli_managed: false,
             source: Some(*src),
             expires_at: c.expires_at,
             has_refresh: c.has_refresh,

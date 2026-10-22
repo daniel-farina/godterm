@@ -12,10 +12,14 @@ use crate::app::{App, Modal};
 use crate::hits::{AddUi, UiAction};
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 
-/// The two agents, in card order.
-pub const AGENTS: [(&str, &str, &str); 2] = [
+/// Agents in card order (also the numbered keyboard shortcuts).
+pub const AGENTS: [(&str, &str, &str); 6] = [
     ("claude", "Claude Code", "Anthropic subscription login"),
     ("grok", "Grok Build", "xAI Grok Build login"),
+    ("codex", "Codex CLI", "Own CODEX_HOME"),
+    ("cursor", "Cursor CLI", "Native shared login"),
+    ("antigravity", "Antigravity CLI", "Native shared login"),
+    ("opencode", "OpenCode", "Native shared login"),
 ];
 
 /// The form's fields, top to bottom.
@@ -50,6 +54,7 @@ pub struct AddForm {
     pub mode: usize,
     pub focus: Field,
     pub grok_ok: bool,
+    pub native_ok: [bool; 4],
     /// Recent folders to pick from, newest first ("~" style).
     pub recents: Vec<String>,
     pub error: Option<String>,
@@ -92,6 +97,13 @@ impl AddForm {
             mode,
             focus: Field::Agent,
             grok_ok: crate::harness::grok::installed(app.cfg.grok_bin.as_deref()),
+            native_ok: [
+                crate::harness::Harness::Codex,
+                crate::harness::Harness::Cursor,
+                crate::harness::Harness::Antigravity,
+                crate::harness::Harness::OpenCode,
+            ]
+            .map(|h| h.installed(&app.cfg)),
             recents,
             error: None,
         }
@@ -106,6 +118,15 @@ impl AddForm {
     pub fn pick_agent(&mut self, i: usize) {
         if i == 1 && !self.grok_ok {
             self.error = Some("grok not found: install Grok Build first (or set grok_bin)".into());
+            return;
+        }
+        if (2..AGENTS.len()).contains(&i) && !self.native_ok[i - 2] {
+            let h = crate::harness::Harness::of(AGENTS[i].0);
+            self.error = Some(format!(
+                "{} not found: install it or set {}",
+                h.label(),
+                h.bin_key()
+            ));
             return;
         }
         self.agent = i.min(AGENTS.len() - 1);
@@ -149,6 +170,9 @@ impl AddForm {
         if self.agent == 1 && !self.grok_ok {
             return Err("grok not found".into());
         }
+        if self.agent >= 2 && !self.native_ok[self.agent - 2] {
+            return Err(format!("{} not found", AGENTS[self.agent].1));
+        }
         Ok(())
     }
 
@@ -173,7 +197,7 @@ impl AddForm {
             KeyCode::Backspace if self.focus == Field::Folder => {
                 self.folder.pop();
             }
-            KeyCode::Char(c @ ('1' | '2')) if !text => {
+            KeyCode::Char(c @ '1'..='6') if !text => {
                 self.focus = Field::Agent;
                 self.pick_agent((c as u8 - b'1') as usize);
             }
@@ -328,8 +352,8 @@ fn frame(buf: &mut Buffer, r: Rect, st: Style) {
 
 pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
     use crate::hits::{button, text};
-    let w = 86u16.min(area.width);
-    let h = 19u16.min(area.height);
+    let w = 115u16.min(area.width);
+    let h = 23u16.min(area.height);
     let r = Rect::new(
         area.x + (area.width - w) / 2,
         area.y + (area.height - h) / 2,
@@ -428,17 +452,18 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
     y += 2;
     // Agent cards.
     caption(buf, y + 1, Field::Agent, "Agent");
-    let cw = (limit.saturating_sub(lx) / 2)
+    let cw = (limit.saturating_sub(lx) / 3)
         .saturating_sub(1)
         .clamp(10, 34);
     for (i, (_, name, sub)) in AGENTS.iter().enumerate() {
-        let cx = lx + i as u16 * (cw + 2);
+        let cx = lx + (i % 3) as u16 * (cw + 2);
         if cx + cw > r.x + r.width - 1 {
             break;
         }
-        let card = Rect::new(cx, y, cw, 4);
+        let cy = y + (i / 3) as u16 * 4;
+        let card = Rect::new(cx, cy, cw, 4);
         let chosen = form.agent == i;
-        let disabled = i == 1 && !form.grok_ok;
+        let disabled = (i == 1 && !form.grok_ok) || (i >= 2 && !form.native_ok[i - 2]);
         let cbg = if chosen { SEL_BG } else { bg };
         fill(buf, card, Style::default().bg(cbg));
         let border = if disabled {
@@ -460,16 +485,22 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
         text(
             buf,
             cx + 2,
-            y + 1,
+            cy + 1,
             cx + cw - 1,
             &format!("{dot} {}  {name}", i + 1),
             tst,
         );
-        let sub = if disabled { "grok not found" } else { sub };
+        let sub = if disabled && i == 1 {
+            "grok not found"
+        } else if disabled {
+            "not installed"
+        } else {
+            sub
+        };
         text(
             buf,
             cx + 2,
-            y + 2,
+            cy + 2,
             cx + cw - 1,
             sub,
             Style::default()
@@ -477,13 +508,13 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
                 .bg(cbg),
         );
         let hint = if disabled {
-            "Grok Build is not installed (grok not found)".to_string()
+            format!("{name} is not installed")
         } else {
             format!("{name}: {sub} ({})", i + 1)
         };
         hits.add(card, UiAction::AddAcct(AddUi::Agent(i as u8)), hint);
     }
-    y += 5;
+    y += 9;
     // Color swatches.
     caption(buf, y, Field::Color, "Color");
     let mut x = lx;
@@ -617,7 +648,10 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
     let (msg, c) = match &form.error {
         Some(e) => (e.clone(), theme::CLAY),
         None => (
-            format!("Tab moves between fields, ←/→ change, 1/2 pick the agent. Enter adds {} and logs in.", AGENTS[form.agent].1),
+            format!(
+                "Tab moves between fields, ←/→ change, 1–6 pick the agent. Enter starts {}.",
+                AGENTS[form.agent].1
+            ),
             FAINT,
         ),
     };
@@ -665,9 +699,24 @@ mod tests {
             mode: 0,
             focus: Field::Agent,
             grok_ok: true,
+            native_ok: [true; 4],
             recents: vec!["~/code".into()],
             error: None,
         }
+    }
+
+    #[test]
+    fn native_agent_shortcuts_and_missing_binary() {
+        let mut f = form();
+        for (i, c) in ['3', '4', '5', '6'].into_iter().enumerate() {
+            f.key(key(KeyCode::Char(c)));
+            assert_eq!(f.agent, i + 2);
+            assert!(f.error.is_none());
+        }
+        f.native_ok[0] = false;
+        f.pick_agent(2);
+        assert_eq!(f.agent, 5);
+        assert!(f.error.as_ref().unwrap().contains("codex_bin"));
     }
 
     #[test]

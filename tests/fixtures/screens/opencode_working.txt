@@ -1,0 +1,16 @@
+ ⠼ New session                   +
+
+  ┃
+  ┃  reply with the single word ok
+  ┃
+
+     ⚠ Retrying in 2s · attempt 2 · ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+     Plan · LMS · Qwen3.6 27B Dense (CODING) · MLX 8-bit (unsloth)
+
+  ┃
+  ┃
+  ┃
+  ┃  Plan · LMS · Qwen3.6 27B Dense (CODING) · MLX 8-bit (unsloth) LM Studio (local)
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝ esc interrupt                                                            shift+tab agents  ctrl+p commands

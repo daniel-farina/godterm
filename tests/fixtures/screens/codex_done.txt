@@ -1,0 +1,32 @@
+╭─────────────────────────────────────────────────╮
+│ ✨ Update available! 0.153.4 -> 0.163.0         │
+│ Run npm install -g @openai/codex to update.     │
+│                                                 │
+│ See full release notes:                         │
+│ https://github.com/openai/codex/releases/latest │
+╰─────────────────────────────────────────────────╯
+
+╭─────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.153.4)                              │
+│                                                         │
+│ model:     gpt-6-astra high   fast   /model to change   │
+│ directory: /tmp/work │
+╰─────────────────────────────────────────────────────────╯
+
+  Tip: Try the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true
+
+⚠ The sentry MCP server is not logged in. Run `codex mcp login sentry`.
+
+• You have 3 usage limit resets available. Run /usage to use one.
+
+⚠ The sentry MCP server is not logged in. Run `codex mcp login sentry`.
+
+⚠ MCP startup incomplete (failed: sentry)
+
+› reply with the single word ok
+
+• ok
+
+› Ask Codex to do anything
+
+  gpt-6-astra high fast · /tmp/w…

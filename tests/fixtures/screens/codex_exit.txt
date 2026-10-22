@@ -1,0 +1,4 @@
+⚠ MCP startup incomplete (failed: sentry)
+To continue this session, run:
+  codex resume 01a160a4-3e5b-70c0-b5f2-602bc3896cd4
+Or run codex resume and select Reply ok.

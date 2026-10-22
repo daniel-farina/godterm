@@ -41,6 +41,47 @@ fn layout(labels: &[String], w: u16) -> (bool, bool) {
     }
 }
 
+/// The Browser button (tab_browser) ending before `end`: its text shows
+/// the state (none, needs the extension, needs turning on, ready). Returns
+/// the new right edge; nothing is drawn when the row is too narrow.
+fn browser_button(
+    buf: &mut Buffer,
+    app: &App,
+    i: usize,
+    y: u16,
+    left: u16,
+    end: u16,
+    bg: ratatui::style::Color,
+) -> u16 {
+    use crate::tab_browser::BtnState;
+    let (state, labels) = app.browser_button(i);
+    let room = end.saturating_sub(left);
+    let Some(label) = labels.into_iter().find(|l| l.chars().count() as u16 <= room) else {
+        return end;
+    };
+    let bw = label.chars().count() as u16;
+    let bx = end - bw;
+    let rect = Rect::new(bx, y, bw, 1);
+    let hovered = app.mouse_pos.is_some_and(|(c, rr)| contains(rect, c, rr));
+    let fill = if hovered { theme::SEL_BG } else { bg };
+    let fg = match state {
+        BtnState::None => theme::FAINT,
+        BtnState::Chosen | BtnState::NeedsEnable => theme::SAND,
+        BtnState::Ready => theme::SAGE,
+    };
+    text(buf, bx, y, end, &label, Style::default().fg(fg).bg(fill));
+    let unsupported = app.pane_harness(i).and_then(|h| h.no_tab_tools_reason());
+    let hint = match state {
+        _ if unsupported.is_some() => format!("Browser: {}", unsupported.unwrap_or_default()),
+        BtnState::None => "Browser: choose the Chrome profile this tab's agent drives with BrowserSkill (Ctrl-a i)".to_string(),
+        BtnState::Chosen => "Browser: BrowserSkill is not in this tab's Chrome profile yet; click to add it (Ctrl-a i)".to_string(),
+        BtnState::NeedsEnable => "Browser: BrowserSkill is in the profile but turned off; click to turn it on (Ctrl-a i)".to_string(),
+        BtnState::Ready => "Browser: ready, this tab's agent can drive its Chrome profile; click to change (Ctrl-a i)".to_string(),
+    };
+    app.hits.borrow_mut().add(rect, UiAction::TabBrowser(i), hint);
+    bx.saturating_sub(1)
+}
+
 pub fn draw(buf: &mut Buffer, app: &App, i: usize, r: Rect) {
     if r.width == 0 || r.height == 0 {
         return;
@@ -98,6 +139,37 @@ pub fn draw(buf: &mut Buffer, app: &App, i: usize, r: Rect) {
     } else {
         end
     };
+    // The Browser button sits left of it.
+    // (Not while a model switch is named on the bar: that text needs the room.)
+    let models_w: u16 = models.iter().map(|m| m.label.chars().count() as u16 + 5).sum::<u16>() + 1;
+    let end = if queued.is_none() {
+        browser_button(buf, app, i, y, r.x + models_w, end, bg)
+    } else {
+        end
+    };
+    if models.is_empty() {
+        // No model picker to drive: say where the model is chosen.
+        let who = app
+            .pane_harness(i)
+            .map(|h| h.label())
+            .unwrap_or("This agent");
+        let msg = format!(" {who}: the model is chosen inside the CLI");
+        let short = format!(" {who}");
+        let t = if (msg.chars().count() as u16) < end.saturating_sub(r.x) {
+            msg
+        } else {
+            short
+        };
+        text(
+            buf,
+            r.x,
+            y,
+            end,
+            &t,
+            Style::default().fg(theme::FAINT).bg(bg),
+        );
+        return;
+    }
     let labels: Vec<String> = models.iter().map(|m| m.label.clone()).collect();
     let (prefix, digits) = layout(&labels, end - r.x);
     let mut x = r.x;

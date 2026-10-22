@@ -235,6 +235,22 @@ impl App {
         self.job_clock.unwrap_or_else(jobs::now_ts)
     }
 
+    /// A tab moved to another account (a new tab id, a new account): its
+    /// jobs follow. Else, once the old id is forgotten (a restart), they
+    /// look for the session in the old account and resume a stale copy.
+    pub(crate) fn jobs_follow_move(&mut self, from: u64, to: u64, account: &str) {
+        let mut n = 0;
+        for j in self.jobs.jobs.iter_mut().filter(|j| j.target.uid == Some(from)) {
+            j.target.uid = Some(to);
+            j.target.account = account.to_string();
+            n += 1;
+        }
+        if n > 0 {
+            crate::log::info(&format!("jobs: {n} followed t{from} to t{to} ({account})"));
+            self.jobs_save();
+        }
+    }
+
     fn jobs_save(&mut self) {
         if let Err(e) = self.jobs.save() {
             crate::log::info(&format!("jobs: could not save: {e}"));

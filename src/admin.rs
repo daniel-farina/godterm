@@ -289,6 +289,7 @@ pub fn caps(h: Harness, dir: &Path) -> Caps {
     match h {
         Harness::Claude => claude_caps(dir),
         Harness::Grok => grok_caps(dir),
+        _ => Caps::default(),
     }
 }
 
@@ -419,6 +420,12 @@ pub fn install_steps(
     has_market: bool,
     env: &[(String, String)],
 ) -> Result<Install, String> {
+    if !h.integrated() {
+        return Err(format!(
+            "Manage {} MCP servers in its CLI; no GodTerm admin adapter yet",
+            h.label()
+        ));
+    }
     let s = |x: &str| x.to_string();
     let env_flags: Vec<String> = env
         .iter()
@@ -510,6 +517,7 @@ pub fn remove_steps(h: Harness, name: &str) -> Vec<Vec<String>> {
             name.into(),
         ]],
         Harness::Grok => vec![vec!["mcp".into(), "remove".into(), name.into()]],
+        _ => vec![],
     }
 }
 
@@ -520,6 +528,9 @@ pub fn plugin_steps(
     id: &str,
     marketplace: Option<&str>,
 ) -> Vec<Vec<String>> {
+    if !h.integrated() {
+        return vec![];
+    }
     let s = |x: &str| x.to_string();
     let mut v = vec![];
     if let Some(m) = marketplace {
@@ -539,6 +550,7 @@ pub fn list_args(h: Harness) -> Vec<String> {
     match h {
         Harness::Claude => vec!["mcp".into(), "list".into()],
         Harness::Grok => vec!["mcp".into(), "list".into(), "--json".into()],
+        _ => vec![],
     }
 }
 

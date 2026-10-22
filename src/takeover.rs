@@ -100,6 +100,7 @@ pub fn is_agent(pid: u32, h: Harness) -> bool {
                 || p.contains("@anthropic-ai/claude-code/cli.js")
         }
         Harness::Grok => base == "grok" || p.contains("/.grok/bin/"),
+        _ => false,
     }
 }
 
@@ -161,6 +162,9 @@ pub fn terminal_of(pid: u32) -> Option<String> {
 pub fn find(homes: &[(Harness, PathBuf)], ours: &std::collections::HashSet<u32>) -> Vec<Live> {
     let mut out = vec![];
     for (h, home) in homes {
+        if !h.integrated() {
+            continue;
+        }
         match h {
             Harness::Claude => {
                 let Ok(rd) = std::fs::read_dir(home.join("sessions")) else {
@@ -232,6 +236,7 @@ pub fn find(homes: &[(Harness, PathBuf)], ours: &std::collections::HashSet<u32>)
                     });
                 }
             }
+            _ => {}
         }
     }
     out
@@ -260,6 +265,7 @@ pub fn transcript_of(l: &Live) -> Option<PathBuf> {
             .flatten()
             .map(|p| p.path().join(&l.session_id))
             .find(|p| p.join("summary.json").is_file()),
+        _ => None,
     }
 }
 
@@ -747,6 +753,8 @@ impl App {
                     )
                     .map_err(|e| format!("copy: {e:#}"))?;
                 }
+
+                _ => return Err("No transcript adapter for this CLI".into()),
             }
         }
         // Resume in the same folder.

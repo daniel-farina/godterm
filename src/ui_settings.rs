@@ -100,6 +100,7 @@ pub fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
         Section::Keys => draw_keys(f, right),
         Section::About => draw_about(f, app, right),
         Section::Setup => draw_setup(f, app, right),
+        Section::Browser => draw_browser(f, app, right),
         sec => draw_rows(f, app, right, sec),
     }
 }
@@ -1315,4 +1316,260 @@ pub fn draw_edit(f: &mut Frame, area: Rect, app: &App, row: usize, buf_text: &st
             ("Cancel", UiAction::ModalCancel, "Close (Esc)"),
         ],
     );
+}
+
+/// Settings > Browser: BrowserSkill (bsk) as the last passive look saw it.
+fn draw_browser(f: &mut Frame, app: &App, area: Rect) {
+    use crate::browser::Daemon;
+    let buf = f.buffer_mut();
+    let mut hits = app.hits.borrow_mut();
+    let limit = area.x + area.width;
+    let bottom = area.y + area.height;
+    let mut y = area.y + 1;
+    let head = Style::default().fg(FG).add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(DIM);
+    let faint = Style::default().fg(FAINT);
+    let Some(s) = app.browser.snapshot() else {
+        text(
+            buf,
+            area.x + 1,
+            y,
+            limit,
+            if app.browser_busy() {
+                "Looking at BrowserSkill..."
+            } else {
+                "Not looked at yet."
+            },
+            dim,
+        );
+        return;
+    };
+    let line = |buf: &mut ratatui::buffer::Buffer, y: &mut u16, x: u16, t: &str, st: Style| {
+        if *y < bottom {
+            text(buf, area.x + x, *y, limit, t, st);
+        }
+        *y += 1;
+    };
+    // Daemon and version.
+    let (mark, c) = match &s.daemon {
+        Daemon::Running(_) => ("✓", theme::SAGE),
+        Daemon::NotInstalled => ("·", theme::SAND),
+        _ => ("✗", theme::CLAY),
+    };
+    let ver = s.version.as_deref().unwrap_or("?");
+    let t = match &s.daemon {
+        Daemon::NotInstalled => {
+            "bsk is not installed (BrowserSkill: github.com/Tencent/BrowserSkill)".to_string()
+        }
+        Daemon::Running(i) => format!(
+            "bsk {ver}, daemon running (pid {}, port {})",
+            i.pid, i.ws_port
+        ),
+        d => format!("bsk {ver}, daemon {}", d.word()),
+    };
+    line(buf, &mut y, 1, "BrowserSkill", head);
+    line(
+        buf,
+        &mut y,
+        2,
+        &format!("{mark} {t}"),
+        Style::default().fg(c),
+    );
+    if let Some(d) = &s.doctor {
+        let c = if d.fail() > 0 {
+            theme::CLAY
+        } else if d.warn() > 0 {
+            theme::SAND
+        } else {
+            theme::SAGE
+        };
+        line(
+            buf,
+            &mut y,
+            2,
+            &format!("doctor: {}", d.summary()),
+            Style::default().fg(c),
+        );
+        for p in d.problems().into_iter().take(3) {
+            let t = crate::sessions::snippet(
+                &format!("{} {}: {}", p.status, p.name, p.detail),
+                area.width.saturating_sub(6) as usize,
+            );
+            line(buf, &mut y, 4, &t, faint);
+        }
+    }
+    y += 1;
+    line(buf, &mut y, 1, "Connected browsers", head);
+    if s.browsers.is_empty() {
+        line(buf, &mut y, 2, "none connected", dim);
+    }
+    for b in &s.browsers {
+        let flags = format!(
+            "{}{}",
+            if b.unresponsive {
+                "  not responding"
+            } else {
+                ""
+            },
+            if b.version_skew {
+                "  version mismatch"
+            } else {
+                ""
+            }
+        );
+        let t = format!(
+            "{:<10}{}  {} {}  ext {}{flags}",
+            b.instance_id, b.label, b.browser_name, b.browser_version, b.extension_version
+        );
+        line(buf, &mut y, 2, &t, Style::default().fg(FG));
+    }
+    if !s.browsers.is_empty() {
+        line(
+            buf,
+            &mut y,
+            2,
+            "A label is what you typed in the extension popup, not the Chrome profile name.",
+            faint,
+        );
+    }
+    y += 1;
+    line(buf, &mut y, 1, "Chrome profiles with the extension", head);
+    if s.profiles.is_empty() {
+        line(buf, &mut y, 2, "no Chrome profiles found", dim);
+    }
+    for p in &s.profiles {
+        let c = match (p.installed, p.enabled) {
+            (_, Some(false)) => theme::SAND,
+            _ if p.present() => theme::SAGE,
+            _ => theme::STONE,
+        };
+        line(
+            buf,
+            &mut y,
+            2,
+            &format!(
+                "{:<34}{}",
+                crate::sessions::snippet(&p.profile.display(), 32),
+                p.word()
+            ),
+            Style::default().fg(c),
+        );
+    }
+    y += 1;
+    line(buf, &mut y, 1, "Skill per account", head);
+    for a in &s.accounts {
+        let (m, c, w) = if a.installed {
+            ("✓", theme::SAGE, "installed")
+        } else {
+            ("·", theme::SAND, "not installed")
+        };
+        line(
+            buf,
+            &mut y,
+            2,
+            &format!(
+                "{m} {:<20}{:<8}{w}",
+                crate::sessions::snippet(&a.account.label, 18),
+                a.account.harness
+            ),
+            Style::default().fg(c),
+        );
+    }
+    if !s.harnesses.is_empty() {
+        let h: Vec<String> = s
+            .harnesses
+            .iter()
+            .filter(|h| h.installed)
+            .map(|h| h.id.clone())
+            .collect();
+        line(
+            buf,
+            &mut y,
+            2,
+            &format!(
+                "bsk's own install: {}",
+                if h.is_empty() {
+                    "none".into()
+                } else {
+                    h.join(", ")
+                }
+            ),
+            faint,
+        );
+    }
+    y += 1;
+    if y < bottom {
+        let pending = app
+            .browser
+            .confirm
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(15));
+        let x = button(
+            buf,
+            &mut hits,
+            app.mouse_pos,
+            area.x + 1,
+            y,
+            limit,
+            if pending {
+                "Click again to install the skill"
+            } else {
+                "Install the browser skill"
+            },
+            UiAction::BrowserSkill,
+            "Copy the skill into your accounts and allow Bash(bsk:*); the first click shows what it does",
+            theme::SAGE,
+        );
+        button(
+            buf,
+            &mut hits,
+            app.mouse_pos,
+            x + 2,
+            y,
+            limit,
+            "Look again",
+            UiAction::BrowserRefresh,
+            "Ask bsk for its status now (it never starts the daemon)",
+            theme::STONE,
+        );
+        text(
+            buf,
+            area.x + 1,
+            y + 1,
+            limit,
+            &format!(
+                "Checked {} s ago. GodTerm never installs bsk or the extension.",
+                s.age_secs()
+            ),
+            faint,
+        );
+        // The Chrome profile links open in ([browser] default_profile).
+        if y + 2 < bottom {
+            let dp = &app.cfg.browser.default_profile;
+            let who = if dp.is_empty() {
+                "the system browser".to_string()
+            } else {
+                app.profile_name(dp).unwrap_or_else(|| dp.clone())
+            };
+            let x = text(
+                buf,
+                area.x + 1,
+                y + 2,
+                limit,
+                &format!("Links open in {who}  "),
+                Style::default().fg(FG),
+            );
+            button(
+                buf,
+                &mut hits,
+                app.mouse_pos,
+                x,
+                y + 2,
+                limit,
+                "Change",
+                UiAction::BrowserDefault,
+                "Next Chrome profile as the default for links; a tab's Browser button sets it too",
+                theme::SLATE,
+            );
+        }
+    }
 }

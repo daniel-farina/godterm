@@ -627,7 +627,8 @@ fn a_tab_gets_a_job_server_limited_to_itself() {
     let home = make_home("tabjobs", "[tabs]\njobs_tools = true\n");
     let t = Tui::start_with(home.clone(), &[], false);
     t.wait_for("fake claude in work", 15);
-    t.wait_for("create_job tool over CronCreate", 5);
+    // The hint is long and the pane narrow: wait for a word that cannot wrap.
+    t.wait_for("Prefer", 5);
     // The launch's --mcp-config names the server and this tab's identity.
     let dir = home.join("tab-mcp");
     let file = std::fs::read_dir(&dir)
@@ -695,7 +696,8 @@ fn a_tab_gets_a_job_server_limited_to_itself() {
         .as_array()
         .unwrap()
         .len();
-    assert_eq!(tools, 5);
+    // The five job tools and the two browser tools (tab_jobs::TAB_TOOLS).
+    assert_eq!(tools, 7);
     // Nothing was made: the user has not said yes.
     let jobs = std::fs::read_to_string(home.join("jobs.json")).unwrap_or_default();
     assert!(!jobs.contains("\"prompt\""), "{jobs}");
@@ -710,7 +712,7 @@ fn interrupted_setup_writes_no_config() {
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let mut t = Tui::start(home.clone(), &[]);
-    t.wait_for("How many Claude accounts", 10);
+    t.wait_for("How many agent slots", 10);
     t.send(b"3\r");
     t.wait_for("Account 1 of 3", 5);
     t.send(b"\x03");
