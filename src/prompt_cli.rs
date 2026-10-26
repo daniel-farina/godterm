@@ -62,23 +62,56 @@ fn numbered(line: &str) -> Option<(bool, u32, String)> {
 }
 
 /// The last run of numbered option lines: (index of its first line,
-/// (selected, number, label) per option).
+/// (selected, number, label) per option). In a narrow tab (a phone) an
+/// option wraps: lines under it indented past its number are the rest of
+/// its label (with the key it names, "(p)").
+#[allow(clippy::type_complexity)]
 fn last_numbered_block(ls: &[&str]) -> Option<(usize, Vec<(bool, u32, String)>)> {
-    let mut end = None;
-    for i in (0..ls.len()).rev() {
-        if numbered(ls[i]).is_some() {
-            end = Some(i);
-            break;
+    // The column an option's number starts at ("› 2." / "  2." -> 2).
+    let col = |l: &str| {
+        l.chars()
+            .take_while(|c| *c == ' ' || *c == '›' || *c == '>')
+            .count()
+    };
+    let indent = |l: &str| l.chars().take_while(|c| *c == ' ').count();
+    let mut best: Option<(usize, Vec<(bool, u32, String)>)> = None;
+    let mut cur: Option<(usize, Vec<(bool, u32, String)>, usize)> = None;
+    for (i, l) in ls.iter().enumerate() {
+        if let Some(o) = numbered(l) {
+            let c = col(l);
+            match &mut cur {
+                Some((_, v, last_col)) => {
+                    v.push(o);
+                    *last_col = c;
+                }
+                None => cur = Some((i, vec![o], c)),
+            }
+            continue;
+        }
+        if let Some((_, v, c)) = &mut cur {
+            if !l.trim().is_empty() && indent(l) > *c {
+                if let Some(last) = v.last_mut() {
+                    last.2 = format!("{} {}", last.2, l.trim());
+                }
+                continue;
+            }
+        }
+        if let Some((start, v, _)) = cur.take() {
+            if v.len() >= 2 {
+                best = Some((start, v));
+            }
         }
     }
-    let end = end?;
-    let mut start = end;
-    while start > 0 && numbered(ls[start - 1]).is_some() {
-        start -= 1;
+    if let Some((start, v, _)) = cur.take() {
+        if v.len() >= 2 {
+            best = Some((start, v));
+        }
     }
-    let opts: Vec<_> = (start..=end).filter_map(|i| numbered(ls[i])).collect();
-    (opts.len() >= 2).then_some((start, opts))
+    best
 }
+
+/// An option's label, number and the key that picks it.
+type OptKeys = (String, Option<u32>, Option<Vec<u8>>);
 
 fn finish(
     kind: PromptKind,
@@ -106,7 +139,9 @@ fn pick_by_label(labels: &[String]) -> [Option<usize>; 3] {
         l.contains("don't ask again") || l.starts_with("always allow") || l.contains("always")
     };
     [
-        find(&|l| (l.starts_with("yes") && !always(l)) || l == "allow" || l.starts_with("allow once")),
+        find(&|l| {
+            (l.starts_with("yes") && !always(l)) || l == "allow" || l.starts_with("allow once")
+        }),
         find(&|l| always(l)).or_else(|| find(&|l| l.starts_with("allow for this session"))),
         find(&|l| l.starts_with("no") || l == "cancel" || l.starts_with("reject")),
     ]
@@ -163,7 +198,12 @@ fn cursor_prompt(screen: &str) -> Option<Prompt> {
             }
         }
         if opts.len() >= 2 {
-            return Some(finish(PromptKind::Trust, opts, selected, [Some(0), None, Some(1)]));
+            return Some(finish(
+                PromptKind::Trust,
+                opts,
+                selected,
+                [Some(0), None, Some(1)],
+            ));
         }
         return None;
     }
@@ -173,8 +213,37 @@ fn cursor_prompt(screen: &str) -> Option<Prompt> {
         let t = l.trim();
         t.starts_with("Run this") && t.ends_with('?')
     })?;
+    // In a narrow tab (a phone) an option's end, with its key, wraps to
+    // the next line or is cut off: a line that starts an option by its
+    // wording takes the lines under it until its key shows, else the key
+    // Cursor gives that option.
+    let known = |label: &str| -> Option<Vec<u8>> {
+        let l = label.to_lowercase();
+        if l.starts_with("run (once)") {
+            Some(b"y".to_vec())
+        } else if l.starts_with("run everything") {
+            Some(b"\x1b[Z".to_vec())
+        } else if l.starts_with("add ") || l.starts_with("allowlist") {
+            Some(b"\t".to_vec())
+        } else if l.starts_with("skip") {
+            Some(b"n".to_vec())
+        } else {
+            None
+        }
+    };
     let mut opts = vec![];
     let mut selected = 0;
+    let mut pending: Option<(bool, String)> = None;
+    let flush = |p: &mut Option<(bool, String)>, opts: &mut Vec<OptKeys>, selected: &mut usize| {
+        if let Some((sel, body)) = p.take() {
+            if let Some(k) = known(&body) {
+                if sel {
+                    *selected = opts.len();
+                }
+                opts.push((body, None, Some(k)));
+            }
+        }
+    };
     for l in &ls[q + 1..] {
         let t = l.trim_end();
         let body = t.trim_start();
@@ -182,14 +251,34 @@ fn cursor_prompt(screen: &str) -> Option<Prompt> {
             Some(r) => (true, r.trim_start()),
             None => (false, body),
         };
+        if let Some((psel, pbody)) = pending.take() {
+            if !sel && !body.is_empty() && known(body).is_none() {
+                let joined = format!("{pbody} {body}");
+                let (label, key) = split_hotkey(&joined);
+                if key.is_some() {
+                    if psel {
+                        selected = opts.len();
+                    }
+                    opts.push((label, None, key));
+                } else {
+                    pending = Some((psel, joined));
+                }
+                continue;
+            }
+            pending = Some((psel, pbody));
+            flush(&mut pending, &mut opts, &mut selected);
+        }
         let (label, key) = split_hotkey(body);
         if key.is_some() {
             if sel {
                 selected = opts.len();
             }
             opts.push((label, None, key));
+        } else if known(body).is_some() {
+            pending = Some((sel, body.to_string()));
         }
     }
+    flush(&mut pending, &mut opts, &mut selected);
     if opts.len() < 2 {
         return None;
     }
@@ -207,30 +296,33 @@ fn cursor_prompt(screen: &str) -> Option<Prompt> {
 
 fn antigravity_prompt(screen: &str) -> Option<Prompt> {
     let ls = lines(screen);
-    if screen.contains("Do you trust the contents of this project") {
+    if screen.contains("Do you trust the contents") {
         // "> Yes, I trust this folder" / "  No, exit": arrows and Enter.
-        let q = ls.iter().position(|l| l.contains("Do you trust the contents"))?;
+        // The options are the block of lines around the highlighted one
+        // ("> "): in a narrow tab (a phone) the explanation above them
+        // wraps, and its second line is not an option.
+        let q = ls
+            .iter()
+            .position(|l| l.contains("Do you trust the contents"))?;
+        let rest = &ls[q + 1..];
+        let opt_line = |l: &str| !l.trim().is_empty() && !l.contains("Navigate");
+        let hi = rest.iter().position(|l| l.starts_with("> "))?;
+        let mut start = hi;
+        while start > 0 && opt_line(rest[start - 1]) {
+            start -= 1;
+        }
+        let mut end = hi + 1;
+        while end < rest.len() && opt_line(rest[end]) {
+            end += 1;
+        }
         let mut opts = vec![];
         let mut selected = 0;
-        for l in &ls[q + 1..] {
-            let t = l.trim_end();
-            if t.trim().is_empty() || t.contains("Navigate") {
-                if opts.is_empty() {
-                    continue;
-                }
-                break;
-            }
-            if t.contains("Antigravity CLI requires") {
-                continue;
-            }
-            let (sel, label) = match t.strip_prefix("> ") {
-                Some(r) => (true, r),
-                None => (false, t.trim_start()),
-            };
-            if sel {
+        for (i, l) in rest[start..end].iter().enumerate() {
+            if start + i == hi {
                 selected = opts.len();
             }
-            opts.push((label.trim().to_string(), None, None));
+            let label = l.strip_prefix("> ").unwrap_or(l).trim();
+            opts.push((label.to_string(), None, None));
         }
         if opts.len() >= 2 {
             let labels: Vec<String> = opts.iter().map(|o| o.0.clone()).collect();
@@ -276,14 +368,12 @@ pub fn describe_request_for(h: Harness, screen: &str) -> Option<Request> {
         // Codex: "> You are in <dir>"; Antigravity: the line under
         // "Accessing workspace:"; Cursor: the line under the question.
         let after = |marker: &str| {
-            ls.iter()
-                .position(|l| l.contains(marker))
-                .and_then(|i| {
-                    ls[i + 1..]
-                        .iter()
-                        .map(|l| l.trim_matches(|c: char| c == '│' || c.is_whitespace()))
-                        .find(|l| !l.is_empty())
-                })
+            ls.iter().position(|l| l.contains(marker)).and_then(|i| {
+                ls[i + 1..]
+                    .iter()
+                    .map(|l| l.trim_matches(|c: char| c == '│' || c.is_whitespace()))
+                    .find(|l| !l.is_empty())
+            })
         };
         let detail = ls
             .iter()
@@ -306,15 +396,13 @@ pub fn describe_request_for(h: Harness, screen: &str) -> Option<Request> {
     match h {
         Harness::Codex => {
             let q = ls.iter().rposition(|l| {
-                l.contains("Would you like to") || l.contains("Do you want to") || l.contains("Allow the")
+                l.contains("Would you like to")
+                    || l.contains("Do you want to")
+                    || l.contains("Allow the")
             })?;
             let question = clean(ls[q]);
             if question.contains("MCP server") {
-                let tool = question
-                    .split('"')
-                    .nth(1)
-                    .unwrap_or("")
-                    .to_string();
+                let tool = question.split('"').nth(1).unwrap_or("").to_string();
                 let server = question
                     .strip_prefix("Allow the ")
                     .and_then(|s| s.split(" MCP").next())
@@ -339,7 +427,10 @@ pub fn describe_request_for(h: Harness, screen: &str) -> Option<Request> {
         Harness::Cursor => {
             let q = ls.iter().rposition(|l| l.trim().starts_with("Run this"))?;
             let question = clean(ls[q]);
-            let above = ls[..q].iter().rev().find(|l| !l.trim().is_empty() && !l.contains('─'))?;
+            let above = ls[..q]
+                .iter()
+                .rev()
+                .find(|l| !l.trim().is_empty() && !l.contains('─'))?;
             let above = above.trim();
             if question.contains("MCP") {
                 return Some(Request {
@@ -360,7 +451,9 @@ pub fn describe_request_for(h: Harness, screen: &str) -> Option<Request> {
             })
         }
         _ => {
-            let r = ls.iter().position(|l| l.contains("Requesting permission for"))?;
+            let r = ls
+                .iter()
+                .position(|l| l.contains("Requesting permission for"))?;
             let detail = ls[r + 1..]
                 .iter()
                 .map(|l| l.trim())
@@ -478,7 +571,8 @@ pub fn activity_for(h: Harness, text: &str) -> Option<Activity> {
                 } else {
                     Activity::Permission
                 }
-            } else if text.contains("? for shortcuts") || any(&|l| l == ">" || l.starts_with("> ")) {
+            } else if text.contains("? for shortcuts") || any(&|l| l == ">" || l.starts_with("> "))
+            {
                 Activity::Ready
             } else {
                 Activity::Starting
@@ -486,7 +580,12 @@ pub fn activity_for(h: Harness, text: &str) -> Option<Activity> {
         ),
         Harness::OpenCode => Some(if text.contains("esc interrupt") {
             Activity::Working
-        } else if text.contains("ctrl+p commands") || text.contains("Ask anything") {
+        } else if text.contains("ctrl+p commands")
+            || text.contains("Ask anything")
+            // The composer's bottom edge: in a narrow tab (a phone) the
+            // footer hints are left out, and a draft hides the placeholder.
+            || any(&|l| l.starts_with("╹▀▀"))
+        {
             Activity::Ready
         } else {
             Activity::Starting
@@ -531,6 +630,7 @@ mod tests {
             (Harness::Codex, "codex_working", Working),
             (Harness::Codex, "codex_done", Ready),
             (Harness::Codex, "codex_approval", Permission),
+            (Harness::Codex, "codex_approval_wrapped", Permission),
             (Harness::Codex, "codex_mcp_approval", Permission),
             (Harness::Cursor, "cursor_trust", Permission),
             (Harness::Cursor, "cursor_ready", Ready),
@@ -540,12 +640,14 @@ mod tests {
             (Harness::Cursor, "cursor_mcp_approval", Permission),
             (Harness::Cursor, "cursor_tellinstead", Permission),
             (Harness::Antigravity, "antigravity_trust", Permission),
+            (Harness::Antigravity, "antigravity_trust_narrow", Permission),
             (Harness::Antigravity, "antigravity_ready", Ready),
             (Harness::Antigravity, "antigravity_working", Working),
             (Harness::Antigravity, "antigravity_done", Ready),
             (Harness::Antigravity, "antigravity_approval", Permission),
             (Harness::OpenCode, "opencode_ready", Ready),
             (Harness::OpenCode, "opencode_working", Working),
+            (Harness::OpenCode, "opencode_draft_narrow", Ready),
         ];
         for &(h, name, want) in cases {
             assert_eq!(activity_for(h, &screen(name)), Some(want), "{name}");
@@ -576,6 +678,17 @@ mod tests {
         assert_eq!(p.kind, PromptKind::Permission);
         assert_eq!(p.selected, 0);
         assert_eq!(p.options.len(), 3);
+        // A narrow tab wraps the options: same keys.
+        assert_eq!(keys(h, "codex_approval_wrapped", Choice::Approve), b"y");
+        assert_eq!(keys(h, "codex_approval_wrapped", Choice::Always), b"p");
+        assert_eq!(keys(h, "codex_approval_wrapped", Choice::Deny), b"\x1b");
+        assert_eq!(
+            parse_prompt_for(h, &screen("codex_approval_wrapped"))
+                .unwrap()
+                .options
+                .len(),
+            3
+        );
         // The MCP prompt has no shortcuts: the numbers pick (verified).
         assert_eq!(keys(h, "codex_mcp_approval", Choice::Approve), b"1");
         assert_eq!(keys(h, "codex_mcp_approval", Choice::Always), b"3");
@@ -599,6 +712,14 @@ mod tests {
         assert_eq!(keys(h, "cursor_approval", Choice::Always), b"\t");
         assert_eq!(keys(h, "cursor_approval", Choice::Deny), b"n");
         assert_eq!(label(h, "cursor_approval", Choice::Approve), "Run (once)");
+        // A narrow tab cuts or wraps the option lines: same keys.
+        for n in ["cursor_approval_cut", "cursor_approval_wrapped"] {
+            assert_eq!(keys(h, n, Choice::Approve), b"y", "{n}");
+            assert_eq!(keys(h, n, Choice::Always), b"\t", "{n}");
+            assert_eq!(keys(h, n, Choice::Deny), b"n", "{n}");
+            let p = parse_prompt_for(h, &screen(n)).unwrap();
+            assert_eq!(p.options.len(), 4, "{n}: {:?}", p.options);
+        }
         // "Run Everything (shift+tab)" is never what a spoken yes means.
         let p = parse_prompt_for(h, &screen("cursor_approval")).unwrap();
         let labels: Vec<&str> = p.options.iter().map(|o| o.label.as_str()).collect();
@@ -633,6 +754,18 @@ mod tests {
         assert_eq!(keys(h, "antigravity_approval", Choice::Approve), b"1");
         assert_eq!(keys(h, "antigravity_approval", Choice::Always), b"2");
         assert_eq!(keys(h, "antigravity_approval", Choice::Deny), b"4");
+        // Wrapped in a narrow tab: the same numbers.
+        assert_eq!(
+            keys(h, "antigravity_approval_wrapped", Choice::Approve),
+            b"1"
+        );
+        assert_eq!(
+            keys(h, "antigravity_approval_wrapped", Choice::Always),
+            b"2"
+        );
+        assert_eq!(keys(h, "antigravity_approval_wrapped", Choice::Deny), b"4");
+        assert!(label(h, "antigravity_approval_wrapped", Choice::Always)
+            .contains("in this conversation"));
         // "Always" is the conversation-wide one, not the persisted rule.
         assert!(label(h, "antigravity_approval", Choice::Always).contains("in this conversation"));
         // Folder trust has no numbers: arrows and Enter from the highlight.
@@ -641,7 +774,32 @@ mod tests {
         assert_eq!(p.selected, 0);
         assert_eq!(keys(h, "antigravity_trust", Choice::Approve), b"\r");
         assert_eq!(keys(h, "antigravity_trust", Choice::Deny), b"\x1b[B\r");
-        for n in ["antigravity_ready", "antigravity_working", "antigravity_done"] {
+        // In a narrow tab (a phone fits it to about 42 columns) the line
+        // under the question wraps; the options are still the two below.
+        let p = parse_prompt_for(h, &screen("antigravity_trust_narrow")).unwrap();
+        let labels: Vec<&str> = p.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["Yes, I trust this folder", "No, exit"]);
+        assert_eq!(keys(h, "antigravity_trust_narrow", Choice::Approve), b"\r");
+        assert_eq!(
+            keys(h, "antigravity_trust_narrow", Choice::Deny),
+            b"\x1b[B\r"
+        );
+        // The highlight on the second option: Enter picks it, Up goes back.
+        let moved = screen("antigravity_trust_narrow")
+            .replace("> Yes, I trust", "  Yes, I trust")
+            .replace("  No, exit", "> No, exit");
+        let p = parse_prompt_for(h, &moved).unwrap();
+        assert_eq!(p.selected, 1);
+        assert_eq!(p.keys_for(p.index_for(Choice::Deny).unwrap(), false), b"\r");
+        assert_eq!(
+            p.keys_for(p.index_for(Choice::Approve).unwrap(), false),
+            b"\x1b[A\r"
+        );
+        for n in [
+            "antigravity_ready",
+            "antigravity_working",
+            "antigravity_done",
+        ] {
             assert!(parse_prompt_for(h, &screen(n)).is_none(), "{n}");
         }
     }
@@ -698,7 +856,10 @@ mod tests {
         assert_eq!(id(Harness::Cursor, "codex_exit"), None);
         assert_eq!(id(Harness::Codex, "codex_working"), None);
         assert_eq!(id(Harness::Claude, "codex_exit"), None);
-        assert_eq!(exit_session_id(Harness::Codex, "codex resume --sandbox"), None);
+        assert_eq!(
+            exit_session_id(Harness::Codex, "codex resume --sandbox"),
+            None
+        );
         assert_eq!(exit_session_id(Harness::Codex, "codex resume ;rm"), None);
     }
 

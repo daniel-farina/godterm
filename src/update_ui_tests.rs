@@ -247,6 +247,35 @@ fn download_then_restart_which_asks_first() {
             .contains("Restart into version 9.9.9"),
         "{v}"
     );
+    // Its confirm in the same turn that asked, or before any question,
+    // or without a yes: refused, nothing scheduled.
+    let v = app.control_call("restart_to_update", &serde_json::json!({"confirm": true}));
+    assert!(v["error"].as_str().unwrap().contains("same turn"), "{v}");
+    assert!(!app.update.after_turn);
+    app.assistant_turn += 1;
+    app.assistant.last_user = "what's new in it?".into();
+    let v = app.control_call("restart_to_update", &serde_json::json!({"confirm": true}));
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("did not clearly say yes"),
+        "{v}"
+    );
+    assert!(!app.update.after_turn);
+    app.assistant_turn += 1;
+    app.assistant.last_user = "yes".into();
+    let v = app.control_call("restart_to_update", &serde_json::json!({"confirm": true}));
+    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+    assert!(app.update.after_turn, "restarts after this answer");
+    app.update.after_turn = false;
+    // That yes is used up: a second confirm needs a new question.
+    app.assistant_turn += 1;
+    let v = app.control_call("restart_to_update", &serde_json::json!({"confirm": true}));
+    assert!(
+        v["error"].as_str().unwrap().contains("ask the user first"),
+        "{v}"
+    );
     let v = app.control_call("update_info", &serde_json::json!({}));
     assert_eq!(v["result"]["latest"], serde_json::json!("9.9.9"), "{v}");
     assert_eq!(v["result"]["versions"].as_array().unwrap().len(), 2);

@@ -71,6 +71,20 @@ pub fn tilde(p: &Path) -> String {
     crate::config::tilde(p)
 }
 
+/// The first `n` bytes of `s`, or fewer so the cut falls between chars
+/// (`&s[..n]` panics inside a char; ids and dates from files on disk are
+/// usually ASCII, but nothing makes them so).
+pub fn head(s: &str, n: usize) -> &str {
+    if n >= s.len() {
+        return s;
+    }
+    let mut end = n;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Cut `s` to `max` chars in the middle: "godterm-fe…auth-login".
 pub fn middle(s: &str, max: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
@@ -227,7 +241,9 @@ impl App {
     pub fn open_in_finder(&mut self, s: usize) {
         let d = self.tab_dir(s, self.panes[s].active);
         if !cfg!(test) && !crate::demo::active() {
-            let _ = std::process::Command::new("open").arg(&d).spawn();
+            let _ = std::process::Command::new("open")
+                .args(crate::guard::finder_args(&d))
+                .spawn();
         }
         self.flash(format!("Opened {} in Finder", tilde(&d)));
     }
@@ -261,6 +277,18 @@ mod sep_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn head_cuts_between_chars() {
+        assert_eq!(head("abcdefgh-1234", 8), "abcdefgh");
+        assert_eq!(head("abc", 8), "abc");
+        assert_eq!(head("", 8), "");
+        // Byte 8 is inside the é: the cut moves back to before it.
+        assert_eq!(head("abcdefgé.jsonl", 8), "abcdefg");
+        assert_eq!(head("日本語", 4), "日");
+        assert_eq!(head("🚀🚀", 3), "");
+        assert_eq!(head("2026-10-23T10:00:00Z", 10), "2026-10-23");
+    }
 
     #[test]
     fn shortens_from_the_middle() {

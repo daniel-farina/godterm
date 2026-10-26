@@ -256,7 +256,11 @@ pub fn doctor() -> Result<()> {
         ),
     }
     if cfg.accounts.is_empty() {
-        r.warn("accounts", "none configured", "run godterm setup");
+        r.warn(
+            "accounts",
+            "none configured",
+            "start godterm: its welcome adds your first account (or run godterm setup)",
+        );
     }
 
     println!("\nAccounts");

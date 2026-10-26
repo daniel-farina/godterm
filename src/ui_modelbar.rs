@@ -42,22 +42,33 @@ fn layout(labels: &[String], w: u16) -> (bool, bool) {
 }
 
 /// The Browser button (tab_browser) ending before `end`: its text shows
-/// the state (none, needs the extension, needs turning on, ready). Returns
-/// the new right edge; nothing is drawn when the row is too narrow.
+/// the state (none, needs the extension, needs turning on, ready). Its
+/// longer forms leave the models their number hints (`left`); when none
+/// fits, a compact " web " form takes the room the hints would use
+/// (`tight`). Returns the new right edge; nothing is drawn when even that
+/// does not fit.
+#[allow(clippy::too_many_arguments)]
 fn browser_button(
     buf: &mut Buffer,
     app: &App,
     i: usize,
     y: u16,
     left: u16,
+    tight: u16,
     end: u16,
     bg: ratatui::style::Color,
 ) -> u16 {
     use crate::tab_browser::BtnState;
     let (state, labels) = app.browser_button(i);
     let room = end.saturating_sub(left);
-    let Some(label) = labels.into_iter().find(|l| l.chars().count() as u16 <= room) else {
-        return end;
+    let compact = crate::tab_browser::compact_label(state);
+    let label = match labels
+        .into_iter()
+        .find(|l| l.chars().count() as u16 <= room)
+    {
+        Some(l) => l,
+        None if compact.chars().count() as u16 <= end.saturating_sub(tight) => compact.to_string(),
+        None => return end,
     };
     let bw = label.chars().count() as u16;
     let bx = end - bw;
@@ -78,7 +89,16 @@ fn browser_button(
         BtnState::NeedsEnable => "Browser: BrowserSkill is in the profile but turned off; click to turn it on (Ctrl-a i)".to_string(),
         BtnState::Ready => "Browser: ready, this tab's agent can drive its Chrome profile; click to change (Ctrl-a i)".to_string(),
     };
-    app.hits.borrow_mut().add(rect, UiAction::TabBrowser(i), hint);
+    let hint = match app.tab_browser_activity(app.panes[i].cur().uid) {
+        Some(a) => format!(
+            "{hint} · last: {}",
+            crate::tab_browser::activity_words(&a, chrono::Utc::now())
+        ),
+        None => hint,
+    };
+    app.hits
+        .borrow_mut()
+        .add(rect, UiAction::TabBrowser(i), hint);
     bx.saturating_sub(1)
 }
 
@@ -103,11 +123,37 @@ pub fn draw(buf: &mut Buffer, app: &App, i: usize, r: Rect) {
     }
     // The loops drawer's button keeps the right end: "⟳ loops (N)",
     // dim at 0.
+    let models_w: u16 = models
+        .iter()
+        .map(|m| m.label.chars().count() as u16 + 5)
+        .sum::<u16>()
+        + 1;
+    // The models without their number hints (what a narrow row shows).
+    let tight_w: u16 = models
+        .iter()
+        .map(|m| m.label.chars().count() as u16 + 3)
+        .sum::<u16>()
+        + 1;
+    // Room the compact Browser button keeps, so it never drops out
+    // while the loops button is still drawn.
+    let web_w = crate::tab_browser::compact_label(app.tab_browser_state(tab.uid))
+        .chars()
+        .count() as u16
+        + 1;
     let n = app.loops_in(tab.uid);
     let open = app.loops_drawer_open(i);
-    let label = format!(" ⟳ loops ({n}) ");
-    let lw = label.chars().count() as u16;
-    let end = if r.width > lw + 24 {
+    let full = format!(" ⟳ loops ({n}) ");
+    let short = format!(" ⟳ {n} ");
+    let (fw, sw) = (full.chars().count() as u16, short.chars().count() as u16);
+    let label = if r.width > fw + 24 && r.width > tight_w + web_w + fw {
+        Some(full)
+    } else if r.width > sw + 18 && r.width > tight_w + web_w + sw {
+        Some(short)
+    } else {
+        None
+    };
+    let lw = label.as_ref().map_or(0, |l| l.chars().count() as u16);
+    let end = if let Some(label) = label {
         let lx = end - lw;
         let rect = Rect::new(lx, y, lw, 1);
         let hovered = app.mouse_pos.is_some_and(|(c, rr)| contains(rect, c, rr));
@@ -141,9 +187,8 @@ pub fn draw(buf: &mut Buffer, app: &App, i: usize, r: Rect) {
     };
     // The Browser button sits left of it.
     // (Not while a model switch is named on the bar: that text needs the room.)
-    let models_w: u16 = models.iter().map(|m| m.label.chars().count() as u16 + 5).sum::<u16>() + 1;
     let end = if queued.is_none() {
-        browser_button(buf, app, i, y, r.x + models_w, end, bg)
+        browser_button(buf, app, i, y, r.x + models_w, r.x + tight_w, end, bg)
     } else {
         end
     };

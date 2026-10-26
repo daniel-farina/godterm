@@ -296,6 +296,7 @@ impl App {
     }
 
     /// The Updates window's lines (`w` wide) and buttons.
+    #[allow(clippy::type_complexity)]
     pub fn updates_view(
         &self,
         w: usize,
@@ -344,7 +345,7 @@ impl App {
             let date = r
                 .published
                 .as_deref()
-                .map(|d| format!(" · {}", &d[..d.len().min(10)]))
+                .map(|d| format!(" · {}", crate::paths::head(d, 10)))
                 .unwrap_or_default();
             lines.push((format!("v{}{date}", r.version()), Tone::Heading));
             let body = if r.body.trim().is_empty() {

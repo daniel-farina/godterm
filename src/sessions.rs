@@ -71,7 +71,7 @@ pub struct SessionInfo {
     /// When it started (the first timestamp in it).
     #[serde(default)]
     pub created: Option<SystemTime>,
-    /// The name the user gave the session (/rename, "RARIUM REFACTOR"):
+    /// The name the user gave the session (/rename, "VARIUM REFACTOR"):
     /// it wins over the generated title.
     #[serde(default)]
     pub name: Option<String>,

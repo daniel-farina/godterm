@@ -15,7 +15,7 @@ pub const HALF_MS: u64 = 500;
 
 /// Is the lit half showing at `now_ms`?
 pub fn lit_at(now_ms: u64) -> bool {
-    (now_ms / HALF_MS) % 2 == 0
+    (now_ms / HALF_MS).is_multiple_of(2)
 }
 
 /// The clock for the blink: wall clock milliseconds, or the test's.

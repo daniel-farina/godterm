@@ -240,7 +240,12 @@ impl App {
     /// look for the session in the old account and resume a stale copy.
     pub(crate) fn jobs_follow_move(&mut self, from: u64, to: u64, account: &str) {
         let mut n = 0;
-        for j in self.jobs.jobs.iter_mut().filter(|j| j.target.uid == Some(from)) {
+        for j in self
+            .jobs
+            .jobs
+            .iter_mut()
+            .filter(|j| j.target.uid == Some(from))
+        {
             j.target.uid = Some(to);
             j.target.account = account.to_string();
             n += 1;
@@ -387,6 +392,7 @@ impl App {
                 label: t.label.clone(),
                 tab_group: None,
                 pinned: false,
+                browser: None,
             };
             self.reopen_closed_tab(c).map(|_| ())
         })();
@@ -453,6 +459,12 @@ impl App {
             self.set_result(id, "skipped", why);
             self.jobs_save();
             return Err(why.into());
+        }
+        // Sync on: only the machine owning its conversation runs it.
+        if let Some(why) = self.lease_job_block(&j) {
+            self.set_result(id, "skipped", why.clone());
+            self.jobs_save();
+            return Err(why);
         }
         let now = self.job_now();
         let (uid, woke) = match self.job_wake(&j.target) {
@@ -1075,6 +1087,7 @@ impl App {
             runs: 0,
             finished: None,
             adopted_from: Some(l.id.clone()),
+            machine: self.job_machine(),
         };
         j.next_run = jobs::next_after(&j, now, None).or(j.at);
         Ok(j)
@@ -1365,7 +1378,14 @@ impl App {
             runs: 0,
             finished: None,
             adopted_from: None,
+            machine: self.job_machine(),
         }
+    }
+
+    /// With sync on, a new job remembers this machine (a job with no
+    /// session runs only here).
+    pub(crate) fn job_machine(&self) -> Option<String> {
+        (self.lease_on() && !self.lease.me.is_empty()).then(|| self.lease.me.clone())
     }
 
     /// The question for a job about to be created or changed.

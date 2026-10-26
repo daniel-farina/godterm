@@ -139,7 +139,7 @@ fn parses_the_doctor_text() {
 #[test]
 fn parses_chrome_local_state_profiles_in_order() {
     let t = r#"{"profile":{"info_cache":{
-      "Profile 2":{"name":"Exelon","user_name":"a@x.com","gaia_name":"A","avatar_icon":"zz"},
+      "Profile 2":{"name":"Acme","user_name":"a@x.com","gaia_name":"A","avatar_icon":"zz"},
       "Default":{"name":"Personal","user_name":"me@x.com"},
       "Profile 10":{"name":"Ten"},
       "Profile 1":{"name":"One","gaia_name":"G"}}},"other":{"secret":"no"}}"#;

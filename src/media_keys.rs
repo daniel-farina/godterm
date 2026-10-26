@@ -531,10 +531,12 @@ pub fn log(msg: &str) {
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1 << 20) {
         let _ = std::fs::remove_file(&path);
     }
+    use crate::platform::OpenOptionsExt;
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(&path)
     {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");

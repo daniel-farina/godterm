@@ -401,8 +401,9 @@ pub fn window_controls(
     start
 }
 
-/// Width of the width carets (" < > ").
-pub const CARETS_W: u16 = 5;
+/// Width of the width carets (" <  > "): three cells each, so either is
+/// as easy to hit as the window controls beside them.
+pub const CARETS_W: u16 = 6;
 
 /// The width carets left of the window controls, ending before `right`:
 /// "<" narrower, ">" wider, trading width with the neighbour. Only where
@@ -433,7 +434,10 @@ fn width_carets(
         let name = if grow { "Wider" } else { "Narrower" };
         let now = app.last_arranged.as_ref().and_then(|a| {
             let pos = app.visible_panes().iter().position(|&p| p == i)?;
-            a.placed.iter().find(|p| p.index == pos).map(|p| p.rect.width)
+            a.placed
+                .iter()
+                .find(|p| p.index == pos)
+                .map(|p| p.rect.width)
         });
         match (app.pane_width_after(i, grow), now) {
             (Some(w), Some(n)) if w != n => format!(
@@ -445,10 +449,10 @@ fn width_carets(
             ),
         }
     };
-    // " < > ": "<" takes the first three cells, ">" the last two.
+    // " <  > ": three cells each.
     for (r, s, grow) in [
         (Rect::new(cx, y, 3, 1), " < ", false),
-        (Rect::new(cx + 3, y, 2, 1), "> ", true),
+        (Rect::new(cx + 3, y, 3, 1), " > ", true),
     ] {
         let hovered = app.mouse_pos.is_some_and(|(c, row)| contains(r, c, row));
         let st = if hovered {
@@ -462,7 +466,7 @@ fn width_carets(
         text(buf, r.x, r.y, r.x + r.width, s, st);
         app.hits
             .borrow_mut()
-            .add(r, UiAction::PaneWidth(i, grow), &hint(grow));
+            .add(r, UiAction::PaneWidth(i, grow), hint(grow));
     }
     cx.saturating_sub(1)
 }
@@ -470,6 +474,17 @@ fn width_carets(
 /// Header row of a pane: number, account (opens the account menu), every
 /// tab with a close mark, a new tab mark, and zoom, restart and state on
 /// the right.
+#[allow(clippy::too_many_arguments)]
+/// A pane state's short form for a tight header, in the words used
+/// everywhere else: a tab at its prompt is "ready" (never "waiting", which
+/// reads as waiting for approval), one at a permission prompt "approval".
+pub fn short_state(state: &str) -> String {
+    match state {
+        "needs approval" => "approval".into(),
+        s => s.split_whitespace().next().unwrap_or("").to_string(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn pane_header(
     buf: &mut Buffer,
@@ -602,11 +617,7 @@ pub fn pane_header(
             Some(format!(" {} ", crate::tab_labels::summary(&counts, true))),
         ));
     }
-    let short_state = state_text
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string();
+    let short_state = short_state(&state_text);
     items.push((
         format!(" {state_text} "),
         None,
@@ -756,6 +767,22 @@ pub fn pane_header(
             Style::default()
                 .fg(theme::STONE)
                 .add_modifier(Modifier::BOLD),
+        );
+    }
+    // A phone (or another browser) sized this tab to its screen: said, so
+    // a narrow tab here is not a surprise; typing here takes it back.
+    if let Some(by) = slot
+        .tabs
+        .get(slot.active)
+        .and_then(|t| t.web_sizer.as_deref())
+    {
+        x = text(
+            buf,
+            x,
+            y,
+            limit,
+            &format!(" · sized by {by}"),
+            Style::default().fg(theme::SAND),
         );
     }
     // "label · ~/code/calculator · email": the folder of the shown tab,
@@ -1278,10 +1305,14 @@ pub fn tab_marker(t: &Pane) -> (String, Color) {
     match t.activity {
         Activity::Working => (SPIN[anim_frame() % 10].to_string(), theme::ACTIVE),
         Activity::Permission => {
-            let on = anim_frame() / 4 % 2 == 0;
+            let on = (anim_frame() / 4).is_multiple_of(2);
             (
                 "!".into(),
-                if on { theme::ATTN_GLYPH } else { theme::ATTN_GLYPH_DIM },
+                if on {
+                    theme::ATTN_GLYPH
+                } else {
+                    theme::ATTN_GLYPH_DIM
+                },
             )
         }
         Activity::Ready => ("○".into(), FAINT),
@@ -1294,6 +1325,12 @@ pub fn tab_marker(t: &Pane) -> (String, Color) {
 /// Background work (subagents, shells) under an idle tab: the hollow
 /// spinner and what runs, from the tab's activity (cached for 2 s).
 pub fn background_of(app: &App, s: usize, t: usize) -> Option<String> {
+    background_work(app, s, t).map(|w| format!("background · {w}"))
+}
+
+/// What runs under a tab at its prompt ("2 subagents, 1 shell"), from its
+/// activity, cached for 2 s per tab (the cache holds this text).
+pub fn background_work(app: &App, s: usize, t: usize) -> Option<String> {
     let tab = app.panes.get(s)?.tabs.get(t)?;
     if !matches!(tab.activity, Activity::Ready | Activity::Idle) {
         return None;
@@ -1303,7 +1340,8 @@ pub fn background_of(app: &App, s: usize, t: usize) -> Option<String> {
         .get(&tab.uid)
         .filter(|(at, _)| at.elapsed() < std::time::Duration::from_secs(2))
         .map(|(_, v)| v.clone());
-    let v = match fresh {
+
+    match fresh {
         Some(v) => v,
         None if !tab.is_running() => None,
         None => {
@@ -1312,19 +1350,20 @@ pub fn background_of(app: &App, s: usize, t: usize) -> Option<String> {
             let v = (n > 0).then(|| {
                 let mut parts = vec![];
                 if a.subagents_running > 0 {
-                    parts.push(crate::control::plural(a.subagents_running, "agent"));
+                    parts.push(crate::control::plural(a.subagents_running, "subagent"));
                 }
-                let jobs = a.background_shells + a.background_tasks;
-                if jobs > 0 {
-                    parts.push(crate::control::plural(jobs, "job"));
+                if a.background_shells > 0 {
+                    parts.push(crate::control::plural(a.background_shells, "shell"));
                 }
-                format!("background · {}", parts.join(", "))
+                if a.background_tasks > 0 {
+                    parts.push(crate::control::plural(a.background_tasks, "task"));
+                }
+                parts.join(", ")
             });
             cache.insert(tab.uid, (std::time::Instant::now(), v.clone()));
             v
         }
-    };
-    v
+    }
 }
 
 /// The look of a tab's row: glyph, glyph color, state text and its
@@ -2033,6 +2072,23 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
                     "{} scheduled in this tab (the Loops view lists them)",
                     crate::control::plural(nl, "loop")
                 ),
+            );
+        }
+        // Not safe on GitHub yet (no repo, unpushed, uncommitted): ⚠.
+        if let Some(w) = app.git_badge(&app.tab_dir(i, ti)) {
+            let bx = cx;
+            cx = text(
+                buf,
+                cx,
+                y,
+                limit,
+                "⚠ ",
+                Style::default().fg(theme::SAND).bg(bg),
+            );
+            app.hits.borrow_mut().add(
+                Rect::new(bx, y, cx.saturating_sub(bx), 1),
+                UiAction::GitOpen(i, ti),
+                format!("Git: {w} (click for the Git section)"),
             );
         }
         // A prompt waiting to go in once the tab is ready (unless the

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#23262b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#23262b" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GodTerm">
+<!-- The theme (Dark, Light or the system's) before anything paints. -->
+<script src="js/theme.js"></script>
+<title>GodTerm</title>
+<link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">
+<meta name="application-name" content="GodTerm">
+<meta name="description" content="Every GodTerm tab, the assistant and approvals on your phone.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="vendor/xterm.css">
+<link rel="stylesheet" href="app.css">
+<!-- Every module the first screen needs, fetched at once instead of one
+     import at a time. -->
+<link rel="modulepreload" href="js/main.js">
+<link rel="modulepreload" href="js/debuglog.js">
+<link rel="modulepreload" href="js/util.js">
+<link rel="modulepreload" href="js/conn.js">
+<link rel="modulepreload" href="js/state.js">
+<link rel="modulepreload" href="js/term.js">
+<link rel="modulepreload" href="js/textinput.js">
+<link rel="modulepreload" href="js/tabs.js">
+<link rel="modulepreload" href="js/keybar.js">
+<link rel="modulepreload" href="js/chat.js">
+<link rel="modulepreload" href="js/md.js">
+<link rel="modulepreload" href="js/sheet.js">
+<link rel="modulepreload" href="js/voice.js">
+<link rel="modulepreload" href="js/mic.js">
+<link rel="modulepreload" href="js/images.js">
+<link rel="modulepreload" href="js/install.js">
+<link rel="modulepreload" href="js/push.js">
+<link rel="modulepreload" href="js/statusbar.js">
+</head>
+<body>
+<div id="app">
+ <header id="top">
+  <div class="tr1">
+   <button class="ib" id="b-menu" aria-label="Tabs" data-i="menu"></button>
+   <button id="title" type="button" aria-label="Tab options"><span class="t1"><span class="tcm" id="t-tc"></span><span class="dot" id="t-dot"></span><b id="t-name">GodTerm</b></span><span id="t-sub"></span></button>
+   <button type="button" class="upd" id="b-upd" hidden data-i="reopen"><span class="lb">Update</span></button>
+   <span id="conn" class="conn" title="connecting"></span>
+   <button class="ib" id="b-gear" aria-label="Settings" data-i="gear"></button>
+   <button class="ib" id="b-appr" aria-label="Approvals" data-i="check"><span class="badge" id="appr-n" hidden>0</span></button>
+  </div>
+  <div class="tr2" role="toolbar" aria-label="Actions">
+   <button class="ib tb" id="b-ptt" aria-label="Voice: tap to pick the mic mode"></button>
+   <button class="ib tb" id="b-chat" aria-label="Assistant" title="Assistant" data-i="chat"><span class="lb">Assistant</span></button>
+   <button class="ib tb" id="b-find" aria-label="Find a tab" title="Find a tab" data-i="search"><span class="lb">Find</span></button>
+   <button class="ib tb" id="b-sessions" aria-label="Sessions" title="Sessions" data-i="history"><span class="lb">Sessions</span></button>
+   <button class="ib tb" id="b-newtab" aria-label="New tab" title="New tab" data-i="plus"><span class="lb">New tab</span></button>
+   <button class="ib tb desk" id="b-split" aria-label="Split panes" title="Split panes" data-i="split"><span class="lb">Layout</span></button>
+   <button class="ib tb" id="b-more" aria-label="Manage: usage, jobs, loops" title="Manage: usage, jobs, loops" data-i="usage"><span class="lb">Manage</span></button>
+   <span class="tr2-gap"></span>
+   <button class="ib tb" id="b-tabmenu" aria-label="This tab's options" title="This tab's options" data-i="more"><span class="lb">Tab</span></button>
+  </div>
+ </header>
+ <div id="under">
+ <div id="update" hidden><span id="update-text">Update available</span><button id="update-go">Reload</button><button class="ib sm" id="update-x" aria-label="Dismiss" data-i="x"></button></div>
+ </div>
+ <div id="toasts" aria-live="polite"></div>
+ <aside id="side">
+  <div class="side-top">
+   <input id="q" type="search" placeholder="Filter tabs" autocomplete="off" spellcheck="false" enterkeyhint="search">
+  </div>
+  <div class="side-opts">
+   <label><span>Sort</span><select id="tsort" aria-label="Sort tabs"><option value="pos">Tab order</option><option value="name">Name</option><option value="state">State</option><option value="folder">Folder</option></select></label>
+   <label><span>Group</span><select id="tgroup" aria-label="Group tabs by"><option value="account">Account</option><option value="harness">Agent</option><option value="folder">Folder</option><option value="state">Status</option><option value="none">None</option></select></label>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div id="list" role="list"></div>
+  <div class="side-foot">
+   <button class="btn" id="b-new" data-i="plus">New tab</button>
+   <button class="btn" id="b-sess2" data-i="search">Sessions</button>
+  </div>
+ </aside>
+ <main id="main">
+  <section id="panes" data-n="1"></section>
+  <aside id="tabpanel" aria-label="This tab's options" hidden><div id="tp-body"></div></aside>
+  <div id="sbar" role="toolbar" aria-label="This tab's status" hidden></div>
+  <div id="keyrow">
+   <div id="keybar" role="toolbar" aria-label="Keys"></div>
+   <button type="button" id="b-ksend" aria-label="Send: Enter into the tab">Send</button>
+  </div>
+ </main>
+ <section id="chat" aria-label="Assistant">
+  <div class="chat-head">
+   <b>Assistant</b>
+   <span id="voice-note" class="dim"></span>
+   <button class="tog" id="b-openmic" aria-pressed="false">Open mic</button>
+   <button class="ib" id="b-voice" aria-label="Voice settings" data-i="filter"></button>
+   <button class="ib" id="b-chat-x" aria-label="Close" data-i="x"></button>
+  </div>
+  <div id="msgs"></div>
+  <div id="att" hidden></div>
+  <form id="composer">
+   <button type="button" class="ib" id="b-ptt2" aria-label="Hold to talk" data-i="mic"></button>
+   <button type="button" class="ib" id="b-img" aria-label="Attach an image" data-i="image"></button>
+   <input type="file" id="f-img" accept="image/*" multiple hidden>
+   <textarea id="say" rows="1" placeholder="Ask the assistant" enterkeyhint="send"></textarea>
+   <button class="ib send" id="b-send" aria-label="Send" data-i="send"></button>
+  </form>
+ </section>
+ <div id="scrim"></div>
+ <div id="sheet" role="dialog" aria-modal="true"><div class="sheet-grip"></div><div id="sheet-body"></div></div>
+</div>
+<script defer src="vendor/xterm.js"></script>
+<script defer src="vendor/addon-fit.js"></script>
+<script defer src="vendor/addon-webgl.js"></script>
+<script defer src="vendor/addon-unicode11.js"></script>
+<script defer src="vendor/addon-web-links.js"></script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

@@ -245,7 +245,12 @@ impl Whisper {
                 self.server_failed = true;
                 bail!("whisper-server exited during startup");
             }
-            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            // Only our own server: another local user who took the port
+            // first would get every utterance and answer with its own
+            // "transcript" (a spoken yes, say).
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+                && listens_as(port, child.id())
+            {
                 super::track(child.id());
                 self.server = Some((child, port));
                 self.gpu = std::fs::read_to_string(&log_path)
@@ -426,8 +431,12 @@ pub fn post_decode(
 
 impl Whisper {
     fn via_cli(&self, wav: &[u8]) -> Result<String> {
-        let path = std::env::temp_dir().join(format!("godterm-utt-{}.wav", std::process::id()));
-        std::fs::write(&path, wav)?;
+        // In GodTerm's own (owner only) folder, never a shared temp dir.
+        let path = server_log().with_file_name(format!("utt-{}.wav", std::process::id()));
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        crate::config::write_private(&path, wav)?;
         let mut cmd = Command::new(&self.cli);
         cmd.arg("-m").arg(&self.model).arg("-f").arg(&path).args([
             "-nt",
@@ -464,6 +473,31 @@ impl Drop for Whisper {
     }
 }
 
+/// Whether the listener on 127.0.0.1:`port` is `pid` (or runs under it).
+/// Where lsof is missing it cannot be told, and the port is trusted.
+fn listens_as(port: u16, pid: u32) -> bool {
+    if cfg!(unix) && !Path::new("/usr/sbin/lsof").is_file() && !which("lsof") {
+        return true;
+    }
+    if cfg!(windows) {
+        return true;
+    }
+    let who = crate::procs::listeners(port);
+    let ok = who
+        .iter()
+        .any(|(p, _)| crate::peer::descends_from(*p, &[pid], crate::peer::parent_of));
+    if !ok {
+        crate::log::info(&format!(
+            "voice: port {port} is not whisper-server's (listening: {})",
+            who.iter()
+                .map(|(p, n)| format!("{n} {p}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    ok
+}
+
 fn which(bin: &str) -> bool {
     std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
@@ -488,6 +522,24 @@ pub fn clean(t: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A port someone else listens on is not taken for whisper-server.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_our_own_server_is_adopted() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let me = std::process::id();
+        assert!(listens_as(port, me), "this process listens there");
+        let mut c = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        assert!(!listens_as(port, c.id()), "a squatter is not the child");
+        let _ = c.kill();
+        let _ = c.wait();
+        drop(l);
+    }
 
     #[test]
     fn cleans_markers() {

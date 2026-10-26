@@ -194,7 +194,19 @@ pub fn resolve(models: &[BarModel], name: &str) -> Option<usize> {
             let mut all = own.clone();
             all.extend(words(&m.desc));
             all.extend(m.matches.iter().flat_map(|k| words(k)));
-            let score = said.iter().filter(|w| all.contains(w)).count();
+            // A name word outweighs version numbers ("opus 5 5" is Opus,
+            // not a model whose id happens to hold two 5s).
+            let score = said
+                .iter()
+                .filter(|w| all.contains(w))
+                .map(|w| {
+                    if w.chars().all(|c| c.is_ascii_digit()) {
+                        1
+                    } else {
+                        10
+                    }
+                })
+                .sum::<usize>();
             (i, score, own.len())
         })
         .filter(|(_, s, _)| *s > 0)
@@ -440,7 +452,7 @@ pub fn input_empty(h: Harness, screen: &vt100::Screen) -> Option<bool> {
                 if t.contains("Type a message") {
                     return Some(true);
                 }
-                let Some(a) = t.find('│') else { return None };
+                let a = t.find('│')?;
                 let b = t.rfind('│').filter(|b| *b > a).unwrap_or(t.len());
                 let (c0, c1) = (
                     t[..a].chars().count() as u16 + 1,

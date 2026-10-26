@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use crate::app::App;
-use crate::pane::{Activity, LaunchKind};
+use crate::pane::LaunchKind;
 
 /// A move on offer.
 #[derive(Debug, Clone, PartialEq)]
@@ -178,12 +178,9 @@ impl App {
                 .failover
                 .iter()
                 .filter(|o| {
-                    self.find_tab(o.uid).is_some_and(|(s, t)| {
-                        !matches!(
-                            self.panes[s].tabs[t].activity,
-                            Activity::Working | Activity::Permission
-                        )
-                    })
+                    // Busy includes background work (a move would stop it).
+                    self.find_tab(o.uid)
+                        .is_some_and(|(s, t)| !self.tab_busy(s, t))
                 })
                 .map(|o| o.uid)
                 .collect();
@@ -227,8 +224,8 @@ impl App {
         let (s, t) = self.find_tab(o.uid)?;
         let name = self.spoken_tab_name(o.uid);
         let to = self.cfg.accounts[o.to].display().to_string();
-        if matches!(self.panes[s].tabs[t].activity, Activity::Working) {
-            // Busy: it moves once its turn ends.
+        if self.tab_has_running_work(s, t) {
+            // Busy (its turn or background work): it moves once that ends.
             self.queued_moves.push(crate::app_tabmove::QueuedMove {
                 uid: o.uid,
                 target: o.to,

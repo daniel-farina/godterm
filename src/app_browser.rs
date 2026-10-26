@@ -41,6 +41,10 @@ pub struct BrowserState {
     pub pending: Vec<(u64, Instant)>,
     /// A line the Browser dialog shows under the profiles.
     pub note: Option<String>,
+    /// Each bound tab's last bsk call, and when it was looked at.
+    pub activity: std::cell::RefCell<
+        std::collections::HashMap<u64, (Instant, Option<crate::tab_browser::BskAction>)>,
+    >,
 }
 
 impl BrowserState {

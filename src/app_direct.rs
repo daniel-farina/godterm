@@ -62,8 +62,7 @@ pub struct DirectConfirm {
 
 /// Whether direct mode can start with this tab.
 fn tab_can_direct(tab: &crate::pane::Pane) -> bool {
-    !(tab.activity == Activity::Exited
-        || (!tab.is_running() && tab.pending.is_none() && !tab.suspended))
+    (tab.suspended || tab.pending.is_some() || tab.is_running()) && tab.activity != Activity::Exited
 }
 
 /// The live state on the mic badge: muted, listening or nothing.
@@ -991,8 +990,8 @@ mod tests {
             Some("trading room")
         );
         assert_eq!(
-            switch_target(&n("let me talk directly to botmesh")).as_deref(),
-            Some("botmesh")
+            switch_target(&n("let me talk directly to fotmesh")).as_deref(),
+            Some("fotmesh")
         );
         assert_eq!(switch_target(&n("talk to me about the tests")), None);
         assert_eq!(switch_target(&n("talk to it")), None);

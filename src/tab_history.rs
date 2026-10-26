@@ -301,6 +301,7 @@ impl App {
             label: r.name.clone(),
             tab_group: r.group.clone(),
             pinned: false,
+            browser: None,
         };
         let msg = self.reopen_closed_tab(c)?;
         self.flash(msg.clone());
@@ -344,7 +345,7 @@ impl App {
                     / words.len() as f64
                     * 0.8
             };
-            // The last part said ("pod mesh" of "lol slash pod mesh")
+            // The last part said ("vod mesh" of "code slash vod mesh")
             // against the name, the folder's own name and words in the text.
             let last = q.rsplit('/').next().unwrap_or(&q);
             let base = folder.rsplit('/').next().unwrap_or("");
@@ -493,8 +494,8 @@ mod tests {
         let y = (now - chrono::Duration::days(1)).to_rfc3339();
         let t = now.to_rfc3339();
         let all = vec![
-            rec("open", "botmesh", "/u/lol/botmesh", &y),
-            rec("close", "botmesh", "/u/lol/botmesh", &y),
+            rec("open", "fotmesh", "/u/code/fotmesh", &y),
+            rec("close", "fotmesh", "/u/code/fotmesh", &y),
             rec("close", "calc", "/u/calc", &t),
             rec("open", "api", "/u/api", &t),
         ];
@@ -507,7 +508,7 @@ mod tests {
         );
         assert_eq!(
             closed.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
-            vec!["calc", "botmesh"],
+            vec!["calc", "fotmesh"],
             "newest first"
         );
         let today = query(
@@ -518,7 +519,7 @@ mod tests {
             },
         );
         assert_eq!(today.len(), 2);
-        for q in ["bot mesh", "pod mesh", "lol slash botmesh"] {
+        for q in ["fot mesh", "vod mesh", "code slash fotmesh"] {
             let hits = query(
                 &all,
                 &Filter {
@@ -527,7 +528,7 @@ mod tests {
                 },
             );
             assert!(
-                !hits.is_empty() && hits.iter().all(|r| r.name == "botmesh"),
+                !hits.is_empty() && hits.iter().all(|r| r.name == "fotmesh"),
                 "{q}"
             );
         }

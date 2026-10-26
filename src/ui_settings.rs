@@ -101,6 +101,8 @@ pub fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
         Section::About => draw_about(f, app, right),
         Section::Setup => draw_setup(f, app, right),
         Section::Browser => draw_browser(f, app, right),
+        Section::Sync => crate::ui_sync::draw(f, app, right),
+        Section::Git => crate::ui_git::draw_cfg_section(f, app, right),
         sec => draw_rows(f, app, right, sec),
     }
 }
@@ -317,7 +319,9 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
                     y,
                     limit.saturating_sub(12),
                     &format!("{st}  "),
-                    Style::default().fg(if installed { theme::SAGE } else { DIM }).bg(bg),
+                    Style::default()
+                        .fg(if installed { theme::SAGE } else { DIM })
+                        .bg(bg),
                 );
                 if !st.starts_with("installing") {
                     x = button(
@@ -1641,6 +1645,38 @@ fn draw_browser(f: &mut Frame, app: &App, area: Rect) {
                 "Change",
                 UiAction::BrowserDefault,
                 "Next Chrome profile as the default for links; a tab's Browser button sets it too",
+                theme::SLATE,
+            );
+        }
+        // Sign in pages and Remote Control links ([browser] login_links).
+        if y + 3 < bottom && !app.cfg.browser.default_profile.is_empty() {
+            let where_ = if app.cfg.browser.login_links {
+                "that profile too"
+            } else {
+                "the system browser"
+            };
+            let x = text(
+                buf,
+                area.x + 1,
+                y + 3,
+                limit,
+                &format!("Sign in and Remote Control links open in {where_}  "),
+                Style::default().fg(FG),
+            );
+            button(
+                buf,
+                &mut hits,
+                app.mouse_pos,
+                x,
+                y + 3,
+                limit,
+                if app.cfg.browser.login_links {
+                    "Use system browser"
+                } else {
+                    "Use that profile"
+                },
+                UiAction::BrowserLoginLinks,
+                "Where GodTerm opens account sign in pages and Remote Control links ([browser] login_links)",
                 theme::SLATE,
             );
         }

@@ -97,7 +97,7 @@ cask "godterm" do
   desc "Run many Claude Code sessions side by side, each on its own account"
   homepage "https://github.com/$REPO"
 
-  depends_on macos: :monterey
+  depends_on macos: ">= :monterey"
   container type: :dmg
 
   app "GodTerm.app"

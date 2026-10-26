@@ -142,8 +142,21 @@ pub fn compare(
     o.then_with(|| ib.modified.cmp(&ia.modified))
 }
 
-/// A folder only scripts and tools use: the temp dirs.
+/// A folder only scripts and tools use: the temp dirs. The demo's own
+/// world counts as a home, not a temp dir, wherever it was made (a demo
+/// started with HOME in a temp dir would hide every session it seeded).
 pub fn temp_dir(cwd: &str) -> bool {
+    if crate::demo::active() {
+        let home = crate::demo::home();
+        let real = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
+        for h in [home, real] {
+            let h = h.to_string_lossy();
+            let h = h.trim_end_matches('/');
+            if !h.is_empty() && (cwd == h || cwd.starts_with(&format!("{h}/"))) {
+                return false;
+            }
+        }
+    }
     let tmp = std::env::var("TMPDIR").unwrap_or_default();
     let tmp = tmp.trim_end_matches('/');
     let under = |p: &str| !p.is_empty() && (cwd == p || cwd.starts_with(&format!("{p}/")));
@@ -235,5 +248,32 @@ mod tests {
             assert!(headless(&x), "{cwd}");
         }
         assert!(!temp_dir("/tmpfoo"));
+    }
+
+    #[test]
+    fn the_demo_world_is_not_a_temp_dir() {
+        let _g = crate::config::testing::LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = "/private/tmp/godterm-demo-sort-test/.godterm-demo";
+        let old = (
+            std::env::var(crate::demo::ENV).ok(),
+            std::env::var("GODTERM_DEMO_HOME").ok(),
+        );
+        std::env::set_var("GODTERM_DEMO_HOME", home);
+        std::env::set_var(crate::demo::ENV, "1");
+        let demo = temp_dir(&format!("{home}/code/payments-api"));
+        let other = temp_dir("/private/tmp/scratch/run");
+        std::env::remove_var(crate::demo::ENV);
+        let off = temp_dir(&format!("{home}/code/payments-api"));
+        for (k, v) in [(crate::demo::ENV, old.0), ("GODTERM_DEMO_HOME", old.1)] {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        assert!(!demo, "the demo's own sessions show");
+        assert!(other, "other temp folders stay hidden in the demo");
+        assert!(off, "outside the demo a temp folder is a temp folder");
     }
 }

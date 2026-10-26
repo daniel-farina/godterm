@@ -24,6 +24,7 @@ impl<K: Hash + Eq> Limiter<K> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_per_key(&mut self, d: Duration) {
         self.per_key = d;
     }

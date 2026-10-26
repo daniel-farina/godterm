@@ -38,7 +38,7 @@ fn clip(s: &str, n: usize) -> String {
     crate::sessions::snippet(&s.replace('\n', " "), n)
 }
 
-/// What a tool call touched, briefly: "sessions project=lol/botmesh",
+/// What a tool call touched, briefly: "sessions project=code/fotmesh",
 /// "open_tab t12 ~/godterm-tabs/calc".
 fn tool_line(e: &Value) -> Option<String> {
     let name = e["name"].as_str()?;
@@ -399,21 +399,21 @@ mod tests {
         let c = crate::assistant_history::ConvLog::new();
         c.write(
             "user",
-            serde_json::json!({"text": "lol/bot mesh directory"}),
+            serde_json::json!({"text": "code/fot mesh directory"}),
         );
-        c.write("tool", serde_json::json!({"name": "sessions", "args": {"project": "lol/bot mesh"}, "result": "{\"ok\":true}"}));
+        c.write("tool", serde_json::json!({"name": "sessions", "args": {"project": "code/fot mesh"}, "result": "{\"ok\":true}"}));
         c.write(
             "reply",
-            serde_json::json!({"text": "Two sessions in lol/botmesh. Want me to open one?"}),
+            serde_json::json!({"text": "Two sessions in code/fotmesh. Want me to open one?"}),
         );
         let r = remember(&c.path).unwrap();
         assert!(
-            r.summary.contains("Asked: lol/bot mesh directory"),
+            r.summary.contains("Asked: code/fot mesh directory"),
             "{}",
             r.summary
         );
         assert!(
-            r.summary.contains("sessions project=lol/bot mesh"),
+            r.summary.contains("sessions project=code/fot mesh"),
             "{}",
             r.summary
         );
@@ -421,18 +421,18 @@ mod tests {
         let b = block(2).unwrap();
         assert!(
             b.contains("Recent conversation memory")
-                && b.contains("you: Two sessions in lol/botmesh"),
+                && b.contains("you: Two sessions in code/fotmesh"),
             "{b}"
         );
         // A saved summary wins.
         c.write(
             "summary",
-            serde_json::json!({"text": "Looked at lol/botmesh sessions; offered to open one."}),
+            serde_json::json!({"text": "Looked at code/fotmesh sessions; offered to open one."}),
         );
         assert!(remember(&c.path)
             .unwrap()
             .summary
-            .starts_with("Looked at lol/botmesh"));
+            .starts_with("Looked at code/fotmesh"));
         let _ = std::fs::remove_dir_all(&home);
     }
 }

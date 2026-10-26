@@ -712,7 +712,7 @@ impl App {
                 config_dir,
                 forked_from: parent,
                 task_state: String::new(),
-                last_poll: Instant::now() - BG_POLL,
+                last_poll: crate::clock::ago(BG_POLL),
                 idle_since: None,
                 seen_job: false,
             },
@@ -941,7 +941,7 @@ impl App {
                                     }
                                 }
                                 *rx = None;
-                                *last_poll = Instant::now() - BG_POLL;
+                                *last_poll = crate::clock::ago(BG_POLL);
                             }
                             Ok(Err(e)) => {
                                 *rx = None;

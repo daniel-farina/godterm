@@ -74,13 +74,13 @@ impl Facts {
     }
 
     /// Worth an update before the roundup.
+    #[cfg(test)]
     pub fn is_event(&self) -> bool {
         self.approval
             || self.errors > 0
             || self.finished
             || self.turn_ended
             || self.exited
-            || self.agents_done > 0
             || !self.jobs_done.is_empty()
             || self.dropped > 0
     }
@@ -644,7 +644,7 @@ pub fn third_person(s: &str) -> String {
 }
 
 fn split_punct(w: &str) -> (String, String) {
-    let core = w.trim_end_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?'));
+    let core = w.trim_end_matches([',', '.', ';', ':', '!', '?']);
     (core.to_string(), w[core.len()..].to_string())
 }
 
@@ -760,13 +760,8 @@ pub fn say_project(name: &str, f: &Facts, said: Said) -> Option<(Prio, String)> 
         }
         n => clauses.push(format!("started {} subagents", number(n))),
     }
-    if f.agents_done > 0 {
-        clauses.push(if f.agents_done == 1 {
-            "a subagent finished".to_string()
-        } else {
-            format!("{} subagents finished", number(f.agents_done))
-        });
-    }
+    // A subagent finishing is never news for the user (its tab's own
+    // turn says what came of it).
     if f.bg_started > 0 {
         clauses.push(if f.bg_started == 1 {
             "started a background command".to_string()
@@ -1148,16 +1143,16 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            say_project("EXELON", &fin, Said::default()).unwrap(),
+            say_project("ACME", &fin, Said::default()).unwrap(),
             (
                 Prio::Finished,
-                "EXELON finished: the deploy finished the plan and is applying now.".into()
+                "ACME finished: the deploy finished the plan and is applying now.".into()
             )
         );
-        // "EXELON finished" was announced already: not again.
+        // "ACME finished" was announced already: not again.
         assert_eq!(
             say_project(
-                "EXELON",
+                "ACME",
                 &fin,
                 Said {
                     finished: true,
@@ -1166,14 +1161,14 @@ mod tests {
             )
             .unwrap()
             .1,
-            "EXELON: the deploy finished the plan and is applying now."
+            "ACME: the deploy finished the plan and is applying now."
         );
         let bare = Facts {
             finished: true,
             ..Default::default()
         };
         assert!(say_project(
-            "EXELON",
+            "ACME",
             &bare,
             Said {
                 finished: true,

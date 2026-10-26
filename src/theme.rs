@@ -3,8 +3,11 @@
 use ratatui::style::Color;
 
 pub const FG: Color = Color::Rgb(208, 204, 196);
-pub const DIM: Color = Color::Rgb(132, 130, 124);
-pub const FAINT: Color = Color::Rgb(84, 86, 90);
+/// Secondary text: about 4.7:1 on BAR_BG (readable, WCAG AA).
+pub const DIM: Color = Color::Rgb(148, 145, 138);
+/// Hints, borders and the least needed text: about 2.7:1 on BAR_BG, still
+/// legible (it was 2:1, too faint to read).
+pub const FAINT: Color = Color::Rgb(104, 106, 110);
 pub const BAR_BG: Color = Color::Rgb(38, 40, 43);
 pub const SEL_BG: Color = Color::Rgb(50, 53, 57);
 /// Selected text in a pane: a quiet slate, the text stays readable.

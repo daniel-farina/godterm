@@ -191,9 +191,11 @@ impl App {
         if let Some(d) = p.parent() {
             let _ = std::fs::create_dir_all(d);
         }
+        use crate::platform::OpenOptionsExt;
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(0o600)
             .open(&p)
         {
             use std::io::Write;
@@ -446,7 +448,7 @@ impl App {
 
     // ---------- settings ----------
 
-    fn find_setting(
+    pub(crate) fn find_setting(
         &self,
         key: &str,
         account: Option<usize>,
@@ -486,7 +488,7 @@ impl App {
                 }
             }
         }
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|b| std::cmp::Reverse(b.0));
         let best = scored.first().map(|x| x.0).unwrap_or(0);
         let hint: Vec<String> = scored
             .into_iter()
@@ -561,7 +563,7 @@ impl App {
     }
 
     /// The validated value of `text` for a setting, as config.toml holds it.
-    fn setting_item(
+    pub(crate) fn setting_item(
         &self,
         s: &crate::settings::Setting,
         text: &str,
@@ -1166,11 +1168,7 @@ impl App {
                 let v = list(&tx);
                 let found = v
                     .iter()
-                    .find(|s| {
-                        s.name == check
-                            || s.name.ends_with(&format!(":{check}"))
-                            || (check.starts_with("plugin:") && s.name == check)
-                    })
+                    .find(|s| s.name == check || s.name.ends_with(&format!(":{check}")))
                     .cloned();
                 if remove {
                     match found {
@@ -1354,7 +1352,7 @@ impl App {
                 AdminEvent::Progress(t) => self.announce_progress(&t),
                 AdminEvent::OpenUrl(u) => {
                     crate::log::info(&format!("admin: opening {}", admin::safe_target(&u)));
-                    admin::open_url(&u);
+                    self.open_service_link(&u);
                 }
                 AdminEvent::Listed(a, v) => {
                     self.admin.live.insert(a, (Instant::now(), v));
@@ -1435,8 +1433,7 @@ impl App {
             if marks.1 > f.seen.1 {
                 let why = screen
                     .lines()
-                    .filter(|l| is_error_line(l))
-                    .next_back()
+                    .rfind(|l| is_error_line(l))
                     .unwrap_or("")
                     .trim()
                     .to_string();
@@ -1483,7 +1480,7 @@ impl App {
                         "admin: opening the login page {}",
                         admin::safe_target(&u)
                     ));
-                    admin::open_url(&u);
+                    self.open_service_link(&u);
                     say.push("Opening the login page in your browser; sign in and approve.".into());
                 }
             }

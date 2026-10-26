@@ -128,7 +128,7 @@ fn told_user_reaches_the_next_brain_turn_once() {
         Source {
             tab: Some(2079),
             account: Some(2),
-            fact: Some("t2079 state working to waiting for input".into()),
+            fact: Some("t2079 state working to ready".into()),
         },
     );
     let snap = app.state_preamble();
@@ -268,19 +268,19 @@ fn attention_fires_only_on_the_tabs_real_transition() {
     app.tick();
     app.panes[slot].tabs[0].activity_since = Instant::now() - Duration::from_secs(5);
     show(&mut app, slot, 0, "? for shortcuts");
-    // The tick sees the transition and announces it (voice_tick).
+    // The tick sees the transition; voice_tick makes it an event for the
+    // assistant (nothing said or flashed by GodTerm itself).
     app.tick();
-    let log = app.told.borrow();
-    let e = log
-        .ring
+    app.voice_tick();
+    assert!(!texts(&app).iter().any(|(x, _)| x.contains("finished")));
+    let e = app
+        .assistant
+        .events
+        .events
         .iter()
-        .find(|e| e.text.ends_with("finished"))
-        .expect("finished notice");
-    assert_eq!(e.kind, "attention");
-    assert_eq!(e.src.tab, Some(uid));
-    let fact = e.src.fact.clone().unwrap();
-    assert!(fact.contains("working to waiting for input"), "{fact}");
-    drop(log);
+        .find(|e| e.kind == crate::app_events::EventKind::Finished)
+        .expect("finished event");
+    assert_eq!(e.uid, uid);
     // A notice for approval that is no longer asked is stale: dropped.
     app.attention.push(crate::app::Attention {
         slot,

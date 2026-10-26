@@ -269,7 +269,7 @@ fn idle_tab_goes_queued_started_done() {
     let Some(mut r) = rig("idle", "working") else {
         return;
     };
-    let text = "Dan's request: add a changelog entry";
+    let text = "Alice's request: add a changelog entry";
     let id = r.app.deliver_request(r.uid, text);
     r.step();
     assert_eq!(r.state(id), "queued", "waits while the tab works");

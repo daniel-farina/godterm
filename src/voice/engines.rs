@@ -138,6 +138,11 @@ pub fn wav_samples(b: &[u8]) -> Option<(Vec<f32>, u32)> {
         let body = b.get(i + 8..(i + 8 + len).min(b.len()))?;
         if id == b"fmt " && body.len() >= 8 {
             rate = u32::from_le_bytes(body[4..8].try_into().ok()?);
+            // Not a rate a speech engine writes: a damaged header (zero
+            // divides, a huge one asks the resampler for gigabytes).
+            if !(1_000..=384_000).contains(&rate) {
+                return None;
+            }
         }
         if id == b"data" {
             let s = body
@@ -165,7 +170,7 @@ impl TtsEngine for SayEngine {
         let f = self.dir.join(format!(
             "say-{}-{}.wav",
             std::process::id(),
-            crate::session_ops::new_uuid()[..8].to_string()
+            &crate::session_ops::new_uuid()[..8]
         ));
         let mut cmd = Command::new("say");
         if let Some(v) = self

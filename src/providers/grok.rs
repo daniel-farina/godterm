@@ -344,6 +344,7 @@ fn prime(launch: &Launch, args: &[String], slot: &Arc<Mutex<Option<Child>>>) -> 
         .with_context(|| format!("starting {}", launch.bin))?;
     let out = child.stdout.take().context("no stdout")?;
     let id = child.id();
+    crate::control::trust_brain_pid(id);
     *lock(slot) = Some(child);
     // A primer that hangs (a login prompt, the network) is stopped.
     let (watch, done) = (slot.clone(), Arc::new(AtomicBool::new(false)));
@@ -407,6 +408,8 @@ fn run_turn(
         Ok(c) => c,
         Err(e) => return fail(format!("starting {}: {e}", launch.bin)),
     };
+    // Its `godterm mcp` may use the read-write control token.
+    crate::control::trust_brain_pid(child.id());
     let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
         return fail("grok has no output".into());
     };

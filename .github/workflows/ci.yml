@@ -55,6 +55,17 @@ jobs:
         env:
           RUSTFLAGS: -Dwarnings
         run: cargo test --locked -- --test-threads=4
+      # The real binary in tmux on the demo world (docs/TESTING.md).
+      - name: e2e demo (tmux)
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get install -y --no-install-recommends tmux; else brew install tmux; fi
+          python3 scripts/e2e/run.py --suite ci --bin target/debug/godterm --out e2e-results/ci
+      - name: e2e screens
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ matrix.os }}
+          path: e2e-results/ci
 
   test-windows:
     name: test (windows-latest)

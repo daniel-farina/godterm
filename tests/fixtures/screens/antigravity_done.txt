@@ -11,8 +11,8 @@
 ● Ran (ls -la) (ctrl+o to expand)
 
     total 0
-    drwxr-xr-x@ 2 dan  wheel   64 Oct 21 18:55 .
-    drwxr-xr-x@ 5 dan  wheel  160 Oct 21 18:55 ..
+    drwxr-xr-x@ 2 usr  wheel   64 Oct 21 18:55 .
+    drwxr-xr-x@ 5 usr  wheel  160 Oct 21 18:55 ..
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 >

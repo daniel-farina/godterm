@@ -273,7 +273,11 @@ impl Voices {
             let extra = u16at(i + 30);
             let comment = u16at(i + 32);
             let local = u32at(i + 42);
-            let name = String::from_utf8_lossy(&data[i + 46..i + 46 + n]).into_owned();
+            // A damaged (or partly downloaded) file: the name runs past the end.
+            let Some(name) = data.get(i + 46..i + 46 + n) else {
+                bail!("truncated zip directory");
+            };
+            let name = String::from_utf8_lossy(name).into_owned();
             i += 46 + n + extra + comment;
             let Some(voice) = name.strip_suffix(".npy") else {
                 continue;
@@ -297,7 +301,6 @@ impl Voices {
         Ok(Voices { map })
     }
 
-    #[cfg(test)]
     pub fn names(&self) -> Vec<String> {
         let mut v: Vec<String> = self.map.keys().cloned().collect();
         v.sort();
@@ -320,6 +323,8 @@ pub fn parse_npy(b: &[u8]) -> Result<(usize, Vec<f32>)> {
     }
     let (hlen, off) = if b[6] == 1 {
         (u16::from_le_bytes([b[8], b[9]]) as usize, 10)
+    } else if b.len() < 12 {
+        bail!("short npy header");
     } else {
         (u32::from_le_bytes([b[8], b[9], b[10], b[11]]) as usize, 12)
     };
@@ -335,7 +340,7 @@ pub fn parse_npy(b: &[u8]) -> Result<(usize, Vec<f32>)> {
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
-    if values.len() % STYLE_DIM != 0 || values.is_empty() {
+    if !values.len().is_multiple_of(STYLE_DIM) || values.is_empty() {
         bail!("npy size {} is not a multiple of {STYLE_DIM}", values.len());
     }
     Ok((values.len() / STYLE_DIM, values))

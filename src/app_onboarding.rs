@@ -493,11 +493,15 @@ impl App {
                 self.flash("Voice onboarding done. Ctrl-a J shows the phrases again.");
             }
             _ => {
-                self.flash("Voice onboarding skipped. Replay it any time: palette > voice onboarding, or Settings > Voice.");
+                self.flash("Voice skipped. Later: Ctrl-a : \"voice onboarding\".");
             }
         }
-        // Claude Code itself missing: Settings > Setup first, as at any start.
-        if !cfg!(test) && !self.required_missing().is_empty() {
+        // No account yet: the first account picker, which also shows what
+        // is installed and installs a missing agent.
+        if self.cfg.accounts.is_empty() {
+            self.open_first_account();
+        } else if !cfg!(test) && !self.required_missing().is_empty() {
+            // Claude Code itself missing: Settings > Setup first, as at any start.
             self.maybe_show_setup(false);
         } else if o.login_walk {
             self.start_onboarding();
@@ -814,7 +818,7 @@ impl App {
 
     /// The mouse over the welcome and the audio setup: only its buttons.
     pub fn onboarding_mouse(&mut self, m: &MouseEvent) -> bool {
-        if !self.onb_full_screen() && !(self.onb.card && self.onb.on.is_none()) {
+        if !(self.onb_full_screen() || self.onb.card && self.onb.on.is_none()) {
             return false;
         }
         if let MouseEventKind::Down(MouseButton::Left) = m.kind {
@@ -835,6 +839,7 @@ impl App {
         true
     }
 
+    #[allow(clippy::collapsible_match)]
     pub fn onboarding_click(&mut self, n: u8) {
         match n {
             BTN_VOICE_ON => self.onb_voice_on(),

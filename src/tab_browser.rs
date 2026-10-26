@@ -129,6 +129,16 @@ pub fn button_labels(state: BtnState, name: &str) -> Vec<String> {
     v
 }
 
+/// The smallest form, for a narrow pane: a short word with the state's
+/// mark, so the button stays rather than vanishing.
+pub fn compact_label(state: BtnState) -> &'static str {
+    match state {
+        BtnState::Ready => " ✓ web ",
+        BtnState::None => " web ",
+        BtnState::Chosen | BtnState::NeedsEnable => " web! ",
+    }
+}
+
 /// What opening Chrome in the dialog would show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenPlan {
@@ -182,6 +192,192 @@ pub fn match_browsers(
         return (all.to_vec(), "only browser");
     }
     (vec![], "unknown")
+}
+
+// ---------- what the tab's agent last did in the browser ----------
+
+/// bsk's commands: the first word of a bsk call that is one names what it
+/// did.
+const BSK_CMDS: &[&str] = &[
+    "navigate",
+    "navigate-back",
+    "navigate-forward",
+    "reload",
+    "click",
+    "hover",
+    "wheel",
+    "scroll-to",
+    "focus",
+    "blur",
+    "fill",
+    "press",
+    "select",
+    "upload",
+    "download",
+    "evaluate",
+    "screenshot",
+    "snapshot",
+    "observe",
+    "console",
+    "network",
+    "get-html",
+    "extract",
+    "emulate",
+    "session",
+    "tab",
+    "window",
+    "browsers",
+    "status",
+    "doctor",
+    "debug",
+    "daemon",
+    "logs",
+];
+/// Commands with a sub command of their own ("tab create").
+const BSK_GROUPS: &[&str] = &["session", "tab", "window", "debug", "daemon"];
+
+/// A bsk call the tab's agent made: what it did and when.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BskAction {
+    pub what: String,
+    pub at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Shell words, quotes taken off (enough for reading a command, never for
+/// running one).
+pub(crate) fn shell_words(s: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut any = false;
+    for c in s.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => cur.push(c),
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                any = true;
+            }
+            None if c.is_whitespace() => {
+                if any || !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                any = false;
+            }
+            None => cur.push(c),
+        }
+    }
+    if any || !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// A link without its scheme and "www.", or a ref or selector, short.
+fn short_arg(a: &str) -> String {
+    let low = a.to_lowercase();
+    let s = if low.starts_with("https://") || low.starts_with("http://") {
+        let rest = &a[a.find("://").map_or(0, |i| i + 3)..];
+        rest.strip_prefix("www.")
+            .unwrap_or(rest)
+            .trim_end_matches('/')
+    } else {
+        a
+    };
+    crate::sessions::snippet(s.trim(), 40)
+}
+
+/// "navigate example.com/login" from a shell command that runs bsk (the
+/// last bsk call in it). None: no bsk call.
+pub fn bsk_summary(cmd: &str) -> Option<String> {
+    let mut segs: Vec<&str> = vec![cmd];
+    for sep in ["&&", "||", ";", "|", "\n"] {
+        segs = segs.into_iter().flat_map(|s| s.split(sep)).collect();
+    }
+    segs.into_iter().rev().find_map(|seg| {
+        let words = shell_words(seg);
+        // Leading VAR=value words aside, the program must be bsk.
+        let mut it = words
+            .iter()
+            .skip_while(|w| w.contains('=') && !w.starts_with('-') && !w.contains('/'));
+        let prog = it.next()?;
+        if prog.rsplit('/').next() != Some("bsk") {
+            return None;
+        }
+        let rest: Vec<&String> = it.collect();
+        let at = rest.iter().position(|w| BSK_CMDS.contains(&w.as_str()))?;
+        let mut what = rest[at].to_string();
+        let mut args = rest[at + 1..].iter().filter(|w| !w.starts_with('-'));
+        if BSK_GROUPS.contains(&what.as_str()) {
+            if let Some(sub) = args.next() {
+                what = format!("{what} {sub}");
+            }
+        }
+        let args: Vec<&&String> = args.collect();
+        // A link or a ref says the most; else the first argument.
+        let arg = args
+            .iter()
+            .find(|a| a.contains("://") || a.starts_with('@'))
+            .or_else(|| args.first());
+        if let Some(a) = arg {
+            what = format!("{what} {}", short_arg(a));
+        }
+        Some(what)
+    })
+}
+
+/// The newest bsk call in the tail of a Claude transcript (JSONL): a Bash
+/// tool call whose command runs bsk.
+pub fn last_bsk_action(tail: &str) -> Option<BskAction> {
+    tail.lines()
+        .rev()
+        .filter(|l| l.contains("bsk"))
+        .find_map(|l| {
+            let v: Value = serde_json::from_str(l).ok()?;
+            if v.get("type").and_then(Value::as_str) != Some("assistant") {
+                return None;
+            }
+            let at = v
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .map(|t| t.with_timezone(&chrono::Utc));
+            let content = v.pointer("/message/content")?.as_array()?;
+            content.iter().rev().find_map(|c| {
+                if c.get("type").and_then(Value::as_str) != Some("tool_use") {
+                    return None;
+                }
+                let cmd = c.pointer("/input/command")?.as_str()?;
+                bsk_summary(cmd).map(|what| BskAction { what, at })
+            })
+        })
+}
+
+/// "navigate example.com · 3 min ago".
+pub fn activity_words(a: &BskAction, now: chrono::DateTime<chrono::Utc>) -> String {
+    match a.at {
+        Some(t) => format!("{} · {} ago", a.what, crate::usage::ago_words(t, now)),
+        None => a.what.clone(),
+    }
+}
+
+/// The last `max` bytes of a file, from a line start.
+pub(crate) fn read_tail(p: &std::path::Path, max: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(p).ok()?;
+    let len = f.metadata().ok()?.len();
+    let from = len.saturating_sub(max);
+    f.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = vec![];
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    Some(if from > 0 {
+        text.split_once('\n')
+            .map(|x| x.1.to_string())
+            .unwrap_or_default()
+    } else {
+        text
+    })
 }
 
 // ---------- opening Chrome ----------
@@ -296,7 +492,19 @@ pub fn open_chrome(url: &str, profile: Option<&str>) -> bool {
         if std::env::var_os("GODTERM_NO_OPEN").is_some() {
             return true;
         }
-        crate::log::info(&format!("browser: {} {}", cmd.prog, cmd.args.join(" ")));
+        // (Links without their query or login parts: they may hold tokens.)
+        let shown: Vec<String> = cmd
+            .args
+            .iter()
+            .map(|a| {
+                if a.contains("://") {
+                    crate::admin::safe_target(a)
+                } else {
+                    a.clone()
+                }
+            })
+            .collect();
+        crate::log::info(&format!("browser: {} {}", cmd.prog, shown.join(" ")));
         let run = |prog: &str| {
             std::process::Command::new(prog)
                 .args(&cmd.args)
@@ -467,10 +675,55 @@ impl App {
         let tab = &self.panes[s].tabs[t];
         tab.browser.as_ref()?;
         let p = self.tab_browser_profile(tab.uid)?;
-        Some(json!({
+        let mut v = json!({
             "profile_dir": p.dir, "profile": p.name, "email": p.user_name,
             "state": self.tab_browser_state(tab.uid).word(),
-        }))
+        });
+        if let Some(a) = self.tab_browser_activity(tab.uid) {
+            v["last_action"] = json!(activity_words(&a, chrono::Utc::now()));
+        }
+        Some(v)
+    }
+
+    /// What a bound tab's agent last did in the browser (its newest bsk
+    /// call, from the session's transcript; Claude tabs). Looked at no
+    /// more than every few seconds per tab.
+    pub fn tab_browser_activity(&self, uid: u64) -> Option<BskAction> {
+        let (s, t) = self.find_tab(uid)?;
+        self.panes[s].tabs[t].browser.as_ref()?;
+        let mut cache = self.browser.activity.borrow_mut();
+        if let Some((at, v)) = cache.get(&uid) {
+            if at.elapsed() < Duration::from_secs(3) {
+                return v.clone();
+            }
+        }
+        let v = self
+            .transcript_of(s, t)
+            .and_then(|(p, _)| read_tail(&p, 256 * 1024))
+            .and_then(|tail| last_bsk_action(&tail));
+        cache.insert(uid, (Instant::now(), v.clone()));
+        v
+    }
+
+    /// Bring up the tab's own Chrome profile (a new tab there). A tab with
+    /// no browser opens its Browser dialog instead.
+    pub fn open_tab_chrome(&mut self, uid: u64) {
+        let Some(dir) = self.tab_browser_dir(uid) else {
+            if let Some((s, _)) = self.find_tab(uid) {
+                self.open_browser_dialog(s);
+            }
+            return;
+        };
+        let who = self.profile_name(&dir).unwrap_or_else(|| dir.clone());
+        let name = self
+            .find_tab(uid)
+            .map(|(s, t)| self.panes[s].tabs[t].name())
+            .unwrap_or_default();
+        if open_chrome("chrome://newtab", Some(&dir)) {
+            self.flash(format!("Opened Chrome profile {who} for {name}"));
+        } else {
+            self.flash("Could not open Chrome");
+        }
     }
 
     // ----- binding -----
@@ -567,6 +820,38 @@ impl App {
             Some(p) => open_chrome(url, Some(&p)),
             None => false,
         }
+    }
+
+    /// Open a sign in page or a Remote Control link: in the default
+    /// Chrome profile when one is set and `[browser] login_links` is on,
+    /// else the system browser.
+    pub fn open_service_link(&self, url: &str) {
+        let low = url.trim().to_lowercase();
+        let web = low.starts_with("https://") || low.starts_with("http://");
+        if web && self.cfg.browser.login_links && self.open_link_in_chrome(url, None) {
+            return;
+        }
+        crate::admin::open_url(url);
+    }
+
+    /// Settings > Browser: sign in and Remote Control links in the default
+    /// profile, or the system browser.
+    pub fn toggle_login_links(&mut self) {
+        let on = !self.cfg.browser.login_links;
+        self.cfg.browser.login_links = on;
+        if let Err(e) = crate::settings::write(
+            &crate::config::Config::path(),
+            &crate::settings::Key::Global("browser.login_links"),
+            Some(toml_edit::value(on)),
+        ) {
+            crate::log::error(&format!("browser.login_links: {e:#}"));
+        }
+        self.config_mtime = crate::app::config_mtime();
+        self.flash(if on {
+            "Sign in and Remote Control links open in the default Chrome profile"
+        } else {
+            "Sign in and Remote Control links open in the system browser"
+        });
     }
 
     // ----- the dialog: opening, polling -----
@@ -714,6 +999,7 @@ impl App {
                     KeyCode::Enter => self.browser_choose(d.sel),
                     KeyCode::Char('c') => self.browser_clear(),
                     KeyCode::Char('r') => self.browser_quick(true),
+                    KeyCode::Char('o') => self.open_tab_chrome(d.uid),
                     _ => {}
                 }
             }
@@ -902,25 +1188,46 @@ impl App {
                 Tone::Dim,
             ));
         }
+        if bound.is_some() {
+            lines.push(match self.tab_browser_activity(d.uid) {
+                Some(a) => line(
+                    format!(
+                        "Last in the browser: {}",
+                        activity_words(&a, chrono::Utc::now())
+                    ),
+                    Tone::Normal,
+                ),
+                None => line(
+                    "Its agent has not used the browser in this session.",
+                    Tone::Dim,
+                ),
+            });
+        }
         if let Some(n) = &self.browser.note {
             lines.push(line(n.clone(), Tone::Normal));
         }
+        let mut buttons = vec![(
+            "Use profile".into(),
+            UiAction::ModalOk,
+            "Choose the selected profile for this tab (Enter)".into(),
+        )];
+        if bound.is_some() {
+            buttons.push((
+                "Open Chrome".into(),
+                UiAction::BrowserOpenTab,
+                "Bring up this tab's Chrome profile (o)".into(),
+            ));
+        }
+        buttons.push((
+            "No browser".into(),
+            UiAction::BrowserClear,
+            "Clear this tab's browser (c)".into(),
+        ));
+        buttons.push(("Close".into(), UiAction::ModalCancel, "Esc".into()));
         Some(DlgView {
             title,
             lines,
-            buttons: vec![
-                (
-                    "Use profile".into(),
-                    UiAction::ModalOk,
-                    "Choose the selected profile for this tab (Enter)".into(),
-                ),
-                (
-                    "No browser".into(),
-                    UiAction::BrowserClear,
-                    "Clear this tab's browser (c)".into(),
-                ),
-                ("Close".into(), UiAction::ModalCancel, "Esc".into()),
-            ],
+            buttons,
         })
     }
 

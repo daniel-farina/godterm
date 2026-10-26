@@ -133,6 +133,7 @@ impl Pen<'_, '_, '_> {
 
     /// An arc from angle a0 to a1 (radians, clockwise on screen as y is
     /// down). `dash` = (on, off) in dots.
+    #[allow(clippy::too_many_arguments)]
     fn arc(&mut self, x: f64, y: f64, r: f64, a0: f64, a1: f64, c: C, dash: Option<(f64, f64)>) {
         if r <= 0.0 {
             return;

@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from demo_pty import Demo  # noqa: E402
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--exe", default=os.path.expanduser("~/claudego/target-demo/release/godterm"))
+ap.add_argument("--exe", default=os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "target-demo", "release", "godterm"))
 ap.add_argument("--out", default=os.path.expanduser("~/godterm-video/rec"))
 ap.add_argument("--quick", action="store_true", help="shorter holds (testing)")
 a = ap.parse_args()

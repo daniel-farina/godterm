@@ -308,6 +308,63 @@ pub struct Config {
     /// (`godterm supervisor install`).
     #[serde(default)]
     pub supervisor: SupervisorCfg,
+    /// `[web]`: GodTerm in a browser (docs/WEB_APP.md).
+    #[serde(default)]
+    pub web: WebCfg,
+    /// `[sync]`: GodTerm Sync (docs/SYNC.md), machine local.
+    #[serde(default)]
+    pub sync: crate::sync::SyncCfg,
+    /// `[git]`: which GitHub owner and gh account each project folder
+    /// belongs to (docs/SYNC.md).
+    #[serde(default)]
+    pub git: crate::git_map::GitCfg,
+}
+
+/// `[web]`: the web app, served on 127.0.0.1 (remote access through
+/// `tailscale serve`) and on this Mac's tailnet IPv4. `godterm web-url`
+/// prints the sign in links.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct WebCfg {
+    /// Serve it (or start with `godterm --web`).
+    pub enabled: bool,
+    pub port: u16,
+    /// Host names it answers to besides loopback and *.ts.net.
+    pub hosts: Vec<String>,
+    /// Sign in tailnet users with no token: through `tailscale serve` (its
+    /// identity headers) and on the tailnet IP (`tailscale whois`). Only
+    /// the owner of this Mac's tailnet node and `tailnet_users`.
+    pub tailnet_sign_in: bool,
+    /// More tailnet logins that sign in (e.g. "you@example.com").
+    pub tailnet_users: Vec<String>,
+    /// Also listen on this Mac's tailnet IPv4, port `ip_port` (for
+    /// browsers that cannot resolve *.ts.net).
+    pub tailnet_ip: bool,
+    pub ip_port: u16,
+    /// Serve the app's files from this folder (a web/ checkout) instead
+    /// of the ones built in, reloaded within about two seconds of an edit.
+    /// Empty: the repo's web/ when GodTerm runs from inside the checkout
+    /// it was built in (target/release/godterm), else the built in files.
+    pub assets_dir: String,
+    /// Always the built in files when `assets_dir` is empty (no repo
+    /// web/ for a binary run from its checkout).
+    pub embedded_assets: bool,
+}
+
+impl Default for WebCfg {
+    fn default() -> Self {
+        WebCfg {
+            enabled: false,
+            port: 7878,
+            hosts: vec![],
+            tailnet_sign_in: true,
+            tailnet_users: vec![],
+            tailnet_ip: true,
+            ip_port: 7880,
+            assets_dir: String::new(),
+            embedded_assets: false,
+        }
+    }
 }
 
 /// `[supervisor]`: what the launchd watchdog does once installed.
@@ -400,7 +457,9 @@ pub struct UiCfg {
 
 impl Default for UiCfg {
     fn default() -> Self {
-        UiCfg { blink_attention: true }
+        UiCfg {
+            blink_attention: true,
+        }
     }
 }
 
@@ -421,13 +480,25 @@ impl Default for TabsCfg {
 }
 
 /// `[browser]`: which Chrome profile links open in.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BrowserCfg {
     /// Chrome profile folder ("Default", "Profile 1") where GodTerm opens
     /// links when asked to open one in Chrome. The profile last chosen with
     /// a tab's Browser button is written here. Empty: the system browser.
     pub default_profile: String,
+    /// Sign in pages and Remote Control links GodTerm opens go to that
+    /// default profile too (true, the default); false: the system browser.
+    pub login_links: bool,
+}
+
+impl Default for BrowserCfg {
+    fn default() -> Self {
+        BrowserCfg {
+            default_profile: String::new(),
+            login_links: true,
+        }
+    }
 }
 
 /// `[assistant]`: the natural language voice assistant, a headless claude
@@ -1100,6 +1171,9 @@ impl Default for Config {
             viz: Default::default(),
             update: Default::default(),
             supervisor: Default::default(),
+            web: Default::default(),
+            sync: Default::default(),
+            git: Default::default(),
             assistant: AssistantCfg::default(),
             usage: UsageCfg::default(),
             tabs: TabsCfg::default(),
@@ -1500,6 +1574,37 @@ impl Config {
         Ok(cfg)
     }
 
+    /// The TUI's load: like load_or_init, but a config that does not parse
+    /// (cut short, or a bad edit) is moved aside (recover.rs) and the start
+    /// is clean, with setup offered again, instead of a refusal to start.
+    pub fn load_or_recover() -> Result<Config> {
+        let path = Self::path();
+        let text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            // Missing (first run) or unreadable: as before.
+            Err(_) => return Self::load_or_init(),
+        };
+        match Self::parse(&text) {
+            Ok(c) => Ok(c),
+            Err(e) => {
+                let why = if text.trim().is_empty() {
+                    "empty".to_string()
+                } else {
+                    format!("{e:#}")
+                };
+                let Some(bak) = crate::recover::quarantine(&path, &why) else {
+                    return Err(e.context(format!("parsing {}", path.display())));
+                };
+                // Seen before setup runs on the plain terminal.
+                eprintln!(
+                    "GodTerm: config.toml did not parse ({why}); saved as {} and starting clean.",
+                    bak.display()
+                );
+                Ok(Config::default())
+            }
+        }
+    }
+
     pub fn parse(text: &str) -> Result<Config> {
         let cfg: Config = toml::from_str(text)?;
         cfg.validate()?;
@@ -1621,7 +1726,9 @@ pub fn secure_home() {
     }
 }
 
-fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
+/// Write through a private temp file and a rename: never half written,
+/// never readable by others.
+pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     let tmp = path.with_extension("toml.tmp");
     write_private(&tmp, data)?;
     fs::rename(&tmp, path)?;

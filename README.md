@@ -121,25 +121,33 @@ Check what you got with `godterm --version` (version, commit, build date).
 ## Quick start
 
 ```sh
-godterm          # first run asks: how many accounts, their labels and folders
+godterm          # the first run walks you through it, inside the app
 ```
 
-1. Answer the questions (for example 2 accounts, "Work" and "Personal").
-2. Each pane shows claude's own login: pick "Claude account with
-   subscription", open the link in a browser signed in to that account,
-   paste the code back. The banner moves to the next account by itself.
-3. Before any UI, the voice onboarding asks one thing: turn voice on
-   (Enter, or say "yes") or skip (Esc). See [Voice onboarding](#voice-onboarding).
-4. You land on the grid with each account's usage, and a short tour shows
-   the screen. Everything is clickable: the menu bar, tab names, `+` and
-   `×`, the usage footer, Approve buttons. `Ctrl-a ?` lists every key.
-5. Optional voice: run `godterm doctor` to check the mic and the speech
-   tools, then hold `Ctrl-a space` and say what you want ("open a tab on
-   account two").
+The first run is one short flow, three steps:
+
+1. **Voice**: a welcome asks one thing: turn voice on (Enter, or say
+   "yes") or skip it (Esc). See [Voice onboarding](#voice-onboarding).
+2. **Your first account**: pick the agent (Claude Code, Grok Build, Codex,
+   Cursor, Antigravity or OpenCode). Each card shows whether its CLI is
+   installed; on a missing one, `i` installs Claude Code or Grok Build
+   (it shows the command first, a second `i` runs it), and the others say
+   where to get them. Give it a name and a folder, then Enter.
+3. **Log in**: the new pane starts that agent's own login, and a banner
+   says what to do (for Claude: pick "Claude account with subscription",
+   finish in the browser, paste the code back). Once logged in, that tab
+   is your first session and a short tour shows the screen.
+
+Add more accounts any time with `Ctrl-a A`. Everything is clickable: the
+menu bar, tab names, `+` and `×`, the usage footer, Approve buttons. Lost?
+`Ctrl-a :` finds any action by plain words ("new tab", "sign in",
+"rename"), `Ctrl-a ?` lists every key, and the bottom right of the screen
+says which keys work where you are. `godterm setup` still asks the old
+questions (how many accounts, labels, folders) on the plain terminal.
 
 ### Voice onboarding
 
-On a brand new install (no `config.toml` yet) the first window, before the
+On a brand new install (no `config.toml` yet, or no accounts) the first window, before the
 grid, is a calm welcome. Within a few seconds it says why voice makes
 GodTerm different and offers **Turn voice on** (Enter, or say "yes") or
 **Skip** (Esc, `s`). Nothing is skipped silently; after about 20 seconds a
@@ -403,13 +411,15 @@ show` prints it and the current screens.
 
 ## Setup and doctor
 
-The first time you run `godterm` (or with no accounts configured), or any
-time with `godterm setup`, it asks how many accounts you want (any number), a
-label and a default directory for each, then opens the TUI (on a new install
-with the [voice onboarding](#voice-onboarding) first) and walks you
-through logging each one in. A banner says which account is up ("Account 2
-of 4: Personal ...") with a check mark per account; once one logs in it
-moves to the next, `Ctrl-a S` skips one, and it ends on the dashboard.
+The first time you run `godterm` (or with no accounts configured) it opens
+the app with the [voice onboarding](#voice-onboarding) welcome, then the
+first account picker (see [Quick start](#quick-start)); no account is made
+up for you. `godterm setup` instead asks on the plain terminal how many
+accounts you want (any number), a label and a default directory for each,
+then opens the TUI and walks you through logging each one in. A banner says
+which account is up ("Account 2 of 4: Personal ...") with a check mark per
+account; once one logs in it moves to the next, `Ctrl-a S` skips one, and
+it ends on the dashboard.
 
 `godterm doctor` checks everything godterm relies on and prints a fix
 for each problem: the claude binary and version, every slot's keychain
@@ -560,13 +570,13 @@ the tabs.
 - `Ctrl-a w` closes the current tab, `Ctrl-a n` / `Ctrl-a p` go to the next
   or previous tab.
 - `Ctrl-a o` is the overview: every account, tab, directory and state
-  (working, needs approval, waiting for input, idle), with Enter to jump.
+  (working, needs approval, ready, idle), with Enter to jump.
 
 The state is read off each claude screen: a permission prompt ("Do you want
 to proceed?"), the folder trust prompt ("Accessing workspace ... Yes, I
 trust this folder") or a plan approval ("ready to execute") means needs
 approval, the "esc to interrupt" spinner means working, and the input box
-means waiting for input. The strings were checked against the claude
+means ready (waiting for input). The strings were checked against the claude
 2.1.290 binary, and the tests use screens captured from claude 2.1.291.
 
 Answers are chosen from the options actually on screen: "approve" picks the
@@ -661,7 +671,7 @@ turns it on (also Voice ▾ > Update mode, the command palette, or
 Settings > Voice > Update mode); "stop updates", "update mode off" or
 "quiet" turns it off. While it is on, GodTerm tells you in a sentence or
 two per project what changed in every active tab, like a colleague
-keeping you posted: "EXELON finished: the deploy finished the plan.
+keeping you posted: "ACME finished: the deploy finished the plan.
 Hyper: three of seven steps done, now applying the migration." For
 Claude tabs it reads only the new part of the transcript (the agent's
 text, edits, commands, to do progress, subagents and background
@@ -1145,6 +1155,20 @@ view reports "Stopped <id>" once the transcript confirms it. Stop all
 (`S`, "stop all loops") asks first. Moving a tab warns that its loops do
 not move with it.
 
+## Git section
+
+Every tab has a Git section (tab options > Git..., or the ⚠ next to a tab's
+name; in the web app the tab menu > Git): branch, remote, the GitHub owner,
+repo and gh account it belongs to, warnings ("Not backed up: no GitHub
+repo", "12 unpushed", "uncommitted changes"), the last commits and the
+changes. From there you commit (the assistant can draft the message), push,
+pull (fast forward only), sync, fetch, switch or create branches, define
+the repo and create a private GitHub repo. Each one shows what it will do
+and runs only on your yes; pushes are checked for secrets and large files
+first. GodTerm never commits, pushes or creates a repo by itself, and the
+assistant cannot either. Folder to owner rules and owner to gh account go
+in `[git]` (docs/SYNC.md).
+
 ## Moving a tab to another account
 
 When an account runs low, carry the conversation over to another one:
@@ -1453,7 +1477,14 @@ your own Chrome. There is no MCP server: agents get an Agent Skill and run
   extension is on (then open the extension popup and turn on the local
   connection; naming the browser after the profile helps `bsk` tell them
   apart). The button reads `browser`, `browser: Work (add)`, `browser: Work
-  (turn on)` or `✓ browser: Work`. Chrome's profile files are only read.
+  (turn on)` or `✓ browser: Work`; a narrow pane shows ` web ` (` ✓ web `
+  when ready) rather than dropping it. Chrome's profile files are only read.
+- **What it did there.** The dialog and the button's hover hint show the
+  tab agent's last browser action from its session (`Last in the browser:
+  navigate example.com · 3 min ago`; Claude tabs), and the assistant sees
+  it as `last_action` in `list_tabs`. **Open Chrome** in the dialog (`o`),
+  or "browser: open this tab's Chrome profile" in the palette, brings up
+  that tab's own profile.
 - **Scoped to the tab.** The binding is saved with the tab and follows it
   when it is moved. A tab's own `list_browsers` and `browser_status` return
   its profile and the connected browser matched to it, never another tab's,
@@ -1464,11 +1495,14 @@ your own Chrome. There is no MCP server: agents get an Agent Skill and run
   button). When you ask GodTerm to open a link in Chrome (`open_path`, also
   by voice) it opens in that profile with `--profile-directory`; a tab with
   its own profile uses it for links opened for that tab. Empty: the system
-  browser.
+  browser. Account sign in pages and Remote Control links GodTerm opens go
+  to that profile too (`login_links`, on by default; Settings > Browser has
+  a button to send them to the system browser instead).
 
 ```toml
 [browser]
 default_profile = "Profile 1"   # Chrome's folder name, not the display name
+login_links = true              # sign in and Remote Control links there too
 ```
 
 ## Permission mode
@@ -1522,10 +1556,19 @@ Nothing is ever approved without you asking.
 
 ## Command palette and broadcast
 
-- `Ctrl-a :` opens the command palette: type to fuzzy find an action (new
-  tab, overview, restart, voice on/off, ...). If no action matches, Enter
-  sends the text to the assistant, so `approve the one in personal` or
-  `tell tab two to run the tests` work from the keyboard too.
+- `Ctrl-a :` opens the command palette: type plain words to find an action
+  ("new tab", "sign in", "rename", "move tab", "install", "exit"); each row
+  shows its `Ctrl-a` key, so the palette also teaches the shortcuts. It also
+  finds open tabs: type part of a tab's name (or its account or folder) and
+  `go to tab: billing · Work · ready` jumps to it in any pane, on any
+  account, showing a hidden pane. If nothing matches, Enter sends the text
+  to the assistant, so `approve the one in personal` or `tell tab two to run
+  the tests` work from the keyboard too.
+- `Ctrl-a *` (or "find" in the palette) finds a word in every tab's recent
+  output (its screen and the newest 400 lines of history) on every
+  account: each match shows its account, tab and line, newest first, and
+  Enter or a click goes to that tab. Only the text GodTerm already holds
+  is searched.
 - `Ctrl-a b` broadcasts a prompt: it is typed into every running session and
   submitted. To send to only some, mark tabs with space in the overview
   (`Ctrl-a o`, marked rows show `+`) and press `b` there or `Ctrl-a b`.
@@ -1588,6 +1631,10 @@ focused pane.
 | `Ctrl-a L` | next layout (auto, grid, columns, rows, focus) |
 | `Ctrl-a \|` | split: another pane for this account |
 | `Ctrl-a t` / `Ctrl-a w` | new tab / close tab |
+| `Ctrl-a W` | reopen the tab closed last (undo a close) |
+| `Ctrl-a P` | pin or unpin the current tab |
+| `Ctrl-a g` | home: back to the grid |
+| `Ctrl-a F` | accept the offered move when an account runs low |
 | `Ctrl-a f` | archive the current tab (stops it, moves it under Archived in the tab list) |
 | `Ctrl-a n` / `Ctrl-a p` | next / previous tab |
 | `Ctrl-a o` | overview of all accounts and tabs |
@@ -1595,7 +1642,7 @@ focused pane.
 | `Ctrl-a r` / `Ctrl-a x` | restart / stop claude in the current tab |
 | `Ctrl-a I` | log in the focused pane's account |
 | `Ctrl-a a` | switch the focused pane to the next account slot |
-| `Ctrl-a A` | add a new account slot (prompts for a name, then logs in) |
+| `Ctrl-a A` | add an account: pick the agent (shows which CLIs are installed), name, folder, then it logs in |
 | `Ctrl-a d` | dashboard |
 | `Ctrl-a H` | sessions (history) for the focused pane's account |
 | `Ctrl-a s` | collapse / expand the tab list |
@@ -1603,7 +1650,8 @@ focused pane.
 | `Ctrl-a ,` | settings |
 | `Ctrl-a R` | rename the current tab (or double click it) |
 | `Ctrl-a u` | refresh usage now (at most once a minute per account) |
-| `Ctrl-a :` | command palette |
+| `Ctrl-a :` | command palette (also jumps to a tab by name) |
+| `Ctrl-a *` | find a word in every tab's recent output |
 | `Ctrl-a y` | approvals queue |
 | `Ctrl-a S` | during setup: skip the current account's login |
 | `Ctrl-a b` | broadcast a prompt to marked (or all) sessions |
@@ -1625,6 +1673,22 @@ focused pane.
 | click `name ▾` | account menu of a pane (switch, log in, log out, tab position) |
 | `Ctrl-a T` | the tour |
 | `Ctrl-a J` | voice phrases card (in the voice onboarding: skip the step) |
+| `Ctrl-a C` | close this pane's account in the grid (stays logged in) |
+| `Ctrl-a N` | restart into a downloaded update (tabs resume) |
+| `Ctrl-a D` | updates: what's new, download, restart |
+| `Ctrl-a _` / `Ctrl-a \` | minimize the focused pane to a strip / collapse it sideways |
+| `Ctrl-a /` | search the tab list |
+| `Ctrl-a <` / `Ctrl-a >` | narrower / wider tab list |
+| `Ctrl-a {` / `Ctrl-a }` | wider / narrower assistant panel |
+| `Ctrl-a c` | copy the selected text again |
+| `Ctrl-a Shift`+arrow | move the pane that way |
+| `Ctrl-a X` / `Ctrl-a O` | mute the microphone / the speaker |
+| `Ctrl-a +` / `Ctrl-a -` | talk back volume up / down |
+| `Ctrl-a K` | talk directly to this tab (again: back to the assistant) |
+| `Ctrl-a B` | brainstorm mode (nothing is sent until "send it") |
+| `Ctrl-a ;` | the loops drawer of this tab |
+| `Ctrl-a i` | this tab's browser (Chrome profile for BrowserSkill) |
+| `Ctrl-a #` | this tab's model (then 1 to 4) |
 
 Dashboard: arrows select an account, `Enter` jumps to its pane, `L` logs in,
 `s` opens its sessions, `r` refreshes it, `R` refreshes all, `n` adds an

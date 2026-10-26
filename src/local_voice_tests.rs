@@ -112,7 +112,9 @@ fn install_waits_for_a_yes() {
     let (mut app, home) = test_app("consent");
     if !local_tts::supported() {
         let rows = settings::settings_for(Section::Voice, &app.cfg);
-        assert!(rows.iter().all(|r| settings::local_install_row(&r.key).is_none()));
+        assert!(rows
+            .iter()
+            .all(|r| settings::local_install_row(&r.key).is_none()));
         let _ = std::fs::remove_dir_all(&home);
         return;
     }
@@ -133,10 +135,19 @@ fn install_waits_for_a_yes() {
     assert!(t.contains("not installed") && t.contains("Install…"), "{t}");
     // Enter asks first, with the size, memory, speed and license.
     app.setting_edit(row);
-    assert_eq!(app.modal, crate::app::Modal::ConfirmLocalVoice("chatterbox", false));
+    assert_eq!(
+        app.modal,
+        crate::app::Modal::ConfirmLocalVoice("chatterbox", false)
+    );
     let t = screen(&mut app, 200);
-    assert!(t.contains("2.9 GB") && t.contains("MIT") && t.contains("0.2 s"), "{t}");
-    assert!(local_tts::STARTED.lock().unwrap().is_empty(), "nothing before the yes");
+    assert!(
+        t.contains("2.9 GB") && t.contains("MIT") && t.contains("0.2 s"),
+        "{t}"
+    );
+    assert!(
+        local_tts::STARTED.lock().unwrap().is_empty(),
+        "nothing before the yes"
+    );
     // No: nothing happens.
     app.on_key(key(KeyCode::Esc));
     assert_eq!(app.modal, crate::app::Modal::None);
@@ -144,13 +155,19 @@ fn install_waits_for_a_yes() {
     // Yes: it starts.
     app.setting_step(row, 1);
     app.on_key(key(KeyCode::Char('y')));
-    assert_eq!(*local_tts::STARTED.lock().unwrap(), vec!["chatterbox".to_string()]);
+    assert_eq!(
+        *local_tts::STARTED.lock().unwrap(),
+        vec!["chatterbox".to_string()]
+    );
     // Installed: Enter offers Remove (asks too), and removes on yes.
     fake_install("chatterbox", &app.cfg.voice);
     let t = screen(&mut app, 200);
     assert!(t.contains("installed") && t.contains("Remove…"), "{t}");
     app.setting_step(row, 1);
-    assert_eq!(app.modal, crate::app::Modal::ConfirmLocalVoice("chatterbox", true));
+    assert_eq!(
+        app.modal,
+        crate::app::Modal::ConfirmLocalVoice("chatterbox", true)
+    );
     app.on_key(key(KeyCode::Char('y')));
     assert!(!local_tts::installed("chatterbox", &app.cfg.voice.local));
     let _ = std::fs::remove_dir_all(&home);
@@ -194,7 +211,10 @@ fn settings_show_engines_and_kokoro_voices() {
         .position(|r| r.key == Key::Global("voice.kokoro_voice"))
         .unwrap();
     let t = screen(&mut app, 220);
-    assert!(t.contains("af_heart") && t.contains("American female, grade A"), "{t}");
+    assert!(
+        t.contains("af_heart") && t.contains("American female, grade A"),
+        "{t}"
+    );
     assert!(t.contains("Preview"), "{t}");
     // Chatterbox and Ming panels only with that engine.
     let labels = |app: &crate::app::App| -> Vec<String> {
@@ -203,11 +223,15 @@ fn settings_show_engines_and_kokoro_voices() {
             .map(|r| r.label)
             .collect()
     };
-    assert!(!labels(&app).iter().any(|l| l.starts_with("Chatterbox:") || l.starts_with("Ming:")));
+    assert!(!labels(&app)
+        .iter()
+        .any(|l| l.starts_with("Chatterbox:") || l.starts_with("Ming:")));
     app.cfg.voice.tts_engine = "chatterbox".into();
     let l = labels(&app);
     assert!(l.iter().any(|x| x == "Chatterbox: voice clip"), "{l:?}");
-    assert!(l.iter().any(|x| x == "Speed") && l.iter().any(|x| x == "Local voice: unload after (s)"));
+    assert!(
+        l.iter().any(|x| x == "Speed") && l.iter().any(|x| x == "Local voice: unload after (s)")
+    );
     assert!(!l.iter().any(|x| x == "Kokoro: voice"));
     app.cfg.voice.tts_engine = "ming".into();
     assert!(labels(&app).iter().any(|x| x == "Ming: voice"));
@@ -229,7 +253,10 @@ fn spoken_voice_choices_switch_and_explain() {
     assert_eq!(app.cfg.voice.tts_engine, "kokoro");
     assert_eq!(app.cfg.voice.kokoro_voice, "af_bella");
     let saved = std::fs::read_to_string(Config::path()).unwrap();
-    assert!(saved.contains("af_bella") && saved.contains("kokoro"), "{saved}");
+    assert!(
+        saved.contains("af_bella") && saved.contains("kokoro"),
+        "{saved}"
+    );
     assert!(app.voice.action.as_deref().unwrap().contains("Bella"));
     // Grok again, then "use the local voice": back to Kokoro.
     assert!(app.voice_choice_intercept("use the grok voice"));

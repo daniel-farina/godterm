@@ -217,13 +217,13 @@ pub(super) fn head(s: &Screen, w: usize) -> Vec<String> {
     match s.flavor {
         Flavor::Claude | Flavor::Grok => s.banner.clone(),
         Flavor::Codex => {
-            let bw = w.min(60).max(24);
+            let bw = w.clamp(24, 60);
             let inner = bw - 2;
             let row = |text: &str, styled: String| {
                 let t = cut(text, inner - 1);
                 let pad = inner.saturating_sub(1 + width(&t));
                 // `styled` is `text` with colors; cut ones fall back to plain.
-                let body = if width(text) <= inner - 1 { styled } else { t };
+                let body = if width(text) < inner { styled } else { t };
                 format!("{GRAY}│{RESET} {body}{}{GRAY}│{RESET}", " ".repeat(pad))
             };
             let model_l = format!("model:     {}   /model to change", s.model);

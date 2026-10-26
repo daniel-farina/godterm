@@ -35,7 +35,7 @@ fn make_home(tag: &str, extra: &str) -> PathBuf {
     let fake = home.join("fake-claude.sh");
     std::fs::write(
         &fake,
-        "#!/bin/sh\nenv > \"$PWD/.tab-env.txt\"\necho \"fake claude in $(basename \"$PWD\") args:$*\"\necho \"? for shortcuts\"\nexec cat\n",
+        "#!/bin/sh\nenv > \"$PWD/.tab-env.txt\"\necho \"$*\" >> \"$PWD/.tab-args.txt\"\necho \"fake claude in $(basename \"$PWD\") args:$*\"\necho \"? for shortcuts\"\nexec cat\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -434,8 +434,8 @@ fn assistant_remembers_across_restarts() {
             r#"while read -r line; do
   echo "$line" >> "{home}/brain-in.txt"
   case "$line" in
-    *"Recent conversation memory"*botmesh*) say="Earlier we were looking at the lol/botmesh sessions; nothing was running there." ;;
-    *botmesh*) say="Two sessions in lol/botmesh." ;;
+    *"Recent conversation memory"*fotmesh*) say="Earlier we were looking at the code/fotmesh sessions; nothing was running there." ;;
+    *fotmesh*) say="Two sessions in code/fotmesh." ;;
     *) say="I don't have context from a previous conversation." ;;
   esac
   echo '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"t","name":"mcp__godterm__get_state","input":{{}}}}]}}}}'
@@ -449,8 +449,8 @@ done
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
-    t.ask("show me the lol/botmesh sessions");
-    t.wait_for("Two sessions in lol/botmesh.", 20);
+    t.ask("show me the code/fotmesh sessions");
+    t.wait_for("Two sessions in code/fotmesh.", 20);
     t.quit_keep();
     // GodTerm starts again: a new brain.
     let mut t = Tui::start(home.clone(), &[]);
@@ -458,32 +458,32 @@ done
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
     t.ask("what was the status of that thing, I forgot to ask you");
-    t.wait_for("Earlier we were looking at the lol/botmesh", 20);
+    t.wait_for("Earlier we were looking at the code/fotmesh", 20);
     let sent = std::fs::read_to_string(home.join("brain-in.txt")).unwrap();
     assert!(
         sent.contains("Recent conversation memory")
-            && sent.contains("show me the lol/botmesh sessions"),
+            && sent.contains("show me the code/fotmesh sessions"),
         "{sent}"
     );
     assert!(!t.text().contains("I don't have context"));
 }
 
-/// The user's 19:38 conversation: "lol/bot mesh", then "lol forward
-/// slash podmesh", then "the lol slash pod mesh": the brain passes what
-/// it heard, and the sessions tool still finds ~/lol/botmesh (it is
-/// among the projects) and says it took the name as lol/botmesh.
+/// The user's 19:38 conversation: "code/fot mesh", then "code forward
+/// slash vodmesh", then "the code slash vod mesh": the brain passes what
+/// it heard, and the sessions tool still finds ~/code/fotmesh (it is
+/// among the projects) and says it took the name as code/fotmesh.
 #[test]
-fn misheard_project_resolves_to_botmesh() {
+fn misheard_project_resolves_to_fotmesh() {
     if !have("python3") {
         return;
     }
-    let home = make_home("botmesh", "");
-    // A session in lol/botmesh in the (fixture) main ~/.claude.
-    let proj = home.join("main-claude/projects/-Users-x-lol-botmesh");
+    let home = make_home("fotmesh", "");
+    // A session in code/fotmesh in the (fixture) main ~/.claude.
+    let proj = home.join("main-claude/projects/-Users-x-code-fotmesh");
     std::fs::create_dir_all(&proj).unwrap();
     std::fs::write(
         proj.join("1111aaaa-0000-4000-8000-000000000001.jsonl"),
-        "{\"type\":\"ai-title\",\"aiTitle\":\"Bot generator changes\"}\n{\"type\":\"user\",\"cwd\":\"/Users/x/lol/botmesh\",\"entrypoint\":\"cli\",\"message\":{\"role\":\"user\",\"content\":\"bot generator changes\"}}\n",
+        "{\"type\":\"ai-title\",\"aiTitle\":\"Bot generator changes\"}\n{\"type\":\"user\",\"cwd\":\"/Users/x/code/fotmesh\",\"entrypoint\":\"cli\",\"message\":{\"role\":\"user\",\"content\":\"bot generator changes\"}}\n",
     )
     .unwrap();
     let exe = env!("CARGO_BIN_EXE_godterm");
@@ -506,7 +506,7 @@ def emit(say):
     print(json.dumps({{"type": "assistant", "message": {{"content": [{{"type": "tool_use", "id": "x", "name": "mcp__godterm__sessions", "input": {{}}}}]}}}}))
     print(json.dumps({{"type": "result", "subtype": "success", "result": say, "is_error": False}}), flush=True)
 # What the model passed in the user's log, turn by turn.
-heard = ["lol/bot mesh", "lol/podmesh", "lol/podmesh"]
+heard = ["code/fot mesh", "code/vodmesh", "code/vodmesh"]
 n = 0
 for line in sys.stdin:
     r = call("sessions", {{"project": heard[min(n, 2)]}})
@@ -527,14 +527,14 @@ for line in sys.stdin:
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
     for said in [
-        "lol/bot mesh directory",
-        "yeah as the folder is lol forward slash podmesh",
-        "yeah no the lol slash pod mesh, that's the one",
+        "code/fot mesh directory",
+        "yeah as the folder is code forward slash vodmesh",
+        "yeah no the code slash vod mesh, that's the one",
     ] {
         t.ask(said);
         std::thread::sleep(Duration::from_millis(300));
     }
-    t.wait_for("lol/botmesh", 40);
+    t.wait_for("code/fotmesh", 40);
     let calls = std::fs::read_to_string(home.join("calls.jsonl")).unwrap();
     let last: serde_json::Value = serde_json::from_str(calls.lines().last().unwrap()).unwrap();
     assert!(
@@ -545,7 +545,7 @@ for line in sys.stdin:
         last["reply"]["result"]["say"]
             .as_str()
             .unwrap()
-            .contains("lol/botmesh"),
+            .contains("code/fotmesh"),
         "{calls}"
     );
     assert!(!calls.contains("came back empty"), "{calls}");
@@ -625,10 +625,15 @@ fn other_clients_are_read_only() {
 #[test]
 fn a_tab_gets_a_job_server_limited_to_itself() {
     let home = make_home("tabjobs", "[tabs]\njobs_tools = true\n");
-    let t = Tui::start_with(home.clone(), &[], false);
+    let mut t = Tui::start_with(home.clone(), &[], false);
     t.wait_for("fake claude in work", 15);
-    // The hint is long and the pane narrow: wait for a word that cannot wrap.
-    t.wait_for("Prefer", 5);
+    // The hint is long and the pane narrow, so it wraps at a place that
+    // depends on the temp path: read the arguments the stub wrote instead.
+    t.wait_file(
+        &home.join("work").join(".tab-args.txt"),
+        "Prefer the godterm create_job tool",
+        10,
+    );
     // The launch's --mcp-config names the server and this tab's identity.
     let dir = home.join("tab-mcp");
     let file = std::fs::read_dir(&dir)
@@ -701,17 +706,47 @@ fn a_tab_gets_a_job_server_limited_to_itself() {
     // Nothing was made: the user has not said yes.
     let jobs = std::fs::read_to_string(home.join("jobs.json")).unwrap_or_default();
     assert!(!jobs.contains("\"prompt\""), "{jobs}");
+    // The request's dialog comes up on a later tick; any key answers it,
+    // so a quit typed while it shows would only decline it (and the Q
+    // would go to the tab). Wait for it and decline it first.
+    t.wait_for("job from a tab", 10);
+    t.send(b"\x1b");
+    t.wait_gone("job from a tab", 5);
+    let jobs = std::fs::read_to_string(home.join("jobs.json")).unwrap_or_default();
+    assert!(!jobs.contains("\"prompt\""), "declined: {jobs}");
     assert_eq!(t.quit(), 0);
 }
 
-/// QA-25: Ctrl-C during the first run setup leaves no config behind, so
-/// setup is offered again.
+/// A first run goes straight into the app: no questions on the plain
+/// terminal, no placeholder accounts, the first account picker with every
+/// agent.
+#[test]
+fn first_run_opens_the_first_account_picker() {
+    let home = std::env::temp_dir().join(format!("godterm-it-first-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let mut t = Tui::start(home.clone(), &[]);
+    t.wait_for("Welcome: add your first account", 15);
+    for name in ["Claude Code", "Grok Build", "Codex CLI", "OpenCode"] {
+        t.wait_for(name, 5);
+    }
+    assert!(!t.text().contains("How many agent slots"));
+    let cfg = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(!cfg.contains("[[accounts]]"), "{cfg}");
+    // Esc: no account yet, and the grid says how to add one.
+    t.send(b"\x1b");
+    t.wait_for("Ctrl-a A adds one", 5);
+    assert_eq!(t.quit(), 0);
+}
+
+/// QA-25: Ctrl-C during `godterm setup` on a new home leaves no config
+/// behind, so setup is offered again.
 #[test]
 fn interrupted_setup_writes_no_config() {
     let home = std::env::temp_dir().join(format!("godterm-it-setup-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
-    let mut t = Tui::start(home.clone(), &[]);
+    let mut t = Tui::start(home.clone(), &["setup"]);
     t.wait_for("How many agent slots", 10);
     t.send(b"3\r");
     t.wait_for("Account 1 of 3", 5);
@@ -811,10 +846,7 @@ fn eager_restore_starts_every_tab() {
         ready(&screen) >= 3 && !screen.contains("starti"),
         "{screen}"
     );
-    assert!(
-        screen.contains("--resume sess-456"),
-        "{screen}"
-    );
+    assert!(screen.contains("--resume sess-456"), "{screen}");
     // The hidden tab kept its name and resumed its session.
     let mut t = t;
     t.cmd(b"1");
@@ -1868,7 +1900,7 @@ fn voice_onboarding_welcome_steps_and_skip() {
     std::fs::write(&cfg, t).unwrap();
     // Esc on the welcome: skipped, recorded, the normal UI.
     let mut t = Tui::start(home.clone(), &["--onboarding"]);
-    t.wait_for("Run every Claude and Grok session just by talking.", 15);
+    t.wait_for("Run all your coding agent sessions just by talking.", 15);
     t.wait_for("Turn voice on", 5);
     assert!(!t.text().contains("Alpha"), "nothing of the UI shows yet");
     t.send(b"\x1b");
@@ -1898,4 +1930,69 @@ fn voice_onboarding_welcome_steps_and_skip() {
     let marker = std::fs::read_to_string(home.join("voice_onboarding")).unwrap();
     assert!(marker.starts_with("stopped"), "{marker}");
     assert_eq!(t.quit(), 0);
+}
+
+/// Damaged state files at start (cut short by a crash or a full disk):
+/// GodTerm starts, moves them aside with a note and quits cleanly. A
+/// config.toml that does not parse is moved aside too, and setup is
+/// offered again instead of a refusal to start.
+#[test]
+fn damaged_state_files_do_not_stop_a_start() {
+    let home = make_home("damaged", "");
+    for (f, body) in [
+        ("state.json", "{\"panes\": [{\"tabs\": [{\"name\""),
+        ("jobs.json", ""),
+        ("archive.json", "\u{0}\u{0}\u{0}"),
+        ("projects.json", "[{\"path\":"),
+        ("session-index.json", "{"),
+        ("project-index.json", "nul"),
+        ("tab-history.jsonl", "{\"a\":1}\n{\"b\":\n\u{0}\n"),
+        ("last_exit.json", "{\"clean\":"),
+        ("control.json", "not json"),
+    ] {
+        std::fs::write(home.join(f), body).unwrap();
+    }
+    let backups = |name: &str| {
+        std::fs::read_dir(&home)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("{name}.corrupt-"))
+            })
+            .count()
+    };
+    let t = Tui::start(home.clone(), &[]);
+    t.wait_for("fake claude in work", 15);
+    t.wait_for("Alpha", 5);
+    let log = std::fs::read_to_string(home.join("godterm.log")).unwrap_or_default();
+    for f in ["state.json", "jobs.json", "archive.json"] {
+        assert_eq!(backups(f), 1, "{f} moved aside; log:\n{log}");
+        assert!(log.contains(&format!("{f} was damaged")), "{log}");
+    }
+    assert!(!log.contains("panic"), "{log}");
+    t.quit_keep();
+    let log = std::fs::read_to_string(home.join("godterm.log")).unwrap_or_default();
+    assert!(!log.contains("panic"), "{log}");
+    // A clean quit writes whole files again.
+    let st = std::fs::read_to_string(home.join("state.json")).unwrap();
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&st).is_ok(),
+        "{st}"
+    );
+
+    // The config itself.
+    std::fs::write(home.join("config.toml"), "claude_bin = \"/x\n[[account]\n").unwrap();
+    let mut t = Tui::start(home.clone(), &[]);
+    // A damaged config starts over like a new home (no accounts; the
+    // welcome and the first account picker on a real terminal), with the
+    // old file moved aside and logged.
+    t.wait_for("No accounts yet", 15);
+    assert_eq!(backups("config.toml"), 1);
+    let log = std::fs::read_to_string(home.join("godterm.log")).unwrap_or_default();
+    assert!(log.contains("config.toml was damaged"), "{log}");
+    assert!(!log.contains("panic"), "{log}");
+    let _ = t.child.kill();
+    let _ = std::fs::remove_dir_all(&home);
 }

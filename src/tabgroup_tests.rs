@@ -320,12 +320,12 @@ fn search_filters_the_list_and_counts() {
         .iter()
         .position(|t| t.name() == "api")
         .unwrap();
-    app.panes[1].tabs[api].session_id = Some("sess-botmesh".into());
+    app.panes[1].tabs[api].session_id = Some("sess-fotmesh".into());
     app.native_titles.borrow_mut().insert(
-        "sess-botmesh".into(),
-        (std::time::Instant::now(), Some("Bot mesh refactor".into())),
+        "sess-fotmesh".into(),
+        (std::time::Instant::now(), Some("Fot mesh refactor".into())),
     );
-    app.panes[1].filter = "botmesh".into();
+    app.panes[1].filter = "fotmesh".into();
     assert_eq!(tab_rows(&app, 1), ["api"]);
     // A click on the field focuses it; the × clears.
     app.panes[1].filter.clear();
@@ -352,12 +352,12 @@ fn search_filters_the_list_and_counts() {
         .find(&crate::hits::UiAction::TabSearchClear(1))
         .is_some());
     key(&mut app, KeyCode::Esc);
-    // Voice: "find the tab about botmesh".
-    let v = app.control_call("search_tabs", &json!({"text": "bot mesh"}));
+    // Voice: "find the tab about fotmesh".
+    let v = app.control_call("search_tabs", &json!({"text": "fot mesh"}));
     assert_eq!(v["result"]["tabs"].as_array().unwrap().len(), 1, "{v}");
     assert!(v["result"]["say"].as_str().unwrap().starts_with("Found it"));
     assert_eq!((app.focus, app.panes[1].active), (1, api));
-    assert_eq!(app.panes[1].filter, "bot mesh");
+    assert_eq!(app.panes[1].filter, "fot mesh");
     app.control_call("search_tabs", &json!({"text": ""}));
     assert!(app.panes.iter().all(|p| p.filter.is_empty()));
     let _ = std::fs::remove_dir_all(home);
@@ -522,7 +522,7 @@ fn sidebar_resize_keys_and_wide_details() {
         "sess-wide".into(),
         (
             std::time::Instant::now(),
-            Some("Refactor the botmesh router".into()),
+            Some("Refactor the fotmesh router".into()),
         ),
     );
     app.panes[1].select(api);
@@ -567,7 +567,7 @@ fn sidebar_resize_keys_and_wide_details() {
     let rows: Vec<&str> = t.lines().collect();
     let at = rows
         .iter()
-        .position(|l| l.contains("Refactor the botmesh"))
+        .position(|l| l.contains("Refactor the fotmesh"))
         .unwrap_or_else(|| panic!("{t}"));
     assert!(rows[at - 1].contains("api"), "{t}");
     // "make the tab list wider" / "narrower", and back to automatic.

@@ -830,3 +830,205 @@ fn the_button_sits_on_the_bottom_bar_shows_its_state_and_a_click_opens_the_dialo
     assert_eq!(app.panes[0].tabs[t].browser.as_deref(), Some("Default"));
     let _ = fs::remove_dir_all(home);
 }
+
+#[test]
+fn a_narrow_pane_keeps_a_compact_browser_button_before_hiding_it() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home, t) = setup("narrow");
+    app.bind_tab_browser(uid_of(&app, t), Some("Default".into()));
+    // (width, the button's text when drawn)
+    let mut seen: Vec<(u16, Option<String>)> = vec![];
+    for w in 16..140u16 {
+        app.hits.borrow_mut().clear();
+        let area = ratatui::layout::Rect::new(0, 0, w, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        crate::ui_modelbar::draw(&mut buf, &app, 0, area);
+        let r = app
+            .hits
+            .borrow()
+            .regions
+            .iter()
+            .find(|r| r.action == UiAction::TabBrowser(0))
+            .map(|r| r.rect);
+        let label = r.map(|r| {
+            (r.x..r.x + r.width)
+                .map(|x| buf[(x, 0)].symbol().to_string())
+                .collect::<String>()
+        });
+        seen.push((w, label));
+    }
+    let compact: Vec<u16> = seen
+        .iter()
+        .filter(|(_, l)| l.as_deref() == Some(tb::compact_label(BtnState::Ready)))
+        .map(|(w, _)| *w)
+        .collect();
+    assert!(
+        !compact.is_empty(),
+        "the compact form is used somewhere: {seen:?}"
+    );
+    // Once it shows, it stays on every wider row.
+    let first = seen.iter().position(|(_, l)| l.is_some()).unwrap();
+    assert!(seen[first..].iter().all(|(_, l)| l.is_some()), "{seen:?}");
+    // It appears at a narrower width than the word form does.
+    let tiny = seen
+        .iter()
+        .find(|(_, l)| l.as_deref() == Some(" ✓ browser "))
+        .map(|(w, _)| *w)
+        .unwrap();
+    assert!(compact[0] < tiny, "{compact:?} {tiny}");
+    // The compact label still says its state.
+    assert_eq!(tb::compact_label(BtnState::None), " web ");
+    assert!(tb::compact_label(BtnState::Chosen).contains('!'));
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
+fn sign_in_and_remote_links_open_in_the_default_profile_unless_turned_off() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home, t) = setup("loginlinks");
+    let url = "https://claude.ai/oauth/authorize?x=1";
+    let opened = || crate::admin::OPENED.lock().unwrap().clone();
+    crate::admin::OPENED.lock().unwrap().clear();
+    // On by default; with no default profile: the system browser.
+    assert!(app.cfg.browser.login_links);
+    app.open_service_link(url);
+    assert!(launched().is_empty());
+    assert_eq!(opened(), vec![url.to_string()]);
+    // A default profile: there (a tab's own binding is not used for these).
+    app.set_default_profile("Profile 1");
+    app.bind_tab_browser(uid_of(&app, t), Some("Default".into()));
+    crate::admin::OPENED.lock().unwrap().clear();
+    app.open_service_link(url);
+    assert_eq!(
+        launched(),
+        vec![chrome_cmd(Os::current(), url, Some("Profile 1")).unwrap()]
+    );
+    assert!(opened().is_empty());
+    // Not a web link: never Chrome.
+    tb::LAUNCHED.lock().unwrap().clear();
+    app.open_service_link("file:///etc/passwd");
+    assert!(launched().is_empty());
+    // Turned off (Settings > Browser): the system browser, and saved.
+    app.toggle_login_links();
+    assert!(!app.cfg.browser.login_links);
+    let toml = fs::read_to_string(crate::config::Config::path()).unwrap();
+    assert!(toml.contains("login_links = false"), "{toml}");
+    tb::LAUNCHED.lock().unwrap().clear();
+    crate::admin::OPENED.lock().unwrap().clear();
+    app.open_service_link(url);
+    assert!(launched().is_empty());
+    assert_eq!(opened(), vec![url.to_string()]);
+    // The Remote Control link goes the same way.
+    app.toggle_login_links();
+    app.assistant.remote_last_url = Some("https://claude.ai/code/session_x".into());
+    tb::LAUNCHED.lock().unwrap().clear();
+    app.open_remote_link();
+    assert_eq!(launched().len(), 1, "{:?}", launched());
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_bsk_call_reads_as_what_it_did() {
+    use tb::bsk_summary as s;
+    assert_eq!(
+        s("bsk navigate https://www.example.com/login/").as_deref(),
+        Some("navigate example.com/login")
+    );
+    assert_eq!(s("bsk --json click @e12").as_deref(), Some("click @e12"));
+    assert_eq!(
+        s("cd /w && BSK_X=1 ~/.local/bin/bsk tab create 'https://a.io'").as_deref(),
+        Some("tab create a.io")
+    );
+    assert_eq!(s("bsk screenshot --full").as_deref(), Some("screenshot"));
+    // The last bsk call in a chain; other programs are not bsk.
+    assert_eq!(
+        s("bsk navigate https://a.io; bsk snapshot | head").as_deref(),
+        Some("snapshot")
+    );
+    assert_eq!(s("echo bsk navigate x"), None);
+    assert_eq!(s("ls -la"), None);
+    assert_eq!(s("bskx navigate https://a.io"), None);
+}
+
+#[test]
+fn the_last_browser_action_comes_from_the_transcript() {
+    let line = |ts: &str, cmd: &str| {
+        json!({"type": "assistant", "timestamp": ts, "message": {"content": [
+            {"type": "text", "text": "Looking"},
+            {"type": "tool_use", "name": "Bash", "input": {"command": cmd}}
+        ]}})
+        .to_string()
+    };
+    let tail = [
+        line("2026-10-23T10:00:00Z", "bsk navigate https://a.io"),
+        json!({"type": "user", "message": {"content": "bsk is great"}}).to_string(),
+        line("2026-10-23T10:05:00Z", "bsk click @e3"),
+        line("2026-10-23T10:06:00Z", "cargo test"),
+    ]
+    .join("\n");
+    let a = tb::last_bsk_action(&tail).unwrap();
+    assert_eq!(a.what, "click @e3");
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-23T10:08:30Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(tb::activity_words(&a, now), "click @e3 · 3 min ago");
+    assert!(tb::last_bsk_action("not json\n{}").is_none());
+}
+
+#[test]
+fn the_dialog_shows_the_tabs_last_browser_action_and_opens_its_chrome() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home, t) = setup("activity");
+    let uid = uid_of(&app, t);
+    app.bind_tab_browser(uid, Some("Default".into()));
+    // The tab's transcript: one bsk call.
+    let a = app.panes[0].account.unwrap();
+    let dir = app.cfg.accounts[a]
+        .config_dir()
+        .join("projects")
+        .join(crate::state::encode_project_dir(&app.panes[0].tabs[t].cwd));
+    fs::create_dir_all(&dir).unwrap();
+    let ts = chrono::Utc::now().to_rfc3339();
+    let l = json!({"type": "assistant", "timestamp": ts, "message": {"content": [
+        {"type": "tool_use", "name": "Bash", "input": {"command": "bsk navigate https://news.example.com"}}
+    ]}});
+    fs::write(dir.join("sess-w.jsonl"), format!("{l}\n")).unwrap();
+    app.open_browser_dialog(0);
+    settle(&app);
+    refresh(&mut app);
+    let Modal::Browser(d) = app.modal.clone() else {
+        panic!("no dialog")
+    };
+    let v = app.browser_dialog_view(&d).unwrap();
+    let text: Vec<String> = v.lines.iter().map(|l| l.text.clone()).collect();
+    assert!(
+        text.iter()
+            .any(|l| l.contains("Last in the browser: navigate news.example.com")),
+        "{text:?}"
+    );
+    // list_tabs carries it for the assistant.
+    let j = app.tab_browser_json(0, t).unwrap();
+    assert!(j["last_action"]
+        .as_str()
+        .unwrap()
+        .starts_with("navigate news.example.com"));
+    // Open Chrome: the button and the o key bring up that profile.
+    assert!(v.buttons.iter().any(|b| b.1 == UiAction::BrowserOpenTab));
+    tb::LAUNCHED.lock().unwrap().clear();
+    key(&mut app, KeyCode::Char('o'));
+    assert_eq!(
+        launched(),
+        vec![chrome_cmd(Os::current(), "chrome://newtab", Some("Default")).unwrap()]
+    );
+    // A tab with no browser: the palette action opens its dialog instead.
+    app.modal = Modal::None;
+    app.bind_tab_browser(uid, None);
+    tb::LAUNCHED.lock().unwrap().clear();
+    app.open_tab_chrome(uid);
+    assert!(launched().is_empty());
+    assert!(matches!(&app.modal, Modal::Browser(d) if d.uid == uid));
+    assert!(crate::palette::ACTIONS
+        .iter()
+        .any(|(_, a)| *a == crate::palette::Action::BrowserOpenTab));
+    let _ = fs::remove_dir_all(home);
+}

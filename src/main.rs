@@ -1,21 +1,21 @@
 //! godterm: up to four Claude Code sessions side by side, one account each.
 
+mod acct_tokens;
 mod activity;
 mod add_account;
-mod attention;
-#[cfg(test)]
-mod attention_tests;
 mod admin;
 mod app;
+mod app_accounts;
 mod app_admin;
 mod app_archive;
 mod app_assistant;
 mod app_bglock;
-mod app_browser;
 mod app_brainstorm;
+mod app_browser;
 mod app_busy;
 mod app_continue;
 mod app_direct;
+mod app_events;
 mod app_failover;
 mod app_followup;
 mod app_grid;
@@ -25,6 +25,7 @@ mod app_input;
 mod app_jobs;
 mod app_layout;
 mod app_learned;
+mod app_lease;
 mod app_loops;
 mod app_loopsdrawer;
 mod app_memory;
@@ -48,17 +49,18 @@ mod app_settings;
 mod app_setup;
 mod app_speaker;
 mod app_startup;
+mod app_sync;
 mod app_sysprompt;
 mod app_tabgroups;
 mod app_tabhist;
 mod app_tabmodel;
 mod app_tabmove;
 mod app_tabopts;
-mod app_updates;
-mod app_voices;
 mod app_talkback;
 mod app_update;
+mod app_updates;
 mod app_voice;
+mod app_voices;
 mod app_wake;
 mod archive;
 #[cfg(test)]
@@ -67,13 +69,20 @@ mod assistant;
 mod assistant_history;
 mod assistant_images;
 mod assistant_memory;
+mod attention;
+#[cfg(test)]
+mod attention_tests;
+#[cfg(test)]
+mod background_busy_tests;
 #[cfg(test)]
 mod bglock_tests;
 mod browser;
 mod browser_skill;
 #[cfg(test)]
 mod browser_tests;
-mod ui_browser;
+mod browser_view;
+#[cfg(test)]
+mod browser_view_tests;
 #[cfg(test)]
 mod busy_tests;
 #[cfg(test)]
@@ -91,7 +100,13 @@ mod demo_agent;
 mod demo_seed;
 mod deps;
 #[cfg(test)]
+mod events_tests;
+#[cfg(test)]
 mod failover_tests;
+mod find_all;
+mod first_run;
+#[cfg(test)]
+mod fuzz_tests;
 mod fuzzy;
 mod grid_layout;
 #[cfg(test)]
@@ -118,10 +133,11 @@ mod layout;
 mod learned;
 #[cfg(test)]
 mod live_tests;
+mod livemap;
 #[cfg(test)]
 mod local_voice_tests;
-mod livemap;
 mod log;
+mod login_screen;
 mod loops;
 mod mcp;
 mod md;
@@ -144,36 +160,55 @@ mod pane;
 #[cfg(test)]
 mod pane_controls_tests;
 #[cfg(test)]
+mod panel_split_tests;
+#[cfg(test)]
 mod panel_view_tests;
 mod panel_views;
 #[cfg(test)]
 mod panel_win_tests;
 #[cfg(test)]
 mod scroll_click_tests;
-#[cfg(test)]
-mod panel_split_tests;
-#[cfg(test)]
-mod wheel_mode_tests;
 mod supervisor;
+mod sync;
 #[cfg(test)]
 mod tabopts_tests;
+mod ui_browser;
+mod ui_git;
+mod ui_lease;
+mod ui_sync;
+#[cfg(test)]
+mod wheel_mode_tests;
 // A real PTY and a shell script stub: Unix only.
+mod app_git;
+mod app_gitcfg;
+mod app_gitpanel;
 #[cfg(test)]
 mod brainstorm_tests;
 #[cfg(all(test, unix))]
 mod continue_tests;
 #[cfg(all(test, unix))]
 mod direct_tests;
+mod gh_login;
+mod git_cfg;
+mod git_cred;
+mod git_map;
+mod git_ops;
+mod git_panel;
+mod git_scan;
 #[cfg(test)]
 mod jobs_tests;
+#[cfg(test)]
+mod lease_app_tests;
 #[cfg(test)]
 mod loopsdrawer_tests;
 #[cfg(all(test, unix))]
 mod paste_enter_tests;
 mod paths;
+mod peer;
 mod picker;
 mod platform;
 mod procs;
+mod project_git;
 mod project_index;
 mod project_memory;
 mod prompt;
@@ -186,6 +221,9 @@ mod quiet_tests;
 #[cfg(all(test, unix))]
 mod receipt_tests;
 mod receipts;
+mod recover;
+#[cfg(test)]
+mod recover_tests;
 #[cfg(test)]
 mod remote_keep_tests;
 #[cfg(test)]
@@ -193,6 +231,9 @@ mod remote_tests;
 mod risk;
 #[cfg(test)]
 mod schedcard_tests;
+mod scrollbar;
+#[cfg(test)]
+mod security_tests;
 mod select;
 #[cfg(test)]
 mod selfswitch_tests;
@@ -200,6 +241,7 @@ mod sess_sort;
 mod session_ids;
 mod session_index;
 mod session_ops;
+mod session_other;
 mod session_rename;
 mod sessions;
 mod settings;
@@ -209,17 +251,19 @@ mod setup_tests;
 mod slot;
 mod splash;
 #[cfg(test)]
+mod stability_tests;
+#[cfg(test)]
 mod stale_tests;
 #[cfg(test)]
 mod startup_tests;
 mod state;
 mod syscheck;
 mod sysprompt;
-mod tab_groups;
-mod tab_history;
 mod tab_browser;
 #[cfg(test)]
 mod tab_browser_tests;
+mod tab_groups;
+mod tab_history;
 mod tab_jobs;
 #[cfg(test)]
 mod tab_jobs_tests;
@@ -254,7 +298,6 @@ mod ui_modelbar;
 mod ui_onboarding;
 mod ui_panelwin;
 mod ui_schedcard;
-mod scrollbar;
 mod ui_schedules;
 mod ui_settings;
 mod ui_updates;
@@ -267,8 +310,10 @@ mod updates_tests;
 mod usage;
 mod usage_share;
 mod voice;
+mod vt_guard;
 #[cfg(test)]
 mod wake_tests;
+mod web;
 mod window;
 
 use anyhow::Result;
@@ -302,10 +347,21 @@ USAGE:
                         (never touches your real accounts, ~/.claude or ~/.grok);
                         --demo-harnesses: one account per agent CLI (Claude Code,
                         Grok Build, Codex, Cursor, Antigravity, OpenCode)
+    godterm --web [--web-port N]
+                        also serve the web app on 127.0.0.1 (as [web] enabled)
+    godterm web-url    print the links that sign a browser in to the web app
+    godterm web-log [--follow] [--client N] [--lines N]
+                        print the web app's debug log (what browsers report)
     godterm setup      guided setup: choose accounts, then log each one in
     godterm doctor     check claude, voice tools, mic, terminal and keychain slots
     godterm window reset|place|show
                         forget / compute / show the saved window position
+    godterm sync init|clone OWNER/REPO|status|now|plan|doctor
+                        back up this machine's state to private GitHub repos,
+                        or restore it on a new one (docs/SYNC.md)
+    godterm projects [--git] [--filter F] [--fetch] [--in DIR]
+                        the git state of every project (F: all, no_remote,
+                        not_github, dirty, unpushed, behind); --fetch fetches first
     godterm status     print accounts, config dirs, keychain service names and login state
     godterm usage      like status, plus live usage from the OAuth usage API
     godterm voice-test [--mic N | --file F [--levels] [--partials] [--echo]]
@@ -360,10 +416,14 @@ fn main() -> Result<()> {
         return demo_agent::run(flavor);
     }
     // --test-control (read by control::test_control) works with any mode.
-    let args: Vec<String> = std::env::args()
+    // --web and --web-port N (read by web::wanted and web::port) too.
+    let mut args: Vec<String> = std::env::args()
         .skip(1)
-        .filter(|a| a != "--test-control" && a != "--control-rw")
+        .filter(|a| a != "--test-control" && a != "--control-rw" && a != "--web")
         .collect();
+    if let Some(i) = args.iter().position(|a| a == "--web-port") {
+        args.drain(i..(i + 2).min(args.len()));
+    }
     // --onboarding (any mode, --demo too): the voice onboarding at start.
     let args: Vec<String> = if args.iter().any(|a| a == "--onboarding") {
         FORCE_ONBOARDING.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -371,6 +431,16 @@ fn main() -> Result<()> {
     } else {
         args
     };
+    // The demo's sign in links (its app home, nothing seeded or started).
+    if args.iter().any(|a| a == "--demo") && args.iter().any(|a| a == "web-url") {
+        std::env::set_var("GODTERM_HOME", demo::home().join("app"));
+        return web::url_command();
+    }
+    // The demo's web client log, likewise.
+    if args.iter().any(|a| a == "--demo") && args.iter().any(|a| a == "web-log") {
+        std::env::set_var("GODTERM_HOME", demo::home().join("app"));
+        return web::clientlog::command(&args);
+    }
     // Demo mode: its own home with made up accounts (see demo.rs).
     if args.iter().any(|a| a == "--demo") {
         demo::enter(&args)?;
@@ -379,6 +449,11 @@ fn main() -> Result<()> {
         return r;
     }
     let arg = args.first().cloned();
+    // git's credential helper for a project repo (git_cred.rs): stdin to
+    // stdout, nothing else runs, nothing is logged.
+    if arg.as_deref() == Some("git-credential") {
+        return git_cred::helper_main(&args[1..]);
+    }
     // The Windows Ctrl-C helper (see procs::interrupt): nothing else runs.
     if arg.as_deref() == Some("__ctrl-c") {
         let pid: u32 = args.get(1).and_then(|p| p.parse().ok()).unwrap_or(0);
@@ -562,6 +637,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some("projects") => app_git::command(&args[1..]),
         Some("tap-test") => {
             let with_mic = args.iter().any(|a| a == "--with-mic");
             let secs = args[1..]
@@ -582,6 +658,9 @@ fn main() -> Result<()> {
         Some("install") => install::install(args.iter().any(|a| a == "--dock")),
         Some("uninstall") => install::uninstall(args.iter().any(|a| a == "--purge")),
         Some("window") => window_cmd(args.get(1).map(String::as_str)),
+        Some("web-url") => web::url_command(),
+        Some("web-log") => web::clientlog::command(&args[1..]),
+        Some("sync") => sync::cli::command(&args[1..]),
         Some("status") => print_status(false),
         Some("usage") => print_status(true),
         Some("help" | "-h" | "--help") => {
@@ -984,27 +1063,44 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     if _instance.is_some() {
         supervisor::mark_running();
     }
-    // First run (no config yet), no accounts, or `godterm setup`: ask the
-    // questions on the plain terminal, then walk through the logins.
+    // `godterm setup` asks its questions on the plain terminal, then walks
+    // through the logins. A first run (or a home with no accounts) goes
+    // straight into the app: the welcome, voice or not, then the first
+    // account picker (first_run.rs).
     let first_run = !Config::path().exists();
-    let fresh_home = first_run;
-    // On a first run the config is written only once setup completes, so
-    // an interrupted setup (Ctrl-C) is offered again next time.
-    let will_setup = opts.setup || (first_run && setup::stdin_is_tty());
-    let mut cfg = if first_run && will_setup {
+    let mut cfg = if first_run && opts.setup {
+        // Written only once setup completes, so an interrupted setup
+        // (Ctrl-C) is offered again next time.
         Config::default()
+    } else if first_run && setup::stdin_is_tty() {
+        // No made up accounts: the first account picker adds a real one.
+        crate::first_run::new_home_config()?
     } else {
-        Config::load_or_init()?
+        Config::load_or_recover()?
     };
-    // The splash, once on a new home (before Setup) and once per update.
+    // A damaged config.toml was moved aside: with a terminal, start over as
+    // on a new home (the first account picker); without one, keep the
+    // defaults written down.
+    let recovered = !first_run && !Config::path().exists();
+    if recovered {
+        if setup::stdin_is_tty() && !opts.setup {
+            cfg = crate::first_run::new_home_config()?;
+        } else if !opts.setup {
+            let _ = cfg.save();
+        }
+    }
+    // The splash, once on a new home and once per update.
     if !opts.setup {
         splash::at_start(&cfg);
     }
     let mut onboarding = false;
-    if opts.setup || ((first_run || cfg.accounts.is_empty()) && setup::stdin_is_tty()) {
+    if opts.setup {
         cfg = setup::interactive_setup(cfg)?;
         onboarding = true;
     }
+    // A home with no accounts yet counts as new (an interrupted first run
+    // too); the voice welcome's marker keeps it to once.
+    let fresh_home = crate::first_run::fresh_home(first_run, &cfg);
     let (tx, rx) = mpsc::channel::<AppEvent>();
     theme::detect_truecolor();
 
@@ -1073,6 +1169,19 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     let panic_restore = std::sync::Arc::clone(&restore);
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // A panic on another thread ends only that thread and the app goes
+        // on drawing (the input thread shuts the app down itself), so the
+        // terminal is left as it is and the message goes to the log, not
+        // over the screen. Restoring it here used to leave a running app
+        // on a cooked terminal that echoed every key and read none.
+        let me = std::thread::current();
+        if me.name() != Some("main") {
+            log::error(&format!(
+                "panic in thread '{}': {info}",
+                me.name().unwrap_or("unnamed")
+            ));
+            return;
+        }
         let restored = (*panic_restore)();
         voice::kill_helpers();
         log::error(&format!("panic: {info}"));
@@ -1090,6 +1199,20 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     std::thread::Builder::new()
         .name("input".into())
         .spawn(move || {
+            // A panic while reading (crossterm parsing odd input) would
+            // leave the app with no keys at all: shut it down instead, as
+            // an unclean exit (the supervisor brings it back).
+            let read = std::panic::AssertUnwindSafe(|| read_input(&itx));
+            if std::panic::catch_unwind(read).is_err() {
+                log::error("the input thread panicked; shutting down");
+            }
+            // The terminal went away (window closed): shut down cleanly.
+            let _ = itx.send(AppEvent::InputClosed);
+        })?;
+    /// Read terminal events into the app's channel until the terminal
+    /// closes or the app is gone.
+    fn read_input(itx: &mpsc::Sender<AppEvent>) {
+        {
             let mut last_key: Option<Instant> = None;
             // An event read past a burst of wheel events, handled next.
             let mut held: Option<event::Event> = None;
@@ -1125,9 +1248,8 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
                     return;
                 }
             }
-            // The terminal went away (window closed): shut down cleanly.
-            let _ = itx.send(AppEvent::InputClosed);
-        })?;
+        }
+    }
     // SIGTERM, SIGHUP (window closed), SIGINT and SIGQUIT end the loop so
     // every child (claude, whisper-server, ffmpeg) is stopped on the way out.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1150,6 +1272,8 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             None
         }
     };
+    // The web app, when it is on (config or --web).
+    app.start_web();
     // Size the panes before the first spawn so claude starts at the right size.
     screen.draw(|f| ui::draw(f, &mut app), |_| ())?;
     // Restarted into a new version: every tab comes back at once.
@@ -1164,6 +1288,12 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     }
     let first_run = !crate::state::AppState::path().exists();
     app.autostart();
+    // Damaged state files moved aside at this start (jobs.json, state.json,
+    // config.toml): one line on the status bar; the log has the paths.
+    let notes = recover::take_notes();
+    if !notes.is_empty() {
+        app.flash(notes.join("; "));
+    }
     app.start_update_checker();
     // The voice onboarding: once on a brand new home (no config.toml at
     // this start), or with --onboarding. It comes first, before the grid;
@@ -1171,6 +1301,10 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     let forced = FORCE_ONBOARDING.load(std::sync::atomic::Ordering::Relaxed);
     if app.voice_onboarding_due(fresh_home, forced) {
         app.start_voice_onboarding(onboarding);
+    } else if app.cfg.accounts.is_empty() && setup::stdin_is_tty() {
+        // No accounts: the picker comes first (it shows what is installed
+        // and installs what is missing).
+        app.open_first_account();
     } else {
         app.maybe_show_setup(first_run);
         if onboarding {
@@ -1215,7 +1349,7 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     log::info("godterm started");
 
     let frame_budget = Duration::from_millis(16);
-    let mut last_draw = Instant::now() - frame_budget;
+    let mut last_draw = clock::ago(frame_budget);
     let mut last_tick = Instant::now();
     let mut dirty = true;
     let mut mouse_on = true;
@@ -1245,6 +1379,13 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             timeout = timeout.min(Duration::from_millis(100));
         }
         app.media_pump();
+        // A state push for browsers that waits out its 100 ms.
+        if let Some(d) = app.web_due() {
+            timeout = timeout.min(d);
+        }
+        if let Some(d) = app.web_retry_tick() {
+            timeout = timeout.min(d.max(Duration::from_millis(50)));
+        }
         match rx.recv_timeout(timeout) {
             Ok(ev) => {
                 app.handle(ev);
@@ -1271,6 +1412,10 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             last_tick = Instant::now();
             dirty = true;
         }
+        if let Some(w) = app.web.as_mut() {
+            w.changed |= dirty;
+        }
+        app.web_pump();
         if app.quit {
             break Ok(());
         }

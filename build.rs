@@ -45,7 +45,52 @@ fn main() {
         }
     }
     println!("cargo:rerun-if-changed=build.rs");
+    web_assets();
     windows_resources();
+}
+
+#[path = "src/web/pack.rs"]
+mod pack;
+
+/// Every file under web/ embedded for the web app (src/web/assets.rs):
+/// `$OUT_DIR/web_assets.rs` lists (path, bytes, gzipped bytes or empty),
+/// and WEB_BUILD is a short hash of them all, so a browser can tell it
+/// runs an older copy of the app. src/web/pack.rs does the work, the same
+/// code a folder served from disk goes through.
+fn web_assets() {
+    use std::path::{Path, PathBuf};
+    println!("cargo:rerun-if-changed=web");
+    println!("cargo:rerun-if-changed=src/web/pack.rs");
+    let root = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("web");
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let gz_dir = out_dir.join("web_gz");
+    let _ = std::fs::remove_dir_all(&gz_dir);
+    std::fs::create_dir_all(&gz_dir).unwrap();
+    for (rel, _) in pack::walk(&root) {
+        println!("cargo:rerun-if-changed={}", root.join(rel).display());
+    }
+    let p = pack::pack(&root).unwrap();
+    let mut list = String::from("&[\n");
+    for (i, f) in p.files.iter().enumerate() {
+        let raw = gz_dir.join(format!("{i}.raw"));
+        std::fs::write(&raw, &f.bytes).unwrap();
+        let gz_ref = match &f.gz {
+            Some(z) => {
+                let gp = gz_dir.join(format!("{i}.gz"));
+                std::fs::write(&gp, z).unwrap();
+                format!("include_bytes!({:?})", gp.display().to_string())
+            }
+            None => "&[]".into(),
+        };
+        list.push_str(&format!(
+            "    ({:?}, include_bytes!({:?}), {gz_ref}),\n",
+            f.rel,
+            raw.display().to_string()
+        ));
+    }
+    list.push(']');
+    std::fs::write(out_dir.join("web_assets.rs"), list).unwrap();
+    println!("cargo:rustc-env=GODTERM_WEB_BUILD={}", p.id);
 }
 
 /// The icon and version info in godterm.exe (Windows targets, built on Windows).

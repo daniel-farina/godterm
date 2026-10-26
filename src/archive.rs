@@ -37,6 +37,9 @@ pub struct Archived {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<SavedLoop>,
+    /// The tab's Chrome profile folder (its Browser binding).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
     /// Unix seconds.
     pub last_activity: i64,
     pub archived_at: i64,
@@ -60,6 +63,7 @@ impl Archived {
             label: self.label.clone(),
             tab_group: self.tab_group.clone(),
             pinned: self.pinned,
+            browser: self.browser.clone(),
         }
     }
 
@@ -87,11 +91,10 @@ pub fn path() -> PathBuf {
 }
 
 impl Store {
+    /// The archive; a damaged file is moved aside (recover.rs), not
+    /// overwritten by the next save.
     pub fn load() -> Store {
-        std::fs::read_to_string(path())
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+        crate::recover::load_json(&path()).unwrap_or_default()
     }
 
     /// Write atomically (a temp file, then rename), owner only.
@@ -186,6 +189,7 @@ mod tests {
                 recurring: true,
                 wakeup: false,
             }],
+            browser: None,
             last_activity: 1000,
             archived_at: 2000,
             by: "user".into(),

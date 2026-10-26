@@ -206,8 +206,10 @@ impl App {
     pub fn open_mic_tick(&mut self) {
         let min = self.cfg.voice.open_mic_sleep_min;
         // Never in the middle of a brainstorm (long silences are fine).
+        // Nor while the voice browser has its mic muted (only silence comes).
         if !self.voice.open_mic
             || self.brainstorm_on()
+            || self.web_mic_is_muted()
             || min == 0
             || self.voice.last_heard.elapsed() < Duration::from_secs(min as u64 * 60)
         {

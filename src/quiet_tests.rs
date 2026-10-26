@@ -112,7 +112,7 @@ fn a_question_queued_into_a_busy_turn_is_reported() {
     let (mut app, home) = test_app("queued");
     let rec = with_brain(&mut app, &home);
     let (uid, path) = tab(&mut app, &home, "7777aaaa-0000-4000-8000-000000000001");
-    let q = "Dan asks: will the microphone come back on after a restart?";
+    let q = "Alice asks: will the microphone come back on after a restart?";
     set_activity(&mut app, uid, Activity::Working);
     app.register_follow_up(uid, q);
     busy_turn(&path, &[q], None);
@@ -191,8 +191,8 @@ fn several_questions_one_turn_one_report() {
     let (mut app, home) = test_app("several");
     let rec = with_brain(&mut app, &home);
     let (uid, path) = tab(&mut app, &home, "7777aaaa-0000-4000-8000-000000000003");
-    let q1 = "Dan's change request: say Done when a task is finished.";
-    let q2 = "Dan's refinement: start the reply with Done, then what was done.";
+    let q1 = "Alice's change request: say Done when a task is finished.";
+    let q2 = "Alice's refinement: start the reply with Done, then what was done.";
     set_activity(&mut app, uid, Activity::Working);
     app.register_follow_up(uid, q1);
     app.register_follow_up(uid, q2);

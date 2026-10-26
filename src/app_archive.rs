@@ -105,8 +105,11 @@ impl App {
             if q > 0 {
                 v.push(soft(format!("{} on the way to it", plural(q, "prompt"))));
             }
-            if let Some(bg) = crate::ui_chrome::background_of(self, s, t) {
-                v.push(soft(format!("it has {bg}")));
+            // Busy, not idle: archiving would stop that work.
+            if let Some(bg) = self.tab_background_work(s, t) {
+                v.push(soft(format!(
+                    "it is busy: work still runs in the background ({bg})"
+                )));
             }
         }
         v
@@ -117,6 +120,17 @@ impl App {
             .map(|x| x.why.clone())
             .collect::<Vec<_>>()
             .join("; ")
+    }
+
+    /// Who a control tool call is acting for, as tab history and the
+    /// archive record it: "web" for the web app (the user in a browser),
+    /// else "assistant".
+    pub fn tool_caller(&self) -> &'static str {
+        if self.web_caller {
+            "web"
+        } else {
+            "assistant"
+        }
     }
 
     /// Archive tab (s, t) now: stop its session and what it owns, record
@@ -159,6 +173,7 @@ impl App {
             tab_group: c.tab_group.clone(),
             model,
             loops: c.loops.clone(),
+            browser: c.browser.clone(),
             last_activity: self.tab_last_activity(s, t),
             archived_at: self.archive_now(),
             by: by.to_string(),
@@ -770,7 +785,7 @@ impl App {
                 continue;
             };
             let name = self.panes[s].tabs[t].name();
-            match self.archive_tab(s, t, "assistant", force) {
+            match self.archive_tab(s, t, self.tool_caller(), force) {
                 Ok(e) => {
                     loops += e.loops.len();
                     done.push(json!({"id": e.id, "name": e.label, "account": self.describe_tab_of(&e.account), "folder": crate::config::tilde(std::path::Path::new(&e.cwd))}));

@@ -47,7 +47,7 @@ const FRAME: Duration = Duration::from_millis(33);
 /// Turns the start up splash off (smoke runs, scripts).
 pub const NO_SPLASH_ENV: &str = "GODTERM_NO_SPLASH";
 
-const TAGLINE: &str = "Every Claude and Grok session, one terminal. Say hey god.";
+const TAGLINE: &str = "Every coding agent session, one terminal. Say hey god.";
 const TAGLINE_SHORT: &str = "Claude and Grok, one terminal. Say hey god.";
 const HINT: &str = "press any key";
 const PREVIEW_HINT: &str = "preview   r replay   q quit";
@@ -354,7 +354,7 @@ fn play(o: Opts) -> io::Result<()> {
                     term.clear()?;
                 } else if t < END {
                     // Any other key skips to the held frame.
-                    start = Instant::now() - Duration::from_secs_f32(END);
+                    start = crate::clock::ago(Duration::from_secs_f32(END));
                 }
             }
             Event::Resize(..) => term.clear()?,
@@ -759,6 +759,7 @@ struct Beams {
     p_in: (f32, f32),
     p_out: (f32, f32),
     /// The beam: from, head, and how far it has grown.
+    #[allow(clippy::type_complexity)]
     beam: Option<((f32, f32), (f32, f32), f32)>,
     /// The rays: head, color, place in the fan (0 top, 1 bottom), how far
     /// out they are.

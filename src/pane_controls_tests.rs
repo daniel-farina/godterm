@@ -318,14 +318,18 @@ fn width_carets_sit_before_the_controls_and_resize_per_shape() {
     let (mut app, home) = test_app("carets");
     let mut t = term(200, 50);
     draw(&mut app, &mut t);
-    let (n, w) = (caret(&app, 0, false).unwrap(), caret(&app, 0, true).unwrap());
+    let (n, w) = (
+        caret(&app, 0, false).unwrap(),
+        caret(&app, 0, true).unwrap(),
+    );
     let close = ctl_region(&app, 0, &UiAction::FoldAccount(0));
-    // " < > " right before the minimize button, with a gap.
-    assert_eq!((n.width, w.width), (3, 2));
+    // " <  > " right before the minimize button, with a gap; each caret
+    // three cells wide, like the window controls.
+    assert_eq!((n.width, w.width), (3, 3));
     assert_eq!(w.x, n.x + 3);
-    assert_eq!(w.x + 2 + 1, close.x);
+    assert_eq!(w.x + 3 + 1, close.x);
     assert_eq!(cell(&t, n.x + 1, n.y), "<");
-    assert_eq!(cell(&t, w.x, w.y), ">");
+    assert_eq!(cell(&t, w.x + 1, w.y), ">");
     let hint = app
         .last_hits
         .regions
@@ -419,10 +423,16 @@ fn width_carets_with_three_columns_and_the_keyboard() {
     draw(&mut app, &mut t);
     assert!(app.pane_rects[1].width > w1);
     assert!(app.pane_rects[2].width < w2);
-    assert_eq!((0..cols).map(|i| app.pane_rects[i].width).sum::<u16>(), total);
+    assert_eq!(
+        (0..cols).map(|i| app.pane_rects[i].width).sum::<u16>(),
+        total
+    );
     // The palette entries do the same for the focused pane.
     for name in ["pane wider", "pane narrower", "equal pane widths"] {
-        assert!(crate::palette::ACTIONS.iter().any(|(n, _)| *n == name), "{name}");
+        assert!(
+            crate::palette::ACTIONS.iter().any(|(n, _)| *n == name),
+            "{name}"
+        );
     }
     app.resize_pane_width(1, false);
     app.equal_pane_widths();
@@ -454,4 +464,230 @@ fn width_carets_are_hidden_without_a_neighbour_or_when_zoomed() {
         .iter()
         .all(|r| !matches!(r.action, UiAction::PaneWidth(..))));
     let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_tight_header_says_ready_or_approval_never_a_bare_waiting() {
+    use crate::pane::Activity;
+    use crate::ui_chrome::short_state;
+    assert_eq!(short_state(Activity::Ready.label()), "ready");
+    assert_eq!(short_state(Activity::Permission.label()), "approval");
+    assert_eq!(short_state(Activity::Working.label()), "working");
+    assert_eq!(short_state("exited 1"), "exited");
+    for a in [
+        Activity::Idle,
+        Activity::Starting,
+        Activity::Working,
+        Activity::Permission,
+        Activity::Ready,
+        Activity::Exited,
+    ] {
+        assert_ne!(short_state(a.label()), "waiting", "{a:?}");
+        assert_ne!(short_state(a.label()), "needs", "{a:?}");
+    }
+}
+
+#[test]
+fn the_palette_jumps_to_any_open_tab_by_name() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("palette-tabs");
+    let dir = app.cfg.accounts[app.panes[2].account.unwrap()].work_dir();
+    let t = app.panes[2].add_tab(dir);
+    app.panes[2].tabs[t].custom_name = Some("billing-api".into());
+    let uid = app.panes[2].tabs[t].uid;
+    app.focus = 0;
+    // Nothing typed: actions only.
+    let none = crate::palette::Palette::default();
+    assert!(crate::palette::items(&app, &none)
+        .iter()
+        .all(|(n, _)| !n.starts_with("go to tab")));
+    // Its name: the tab first, with its account and state.
+    let pl = crate::palette::Palette {
+        input: "billing".into(),
+        sel: 0,
+    };
+    let items = crate::palette::items(&app, &pl);
+    let (label, action) = &items[0];
+    assert_eq!(*action, crate::palette::Action::GoTab(uid), "{items:?}");
+    let acct = app
+        .account_cfg(app.panes[2].account.unwrap())
+        .display()
+        .to_string();
+    assert!(
+        label.starts_with("go to tab: billing-api · ") && label.contains(&acct),
+        "{label}"
+    );
+    // Fuzzy, like the actions.
+    let pl2 = crate::palette::Palette {
+        input: "bilapi".into(),
+        sel: 0,
+    };
+    assert!(crate::palette::items(&app, &pl2)
+        .iter()
+        .any(|(_, a)| *a == crate::palette::Action::GoTab(uid)));
+    // Actions still win their own words.
+    let next = crate::palette::Palette {
+        input: "next".into(),
+        sel: 0,
+    };
+    assert_eq!(crate::palette::items(&app, &next)[0].0, "next tab");
+    // Enter goes there: the pane is focused and the tab shown, even when
+    // the pane was hidden.
+    app.panes[2].hidden = true;
+    app.panes[2].active = 0;
+    app.modal = Modal::Palette(pl);
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.focus, 2);
+    assert_eq!(app.panes[2].active, t);
+    assert!(!app.panes[2].hidden);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn find_reads_history_and_screen_and_keeps_the_scroll() {
+    let mut p = vt100::Parser::new(5, 40, 1000);
+    for i in 1..=50 {
+        p.process(format!("line {i}\r\n").as_bytes());
+    }
+    p.process(b"prompt> ");
+    p.screen_mut().set_scrollback(7);
+    let lines = crate::find_all::recent_lines(&mut p, 20);
+    assert_eq!(p.screen().scrollback(), 7, "the view's scroll is put back");
+    assert_eq!(lines.last().map(|l| l.trim()), Some("prompt>"));
+    assert_eq!(lines.len(), 20);
+    assert_eq!(lines[0].trim(), "line 32");
+    let m = crate::find_all::matches_in(&lines, "LINE 4", 3);
+    assert_eq!(
+        m,
+        vec![
+            ("line 49".to_string(), 2),
+            ("line 48".to_string(), 3),
+            ("line 47".to_string(), 4)
+        ]
+    );
+    assert!(
+        crate::find_all::matches_in(&lines, "l", 3).is_empty(),
+        "one letter: nothing"
+    );
+    let cut = crate::find_all::around(
+        &format!("{}needle{}", "a".repeat(80), "b".repeat(80)),
+        "needle",
+        30,
+    );
+    assert!(cut.contains("needle") && cut.chars().count() <= 30, "{cut}");
+}
+
+#[test]
+fn find_in_every_tab_lists_matches_and_goes_there() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("findall");
+    let dir = app.cfg.accounts[app.panes[1].account.unwrap()].work_dir();
+    let t = app.panes[1].add_tab(dir);
+    app.panes[1].tabs[t].custom_name = Some("deploy".into());
+    let uid = app.panes[1].tabs[t].uid;
+    app.panes[1].tabs[t]
+        .parser
+        .lock()
+        .unwrap()
+        .process(b"building...\r\nerror[E0425]: cannot find value `x`\r\ndone\r\n");
+    app.focus = 0;
+    let key = |app: &mut App, c: KeyCode| app.on_key(KeyEvent::new(c, KeyModifiers::NONE));
+    // Ctrl-a * opens it.
+    app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    key(&mut app, KeyCode::Char('*'));
+    assert!(matches!(app.modal, Modal::FindAll(_)), "{:?}", app.modal);
+    for c in "E0425".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    let Modal::FindAll(fa) = app.modal.clone() else {
+        panic!()
+    };
+    assert_eq!(fa.hits.len(), 1, "{:?}", fa.hits);
+    assert_eq!(fa.hits[0].uid, uid);
+    assert!(fa.hits[0].line.contains("cannot find value"));
+    assert!(
+        fa.hits[0].place.ends_with("· deploy"),
+        "{}",
+        fa.hits[0].place
+    );
+    // On screen, with a clickable row.
+    let mut t2 = term(160, 40);
+    draw(&mut app, &mut t2);
+    let s: String = {
+        let b = t2.backend().buffer();
+        (0..b.area.height)
+            .map(|y| {
+                (0..b.area.width)
+                    .map(|x| b[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        s.contains("find in every tab") && s.contains("E0425"),
+        "{s}"
+    );
+    assert!(app
+        .last_hits
+        .regions
+        .iter()
+        .any(|r| r.action == UiAction::FindAllRow(0)));
+    // Enter goes there.
+    app.panes[1].active = 0;
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.modal, Modal::None);
+    assert_eq!((app.focus, app.panes[1].active), (1, t));
+    // The palette has it too.
+    assert!(crate::palette::ACTIONS
+        .iter()
+        .any(|(_, a)| *a == crate::palette::Action::FindAll));
+    assert!(crate::ui::HELP.iter().any(|(k, _)| *k == "Ctrl-a *"));
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn help_shows_every_key_on_a_wide_screen_that_is_not_tall() {
+    // Taller than the screen, the key rows scroll: every key is on screen
+    // at some scroll position, and the rows shown still run when clicked.
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("help-fit");
+    app.modal = Modal::Help;
+    for (w, h) in [(200u16, 50u16), (160, 45)] {
+        let mut seen = std::collections::HashSet::new();
+        app.help_scroll = 0;
+        loop {
+            let mut t = term(w, h);
+            draw(&mut app, &mut t);
+            let b = t.backend().buffer();
+            let s: String = (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            for (k, _) in crate::ui::HELP {
+                if s.contains(&format!("  {k}")) {
+                    seen.insert(*k);
+                }
+            }
+            let shown = app
+                .last_hits
+                .regions
+                .iter()
+                .filter(|r| r.hint.starts_with("Run: "))
+                .count();
+            assert!(shown > 0, "{w}x{h}: shown rows are clickable");
+            if app.help_scroll >= app.help_max.get() {
+                break;
+            }
+            app.help_scroll += 1;
+        }
+        for (k, _) in crate::ui::HELP {
+            assert!(seen.contains(k), "{w}x{h}: {k} is never shown");
+        }
+    }
+    let _ = std::fs::remove_dir_all(home);
 }

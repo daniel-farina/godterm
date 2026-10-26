@@ -9,9 +9,11 @@
 *.mobileprovision
 notary.env
 __pycache__/
+/e2e-results
 /assets/video/music.*
 
 # Internal working notes (kept locally and in the private history only)
 /docs/PRODUCTION_READINESS.md
 /docs/QA_REPORT.md
 /docs/STALE_STATE_HUNT.md
+web/dev/node_modules

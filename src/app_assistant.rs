@@ -174,6 +174,10 @@ pub struct AssistantState {
     /// This turn was started by GodTerm (a delegated answer arrived), not
     /// by the user.
     pub system_turn: bool,
+    /// The browser this turn was typed in (the web app), if it was.
+    pub web_client: Option<u64>,
+    /// Set while a browser's turn is being started.
+    pub pending_web: Option<u64>,
     /// A raised reply limit (after a reply hit the old one), for every
     /// brain started from now on.
     pub token_cap: Option<u32>,
@@ -230,6 +234,9 @@ pub struct AssistantState {
     pub selfswitch: crate::app_selfswitch::SelfSwitch,
     /// Unprompted updates wait here for a quiet moment.
     pub quiet: crate::app_quiet::QuietGate,
+    /// What tabs did (finished, approvals, update news), for the
+    /// assistant to tell or not (app_events).
+    pub events: crate::app_events::Inbox,
     /// Images attached in the input (their chips are in it).
     pub pending_images: Vec<crate::assistant_images::Attachment>,
     /// Images sent lately, referable by number (30 minutes).
@@ -294,9 +301,7 @@ impl App {
     /// with the most 5 hour quota left.
     pub fn assistant_account(&self) -> Option<usize> {
         // Only accounts of the provider's harness (none: it has its own login).
-        let Some(h) = crate::providers::by_id(&self.cfg.assistant.provider).harness else {
-            return None;
-        };
+        let h = crate::providers::by_id(&self.cfg.assistant.provider).harness?;
         let claude = |a: usize| self.cfg.accounts[a].harness() == h;
         let want = self.cfg.assistant.account.trim();
         if !want.is_empty() && want != "best" {
@@ -389,11 +394,14 @@ impl App {
         let provider = crate::providers::by_id(&self.cfg.assistant.provider);
         let best = self.cfg.assistant.account == "best";
         let want = self.assistant_account();
+        let model = crate::providers::model_for(provider, &self.cfg.assistant);
         if let Some(b) = self.assistant.brain.as_mut() {
             // With "best", a working brain stays put (the tick moves it off
-            // an account under 5%); otherwise it follows the setting.
+            // an account under 5%); otherwise it follows the setting. A model
+            // picked mid answer applies on the next turn.
             if b.running()
                 && b.provider == provider.id
+                && b.model == model
                 && (provider.harness.is_none() || best || b.account == want)
             {
                 return Ok(());
@@ -401,18 +409,32 @@ impl App {
         }
         self.assistant.brain = None;
         self.remote_lost("the assistant restarted");
+        let mut extra_env = vec![];
         let (account, home, label) = match provider.own_home {
             Some(home) => (None, home(), format!("{}'s own login", provider.name)),
             None => {
                 let a = self
                     .assistant_account()
                     .ok_or("no logged in account for the assistant")?;
-                if !self.accounts[a].login.logged_in() {
+                // A Claude account set to use its long-lived token runs
+                // on it (CLAUDE_CODE_OAUTH_TOKEN for this process only).
+                let token = (self.cfg.accounts[a].harness() == crate::harness::Harness::Claude
+                    && provider.harness == Some(crate::harness::Harness::Claude))
+                .then(|| crate::acct_tokens::env_for(&self.cfg.accounts[a].name))
+                .flatten();
+                if !self.accounts[a].login.logged_in() && token.is_none() {
                     return Err(format!(
                         "{} is not logged in",
                         self.cfg.accounts[a].display()
                     ));
                 }
+                if token.is_some() {
+                    crate::log::info(&format!(
+                        "assistant: {} runs with its long-lived token",
+                        self.cfg.accounts[a].name
+                    ));
+                }
+                extra_env.extend(token);
                 let dir = self.cfg.accounts[a].config_dir();
                 let _ = crate::trust::seed_trust(&dir, &crate::assistant::dir());
                 (Some(a), dir, self.cfg.accounts[a].display().to_string())
@@ -439,6 +461,7 @@ impl App {
                 crate::assistant::system_prompt(&acfg.style),
                 crate::learned::prompt_section(&crate::learned::load())
             ),
+            extra_env,
         };
         let b = Brain::start(provider, account, ctx).map_err(|e| format!("{e:#}"))?;
         crate::log::info(&format!(
@@ -538,15 +561,12 @@ impl App {
                             60
                         )
                     ),
-                    // Ready on screen, but subagents or shells may still run.
-                    Activity::Ready => {
-                        let a = self.tab_activity(si, ti);
-                        if a.background() > 0 {
-                            format!("ready, {}", a.state)
-                        } else {
-                            "ready".into()
-                        }
-                    }
+                    // At its prompt, but subagents or shells may still run:
+                    // then it is busy (never idle), though it takes prompts.
+                    Activity::Ready => match self.tab_background_work(si, ti) {
+                        Some(w) => format!("BUSY in background ({w}), not idle"),
+                        None => "ready".into(),
+                    },
                     Activity::Starting => "starting".into(),
                     Activity::Exited => "ended".into(),
                     Activity::Idle => {
@@ -637,8 +657,10 @@ impl App {
         }
         s.push_str(&self.modes_line());
         s.push_str(&self.pending_answers_line());
+        s.push_str(&self.events_line());
         s.push_str(&self.update_state_line());
         s.push_str(&self.admin_state_lines());
+        s.push_str(&self.acct_state_lines());
         s.push_str(&self.grid_state_line());
         s.push_str(&self.provider_state_line());
         s.push_str(&self.speaker_state_line());
@@ -651,6 +673,7 @@ impl App {
             Some(left) => format!("listening_paused: {left} s left\n"),
             None => "listening_paused: no (listening is active)\n".to_string(),
         });
+        s.push_str(&self.web_turn_line());
         s.push_str("(t.. = tab id, a = account, tabN = position in the account, * focused, last = the tab you used last)\n</state>");
         s
     }
@@ -671,7 +694,7 @@ impl App {
             }
             let what = match (&r.session, &r.folder) {
                 (_, Some(f)) => f.clone(),
-                (Some(s), None) => format!("session {}", &s[..8.min(s.len())]),
+                (Some(s), None) => format!("session {}", crate::paths::head(s, 8)),
                 _ => continue,
             };
             let folder = r.folder.as_ref().map(|f| crate::config::expand_tilde(f));
@@ -856,6 +879,11 @@ impl App {
         ));
         self.assistant.unsaid = None;
         self.assistant.system_turn = system.is_some();
+        self.assistant.web_client = if system.is_none() {
+            self.assistant.pending_web.take()
+        } else {
+            None
+        };
         // Spoken in, spoken out; a turn of our own (a tab finished...)
         // follows how the user last talked to it.
         if system.is_none() {
@@ -1113,6 +1141,10 @@ impl App {
         args: &serde_json::Value,
         v: &serde_json::Value,
     ) {
+        // The user's own clicks in the web app, not the assistant's work.
+        if self.web_caller {
+            return;
+        }
         let status = if v.get("needs_confirmation").is_some() {
             "needs your yes".to_string()
         } else if v.get("_wait_uid").is_some() || v.get("_wait").is_some() {
@@ -1458,7 +1490,11 @@ impl App {
                 } else {
                     (reply, error)
                 };
-                if self.assistant.ignored_turn {
+                if self.assistant.ignored_turn && self.assistant.system_turn {
+                    // A turn of our own (tab events) it chose to keep quiet
+                    // about: nothing said, the user's own lines untouched.
+                    crate::log::info("assistant: kept quiet about a turn of our own");
+                } else if self.assistant.ignored_turn {
                     // Not addressed to it: nothing said, nothing shown but a note.
                     if let Some(u) = self
                         .assistant

@@ -489,7 +489,7 @@ impl App {
                 Stage::WaitIdle(Instant::now())
             }
             Mode::Take => Stage::Interrupt {
-                at: Instant::now() - Duration::from_secs(10),
+                at: crate::clock::ago(Duration::from_secs(10)),
                 sent: 0,
             },
         };
@@ -534,7 +534,7 @@ impl App {
                             > Duration::from_secs(4)
                     {
                         Some(Stage::Interrupt {
-                            at: Instant::now() - Duration::from_secs(10),
+                            at: crate::clock::ago(Duration::from_secs(10)),
                             sent: 0,
                         })
                     } else if since.elapsed() > Duration::from_secs(1800) {
@@ -575,7 +575,7 @@ impl App {
                                     // confirmed stop at once (no point waiting).
                                     let next = after_interrupt(sent, ok);
                                     Some(Stage::Interrupt {
-                                        at: if ok { Instant::now() } else { Instant::now() - Duration::from_secs(10) },
+                                        at: if ok { Instant::now() } else { crate::clock::ago(Duration::from_secs(10)) },
                                         sent: next,
                                     })
                                 }

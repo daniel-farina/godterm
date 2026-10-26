@@ -535,7 +535,7 @@ impl App {
             .or_else(|| self.assistant.remote_last_url.clone());
         match url {
             Some(u) => {
-                crate::admin::open_url(&u);
+                self.open_service_link(&u);
                 if !cfg!(test) {
                     crate::procs::copy_to_clipboard(u.clone());
                 }

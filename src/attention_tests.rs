@@ -127,10 +127,18 @@ fn label_and_hit_region_do_not_change() {
     let mut a = app("hit");
     a.attn_clock_ms.set(Some(0));
     let (idle_label, _, col0) = drawn(&a);
-    let hit0 = a.hits.borrow().at(col0, 0).map(|h| (h.rect, h.action.clone()));
+    let hit0 = a
+        .hits
+        .borrow()
+        .at(col0, 0)
+        .map(|h| (h.rect, h.action.clone()));
     wait_tabs(&mut a, 1);
     let (label, _, col1) = drawn(&a);
-    let hit1 = a.hits.borrow().at(col1, 0).map(|h| (h.rect, h.action.clone()));
+    let hit1 = a
+        .hits
+        .borrow()
+        .at(col1, 0)
+        .map(|h| (h.rect, h.action.clone()));
     assert_eq!(col0, col1);
     assert_eq!(&idle_label[..9], &label[..9]);
     assert_eq!(idle_label.chars().count(), label.chars().count());

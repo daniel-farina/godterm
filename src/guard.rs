@@ -58,7 +58,113 @@ fn private_dirs() -> Vec<PathBuf> {
     v.push(crate::config::dirs().main_grok);
     v.push(PathBuf::from("/Library/Keychains"));
     v.push(PathBuf::from("/private/var/db"));
-    v.into_iter().map(|p| canon(&p)).collect()
+    let mut v: Vec<PathBuf> = v.into_iter().map(|p| canon(&p)).collect();
+    // The private vault: never canonicalized (that would look inside it).
+    v.extend(vault_dirs());
+    v
+}
+
+/// The user's private vault: nothing in it is ever read, listed, bound to
+/// a repo or synced. Compared as written, never looked into.
+pub const VAULT: &str = "/Volumes/Private";
+
+fn vault_dirs() -> Vec<PathBuf> {
+    vec![PathBuf::from(VAULT)]
+}
+
+/// `p` names the vault or something in it, judged on the path as written
+/// (no file system access).
+pub fn in_vault(p: &Path) -> bool {
+    vault_dirs()
+        .iter()
+        .any(|v| same(p, v) || inside(p, v) || p.starts_with(v))
+}
+
+/// Where `p` really is, following symlinks one component at a time, and
+/// refusing (without touching it) as soon as the path leads into the
+/// vault. Err(why) for the vault; otherwise the resolved path (the part
+/// that does not exist is kept as written).
+pub fn resolve_outside_vault(p: &Path) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let refuse = || {
+        Err(format!(
+            "{} is in the private vault ({VAULT}); GodTerm never touches it",
+            p.display()
+        ))
+    };
+    if in_vault(p) {
+        return refuse();
+    }
+    let mut todo: Vec<std::ffi::OsString> = p
+        .components()
+        .rev()
+        .map(|c| c.as_os_str().to_os_string())
+        .collect();
+    let mut cur = PathBuf::new();
+    let mut hops = 0;
+    while let Some(c) = todo.pop() {
+        let comp = Path::new(&c);
+        match comp.components().next() {
+            Some(Component::ParentDir) => {
+                cur.pop();
+                continue;
+            }
+            Some(Component::CurDir) => continue,
+            _ => {}
+        }
+        let next = cur.join(&c);
+        if in_vault(&next) {
+            return refuse();
+        }
+        match std::fs::symlink_metadata(&next) {
+            Ok(md) if md.file_type().is_symlink() => {
+                hops += 1;
+                if hops > 40 {
+                    return Err(format!("{}: too many symlinks", p.display()));
+                }
+                let target = std::fs::read_link(&next).map_err(|e| e.to_string())?;
+                let full = if target.is_absolute() {
+                    target
+                } else {
+                    cur.join(target)
+                };
+                if in_vault(&full) {
+                    return refuse();
+                }
+                // Walk the target from the start again, then the rest.
+                cur = PathBuf::new();
+                for t in full
+                    .components()
+                    .rev()
+                    .map(|c| c.as_os_str().to_os_string())
+                {
+                    todo.push(t);
+                }
+            }
+            _ => cur = next,
+        }
+    }
+    Ok(cur)
+}
+
+/// A folder no project repo may live in or point into: the vault and the
+/// private folders (logins, keys). Why, if so. Symlinks are followed
+/// without ever stepping into the vault.
+pub fn never_folder(p: &Path) -> Option<String> {
+    let r = match resolve_outside_vault(p) {
+        Ok(r) => r,
+        Err(e) => return Some(e),
+    };
+    let c = canon(&r);
+    for d in private_dirs() {
+        if c.starts_with(&d) || same(&c, &d) {
+            return Some(format!(
+                "{} is private (logins, tokens or keys live there)",
+                crate::config::tilde(&d)
+            ));
+        }
+    }
+    None
 }
 
 /// A path as the OS compares them: on Windows without the \\?\ prefix
@@ -120,6 +226,10 @@ pub fn secret_name(name: &str) -> bool {
 /// `allowed` are folders inside a private one that the user made tabs in
 /// (tab workspaces under GodTerm's home).
 pub fn denied(p: &Path, allowed: &[PathBuf]) -> Option<String> {
+    // The vault first, without looking into it (canon would).
+    if let Err(why) = resolve_outside_vault(p) {
+        return Some(why);
+    }
     let c = canon(p);
     if let Some(name) = c.file_name().map(|n| n.to_string_lossy().into_owned()) {
         if secret_name(&name) {
@@ -151,6 +261,18 @@ const DOCS: &[&str] = &[
     "mp4", "mov", "m4v", "webm", "mp3", "m4a", "wav", "aac", "flac", "ogg", "docx", "xlsx", "pptx",
     "pages", "numbers", "key", "odt", "ods", "epub",
 ];
+
+/// The arguments for `open` showing folder `p` in Finder: a folder that is
+/// an app or other bundle (a tab's agent may cd into `X.app`) is revealed,
+/// never launched.
+pub fn finder_args(p: &Path) -> Vec<std::ffi::OsString> {
+    let mut v = vec![];
+    if open_refusal(p).is_some() {
+        v.push("-R".into());
+    }
+    v.push(p.as_os_str().to_os_string());
+    v
+}
 
 /// Why open_path must not open `p` (it could run code), if so. Folders
 /// open in Finder unless they are bundles; files only as documents.
@@ -249,6 +371,7 @@ pub fn a_system_folder() -> PathBuf {
 /// Where a tab may be opened: Ok(false) fine, Ok(true) needs the user's
 /// yes (the home folder itself), Err refused.
 pub fn tab_folder(p: &Path, allowed: &[PathBuf]) -> Result<bool, String> {
+    resolve_outside_vault(p)?;
     let c = canon(p);
     let home = canon(&crate::config::home_dir());
     // The temp folders (on Windows the one in the profile's AppData).
@@ -380,6 +503,43 @@ mod tests {
     }
 
     #[test]
+    fn the_vault_is_never_touched() {
+        let _g = crate::config::testing::LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(private_dirs().contains(&PathBuf::from(VAULT)));
+        for p in [
+            "/Volumes/Private",
+            "/Volumes/Private/x/y",
+            "/Volumes/Private/",
+        ] {
+            assert!(in_vault(Path::new(p)), "{p}");
+            assert!(never_folder(Path::new(p)).is_some(), "{p}");
+            assert!(denied(Path::new(p), &[]).is_some(), "{p}");
+        }
+        assert!(!in_vault(Path::new("/Volumes/PrivateX")));
+        // A symlink into the vault is refused from the link alone.
+        let d = std::env::temp_dir().join(format!("godterm-vault-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/Volumes/Private/stuff", d.join("v")).unwrap();
+            std::os::unix::fs::symlink(d.join("v"), d.join("vv")).unwrap();
+            for l in ["v", "vv"] {
+                let why = never_folder(&d.join(l).join("proj")).unwrap();
+                assert!(why.contains("vault"), "{why}");
+                assert!(resolve_outside_vault(&d.join(l)).is_err());
+            }
+        }
+        std::fs::create_dir_all(d.join("ok")).unwrap();
+        assert_eq!(never_folder(&d.join("ok")), None);
+        let home = crate::config::home_dir();
+        assert!(never_folder(&home.join(".ssh")).is_some());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn open_only_documents() {
         use crate::platform::PermissionsExt;
         let d = std::env::temp_dir().join(format!("godterm-open-{}", std::process::id()));
@@ -419,6 +579,12 @@ mod tests {
         for good in ["index.html", "notes.md", "site"] {
             assert!(open_refusal(&d.join(good)).is_none(), "{good}");
         }
+        // Finder shows a folder, and only reveals a bundle.
+        assert_eq!(
+            finder_args(&d.join("site")),
+            vec![d.join("site").into_os_string()]
+        );
+        assert_eq!(finder_args(&d.join("Evil.app"))[0], "-R");
         let _ = std::fs::remove_dir_all(&d);
     }
 

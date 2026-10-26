@@ -70,6 +70,9 @@ pub struct StartCtx<'a> {
     /// Its own session, kept across restarts (assistant.resume); None:
     /// nothing is saved.
     pub session: Option<SessionPlan>,
+    /// More variables for its process only (the account's long-lived
+    /// token as CLAUDE_CODE_OAUTH_TOKEN, when it is set to use it).
+    pub extra_env: Vec<(String, String)>,
 }
 
 /// The session a brain runs in: a new one with this id, or this one again.

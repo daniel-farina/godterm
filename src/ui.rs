@@ -255,6 +255,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Modal::ArchMenu(id, sel) => draw_arch_menu(f, area, app, &id, sel),
         Modal::NewTab(pk) => draw_picker(f, area, app, &pk),
         Modal::Palette(pl) => draw_palette(f, area, app, &pl),
+        Modal::FindAll(fa) => crate::find_all::draw(f, area, app, &fa),
         Modal::Broadcast(buf) => draw_broadcast(f, area, app, &buf),
         Modal::Approvals(sel) => draw_approvals(f, area, app, sel),
         // Edited in its sidebar row when that is on screen, else a popup.
@@ -425,6 +426,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             }
         }
         Modal::Browser(d) => crate::ui_browser::draw(f, area, app, &d),
+        Modal::Git(d) => crate::ui_git::draw(f, area, app, &d),
+        Modal::GitCfg(d) => crate::ui_git::draw_view(f, area, app, &app.gitcfg_dialog_view(&d)),
         Modal::SchedCard(key) => crate::ui_schedcard::draw(f, area, app, &key),
         Modal::ConfirmStopLoops => crate::ui_chrome::draw_message(
             f,
@@ -587,7 +590,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             f,
             area,
             app,
-            if remove { "remove local voice" } else { "install local voice" },
+            if remove {
+                "remove local voice"
+            } else {
+                "install local voice"
+            },
             &crate::app_voices::confirm_lines(id, remove),
             &[
                 (
@@ -595,7 +602,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     crate::hits::UiAction::ModalOk,
                     "Yes (y)",
                 ),
-                ("Cancel", crate::hits::UiAction::ModalCancel, "Not now (Esc)"),
+                (
+                    "Cancel",
+                    crate::hits::UiAction::ModalCancel,
+                    "Not now (Esc)",
+                ),
             ],
             theme::SAND,
         ),
@@ -1132,6 +1143,10 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
     crate::ui_modelbar::draw(f.buffer_mut(), app, i, model_row);
     crate::ui_loopsdrawer::draw(f.buffer_mut(), app, i, drawer);
 
+    // Owned by another machine (GodTerm Sync): its read only view.
+    if crate::ui_lease::draw(f, pane, inner) {
+        return;
+    }
     match &pane.state {
         PaneState::Idle | PaneState::Failed(_) => {
             draw_idle(f, app, i, inner);
@@ -1154,6 +1169,7 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
             }
             drop(parser);
             draw_selection(f.buffer_mut(), app, i, pane, inner);
+            crate::ui_lease::banner(f, pane, inner);
             if let PaneState::Exited(_) = pane.state {
                 let msg = match (&pane.state, &pane.session_id) {
                     (PaneState::Exited(Some(c)), Some(_)) if *c != 0 => {
@@ -1317,14 +1333,22 @@ fn draw_idle(f: &mut Frame, app: &App, i: usize, area: Rect) {
     let mut add_btn = false;
     match slot.account {
         None => {
-            lines.push(Line::styled(
-                "No account assigned.",
-                Style::default().fg(FG),
-            ));
-            lines.push(Line::styled(
-                "Click \"no account ▾\" above (or Ctrl-a a) to pick one, Ctrl-a A to add one.",
-                Style::default().fg(DIM),
-            ));
+            if app.cfg.accounts.is_empty() {
+                lines.push(Line::styled("No accounts yet.", Style::default().fg(FG)));
+                lines.push(Line::styled(
+                    "Add one (Ctrl-a A): Claude Code, Grok, Codex, Cursor, Antigravity or OpenCode.",
+                    Style::default().fg(DIM),
+                ));
+            } else {
+                lines.push(Line::styled(
+                    "No account assigned.",
+                    Style::default().fg(FG),
+                ));
+                lines.push(Line::styled(
+                    "Click \"no account ▾\" above (or Ctrl-a a) to pick one, Ctrl-a A to add one.",
+                    Style::default().fg(DIM),
+                ));
+            }
             add_btn = true;
         }
         Some(a) => {
@@ -1345,14 +1369,13 @@ fn draw_idle(f: &mut Frame, app: &App, i: usize, area: Rect) {
             ));
             lines.push(Line::raw(""));
             if let Some(id) = app.agent_missing(Some(a)) {
-                let h = crate::harness::Harness::of(id);
-                let (name, key) = (h.label(), h.bin_key());
-                lines.push(Line::styled(
-                    format!(
-                        "{name} isn't installed. Press I to install it, or set {key} in Settings."
-                    ),
-                    Style::default().fg(theme::SAND),
-                ));
+                let line = app
+                    .deps()
+                    .iter()
+                    .find(|d| d.id == id)
+                    .map(crate::first_run::missing_pane_line)
+                    .unwrap_or_default();
+                lines.push(Line::styled(line, Style::default().fg(theme::SAND)));
                 lines.push(Line::raw(""));
             } else if let PaneState::Failed(e) = &pane.state {
                 lines.push(Line::styled(
@@ -1371,7 +1394,7 @@ fn draw_idle(f: &mut Frame, app: &App, i: usize, area: Rect) {
                 ));
             } else if st.login.logged_in() {
                 lines.push(Line::styled(
-                    "Logged in. Press Enter to start claude.",
+                    format!("Logged in. Press Enter to start {}.", cfg.harness().label()),
                     Style::default().fg(FG),
                 ));
             } else {
@@ -1380,15 +1403,14 @@ fn draw_idle(f: &mut Frame, app: &App, i: usize, area: Rect) {
                     Style::default().fg(theme::SAND),
                 ));
                 lines.push(Line::styled(
-                    "Press Enter (or Ctrl-a I) to run claude here and log in.",
+                    format!(
+                        "Press Enter (or Ctrl-a I) to run {} here and log in.",
+                        cfg.harness().label()
+                    ),
                     Style::default().fg(FG),
                 ));
                 lines.push(Line::styled(
-                    "Pick \"Claude account with subscription\", open the URL, and paste",
-                    Style::default().fg(DIM),
-                ));
-                lines.push(Line::styled(
-                    "the code back into this pane.",
+                    crate::first_run::login_hint(cfg.harness()),
                     Style::default().fg(DIM),
                 ));
             }
@@ -2234,13 +2256,26 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
         });
     }
     if app.assistant_on() {
-        if let Some(a) = app
-            .assistant
-            .brain
-            .as_ref()
-            .and_then(|b| b.account)
-            .or_else(|| app.assistant_account())
-        {
+        let p = crate::providers::by_id(&app.cfg.assistant.provider);
+        if let Some(home) = p.own_home {
+            // A provider with its own login (Grok): its name and its own
+            // binding bucket, or that it is not signed in.
+            let left = if crate::harness::grok::logged_in(&home()) {
+                app.assistant_buckets()
+                    .as_deref()
+                    .and_then(crate::providers::binding)
+                    .map(|k| format!(" · {}", crate::providers::bucket_text(k)))
+                    .unwrap_or_default()
+            } else {
+                " · not signed in".to_string()
+            };
+            v.push(Chip {
+                text: format!("AI: {}{left}", p.name),
+                bg: theme::SLATE,
+                action: UiAction::Key('.'),
+                hint: "The assistant and the login it spends: click to open it",
+            });
+        } else if let Some(a) = crate::ui_assistant::brain_account(app) {
             let left = match app.accounts[a].binding() {
                 Some((l, "weekly", _)) => format!(" · wk {l:.0}%"),
                 Some((l, _, _)) => format!(" · {l:.0}%"),
@@ -2293,6 +2328,10 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
     }
     v
 }
+
+/// After Ctrl-a, until the next key: the most used ones.
+pub const PREFIX_HINT: &str =
+    "then a key: t new tab  w close  R rename  m move  a account  : find  ? all keys";
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![];
@@ -2464,12 +2503,17 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let right_text = match (&app.config_error, &hover, &app.flash) {
         (Some(e), _, _) => e.clone(),
         (None, Some(h), _) => h.clone(),
+        // Just pressed Ctrl-a: the keys matter more than the last news.
+        (None, None, _) if app.prefix => PREFIX_HINT.into(),
         (None, None, Some((m, _))) => m.clone(),
         (None, None, None) => match app.view {
-            View::Grid => "C-a ? help  C-a t tab  C-a o overview  C-a d usage".into(),
-            View::Dashboard => "dashboard".into(),
-            View::Sessions => "sessions".into(),
-            View::Overview => "overview".into(),
+            View::Grid if app.cfg.accounts.is_empty() => {
+                "C-a A add an account  C-a : find any action  C-a ? keys".into()
+            }
+            View::Grid => "C-a : find any action  C-a ? keys  C-a t new tab  C-a o overview".into(),
+            View::Dashboard => "dashboard: Esc back to the grid, C-a ? keys".into(),
+            View::Sessions => "sessions: Enter resumes, / search, Esc back".into(),
+            View::Overview => "overview: Enter opens, space marks, b broadcasts, Esc back".into(),
             View::Loops => "loops: s stops one, S stops all".into(),
             View::TabHistory => {
                 "tab history: Enter reopens, f folder, c copy id, / search, s sort".into()
@@ -3549,12 +3593,19 @@ fn draw_onboard_banner(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::Rgb(30, 30, 30)).bg(theme::SAND),
     )];
     if let Some(a) = cur {
-        top.push(Span::styled(
+        let acfg = app.account_cfg(a);
+        let hint = crate::first_run::login_hint(acfg.harness());
+        let text = if ob.first {
+            format!("  step 3 of 3: log in {}. {hint}", acfg.display())
+        } else {
             format!(
-                "  Account {} of {n}: {}. Pick \"Claude account with subscription\", finish the browser login, paste the code in the pane below.",
+                "  Account {} of {n}: {}. {hint}",
                 ob.pos + 1,
-                app.account_cfg(a).display()
-            ),
+                acfg.display()
+            )
+        };
+        top.push(Span::styled(
+            text,
             Style::default().fg(FG).add_modifier(Modifier::BOLD),
         ));
     }
@@ -4871,10 +4922,12 @@ pub(crate) fn draw_history(
         }
         let body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
         let w = body.width.max(1) as usize;
-        let total: u16 = lines
+        // A long conversation in a narrow panel can wrap past u16 rows.
+        let total = lines
             .iter()
-            .map(|l| (l.width().max(1).div_ceil(w)) as u16)
-            .sum();
+            .map(|l| l.width().max(1).div_ceil(w))
+            .sum::<usize>()
+            .min(u16::MAX as usize) as u16;
         f.render_widget(
             Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
@@ -4987,7 +5040,7 @@ fn draw_menus(f: &mut Frame, area: Rect, app: &App, o: &crate::menus::Open) {
         let w = width(&ses) + 2;
         // To the right of the row, or to the left when there is no room.
         let x = if r.x + r.width + w <= area.x + area.width {
-            r.x + r.width - 1
+            (r.x + r.width).saturating_sub(1)
         } else {
             r.x.saturating_sub(w - 1)
         };
@@ -5089,7 +5142,7 @@ fn draw_menu_box(
         let rw = right.chars().count() as u16;
         if !e.info.is_empty() {
             let ix = row.x + 1 + 2 + label_w + 2;
-            let end = row.x + row.width - if rw > 0 { rw + 2 } else { 1 };
+            let end = (row.x + row.width).saturating_sub(if rw > 0 { rw + 2 } else { 1 });
             let parts = fit_parts(&e.info, end.saturating_sub(ix) as usize);
             let mut cx = ix;
             for (t, tone) in parts {
@@ -5200,7 +5253,7 @@ fn draw_dropdown(
     let mut hits = app.hits.borrow_mut();
     for (i, (label, action)) in rows.iter().enumerate() {
         let ry = r.y + 1 + i as u16;
-        if ry + 1 >= r.y + r.height + 1 {
+        if ry + 1 > r.y + r.height {
             break;
         }
         let row = Rect::new(r.x + 1, ry, r.width.saturating_sub(2), 1);
@@ -5497,6 +5550,13 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("Ctrl-a t", "new tab: pick a directory or resume a session"),
     ("Ctrl-a w", "close the current tab"),
+    ("Ctrl-a W", "reopen the last closed tab (its session and loops)"),
+    ("Ctrl-a P", "pin or unpin the current tab"),
+    ("Ctrl-a g", "home: back to the grid of every pane, popups closed"),
+    (
+        "Ctrl-a F",
+        "accept the offered move to another account (when a tab runs low)",
+    ),
     (
         "Ctrl-a f",
         "archive the current tab: its session stops (frees memory) and it moves to Archived in the tab list; a double click there resumes it",
@@ -5536,6 +5596,11 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("Ctrl-a S", "tab list position: left, right, top"),
     ("Ctrl-a o", "overview of every account and tab"),
+    ("Ctrl-a G", "live map: every session as an animated diagram"),
+    (
+        "Ctrl-a *",
+        "find in every tab: the tabs whose recent output has a word, Enter goes there",
+    ),
     ("Ctrl-a y", "approvals queue: every tab waiting"),
     (
         "Ctrl-a c",
@@ -5555,7 +5620,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("Ctrl-a u", "refresh usage now"),
     (
         "Ctrl-a :",
-        "command palette (actions, or a request for the assistant)",
+        "command palette: actions, a tab's name to jump to it in any pane, or a request for the assistant",
     ),
     ("Ctrl-a b", "broadcast a prompt to marked or all sessions"),
     ("Ctrl-a space", "voice: push to talk"),
@@ -5571,6 +5636,10 @@ pub const HELP: &[(&str, &str)] = &[
     (
         "Ctrl-a m / U",
         "move this tab to another account / undo the move",
+    ),
+    (
+        "Ctrl-a F",
+        "accept the offered move when an account runs low",
     ),
     (
         "Ctrl-a @ / Z",
@@ -5644,6 +5713,7 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("Ctrl-a M", "release / capture the mouse (text selection)"),
     ("Ctrl-a T", "the tour"),
+    ("Ctrl-a ?", "this help"),
     (
         "Ctrl-a J",
         "voice phrases card (during the voice onboarding: skip the step); palette > replay voice onboarding",
@@ -5689,16 +5759,27 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, r);
     let row = |k: &str, v: &str, kc: Color| {
         Line::from(vec![
-            Span::styled(format!("  {k:<26}"), Style::default().fg(kc)),
+            Span::styled(format!("  {k:<26} "), Style::default().fg(kc)),
             Span::styled(v.to_string(), Style::default().fg(FG)),
         ])
     };
+    // Taller than the screen: the key rows scroll (arrows, pages).
+    let total = 5 + HELP.len() + if wide { 0 } else { VOICE_HELP.len() + 1 };
+    let rows = r.height.saturating_sub(2) as usize;
+    let overflow = total > rows;
+    let max = total.saturating_sub(rows).min(HELP.len());
+    app.help_max.set(max);
+    let skip = app.help_scroll.min(max);
     let mut lines: Vec<Line> = vec![Line::styled(
-        "  Keys: press Ctrl-a, then the key. Click any line to run it.",
+        if overflow {
+            "  Keys: Ctrl-a, then the key. Click a line to run it. ↑↓ PgDn scroll."
+        } else {
+            "  Keys: press Ctrl-a, then the key. Click any line to run it."
+        },
         Style::default().fg(DIM).add_modifier(Modifier::BOLD),
     )];
     let keys_from = lines.len();
-    lines.extend(HELP.iter().map(|(k, v)| row(k, v, theme::SAND)));
+    lines.extend(HELP.iter().skip(skip).map(|(k, v)| row(k, v, theme::SAND)));
     lines.push(Line::raw(""));
     lines.push(Line::styled(
         "  Mouse: the menu bar, tab names, x and +, the account ▾ menu, the window controls (_ minimize, □ maximize, × close; ◂ collapses sideways), restart, the usage",
@@ -5750,8 +5831,8 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
     // Each key row runs its command when clicked.
     {
         let mut hits = app.hits.borrow_mut();
-        for (i, (k, v)) in HELP.iter().enumerate() {
-            let y = r.y + 1 + (keys_from + i) as u16;
+        for (i, (k, v)) in HELP.iter().enumerate().skip(skip) {
+            let y = r.y + 1 + (keys_from + i - skip) as u16;
             if y + 1 >= r.y + r.height {
                 break;
             }
@@ -5793,7 +5874,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_palette(f: &mut Frame, area: Rect, app: &App, pl: &crate::palette::Palette) {
-    let items = pl.matches();
+    let items = crate::palette::items(app, pl);
     let h = (items.len() as u16 + 5).clamp(7, 26);
     let r = centered(area, 70, h);
     f.render_widget(Clear, r);
@@ -5805,15 +5886,21 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App, pl: &crate::palette::Palet
         ]),
         Line::raw(""),
     ];
-    for (i, (name, _)) in items.iter().enumerate().take(h as usize - 5) {
+    // Each row: the action, and its shortcut on the right where it has one.
+    let inner_w = r.width.saturating_sub(5) as usize;
+    for (i, (name, action)) in items.iter().enumerate().take(h as usize - 5) {
         let sel = i == pl.sel;
+        let key = crate::palette::key_hint(*action).unwrap_or_default();
+        let room = inner_w.saturating_sub(key.chars().count() + 1);
+        let shown = crate::sessions::snippet(name, room);
+        let pad = room.saturating_sub(shown.chars().count());
         lines.push(Line::from(vec![
             Span::styled(
                 if sel { "› " } else { "  " },
                 Style::default().fg(theme::SAND),
             ),
             Span::styled(
-                name.to_string(),
+                shown,
                 if sel {
                     Style::default()
                         .fg(FG)
@@ -5823,13 +5910,25 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App, pl: &crate::palette::Palet
                     Style::default().fg(FG)
                 },
             ),
+            Span::raw(" ".repeat(pad + 1)),
+            Span::styled(key, Style::default().fg(FAINT)),
         ]));
     }
     if items.is_empty() {
         lines.push(Line::styled(
-            "  Enter runs this as a command, e.g. \"in account two approve\"",
+            if app.assistant_on() {
+                "  No action matches. Enter asks the assistant, e.g. \"in account two approve\""
+            } else {
+                "  No action matches. Try a plain word: tab, account, login, voice, layout"
+            },
             Style::default().fg(DIM),
         ));
+    } else if pl.input.is_empty() {
+        // In place of the blank line, so the rows stay where clicks land.
+        lines[1] = Line::styled(
+            "  Type plain words: \"new tab\", \"sign in\", \"rename\", \"move tab\"",
+            Style::default().fg(FAINT),
+        );
     }
     f.render_widget(
         Paragraph::new(lines)
@@ -6565,6 +6664,127 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The single keys Help documents as "Ctrl-a X" (and "Ctrl-a X / Y").
+    fn documented_keys() -> Vec<char> {
+        let mut v = vec![];
+        for (k, _) in HELP {
+            let Some(rest) = k.strip_prefix("Ctrl-a ") else {
+                continue;
+            };
+            for tok in rest.split([' ', ',']) {
+                let mut cs = tok.chars();
+                if let (Some(c), None) = (cs.next(), cs.next()) {
+                    if c != '/' && !v.contains(&c) {
+                        v.push(c);
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn every_documented_key_does_something() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, home) = test_app("helpkeys");
+        let keys = documented_keys();
+        for c in ['t', 'w', 'W', 'P', 'g', 'R', 'm', 'U', ':', '?', 'F'] {
+            assert!(keys.contains(&c), "Help documents Ctrl-a {c}");
+        }
+        // Keys that restart, quit or start audio are left out here.
+        for c in keys.into_iter().filter(|c| !"NQqKBXOvV+-iDE".contains(*c)) {
+            app.modal = Modal::None;
+            app.view = View::Grid;
+            app.flash = None;
+            app.on_command(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            let fl = app.flash.as_ref().map(|f| f.0.clone()).unwrap_or_default();
+            assert_ne!(
+                fl,
+                crate::app::unknown_key_line(c),
+                "Ctrl-a {c} is documented"
+            );
+        }
+        // A key that is no shortcut says where the keys are.
+        app.modal = Modal::None;
+        app.on_command(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::NONE));
+        let fl = app.flash.as_ref().map(|f| f.0.clone()).unwrap_or_default();
+        assert!(fl.contains("Ctrl-a ?") && fl.contains("Ctrl-a :"), "{fl}");
+        assert!(!HELP.iter().any(|(k, _)| k.contains(" Y")), "Y is free");
+        app.shutdown();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn help_scrolls_on_a_short_terminal() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, home) = test_app("helpscroll");
+        let mut term = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        app.modal = Modal::Help;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let t = buffer_text(term.backend().buffer());
+        assert!(
+            t.contains("PgDn scroll") && t.contains("move focus between panes"),
+            "{t}"
+        );
+        assert!(!t.contains("send a literal Ctrl-a"), "the end is below");
+        let down = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+        for _ in 0..6 {
+            app.on_key(down);
+        }
+        assert_eq!(app.modal, Modal::Help, "scrolling keeps it open");
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let t = buffer_text(term.backend().buffer());
+        assert!(t.contains("send a literal Ctrl-a"), "{t}");
+        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!((app.modal.clone(), app.help_scroll), (Modal::None, 0));
+        app.shutdown();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn hint_row_says_what_to_do_here() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, home) = test_app("hintrow");
+        let mut term = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        app.flash = None;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let t = buffer_text(term.backend().buffer());
+        assert!(t.contains("C-a : find any action"), "{t}");
+        // After Ctrl-a: the most used keys, over the last flash.
+        app.flash("some tab finished");
+        app.prefix = true;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let t = buffer_text(term.backend().buffer());
+        assert!(t.contains("then a key: t new tab"), "{t}");
+        app.prefix = false;
+        // The palette lists shortcuts next to actions and takes plain words.
+        app.modal = Modal::Palette(Default::default());
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let t = buffer_text(term.backend().buffer());
+        assert!(
+            t.contains("Type plain words") && t.contains("Ctrl-a t"),
+            "{t}"
+        );
+        app.modal = Modal::Palette(crate::palette::Palette {
+            input: "sign in".into(),
+            sel: 0,
+        });
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let t = buffer_text(term.backend().buffer());
+        assert!(
+            t.contains("log in account") && t.contains("Ctrl-a I"),
+            "{t}"
+        );
+        app.shutdown();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn onboarding_walks_accounts_and_ends_on_dashboard() {
         use crate::creds::CredSource;
@@ -6918,7 +7138,9 @@ mod tests {
         let Modal::AddAccount(f) = &mut app.modal else {
             panic!("{:?}", app.modal)
         };
-        f.grok_ok = false;
+        f.ok[1] = false;
+        f.how[1] = "curl -fsSL https://x.ai/cli/install.sh | bash".into();
+        f.can_install[1] = true;
         term.draw(|f| draw(f, &mut app)).unwrap();
         let t = buffer_text(term.backend().buffer());
         assert!(
@@ -6929,23 +7151,29 @@ mod tests {
             t.contains("Claude Code") && t.contains("Anthropic subscription login"),
             "{t}"
         );
-        assert!(t.contains("Grok Build") && t.contains("grok not found"));
+        assert!(t.contains("Grok Build") && t.contains("press i to install it"));
         for name in ["Codex CLI", "Cursor CLI", "Antigravity CLI", "OpenCode"] {
             assert!(t.contains(name), "{t}");
         }
         assert!(t.contains("Add & log in") && t.contains("Cancel") && t.contains("bypass"));
-        // Grok is disabled: its card does not pick it.
+        // Grok is missing: its card picks it and says how to install it.
         click_on(&mut app, &mut term, &UiAction::AddAcct(AddUi::Agent(1)));
         let Modal::AddAccount(f) = &mut app.modal else {
             panic!()
         };
-        assert_eq!(f.agent, 0);
-        f.grok_ok = true;
+        assert_eq!(f.agent, 1);
+        assert!(f
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Press i to install it"));
+        f.ok[1] = true;
         click_on(&mut app, &mut term, &UiAction::AddAcct(AddUi::Agent(1)));
         let Modal::AddAccount(f) = &app.modal else {
             panic!()
         };
         assert_eq!(f.agent, 1);
+        assert!(f.error.is_none());
         click_on(&mut app, &mut term, &UiAction::AddAcct(AddUi::Agent(0)));
         // A click inside (on the title) keeps it open; outside closes it.
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -9539,8 +9767,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// Misheard names: "pod mesh", "lol slash pod mesh" and the like find
-    /// lol/botmesh; near ties come back as candidates.
+    /// Misheard names: "vod mesh", "code slash vod mesh" and the like find
+    /// code/fotmesh; near ties come back as candidates.
     #[test]
     fn spoken_names_resolve_to_what_exists() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -9555,8 +9783,8 @@ mod tests {
             let id = format!("aaaa{n:04}-0000-4000-8000-000000000000");
             std::fs::write(p.join(format!("{id}.jsonl")), format!("{{\"type\":\"ai-title\",\"aiTitle\":\"{title}\"}}\n{{\"type\":\"user\",\"cwd\":\"{cwd}\",\"message\":{{\"role\":\"user\",\"content\":\"work on {title}\"}}}}\n")).unwrap();
         };
-        add("/Users/x/lol/botmesh", "Bot generator changes");
-        add("/Users/x/lol/trading-room", "Trading room chart");
+        add("/Users/x/code/fotmesh", "Bot generator changes");
+        add("/Users/x/code/trading-room", "Trading room chart");
         add("/Users/x/hacker-sim", "Hacker sim");
         let ids = |v: &serde_json::Value| {
             v["result"]["sessions"]
@@ -9575,33 +9803,36 @@ mod tests {
                 .unwrap_or_default()
         };
         for q in [
-            "lol/bot mesh",
-            "lol/podmesh",
-            "pod mesh",
-            "lol slash pod mesh",
-            "botmash",
-            "bought mesh",
-            "lol forward slash podmesh",
+            "code/fot mesh",
+            "code/vodmesh",
+            "vod mesh",
+            "code slash vod mesh",
+            "fotmash",
+            "fought mesh",
+            "code forward slash vodmesh",
         ] {
             let v = app.control_call("sessions", &json!({"project": q}));
             let got = ids(&v);
             assert!(
-                !got.is_empty() && got.iter().all(|c| c.contains("botmesh")),
+                !got.is_empty() && got.iter().all(|c| c.contains("fotmesh")),
                 "{q}: {v}"
             );
         }
-        let v = app.control_call("sessions", &json!({"project": "lol/podmesh"}));
+        let v = app.control_call("sessions", &json!({"project": "code/vodmesh"}));
         assert_eq!(
-            v["result"]["corrected_from"][0]["said"], "lol/podmesh",
+            v["result"]["corrected_from"][0]["said"], "code/vodmesh",
             "{v}"
         );
         assert!(
-            v["result"]["say"].as_str().unwrap().contains("lol/botmesh"),
+            v["result"]["say"]
+                .as_str()
+                .unwrap()
+                .contains("code/fotmesh"),
             "{v}"
         );
         // Ambiguous: candidates, no guess.
-        add("/Users/x/lol/potmash", "Pot mash");
-        add("/Users/x/lol/bodmish", "Bod mish");
+        add("/Users/x/code/votmash", "Vot mash");
+        add("/Users/x/code/fodmish", "Fod mish");
         app.kick_index(true);
         let v = app.control_call("sessions", &json!({"project": "pod mush"}));
         assert!(
@@ -9613,15 +9844,15 @@ mod tests {
         // Tabs and accounts by a misheard name.
         app.panes[0].add_tab(home.clone());
         let last = app.panes[0].tabs.len() - 1;
-        app.panes[0].tabs[last].custom_name = Some("botmesh".into());
-        let v = app.control_call("show", &json!({"tab": "bot mesh"}));
+        app.panes[0].tabs[last].custom_name = Some("fotmesh".into());
+        let v = app.control_call("show", &json!({"tab": "fot mesh"}));
         assert_eq!(v["ok"], json!(true), "{v}");
         let fix = if v["result"].is_object() {
             &v["result"]["corrected_from"]
         } else {
             &v["corrected_from"]
         };
-        assert_eq!(fix[0]["used"], "botmesh", "{v}");
+        assert_eq!(fix[0]["used"], "fotmesh", "{v}");
         app.cfg.accounts[1].label = "Bravo".into();
         let v = app.control_call("show", &json!({"account": "brahvo"}));
         assert_eq!(v["ok"], json!(true), "{v}");
@@ -9639,7 +9870,7 @@ mod tests {
         // The vocabulary carries project names for the recognizer.
         let vocab = app.vocabulary();
         assert!(
-            vocab.contains("botmesh") && vocab.contains("trading room"),
+            vocab.contains("fotmesh") && vocab.contains("trading room"),
             "{vocab}"
         );
         let _ = std::fs::remove_dir_all(&home);
@@ -9651,18 +9882,18 @@ mod tests {
         use crate::pane::LaunchKind;
         use serde_json::json;
         let (mut app, home) = test_app("tabhist");
-        let proj = home.join("newtabs").join("botmesh");
+        let proj = home.join("newtabs").join("fotmesh");
         std::fs::create_dir_all(&proj).unwrap();
         // open, restart, rename, move, close (user), close (assistant)
         let t = app.panes[0].add_tab(proj.clone());
         app.panes[0].tabs[t].session_id = Some("1111aaaa-0000-4000-8000-000000000001".into());
         app.launch_tab(0, t, LaunchKind::Normal);
         app.launch_tab(0, t, LaunchKind::Normal);
-        app.rename_tab(0, t, "botmesh");
+        app.rename_tab(0, t, "fotmesh");
         let tab = format!("t{}", app.panes[0].tabs[t].uid);
         app.control_call("move_tab", &json!({"tab": tab, "to": 2}));
         let (ms, mt) = app
-            .all_tabs_where(|x| x.custom_name.as_deref() == Some("botmesh"))
+            .all_tabs_where(|x| x.custom_name.as_deref() == Some("fotmesh"))
             .unwrap();
         app.close_tab_at(ms, mt);
         let t2 = app.panes[0].add_tab(home.clone());
@@ -9683,7 +9914,7 @@ mod tests {
             .any(|r| r.event == "close" && r.by.as_deref() == Some("assistant")));
         assert!(all
             .iter()
-            .any(|r| r.event == "close" && r.by.as_deref() == Some("user") && r.name == "botmesh"));
+            .any(|r| r.event == "close" && r.by.as_deref() == Some("user") && r.name == "fotmesh"));
         let mode = crate::platform::PermissionsExt::mode(
             &std::fs::metadata(crate::tab_history::path())
                 .unwrap()
@@ -9695,10 +9926,10 @@ mod tests {
         // The tool: closed today, a misheard name.
         let v = app.control_call(
             "tab_history",
-            &json!({"event": "close", "since": "today", "text": "pod mesh"}),
+            &json!({"event": "close", "since": "today", "text": "vod mesh"}),
         );
         let recs = v["result"]["records"].as_array().unwrap();
-        assert!(!recs.is_empty() && recs[0]["name"] == "botmesh", "{v}");
+        assert!(!recs.is_empty() && recs[0]["name"] == "fotmesh", "{v}");
         // Reopen from the record: it resumes the session.
         let rid = recs[0]["record"].as_str().unwrap().to_string();
         let v = app.control_call("reopen_tab", &json!({"id": rid}));
@@ -9712,13 +9943,13 @@ mod tests {
         let sp = app.cfg.accounts[0]
             .config_dir()
             .join("projects")
-            .join("-x-lol-botmesh");
+            .join("-x-code-fotmesh");
         std::fs::create_dir_all(&sp).unwrap();
-        std::fs::write(sp.join("2222bbbb-0000-4000-8000-000000000002.jsonl"), "{\"type\":\"ai-title\",\"aiTitle\":\"Bot generator changes\"}\n{\"type\":\"user\",\"cwd\":\"/x/lol/botmesh\",\"message\":{\"role\":\"user\",\"content\":\"tweak the bot generator\"}}\n").unwrap();
+        std::fs::write(sp.join("2222bbbb-0000-4000-8000-000000000002.jsonl"), "{\"type\":\"ai-title\",\"aiTitle\":\"Bot generator changes\"}\n{\"type\":\"user\",\"cwd\":\"/x/code/fotmesh\",\"message\":{\"role\":\"user\",\"content\":\"tweak the bot generator\"}}\n").unwrap();
         let c = crate::assistant_history::ConvLog::new();
-        c.write("user", json!({"text": "show the botmesh sessions"}));
+        c.write("user", json!({"text": "show the fotmesh sessions"}));
         app.kick_index(true);
-        let v = app.control_call("find", &json!({"query": "lol slash pod mesh"}));
+        let v = app.control_call("find", &json!({"query": "code slash vod mesh"}));
         let types: Vec<&str> = v["result"]["hits"]
             .as_array()
             .unwrap()
@@ -9740,7 +9971,7 @@ mod tests {
         let (mut app, home) = test_app("thview");
         let t = app.panes[0].add_tab(home.clone());
         app.panes[0].tabs[t].session_id = Some("3333cccc-0000-4000-8000-000000000003".into());
-        app.rename_tab(0, t, "botmesh");
+        app.rename_tab(0, t, "fotmesh");
         app.close_tab_at(0, t);
         let k = |app: &mut crate::app::App, c: KeyCode| {
             app.on_key(KeyEvent::new(c, KeyModifiers::NONE))
@@ -9751,16 +9982,16 @@ mod tests {
         term.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(term.backend().buffer());
         assert!(
-            text.contains("Tab history") && text.contains("botmesh") && text.contains("close"),
+            text.contains("Tab history") && text.contains("fotmesh") && text.contains("close"),
             "{text}"
         );
         // Search with a misheard name, then Enter reopens it.
         k(&mut app, KeyCode::Char('/'));
-        for c in "pod mesh".chars() {
+        for c in "vod mesh".chars() {
             k(&mut app, KeyCode::Char(c));
         }
         k(&mut app, KeyCode::Enter);
-        assert!(!app.th.rows().is_empty() && app.th.rows().iter().all(|r| r.name == "botmesh"));
+        assert!(!app.th.rows().is_empty() && app.th.rows().iter().all(|r| r.name == "fotmesh"));
         k(&mut app, KeyCode::Enter);
         assert_eq!(app.view, View::Grid);
         assert!(app.panes.iter().flat_map(|p| p.tabs.iter()).any(|x| x.kind
@@ -9901,29 +10132,32 @@ mod tests {
         use serde_json::json;
         let (mut app, home) = test_app("histtool");
         let c = crate::assistant_history::ConvLog::new();
-        c.write("user", json!({"text": "show the lol/botmesh sessions"}));
-        c.write("reply", json!({"text": "Two sessions in lol/botmesh."}));
+        c.write("user", json!({"text": "show the code/fotmesh sessions"}));
+        c.write("reply", json!({"text": "Two sessions in code/fotmesh."}));
         app.assistant.conv = Some(c.clone());
         assert_eq!(
             app.control_call(
                 "remember_summary",
-                &json!({"summary": "Looked at lol/botmesh sessions."})
+                &json!({"summary": "Looked at code/fotmesh sessions."})
             )["ok"],
             json!(true)
         );
-        let v = app.control_call("history", &json!({"text": "bot mesh", "since": "today"}));
+        let v = app.control_call("history", &json!({"text": "fot mesh", "since": "today"}));
         let list = v["result"]["conversations"].as_array().unwrap();
         assert_eq!(list.len(), 1, "{v}");
-        assert_eq!(list[0]["summary"], "Looked at lol/botmesh sessions.");
+        assert_eq!(list[0]["summary"], "Looked at code/fotmesh sessions.");
         let none = app.control_call("history", &json!({"text": "kubernetes"}));
         assert_eq!(none["result"]["conversations"].as_array().unwrap().len(), 0);
         let d = app.control_call("history", &json!({"action": "detail", "id": c.id}));
-        assert!(d.to_string().contains("Two sessions in lol/botmesh"), "{d}");
+        assert!(
+            d.to_string().contains("Two sessions in code/fotmesh"),
+            "{d}"
+        );
         // The memory block a new brain gets carries it.
         let b = crate::assistant_memory::block(2).unwrap();
         assert!(
-            b.contains("Looked at lol/botmesh sessions.")
-                && b.contains("user: show the lol/botmesh sessions"),
+            b.contains("Looked at code/fotmesh sessions.")
+                && b.contains("user: show the code/fotmesh sessions"),
             "{b}"
         );
         let _ = std::fs::remove_dir_all(&home);
@@ -9980,8 +10214,8 @@ mod tests {
         );
         // The next request says listening resumed, and the state agrees.
         app.ask_assistant_from(
-            "okay what's running in botmesh",
-            Some("okay what's running in botmesh"),
+            "okay what's running in fotmesh",
+            Some("okay what's running in fotmesh"),
         );
         std::thread::sleep(std::time::Duration::from_millis(300));
         let sent = std::fs::read_to_string(&rec).unwrap_or_default();
@@ -9989,7 +10223,7 @@ mod tests {
             sent.contains("(Listening resumed at") && sent.contains("listening_paused: no"),
             "{sent}"
         );
-        assert!(sent.contains("(spoken) okay what's running in botmesh"));
+        assert!(sent.contains("(spoken) okay what's running in fotmesh"));
         app.on_brain(B::Done {
             text: "Nothing is running there.".into(),
             cost: None,
@@ -10076,22 +10310,21 @@ mod tests {
             from: crate::pane::Activity::Working,
         });
         app.voice_tick();
-        assert_eq!(app.voice.paused.as_ref().unwrap().queued.len(), 1);
+        // An approval is an event for the assistant; it waits while paused.
+        let pending_approval = |app: &crate::app::App| {
+            app.assistant.events.events.iter().any(|e| {
+                matches!(e.kind, crate::app_events::EventKind::Approval(_)) && !e.delivered
+            })
+        };
+        assert!(pending_approval(&app));
         // The wake word resumes and the rest runs ("next tab" is instant).
         app.panes[0].add_tab(home.clone());
         app.panes[0].active = 0;
         heard(&mut app, "hey god next tab");
         assert!(!app.paused());
         assert_eq!(app.panes[0].active, 1);
-        assert!(
-            app.voice
-                .away_summary
-                .as_deref()
-                .unwrap()
-                .contains("needs approval"),
-            "{:?}",
-            app.voice.away_summary
-        );
+        // Still for the assistant to tell, now that listening is back.
+        assert!(pending_approval(&app));
         // "hold on" alone (after the wake word) is instant, default length.
         heard(&mut app, "hey god hold on");
         assert!(app.paused() && app.pause_left().unwrap() > 115);
@@ -12385,7 +12618,7 @@ mod tests {
         use serde_json::json;
         let (mut app, home) = test_app("presskeystop");
         app.panes[0].tabs[0].custom_name = Some("claudego".into());
-        app.panes[1].tabs[0].custom_name = Some("botmesh".into());
+        app.panes[1].tabs[0].custom_name = Some("fotmesh".into());
         app.panes[0].tabs[0].activity = crate::pane::Activity::Working;
         let tab = format!("t{}", app.panes[0].tabs[0].uid);
         let call = |app: &mut App, key: &str| {
@@ -12413,7 +12646,7 @@ mod tests {
         app.assistant.last_user = "why do you stop it, I didn't ask you that".into();
         assert_eq!(call(&mut app, "escape")["needs_confirmation"], json!(true));
         // Another tab named: not this one.
-        app.assistant.last_user = "stop botmesh".into();
+        app.assistant.last_user = "stop fotmesh".into();
         assert_eq!(call(&mut app, "escape")["needs_confirmation"], json!(true));
         // The user said to stop it: at once.
         app.assistant.last_user = "stop claudego".into();

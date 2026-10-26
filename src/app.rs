@@ -57,9 +57,16 @@ pub enum AppEvent {
     ),
     /// The assistant's process said something.
     Assistant(u64, crate::assistant::BrainEvent),
+    /// A browser asked for something (src/web).
+    Web(crate::web::ToApp),
     /// Headphone play/pause or the media key (voice.headphone_tap).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     MediaKey(crate::media_keys::Press),
+    /// The lease worker (app_lease.rs).
+    Lease(crate::sync::takeover::Event),
+    /// A sync pulled changes for a store the app holds: apply and save
+    /// them, then say whether that went through.
+    SyncApply(crate::sync::StoreApply, std::sync::mpsc::Sender<bool>),
 }
 
 /// Login state as derived from stored credentials (no secrets kept here).
@@ -319,6 +326,10 @@ pub enum Modal {
     ConfirmTabJob(String),
     /// The Browser dialog of a tab (tab_browser).
     Browser(crate::tab_browser::BrowserDlg),
+    /// The Git section of a tab (app_gitpanel).
+    Git(crate::app_gitpanel::GitDlg),
+    /// Settings > GitHub accounts and repos: the editor.
+    GitCfg(crate::app_gitcfg::GitCfgDlg),
     /// The detail card of a Loops & schedules row (its key).
     SchedCard(String),
     /// Menu bar buttons that did not fit.
@@ -346,6 +357,8 @@ pub enum Modal {
     ColorPick(crate::color_pick::Target, usize),
     NewTab(Picker),
     Palette(crate::palette::Palette),
+    /// Find in every tab's recent output (Ctrl-a *).
+    FindAll(crate::find_all::FindAll),
     /// Prompt text to send to the marked tabs (or every running tab).
     Broadcast(String),
     /// Every tab waiting for approval; the selected row.
@@ -389,6 +402,11 @@ pub enum Modal {
     SessConflict(usize),
 }
 
+/// Ctrl-a and a key that is no shortcut: say where the keys are.
+pub fn unknown_key_line(c: char) -> String {
+    format!("Ctrl-a {c} does nothing. Ctrl-a ? lists keys, Ctrl-a : finds actions.")
+}
+
 /// Progress of the first run login walk through.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Onboard {
@@ -397,6 +415,8 @@ pub struct Onboard {
     pub pos: usize,
     /// Accounts the user skipped.
     pub skipped: Vec<usize>,
+    /// The first run's first account: it ends on its tab, not the dashboard.
+    pub first: bool,
 }
 
 /// A state change worth telling the user about (used by voice alerts).
@@ -436,6 +456,10 @@ pub struct App {
     pub modal: Modal,
     pub prefix: bool,
     pub prefix_at: Option<Instant>,
+    /// Help: the first key row shown (it scrolls on short terminals).
+    pub help_scroll: usize,
+    /// How far help can scroll on this screen (set as it is drawn).
+    pub help_max: std::cell::Cell<usize>,
     /// Selected account in dashboard and sessions views.
     pub sel_account: usize,
     pub sel_session: usize,
@@ -502,6 +526,8 @@ pub struct App {
     pub project_index: crate::project_index::Shared,
     /// Sessions being brought here from other terminals.
     pub takeovers: Vec<crate::takeover::TakeOver>,
+    /// Conversation ownership across machines (GodTerm Sync, Phase 3).
+    pub lease: crate::app_lease::LeaseApp,
     /// Sessions running in other terminals (for the Sessions view), and when looked.
     pub sess_live: std::collections::HashMap<String, crate::takeover::Live>,
     pub sess_live_at: Option<Instant>,
@@ -639,12 +665,22 @@ pub struct App {
     pub update: crate::app_update::UpdateUi,
     /// The assistant's admin flows (installs, logins) and their log.
     pub admin: crate::app_admin::AdminState,
+    /// The Accounts screen's logins and tokens (app_accounts.rs).
+    pub acct: crate::app_accounts::AcctState,
     /// What is installed and the installs running (Settings > Setup).
     pub setup: crate::app_setup::SetupState,
     /// BrowserSkill status and skill sync (Settings > Browser).
     pub browser: crate::app_browser::BrowserState,
+    /// The Git section's background work and badges (app_gitpanel).
+    pub git: crate::app_gitpanel::GitState,
     /// Restore every tab at once this start (after a restart to update).
     pub force_eager: bool,
+    /// The web app's server and what browsers were last sent (src/web).
+    pub web: Option<crate::web::app_web::WebSide>,
+    /// The control call running now came from the web app.
+    pub web_caller: bool,
+    /// The web port was busy: the next try to serve it (every 5 s).
+    pub web_retry_at: Option<std::time::Instant>,
     pub pane_rects: Vec<Rect>,
     /// Terminal area of each pane (inside the border, above the footer).
     pub term_rects: Vec<Rect>,
@@ -760,6 +796,8 @@ impl App {
             modal: Modal::None,
             prefix: false,
             prefix_at: None,
+            help_scroll: 0,
+            help_max: std::cell::Cell::new(0),
             sel_account: 0,
             sel_session: 0,
             sess_source: crate::app_sessions::SourceSel::All,
@@ -796,7 +834,7 @@ impl App {
             exit_clean: false,
             loops: vec![],
             loops_scanning: false,
-            loops_scanned: Instant::now() - std::time::Duration::from_secs(60),
+            loops_scanned: crate::clock::ago(std::time::Duration::from_secs(60)),
             sel_loop: 0,
             stop_reqs: vec![],
             pending_moves: vec![],
@@ -805,6 +843,7 @@ impl App {
             busy: Default::default(),
             opened_paths: vec![],
             takeovers: vec![],
+            lease: Default::default(),
             sess_live: Default::default(),
             sess_live_at: None,
             session_index: Default::default(),
@@ -880,9 +919,14 @@ impl App {
             want_cursor: Default::default(),
             update: Default::default(),
             admin: Default::default(),
+            acct: Default::default(),
             setup: Default::default(),
             browser: Default::default(),
+            git: Default::default(),
             force_eager: false,
+            web: None,
+            web_caller: false,
+            web_retry_at: None,
             pane_rects: vec![],
             term_rects: vec![],
             panel_overlay: Default::default(),
@@ -923,7 +967,7 @@ impl App {
                 .copied()
                 .collect(),
             mem: Default::default(),
-            last_mem: Instant::now() - Duration::from_secs(60),
+            last_mem: crate::clock::ago(Duration::from_secs(60)),
             config_mtime: config_mtime(),
             last_config_check: Instant::now(),
             config_error: None,
@@ -1272,8 +1316,10 @@ impl App {
                     .collect();
                 if let Some(id) = state::detect_session(&dir, &t.cwd, t.started, &taken) {
                     if t.session_id.as_deref() != Some(&id) {
-                        self.panes[si].tabs[ti].session_id = Some(id);
+                        self.panes[si].tabs[ti].session_id = Some(id.clone());
                         self.state_dirty = true;
+                        // A new conversation id here: its own lease.
+                        self.lease_claim(si, ti, &id);
                     }
                 }
             }
@@ -1324,6 +1370,11 @@ impl App {
             self.flash("No account assigned to this pane (Ctrl-a a to assign)");
             return;
         };
+        // Sync on: a resume waits for this machine to hold the session's
+        // lease (and for its transcript to be pulled).
+        if self.lease_gate(pane, &kind) {
+            return;
+        }
         let a = self.cfg.accounts[acct].clone();
         let dir = a.config_dir();
         if creds::is_default_dir(&dir) {
@@ -1884,11 +1935,15 @@ impl App {
         self.assistant_tick();
         self.update_tick();
         self.admin_tick();
+        self.acct_tick();
         self.onboarding_tick();
         self.browser_tick();
+        self.git_tick();
         self.control_tick();
         self.jobs_tick();
         self.tab_jobs_tick();
+        self.sync_tick();
+        self.lease_tick();
         self.local_voices_tick();
         self.refresh_paths();
         for st in &mut self.accounts {
@@ -2298,6 +2353,9 @@ impl App {
                     self.on_brain(ev);
                 }
             }
+            AppEvent::Web(ev) => self.web_event(ev),
+            AppEvent::Lease(e) => self.lease_event(e),
+            AppEvent::SyncApply(a, reply) => self.sync_apply(a, reply),
             AppEvent::InputClosed => {
                 crate::log::info("terminal closed, shutting down");
                 self.quit = true;
@@ -2390,8 +2448,31 @@ impl App {
                 self.on_sched_card_key(k);
                 return;
             }
+            Modal::FindAll(_) => {
+                self.on_find_all_key(k);
+                return;
+            }
             Modal::Help => {
-                self.modal = Modal::None;
+                // Arrows and pages scroll a help taller than the screen;
+                // any other key closes it.
+                let n = self.help_max.get();
+                match k.code {
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.help_scroll = (self.help_scroll + 1).min(n)
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.help_scroll = self.help_scroll.saturating_sub(1)
+                    }
+                    KeyCode::PageDown | KeyCode::Char(' ') => {
+                        self.help_scroll = (self.help_scroll + 15).min(n)
+                    }
+                    KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(15),
+                    KeyCode::Home => self.help_scroll = 0,
+                    _ => {
+                        self.help_scroll = 0;
+                        self.modal = Modal::None;
+                    }
+                }
                 return;
             }
             Modal::ConfirmCloseWindow(s) => {
@@ -2482,9 +2563,12 @@ impl App {
                     KeyCode::Esc => self.modal = Modal::None,
                     KeyCode::Up => pl.sel = pl.sel.saturating_sub(1),
                     KeyCode::Down | KeyCode::Tab => {
-                        let n = pl.matches().len();
-                        if n > 0 {
-                            pl.sel = (pl.sel + 1) % n;
+                        let snap = pl.clone();
+                        let n = crate::palette::items(self, &snap).len();
+                        if let Modal::Palette(pl) = &mut self.modal {
+                            if n > 0 {
+                                pl.sel = (pl.sel + 1) % n;
+                            }
                         }
                     }
                     KeyCode::Backspace => {
@@ -2746,6 +2830,14 @@ impl App {
                 self.on_browser_key(k);
                 return;
             }
+            Modal::Git(_) => {
+                self.on_git_key(k);
+                return;
+            }
+            Modal::GitCfg(_) => {
+                self.on_gitcfg_key(k);
+                return;
+            }
             Modal::ConfirmRemoveAccount(a) => {
                 let a = *a;
                 self.modal = Modal::None;
@@ -2857,6 +2949,16 @@ impl App {
                 return;
             }
         }
+        // Owned elsewhere, or being handed over: its own keys only.
+        let (fp, ft) = (self.focus, self.panes[self.focus].active);
+        if self.panes[fp].tabs[ft]
+            .lease
+            .as_ref()
+            .is_some_and(|l| l.blocks_input())
+            && self.lease_key(fp, ft, k)
+        {
+            return;
+        }
         let pane = self.panes[self.focus].cur_mut();
         match pane.state {
             PaneState::Running => {
@@ -2871,6 +2973,12 @@ impl App {
                 let bytes = keys::encode_key(&k, pane.app_cursor());
                 pane.reset_scroll();
                 pane.write(&bytes);
+                // Typed into here on the Mac: a size a browser took goes
+                // back to this pane.
+                if pane.web_size.is_some() {
+                    let uid = pane.uid;
+                    self.web_size_back(uid);
+                }
             }
             _ if pane.bg_lock.is_some() => {
                 // Held by a background run: a attaches (also Enter), s
@@ -2895,6 +3003,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::collapsible_match)]
     pub(crate) fn on_command(&mut self, k: KeyEvent) {
         let ch = match k.code {
             KeyCode::Char(c) => Some(c),
@@ -3050,6 +3159,7 @@ impl App {
             (_, Some('U')) => self.undo_tab_move(),
             (_, Some('@')) => self.open_loops(),
             (_, Some('G')) => self.open_livemap(),
+            (_, Some('*')) => self.open_find_all(),
             (_, Some('Z')) => self.toggle_memory_saver(),
             (_, Some('X')) => self.toggle_mute(),
             (_, Some('O')) => self.toggle_speaker(),
@@ -3115,6 +3225,9 @@ impl App {
                     let say = self.close_accounts(&[a]);
                     self.flash(say);
                 }
+            }
+            (_, Some(c)) if !k.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.flash(unknown_key_line(c));
             }
             _ => {}
         }
@@ -3701,6 +3814,7 @@ impl App {
         }
         // Everything else at the top level is taken as is; accounts were
         // merged above so their indices stay stable.
+        let old_web = self.cfg.web.clone();
         {
             let accounts = std::mem::take(&mut self.cfg.accounts);
             let voice = self.cfg.voice.clone();
@@ -3728,6 +3842,13 @@ impl App {
                 self.start_voice(always);
             }
         }
+        if self.cfg.git != new.git {
+            self.cfg.git = new.git;
+            changes.push("GitHub owners and folder rules".into());
+        }
+        if let Some(c) = self.web_config_changed(&old_web) {
+            changes.push(c);
+        }
         self.apply_buffers();
         // New accounts get a pane.
         self.ensure_panes();
@@ -3747,6 +3868,7 @@ impl App {
             queue,
             pos: 0,
             skipped: vec![],
+            first: false,
         });
         self.onboard_step();
     }
@@ -3761,6 +3883,20 @@ impl App {
             !self.accounts[a].login.can_start() && !ob.skipped.contains(&a)
         });
         match next {
+            None if ob.first => {
+                self.onboard = None;
+                self.view = View::Grid;
+                self.refresh_all(true);
+                let label = ob
+                    .queue
+                    .first()
+                    .and_then(|&a| self.cfg.accounts.get(a))
+                    .map(|a| a.display().to_string())
+                    .unwrap_or_default();
+                self.maybe_start_tour();
+                self.flash(crate::first_run::ready_line(&label, ob.skipped.is_empty()));
+                crate::log::info("first account set up");
+            }
             None => {
                 self.onboard = None;
                 self.view = View::Dashboard;
@@ -3824,7 +3960,7 @@ impl App {
 
     pub(crate) fn run_palette(&mut self, pl: crate::palette::Palette) {
         use crate::palette::Action;
-        let matches = pl.matches();
+        let matches = crate::palette::items(self, &pl);
         // An action whose name matches runs; anything else typed is a
         // request in plain words, for the assistant to interpret.
         let Some(&(_, action)) = matches.get(pl.sel.min(matches.len().saturating_sub(1))) else {
@@ -3849,6 +3985,7 @@ impl App {
             Action::UpdateMode => self.toggle_update_mode(),
             Action::VoiceOnboarding => self.start_voice_onboarding(false),
             Action::VoicePhrases => self.onb.card = true,
+            Action::Setup => self.open_setup(),
             Action::UpdatesNow => {
                 self.assistant.show = true;
                 self.updates_roundup_now();
@@ -3881,6 +4018,19 @@ impl App {
             }
             Action::ShowHidden => self.show_hidden(),
             Action::FreeNow => self.free_now(),
+            Action::FindAll => self.open_find_all(),
+            Action::GoTab(uid) => {
+                if let Some((s, t)) = self.find_tab(uid) {
+                    self.panes[s].hidden = false;
+                    self.jump_to(s, t);
+                }
+            }
+            Action::BrowserOpenTab => {
+                if let Some(p) = self.panes.get(self.focus) {
+                    let uid = p.cur().uid;
+                    self.open_tab_chrome(uid);
+                }
+            }
             Action::AssistantNew => self.reset_assistant(),
             Action::OpenMic => self.start_open_mic(),
             Action::HeadphoneTap => self.toggle_headphone_tap(),
@@ -3894,6 +4044,7 @@ impl App {
                 self.open_move_picker(p, t, true);
             }
             Action::VoicePreview => self.preview_voice(),
+            Action::CreateToken => self.palette_create_token(),
             Action::StopTalking => {
                 if let Some(v) = &self.voice.engine {
                     v.stop_speaking();

@@ -69,17 +69,14 @@ fn more_missing_asks_once_then_makes_it() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("deep");
     let base = work("deep");
-    let dir = base.join("exelon/ai-brain");
+    let dir = base.join("acme/ai-brain");
     let v = app.control_call(
         "open_tab",
         &json!({"account": 2, "dir": dir.to_string_lossy()}),
     );
     let e = v["error"].as_str().unwrap_or("");
-    assert!(
-        e.contains("ask the user once") && e.contains("exelon"),
-        "{v}"
-    );
-    assert!(!base.join("exelon").exists(), "nothing made before the yes");
+    assert!(e.contains("ask the user once") && e.contains("acme"), "{v}");
+    assert!(!base.join("acme").exists(), "nothing made before the yes");
     // The yes.
     let v = app.control_call(
         "open_tab",

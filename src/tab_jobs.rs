@@ -176,7 +176,10 @@ fn codex_launch(exe: &Path, shared: &str, uid: u64, home: &Path, args: &mut Vec<
         toml_str(&crate::config::app_home().to_string_lossy())
     )];
     env.push(format!("GODTERM_CLIENT={}", toml_str("tab")));
-    if let Some(g) = srv["env"].get(crate::test_guard::ENV).and_then(Value::as_str) {
+    if let Some(g) = srv["env"]
+        .get(crate::test_guard::ENV)
+        .and_then(Value::as_str)
+    {
         env.push(format!("{}={}", crate::test_guard::ENV, toml_str(g)));
     }
     let mut c = |kv: String| {

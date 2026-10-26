@@ -271,7 +271,7 @@ impl App {
         });
         if !sends.is_empty() {
             // Look for the confirmation soon.
-            self.loops_scanned = Instant::now() - Duration::from_secs(3);
+            self.loops_scanned = crate::clock::ago(Duration::from_secs(3));
         }
         for (s, t, text) in sends {
             crate::log::info(&format!(

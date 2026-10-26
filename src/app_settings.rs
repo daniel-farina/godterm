@@ -260,20 +260,33 @@ impl App {
     }
 
     /// Remove account `a` from config.toml (its config dir stays on disk).
+    /// It is found there by name: the file's order need not match the one
+    /// in memory (a removed account stays shown until the next start, and
+    /// the file may have been edited by hand), and an index past the end
+    /// used to panic.
     pub fn remove_account(&mut self, a: usize) {
         let path = Config::path();
+        let want = self.cfg.accounts.get(a).map(|x| x.name.clone());
         let res = (|| -> anyhow::Result<()> {
+            let want = want.ok_or_else(|| anyhow::anyhow!("no such account"))?;
             let text = std::fs::read_to_string(&path)?;
             let mut doc: toml_edit::DocumentMut = text.parse()?;
-            if let Some(arr) = doc
+            let arr = doc
                 .get_mut("account")
-                .and_then(toml_edit::Item::as_array_of_tables_mut)
-            {
-                arr.remove(a);
-            }
+                .and_then(toml_edit::Item::as_array_of_tables_mut);
+            let Some(arr) = arr else {
+                anyhow::bail!("{want} is not in config.toml (already removed?)");
+            };
+            let Some(i) = arr
+                .iter()
+                .position(|t| t.get("name").and_then(|n| n.as_str()) == Some(want.as_str()))
+            else {
+                anyhow::bail!("{want} is not in config.toml (already removed?)");
+            };
+            arr.remove(i);
             let out = doc.to_string();
             Config::parse(&out)?;
-            std::fs::write(&path, out)?;
+            crate::config::write_atomic(&path, out.as_bytes())?;
             Ok(())
         })();
         match res {
@@ -307,6 +320,8 @@ impl App {
                 self.run_in_new_tab(p, &prog, args);
                 self.view = View::Grid;
             }
+            // (Tests never open an editor on the desktop.)
+            None if cfg!(test) || std::env::var_os("GODTERM_NO_OPEN").is_some() => {}
             None => {
                 let _ = Command::new("open")
                     .arg("-t")
@@ -390,8 +405,8 @@ impl App {
                     return;
                 }
                 KeyCode::Char(c)
-                    if !k.modifiers.contains(KeyModifiers::CONTROL)
-                        && !(c == ' ' && q.is_empty()) =>
+                    if !(k.modifiers.contains(KeyModifiers::CONTROL)
+                        || c == ' ' && q.is_empty()) =>
                 {
                     q.push(c);
                     self.settings_sel = 0;
@@ -426,6 +441,12 @@ impl App {
             }
             KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('-') => {
                 self.setting_step(self.settings_sel, -1)
+            }
+            KeyCode::Enter | KeyCode::Char(' ')
+                if self.settings_section_kind() == Section::Git
+                    && self.settings_query.is_none() =>
+            {
+                self.open_gitcfg()
             }
             KeyCode::Enter | KeyCode::Char(' ') => self.setting_edit(self.settings_sel),
             KeyCode::Backspace | KeyCode::Delete => self.setting_reset(self.settings_sel),

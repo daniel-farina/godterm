@@ -386,8 +386,11 @@ fn grok_buckets_and_a_provider_with_no_usage() {
     let texts: Vec<String> = b.iter().map(crate::providers::bucket_text).collect();
     assert_eq!(texts, vec!["wk 13%", "Build 20%"]);
     assert!(b[0].binding && !b[1].binding);
-    // As the assistant's own login: in the title.
+    // As the assistant's own login (signed in): in the title.
     app.cfg.assistant.provider = "grok".into();
+    let gh = crate::providers::grok::home();
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(gh.join("auth.json"), "{\"key\":\"x\"}").unwrap();
     app.own_usage.insert("grok", Ok(u));
     let p = crate::ui_assistant::title_parts(&app, 200);
     let t: String = p.iter().map(|(s, _)| s.as_str()).collect();
@@ -470,7 +473,8 @@ fn account_menu_rows_say_more() {
     // Models with a word each.
     assert_eq!(info("Haiku"), "quickest");
     assert_eq!(info("Sonnet"), "balanced");
-    assert_eq!(info("Opus"), "most capable");
+    assert_eq!(info("Opus"), "thorough");
+    assert_eq!(info("Fable"), "most capable");
     let g = crate::providers::by_id("grok");
     assert_eq!(g.models[0].2, "quickest");
     // Drawn: the info column fits, cut with … before the names.
@@ -517,5 +521,66 @@ fn enter_bursts_are_timed_when_read_not_when_handled() {
     app.handle(AppEvent::KeyRead(key(KeyCode::Enter), true));
     app.handle(AppEvent::KeyRead(key(KeyCode::Char('c')), true));
     assert_eq!(app.assistant.input, "ab\nc");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn grok_panel_needs_no_account_and_names_the_chosen_model() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("grokpanel");
+    let joined = |p: &[(String, u8)]| p.iter().map(|(t, _)| t.as_str()).collect::<String>();
+    app.cfg.assistant.provider = "grok".into();
+    // Its own login missing: a sign in prompt (clickable), not "an account".
+    let acct = crate::ui_assistant::brain_account(&app);
+    let (note, login) = crate::ui_assistant::login_note(&app, acct);
+    assert!(login && note.contains("Grok needs its own login"), "{note}");
+    assert!(joined(&crate::ui_assistant::title_parts(&app, 200)).contains("not signed in"));
+    // Signed in: no account wanted, no prompt.
+    let gh = crate::providers::grok::home();
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(gh.join("auth.json"), "{\"key\":\"x\"}").unwrap();
+    let (note, login) = crate::ui_assistant::login_note(&app, None);
+    assert!(!login && !note.contains("log in"), "{note}");
+    let t = joined(&crate::ui_assistant::title_parts(&app, 200));
+    assert!(
+        !t.contains("not signed in") && !t.contains("account"),
+        "{t}"
+    );
+    // A model picked: the title names it at once.
+    app.switch_assistant(None, None, Some("grok-4.6")).unwrap();
+    assert!(joined(&crate::ui_assistant::title_parts(&app, 200)).contains("grok-4.6 ▾"));
+    // Back to Claude with no logged in Claude account: that is what it asks.
+    app.switch_assistant(Some("claude"), None, None).unwrap();
+    for a in 0..app.accounts.len() {
+        app.accounts[a].login.source = None;
+    }
+    let (note, _) = crate::ui_assistant::login_note(&app, crate::ui_assistant::brain_account(&app));
+    assert_eq!(note, "log in a Claude account to use it");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn the_status_bar_names_grok_when_it_runs_the_assistant() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("grokchip");
+    let chip = |app: &crate::app::App| {
+        crate::ui::status_chips(app)
+            .into_iter()
+            .map(|c| c.text)
+            .find(|t| t.starts_with("AI: "))
+    };
+    assert!(chip(&app).is_some_and(|t| !t.contains("Grok")));
+    app.cfg.assistant.provider = "grok".into();
+    assert_eq!(chip(&app).as_deref(), Some("AI: Grok · not signed in"));
+    let gh = crate::providers::grok::home();
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(gh.join("auth.json"), "{\"key\":\"x\"}").unwrap();
+    let v = json!({
+        "creditUsagePercent": 87.0,
+        "currentPeriod": {"start": "2026-10-02T14:16:00Z", "end": "2099-10-09T14:16:00Z"},
+    });
+    app.own_usage
+        .insert("grok", Ok(crate::harness::grok::parse_billing(&v)));
+    assert_eq!(chip(&app).as_deref(), Some("AI: Grok · wk 13%"));
     let _ = std::fs::remove_dir_all(&home);
 }

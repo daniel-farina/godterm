@@ -325,7 +325,7 @@ impl App {
         let of = |ids: &[String]| -> Vec<crate::session_index::Row> {
             ix.rows
                 .iter()
-                .filter(|r| ids.iter().any(|i| *i == r.info.id))
+                .filter(|r| ids.contains(&r.info.id))
                 .cloned()
                 .collect()
         };
@@ -372,7 +372,7 @@ impl App {
                 ids.len(),
                 ids.iter()
                     .take(5)
-                    .map(|i| &i[..i.len().min(13)])
+                    .map(|i| crate::paths::head(i, 13))
                     .collect::<Vec<_>>()
                     .join(", ")
             ));

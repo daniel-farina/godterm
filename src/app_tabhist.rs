@@ -79,7 +79,9 @@ impl App {
                 if !p.is_dir() {
                     self.flash(format!("{} is gone", crate::config::tilde(&p)));
                 } else if !cfg!(test) && std::env::var_os("GODTERM_NO_OPEN").is_none() {
-                    let _ = std::process::Command::new("open").arg(&p).spawn();
+                    let _ = std::process::Command::new("open")
+                        .args(crate::guard::finder_args(&p))
+                        .spawn();
                     self.flash(format!("Opened {}", crate::config::tilde(&p)));
                 }
             }
@@ -234,10 +236,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             .find(|a| a.name == r.account)
             .map(|a| a.display().to_string())
             .unwrap_or_else(|| r.account.clone());
-        let by =
-            r.by.as_deref()
-                .map(|b| format!(" by {b}"))
-                .unwrap_or_default();
+        let by = match r.by.as_deref() {
+            Some("web") => " from the web app".to_string(),
+            Some(b) => format!(" by {b}"),
+            None => String::new(),
+        };
         lines.push((
             Some(i),
             format!(
@@ -248,7 +251,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 crate::paths::shorten_path(&crate::config::tilde(std::path::Path::new(&r.cwd)), 36),
                 r.session_id
                     .as_deref()
-                    .map(|s| &s[..s.len().min(8)])
+                    .map(|s| crate::paths::head(s, 8))
                     .unwrap_or("-"),
             ),
         ));

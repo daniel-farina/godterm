@@ -105,15 +105,15 @@ fn names_come_in_order_tab_name_description_project_task() {
 #[test]
 fn the_users_name_and_home_folder_are_not_names() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    assert!(!meaningful("dan", Some("dan")));
-    assert!(!meaningful("Dan", Some("dan")));
+    assert!(!meaningful("alice", Some("alice")));
+    assert!(!meaningful("Alice", Some("alice")));
     assert!(!meaningful("~", None));
     assert!(!meaningful("", None));
     assert!(!meaningful("src", None));
-    assert!(meaningful("hyper", Some("dan")));
+    assert!(meaningful("hyper", Some("alice")));
     let (mut app, home) = test_app("home");
     let store = Store::default();
-    // A tab in the home folder, named after it: not "dan".
+    // A tab in the home folder, named after it: not "alice".
     let t = app.panes[0].add_tab(crate::config::home_dir());
     let uid = app.panes[0].tabs[t].uid;
     let user = crate::config::home_dir()
@@ -181,23 +181,32 @@ fn attention_notices_name_the_project_not_account_and_tab_number() {
         from: Activity::Working,
     });
     app.voice_tick();
+    // Nothing is said by GodTerm itself: both are events for the
+    // assistant, named by project or task.
+    assert!(
+        !app.told.borrow().ring.iter().any(|e| e.kind == "attention"),
+        "the announcer says nothing"
+    );
     let said: Vec<String> = app
-        .told
-        .borrow()
-        .ring
+        .assistant
+        .events
+        .events
         .iter()
-        .filter(|e| e.kind == "attention")
-        .map(|e| e.text.clone())
+        .map(|e| e.line())
         .collect();
     assert_eq!(said.len(), 2, "{said:?}");
-    assert!(said.contains(&"hyper finished".to_string()), "{said:?}");
     assert!(
         said.iter()
-            .any(|x| x.contains("Deploy the trading room bot") && x.ends_with("needs approval")),
+            .any(|x| x.contains("(hyper,") && x.contains("finished")),
         "{said:?}"
     );
-    for x in &said {
-        assert!(!only_account_and_number(x), "{x}");
+    assert!(
+        said.iter()
+            .any(|x| x.contains("Deploy the trading room bot") && x.contains("approval")),
+        "{said:?}"
+    );
+    for e in &app.assistant.events.events {
+        assert!(!only_account_and_number(&e.tab), "{}", e.tab);
     }
     assert!(only_account_and_number("Account 3 tab three finished"));
     let _ = std::fs::remove_dir_all(&home);

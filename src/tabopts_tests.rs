@@ -67,7 +67,9 @@ fn double_click_opens_move_and_tab_sections() {
     let menu: Vec<TabAct> = app.tab_actions(0, 1).iter().map(|r| r.act).collect();
     let panel: Vec<TabAct> = app.panel_rows(0, 1).iter().map(|r| r.act).collect();
     assert_eq!(
-        menu.iter().filter(|a| **a != TabAct::Move).count(),
+        menu.iter()
+            .filter(|a| **a != TabAct::Move && **a != TabAct::Git)
+            .count(),
         panel.len()
     );
     app.modal = Modal::None;

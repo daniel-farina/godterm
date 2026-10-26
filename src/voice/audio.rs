@@ -321,12 +321,203 @@ pub enum Source {
     Mic(String),
     /// Any file ffmpeg can read, decoded at real time speed when `realtime`.
     File { path: String, realtime: bool },
+    /// A browser's mic (the web app), 16 kHz mono PCM16 as it arrives.
+    Web(std::sync::Arc<WebMic>),
+}
+
+/// Audio a browser sends, queued for the voice engine as if it came from
+/// a mic. What arrives while no capture is open waits a moment (the
+/// engine may still be loading its model on the first press of push to
+/// talk), then is dropped: a capture that opens keeps only audio that came
+/// in the last second before it.
+#[derive(Debug, Default)]
+pub struct WebMic {
+    q: std::sync::Mutex<WebQueue>,
+    cv: std::sync::Condvar,
+}
+
+#[derive(Debug, Default)]
+struct WebQueue {
+    pcm: std::collections::VecDeque<i16>,
+    /// A capture reads it now.
+    open: bool,
+    /// When audio last came while closed.
+    early: Option<std::time::Instant>,
+    /// Since the last take_stats (a press of push to talk) and since the
+    /// last take_second (the debug log).
+    stats: MicStats,
+    second: MicStats,
+}
+
+/// What a browser's mic sent since the last look (for the logs).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct MicStats {
+    /// Binary frames.
+    pub frames: u64,
+    pub samples: u64,
+    /// Samples that are not zero (a mic that sends only zeros is muted or
+    /// not running).
+    pub nonzero: u64,
+    sumsq: f64,
+    pub peak: i32,
+    /// Samples dropped because no capture was reading.
+    pub dropped: u64,
+}
+
+impl MicStats {
+    fn add(&mut self, samples: impl Iterator<Item = i16>) {
+        self.frames += 1;
+        for s in samples {
+            self.samples += 1;
+            if s != 0 {
+                self.nonzero += 1;
+            }
+            self.sumsq += f64::from(s) * f64::from(s);
+            self.peak = self.peak.max(i32::from(s).abs());
+        }
+    }
+
+    /// RMS level in dBFS.
+    pub fn db(&self) -> f32 {
+        if self.samples == 0 {
+            return -90.0;
+        }
+        db((self.sumsq / self.samples as f64).sqrt() as f32)
+    }
+
+    pub fn peak_db(&self) -> f32 {
+        db(self.peak as f32)
+    }
+
+    pub fn ms(&self) -> u64 {
+        self.samples * 1000 / RATE as u64
+    }
+
+    /// One line for the log.
+    pub fn line(&self) -> String {
+        format!(
+            "{} frames, {} ms of audio, level {:.0} dBFS (peak {:.0}), {}% non zero{}",
+            self.frames,
+            self.ms(),
+            self.db(),
+            self.peak_db(),
+            (self.nonzero * 100).checked_div(self.samples).unwrap_or(0),
+            if self.dropped > 0 {
+                format!(
+                    ", {} ms dropped (nothing listening)",
+                    self.dropped * 1000 / RATE as u64
+                )
+            } else {
+                String::new()
+            }
+        )
+    }
+}
+
+/// Voice debugging (GODTERM_VOICE_DEBUG=1, or a browser with voice debug
+/// on): the browser's audio and the endpointer are logged once a second.
+pub static VOICE_DEBUG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn voice_debug() -> bool {
+    VOICE_DEBUG.load(std::sync::atomic::Ordering::Relaxed)
+        || crate::config::env_var("VOICE_DEBUG").is_some_and(|v| v != "0")
+}
+
+/// At most this much browser audio waits for the engine (10 s).
+const WEB_MAX: usize = RATE as usize * 10;
+/// Audio that came before a capture opened is kept this long (3 s at
+/// most of it), for the first words said while the model loads.
+const WEB_EARLY: std::time::Duration = std::time::Duration::from_secs(1);
+const WEB_EARLY_MAX: usize = RATE as usize * 3;
+
+impl WebMic {
+    pub fn new() -> std::sync::Arc<WebMic> {
+        std::sync::Arc::new(WebMic::default())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, WebQueue> {
+        self.q.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// PCM16 little endian bytes from the browser.
+    pub fn push(&self, bytes: &[u8]) {
+        let mut q = self.lock();
+        let samples = bytes
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]));
+        q.stats.add(samples.clone());
+        q.second.add(samples.clone());
+        q.pcm.extend(samples);
+        let max = if q.open {
+            WEB_MAX
+        } else {
+            q.early = Some(std::time::Instant::now());
+            WEB_EARLY_MAX
+        };
+        let over = q.pcm.len().saturating_sub(max);
+        q.pcm.drain(..over);
+        if !q.open {
+            q.stats.dropped += over as u64;
+            q.second.dropped += over as u64;
+        }
+        self.cv.notify_one();
+    }
+
+    /// The counts since the last call (and starts new ones).
+    pub fn take_stats(&self) -> MicStats {
+        std::mem::take(&mut self.lock().stats)
+    }
+
+    /// The same, kept apart for the once a second debug log.
+    pub fn take_second(&self) -> (MicStats, bool) {
+        let mut q = self.lock();
+        (std::mem::take(&mut q.second), q.open)
+    }
+
+    fn set_open(&self, on: bool) {
+        let mut q = self.lock();
+        let fresh = q.early.is_some_and(|t| t.elapsed() < WEB_EARLY);
+        if !(on && fresh) {
+            let n = q.pcm.len() as u64;
+            if !q.open {
+                q.stats.dropped += n;
+                q.second.dropped += n;
+            }
+            q.pcm.clear();
+        }
+        q.open = on;
+        q.early = None;
+    }
+
+    fn queued(&self) -> usize {
+        self.lock().pcm.len()
+    }
+
+    /// One frame: what came, or silence after a while without audio (so
+    /// the engine's loop goes on and hears its controls). A browser that
+    /// goes away ends with the engine (voice off), not with the stream, so
+    /// a half said sentence is never sent.
+    fn frame(&self, out: &mut Vec<i16>) -> Option<()> {
+        let wait = std::time::Duration::from_millis(250);
+        let q = self.lock();
+        let (mut q, _) = self
+            .cv
+            .wait_timeout_while(q, wait, |q| q.pcm.len() < FRAME)
+            .unwrap_or_else(|e| e.into_inner());
+        out.clear();
+        let n = q.pcm.len().min(FRAME);
+        out.extend(q.pcm.drain(..n));
+        out.resize(FRAME, 0);
+        Some(())
+    }
 }
 
 /// A running ffmpeg (or the Apple capture helper, see capture.rs)
 /// producing s16le 16 kHz mono on stdout.
 pub struct Capture {
-    pub(super) child: Child,
+    /// The ffmpeg or helper process (none for a browser's mic).
+    pub(super) child: Option<Child>,
+    pub(super) web: Option<std::sync::Arc<WebMic>>,
     /// Apple capture: its stderr is read by a thread; the last error here.
     pub(super) err: Option<std::sync::Arc<std::sync::Mutex<String>>>,
     /// Apple voice processing is on (echo cancellation and noise
@@ -380,6 +571,7 @@ impl Capture {
                 }
                 cmd.args(["-i", path]);
             }
+            Source::Web(mic) => return Ok(Capture::web(mic)),
         }
         // A long, steep resampling filter (this ffmpeg has no soxr), mono.
         cmd.args([
@@ -394,15 +586,35 @@ impl Capture {
             .spawn()?;
         super::track(child.id());
         Ok(Capture {
-            child,
+            child: Some(child),
+            web: None,
             err: None,
             vp: false,
         })
     }
 
+    /// A browser's mic (the browser does its own echo cancellation).
+    pub fn web(mic: &std::sync::Arc<WebMic>) -> Capture {
+        mic.set_open(true);
+        Capture {
+            child: None,
+            web: Some(std::sync::Arc::clone(mic)),
+            err: None,
+            vp: true,
+        }
+    }
+
+    /// Browser audio that came and is not read yet (0 for other sources).
+    pub fn queued(&self) -> usize {
+        self.web.as_ref().map_or(0, |w| w.queued())
+    }
+
     /// Read one frame. None at end of stream.
     pub fn frame(&mut self, out: &mut Vec<i16>) -> Option<()> {
-        let stdout = self.child.stdout.as_mut()?;
+        if let Some(w) = &self.web {
+            return w.frame(out);
+        }
+        let stdout = self.child.as_mut()?.stdout.as_mut()?;
         let mut bytes = [0u8; FRAME * 2];
         let mut got = 0;
         while got < bytes.len() {
@@ -425,21 +637,31 @@ impl Capture {
 
     /// ffmpeg's error text after it exited (mic permission problems etc).
     pub fn error_text(&mut self) -> String {
-        let _ = self.child.wait();
+        if self.web.is_some() {
+            return "the browser stopped sending audio".into();
+        }
+        if let Some(c) = self.child.as_mut() {
+            let _ = c.wait();
+        }
         if let Some(e) = &self.err {
             return e.lock().unwrap_or_else(|e| e.into_inner()).clone();
         }
         let mut s = String::new();
-        if let Some(e) = self.child.stderr.as_mut() {
+        if let Some(e) = self.child.as_mut().and_then(|c| c.stderr.as_mut()) {
             let _ = e.read_to_string(&mut s);
         }
         s.lines().last().unwrap_or("").trim().to_string()
     }
 
     pub fn stop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        super::untrack(self.child.id());
+        if let Some(w) = &self.web {
+            w.set_open(false);
+        }
+        if let Some(c) = self.child.as_mut() {
+            let _ = c.kill();
+            let _ = c.wait();
+            super::untrack(c.id());
+        }
     }
 }
 

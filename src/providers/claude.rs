@@ -24,7 +24,8 @@ pub const PROVIDER: Provider = Provider {
     models: &[
         ("claude-haiku-4-5", "Haiku", "quickest"),
         ("sonnet", "Sonnet", "balanced"),
-        ("opus", "Opus", "most capable"),
+        ("opus", "Opus", "thorough"),
+        ("claude-fable-5-1", "Fable", "most capable"),
     ],
     tab_models: &[
         TabModel {
@@ -42,8 +43,14 @@ pub const PROVIDER: Provider = Provider {
         TabModel {
             arg: "opus",
             label: "Opus",
-            desc: "most capable",
+            desc: "thorough",
             matches: &["opus"],
+        },
+        TabModel {
+            arg: "claude-fable-5-1",
+            label: "Fable",
+            desc: "most capable",
+            matches: &["fable"],
         },
     ],
     usage: |u| {
@@ -120,6 +127,10 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         }
     }
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
+    // This account's own token (never logged), for this process only.
+    for (k, v) in &ctx.extra_env {
+        cmd.env(k, v);
+    }
     // Quick and quiet: low effort, no thinking at low, short replies,
     // and nothing at startup that is not needed (no updater, telemetry,
     // error reports, surveys, auto memory or other background traffic).
@@ -145,6 +156,8 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
             .env("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING", "1");
     }
     let mut child = cmd.spawn().with_context(|| format!("starting {claude}"))?;
+    // Its `godterm mcp` may use the read-write control token.
+    crate::control::trust_brain_pid(child.id());
     let stdin = child.stdin.take().context("no stdin")?;
     let stdout = child.stdout.take().context("no stdout")?;
     let stderr = child.stderr.take().context("no stderr")?;

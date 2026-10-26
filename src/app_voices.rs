@@ -39,9 +39,21 @@ pub fn parse_voice_phrase(raw: &str, engine: &str) -> Option<VoicePick> {
         return None;
     }
     let s = w.join(" ");
-    let rest = ["use the ", "use ", "switch to the ", "switch to ", "change to the ", "change to ", "try the ", "go back to the ", "go back to ", "talk with the ", "speak with the "]
-        .iter()
-        .find_map(|p| s.strip_prefix(p))?;
+    let rest = [
+        "use the ",
+        "use ",
+        "switch to the ",
+        "switch to ",
+        "change to the ",
+        "change to ",
+        "try the ",
+        "go back to the ",
+        "go back to ",
+        "talk with the ",
+        "speak with the ",
+    ]
+    .iter()
+    .find_map(|p| s.strip_prefix(p))?;
     let (body, said_voice) = match rest
         .strip_suffix(" voices")
         .or_else(|| rest.strip_suffix(" voice"))
@@ -58,7 +70,11 @@ pub fn parse_voice_phrase(raw: &str, engine: &str) -> Option<VoicePick> {
         if body == "local" && !said_voice {
             return None;
         }
-        if matches!(body, "mac" | "macos" | "mac os" | "say" | "system" | "apple") && !said_voice {
+        if matches!(
+            body,
+            "mac" | "macos" | "mac os" | "say" | "system" | "apple"
+        ) && !said_voice
+        {
             return None;
         }
         return Some(VoicePick::Engine(e));
@@ -76,14 +92,11 @@ pub fn parse_voice_phrase(raw: &str, engine: &str) -> Option<VoicePick> {
             key == full || key == short
         })
         .copied();
-    let kokoro = catalog::KOKORO_EN
-        .iter()
-        .map(|v| v.0)
-        .find(|id| {
-            let full = id.replace('_', "");
-            let short = id.split('_').nth(1).unwrap_or("");
-            key == full || key == short
-        });
+    let kokoro = catalog::KOKORO_EN.iter().map(|v| v.0).find(|id| {
+        let full = id.replace('_', "");
+        let short = id.split('_').nth(1).unwrap_or("");
+        key == full || key == short
+    });
     match (kokoro, ming) {
         (Some(_), Some(m)) if engine == "ming" => Some(VoicePick::Ming(m)),
         (Some(k), _) => Some(VoicePick::Kokoro(k)),
@@ -177,8 +190,12 @@ impl App {
                 "Okay, Kokoro, the {} voice.",
                 catalog::kokoro_name(&vc.kokoro_voice)
             ),
-            VoicePick::Engine("chatterbox") => "Okay, Chatterbox Turbo. It takes a few seconds to load the first time.".into(),
-            VoicePick::Engine("ming") => "Okay, Ming. It takes a moment before each sentence.".into(),
+            VoicePick::Engine("chatterbox") => {
+                "Okay, Chatterbox Turbo. It takes a few seconds to load the first time.".into()
+            }
+            VoicePick::Engine("ming") => {
+                "Okay, Ming. It takes a moment before each sentence.".into()
+            }
             VoicePick::Engine("grok") => "Okay, the Grok voice.".into(),
             VoicePick::Engine(_) => "Okay, the Mac voice.".into(),
         }
@@ -270,22 +287,40 @@ mod tests {
         let e = |s: &str| parse_voice_phrase(s, "kokoro");
         assert_eq!(e("use the local voice"), Some(VoicePick::Engine("kokoro")));
         assert_eq!(e("Use Chatterbox."), Some(VoicePick::Engine("chatterbox")));
-        assert_eq!(e("switch to chatter box"), Some(VoicePick::Engine("chatterbox")));
+        assert_eq!(
+            e("switch to chatter box"),
+            Some(VoicePick::Engine("chatterbox"))
+        );
         assert_eq!(e("use Kokoro please"), Some(VoicePick::Engine("kokoro")));
         assert_eq!(e("use the Grok voice"), Some(VoicePick::Engine("grok")));
         assert_eq!(e("use grok voice"), Some(VoicePick::Engine("grok")));
         assert_eq!(e("use the ming voice"), Some(VoicePick::Engine("ming")));
         assert_eq!(e("use the mac voice"), Some(VoicePick::Engine("say")));
-        assert_eq!(e("use the Bella voice"), Some(VoicePick::Kokoro("af_bella")));
-        assert_eq!(e("use the af heart voice"), Some(VoicePick::Kokoro("af_heart")));
-        assert_eq!(e("okay use the Michael voice"), Some(VoicePick::Kokoro("am_michael")));
+        assert_eq!(
+            e("use the Bella voice"),
+            Some(VoicePick::Kokoro("af_bella"))
+        );
+        assert_eq!(
+            e("use the af heart voice"),
+            Some(VoicePick::Kokoro("af_heart"))
+        );
+        assert_eq!(
+            e("okay use the Michael voice"),
+            Some(VoicePick::Kokoro("am_michael"))
+        );
         // Emma and George are in both: the engine in use decides.
-        assert_eq!(e("use the George voice"), Some(VoicePick::Kokoro("bm_george")));
+        assert_eq!(
+            e("use the George voice"),
+            Some(VoicePick::Kokoro("bm_george"))
+        );
         assert_eq!(
             parse_voice_phrase("use the George voice", "ming"),
             Some(VoicePick::Ming("UK_George"))
         );
-        assert_eq!(e("use the Stella voice"), Some(VoicePick::Ming("US_Stella")));
+        assert_eq!(
+            e("use the Stella voice"),
+            Some(VoicePick::Ming("US_Stella"))
+        );
         // Not voice choices.
         for s in [
             "use grok",
@@ -303,7 +338,10 @@ mod tests {
     #[test]
     fn remove_asks_with_what_goes() {
         let l = confirm_lines("chatterbox", true).join(" ");
-        assert!(l.contains("Remove Chatterbox Turbo") && l.contains("2.9 GB"), "{l}");
+        assert!(
+            l.contains("Remove Chatterbox Turbo") && l.contains("2.9 GB"),
+            "{l}"
+        );
         assert!(confirm_lines("ming", false)[0].contains("Install Ming-3.0"));
         assert!(confirm_lines("bogus", false).is_empty());
     }

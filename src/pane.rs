@@ -142,7 +142,8 @@ impl Activity {
             Activity::Starting => "starting",
             Activity::Working => "working",
             Activity::Permission => "needs approval",
-            Activity::Ready => "waiting for input",
+            // The word the headers, the assistant and list_tabs use.
+            Activity::Ready => "ready",
             Activity::Exited => "exited",
         }
     }
@@ -171,11 +172,18 @@ pub fn detect_activity(text: &str) -> Activity {
             && (text.contains("1. Yes") || text.contains("❯ Yes") || text.contains("2. No")));
     if permission || asks_question(text) {
         Activity::Permission
-    } else if text.contains("esc to interrupt") || text.contains("Ctrl+c to cancel the turn") {
+    } else if text.contains("esc to interrupt")
+        || text.contains("Ctrl+c to cancel the turn")
+        // Grok Build 1.0.69+: "⠋ Waiting for response… 0.1s ... [stop]"
+        // over a "Shift+Tab:mode │ Ctrl+c:cancel" footer.
+        || text.contains("Ctrl+c:cancel")
+    {
         Activity::Working
     } else if text.contains("? for shortcuts")
         || text.contains("Type a message")
         || text.contains("│ >")
+        // Grok Build 1.0.69+: an empty boxed `❯` input on its home screen.
+        || text.contains("│ ❯")
         || text
             .lines()
             .any(|l| l.trim_start().starts_with('>') || l.trim_start().starts_with('❯'))
@@ -302,6 +310,9 @@ pub struct Pane {
     pub bg_lock: Option<crate::session_ids::BgLock>,
     /// The next launch attaches or forks instead of a plain resume.
     pub next_launch: Option<crate::session_ids::NextLaunch>,
+    /// Its session's lease (GodTerm Sync): read only, or input blocked
+    /// while the conversation moves to another machine.
+    pub lease: Option<crate::app_lease::TabLease>,
     /// The model it runs, as its transcript, session or screen names it
     /// ("claude-opus-5-5", "Sonnet 5.5", "grok-4.7"); app_tabmodel.
     pub model: Option<String>,
@@ -314,7 +325,21 @@ pub struct Pane {
     pub model_set: Option<(String, Instant)>,
     /// The CLI the tab last ran (set at launch).
     pub harness: crate::harness::Harness,
+    /// Its output and input for web clients (src/web/tap.rs).
+    pub web: Arc<crate::web::tap::Tap>,
+    /// A size a browser took for it (its "take size" toggle): the PTY
+    /// keeps it whatever the pane's area is, until released.
+    pub web_size: Option<(u16, u16)>,
+    /// Who took it ("iPhone"), shown in the pane's header.
+    pub web_sizer: Option<String>,
+    /// A tab that may print a secret (`claude setup-token`): its output
+    /// goes through this filter before the parser and the web tap, so the
+    /// token is caught here and only dots ever reach a screen.
+    pub secret: Option<Arc<Mutex<crate::acct_tokens::Scrub>>>,
 }
+
+/// A secret tab is this wide at least, so a token never wraps.
+pub const SECRET_COLS: u16 = 320;
 
 impl Pane {
     /// The visible screen as text.
@@ -327,10 +352,12 @@ impl Pane {
     }
 
     pub fn new(cwd: PathBuf) -> Pane {
+        let uid = alloc_uid();
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(24, 80, scrollback())));
         Pane {
             live_cwd: None,
             cwd_polled: None,
-            uid: alloc_uid(),
+            uid,
             cwd,
             custom_name: None,
             accent: None,
@@ -343,7 +370,11 @@ impl Pane {
             transient: false,
             crashes: vec![],
             activity_since: Instant::now(),
-            parser: Arc::new(Mutex::new(vt100::Parser::new(24, 80, scrollback()))),
+            web: crate::web::tap::Tap::new(uid, Arc::clone(&parser)),
+            web_size: None,
+            web_sizer: None,
+            secret: None,
+            parser,
             state: PaneState::Idle,
             kind: LaunchKind::Normal,
             scroll: 0,
@@ -364,6 +395,7 @@ impl Pane {
             bg_wait_unseen: false,
             bg_lock: None,
             next_launch: None,
+            lease: None,
             model: None,
             effort: None,
             model_polled: None,
@@ -397,31 +429,8 @@ impl Pane {
         }
         self.history = lines;
         let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
-        let (rows, cols) = p.screen().size();
         let was = p.screen().scrollback();
-        p.screen_mut().set_scrollback(usize::MAX);
-        let keep = p.screen().scrollback().min(lines);
-        let mut text: Vec<String> = Vec::with_capacity(keep + rows as usize);
-        for k in (1..=keep).rev() {
-            p.screen_mut().set_scrollback(k);
-            text.push(p.screen().rows(0, cols).next().unwrap_or_default());
-        }
-        p.screen_mut().set_scrollback(0);
-        let replay = p.screen().contents_formatted();
-        let mut fresh = vt100::Parser::new(rows, cols, lines);
-        if keep > 0 {
-            // The history, then the screen's rows as text: the history
-            // ends up above the screen, which is then drawn again in full.
-            text.extend(p.screen().rows(0, cols));
-            let n = text.len();
-            for (i, l) in text.iter().enumerate() {
-                fresh.process(l.as_bytes());
-                if i + 1 < n {
-                    fresh.process(b"\r\n");
-                }
-            }
-        }
-        fresh.process(&replay);
+        let (mut fresh, keep) = rebuilt(&mut p, lines);
         fresh.screen_mut().set_scrollback(was.min(keep));
         self.scroll = fresh.screen().scrollback();
         *p = fresh;
@@ -470,6 +479,7 @@ impl Pane {
         let (rows, cols) = self.size;
         // Fresh screen for the new process.
         self.parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, self.history)));
+        self.sync_tap();
         self.scroll = 0;
         self.suspended = false;
         self.harness = spec.harness;
@@ -536,10 +546,18 @@ impl Pane {
                 }
             })?;
 
+        self.web.respawn(
+            self.generation,
+            Arc::clone(&self.parser),
+            Some(input.clone()),
+        );
+        let web = Arc::clone(&self.web);
         let parser = Arc::clone(&self.parser);
+        let lines = self.history;
         let w2 = input.clone();
         let last = Arc::clone(&self.last_output);
         let (id, gen) = (self.uid, self.generation);
+        let secret = self.secret.clone();
         std::thread::Builder::new()
             .name(format!("pty-{id}"))
             .spawn(move || {
@@ -550,6 +568,10 @@ impl Pane {
                 // core parsing output nobody can read that fast (QA-14).
                 let mut window = Instant::now();
                 let mut in_window = 0usize;
+                // Huge counts in CSI sequences capped (vt_guard.rs).
+                let mut cap = crate::vt_guard::CsiCap::default();
+                let mut clean = Vec::with_capacity(read_buf);
+                let mut scrubbed = Vec::new();
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
@@ -563,10 +585,43 @@ impl Pane {
                                 window = Instant::now();
                                 in_window = 0;
                             }
-                            let chunk = &buf[..n];
+                            let mut chunk = &buf[..n];
+                            if let Some(sc) = &secret {
+                                scrubbed.clear();
+                                sc.lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .filter(chunk, &mut scrubbed);
+                                chunk = &scrubbed;
+                            }
                             let reply = {
                                 let mut p = parser.lock().unwrap_or_else(|e| e.into_inner());
-                                p.process(chunk);
+                                let (rows, cols) = p.screen().size();
+                                clean.clear();
+                                cap.filter(chunk, rows.max(cols), &mut clean);
+                                let alt = p.screen().alternate_screen();
+                                let fed = process_guarded(&mut p, &clean, lines);
+                                if !fed {
+                                    crate::log::error(&format!(
+                                        "{}: the terminal parser failed on this tab's output; its screen was rebuilt",
+                                        crate::control::tab_id(id)
+                                    ));
+                                }
+                                // Browsers get what the parser got, under
+                                // its lock (no gap or repeat after their
+                                // snapshot); a rebuilt screen is re-sent.
+                                if web.active() {
+                                    // Back from a full screen app: the
+                                    // main screen a browser's snapshot
+                                    // never had (it got only the
+                                    // alternate one) comes from a new one.
+                                    if fed && alt && !p.screen().alternate_screen() {
+                                        web.resync_all();
+                                    } else if fed {
+                                        web.publish(gen, &clean);
+                                    } else {
+                                        web.resync_all();
+                                    }
+                                }
                                 query_replies(chunk, p.screen())
                             };
                             if !reply.is_empty() {
@@ -579,6 +634,20 @@ impl Pane {
                             {
                                 break;
                             }
+                        }
+                    }
+                }
+                // A secret tab's last held bytes (and a token that ended
+                // with the stream).
+                if let Some(sc) = &secret {
+                    let mut tail = vec![];
+                    sc.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .flush(&mut tail);
+                    if !tail.is_empty() {
+                        let mut p = parser.lock().unwrap_or_else(|e| e.into_inner());
+                        if process_guarded(&mut p, &tail, lines) && web.active() {
+                            web.publish(gen, &tail);
                         }
                     }
                 }
@@ -616,6 +685,7 @@ impl Pane {
                 reap(p.child);
             }
         }
+        self.web.stop_input();
         self.pending_type = None;
         self.state = PaneState::Exited(code);
         self.set_activity(Activity::Exited);
@@ -634,6 +704,8 @@ impl Pane {
                 child,
             } = p;
             drop(input);
+            // The tap's copy too, so the writer thread ends.
+            self.web.stop_input();
             reap_after_hup(child, master);
         }
         self.pending_type = None;
@@ -684,7 +756,7 @@ impl Pane {
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
+        if bytes.is_empty() || self.lease.as_ref().is_some_and(|l| l.blocks_input()) {
             return;
         }
         self.last_input = Instant::now();
@@ -701,18 +773,54 @@ impl Pane {
         self.size
     }
 
-    /// Resize the PTY and the virtual screen to the pane's inner area.
+    /// The web tap follows the uid (restored tabs get their saved one
+    /// after they were made).
+    fn sync_tap(&mut self) {
+        if self.web.uid != self.uid {
+            self.web.forget();
+            self.web = crate::web::tap::Tap::new(self.uid, Arc::clone(&self.parser));
+        }
+    }
+
+    /// Resize the PTY and the virtual screen to the pane's inner area (or
+    /// to the size a browser took for it).
     pub fn resize(&mut self, rows: u16, cols: u16) {
+        self.sync_tap();
+        let (rows, cols) = self.web_size.unwrap_or((rows, cols));
         let (rows, cols) = (rows.max(2), cols.max(10));
+        let cols = if self.secret.is_some() {
+            cols.max(SECRET_COLS)
+        } else {
+            cols
+        };
         if self.size == (rows, cols) {
             return;
         }
         self.size = (rows, cols);
-        self.parser
-            .lock()
-            .unwrap()
-            .screen_mut()
-            .set_size(rows, cols);
+        {
+            // A reader thread that panicked inside the parser poisons the
+            // lock; like every other use, go on with the screen as it is.
+            let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
+            p.screen_mut().set_size(rows, cols);
+            // A wide char cut in half by the narrower screen makes vt100
+            // panic on the next edit there (see process_guarded): lay the
+            // screen out again now instead, wrapping it to the next row.
+            if wide_at_edge(&mut p) {
+                let was = p.screen().scrollback();
+                let modes = p.screen().input_mode_formatted();
+                let (mut fresh, keep) = rebuilt(&mut p, self.history);
+                fresh.process(&modes);
+                fresh.screen_mut().set_scrollback(was.min(keep));
+                self.scroll = fresh.screen().scrollback();
+                *p = fresh;
+                // A rebuilt screen: browsers redraw from a snapshot.
+                self.web.resync_all();
+            } else {
+                // Browsers resize their terminal and output flows on
+                // (the app redraws at the new size), no snapshot.
+                self.web.resized(rows, cols);
+            }
+        }
         if let Some(p) = &self.proc {
             let _ = p.master.resize(PtySize {
                 rows,
@@ -783,6 +891,7 @@ impl Pane {
 
 impl Drop for Pane {
     fn drop(&mut self) {
+        self.web.forget();
         self.kill();
     }
 }
@@ -839,6 +948,75 @@ fn reap(mut child: Box<dyn Child + Send + Sync>) {
         .spawn(move || {
             let _ = child.wait();
         });
+}
+
+/// A new parser with what `p` shows: the newest `lines` of its history (as
+/// text), then its screen with colors. Returns it and how much history
+/// came along. `p` is left scrolled to the bottom.
+fn rebuilt(p: &mut vt100::Parser, lines: usize) -> (vt100::Parser, usize) {
+    let (rows, cols) = p.screen().size();
+    p.screen_mut().set_scrollback(usize::MAX);
+    let keep = p.screen().scrollback().min(lines);
+    let mut text: Vec<String> = Vec::with_capacity(keep + rows as usize);
+    for k in (1..=keep).rev() {
+        p.screen_mut().set_scrollback(k);
+        text.push(p.screen().rows(0, cols).next().unwrap_or_default());
+    }
+    p.screen_mut().set_scrollback(0);
+    let replay = p.screen().contents_formatted();
+    let mut fresh = vt100::Parser::new(rows, cols, lines);
+    if keep > 0 {
+        // The history, then the screen's rows as text: the history ends up
+        // above the screen, which is then drawn again in full.
+        text.extend(p.screen().rows(0, cols));
+        let n = text.len();
+        for (i, l) in text.iter().enumerate() {
+            fresh.process(l.as_bytes());
+            if i + 1 < n {
+                fresh.process(b"\r\n");
+            }
+        }
+    }
+    fresh.process(&replay);
+    (fresh, keep)
+}
+
+/// A wide char starts in the last column of the live screen (it has no
+/// room for its second half).
+fn wide_at_edge(p: &mut vt100::Parser) -> bool {
+    let was = p.screen().scrollback();
+    p.screen_mut().set_scrollback(0);
+    let (rows, cols) = p.screen().size();
+    let found =
+        cols > 0 && (0..rows).any(|r| p.screen().cell(r, cols - 1).is_some_and(|c| c.is_wide()));
+    p.screen_mut().set_scrollback(was);
+    found
+}
+
+/// Feed PTY output to the parser; true when it went through.
+///
+/// vt100 0.16 can panic on its own state: a wide char left in the last
+/// column when a resize narrows the screen by one makes the next erase or
+/// print there index past the row (row.rs clear_wide, screen.rs text). The
+/// reader thread died with it and the tab froze for good (the soak run hit
+/// it every few minutes). The parser is rebuilt from what it showed instead
+/// (history and screen; the chunk that failed is lost) and reading goes on.
+pub fn process_guarded(p: &mut vt100::Parser, bytes: &[u8], lines: usize) -> bool {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    if catch_unwind(AssertUnwindSafe(|| p.process(bytes))).is_ok() {
+        return true;
+    }
+    let fresh = catch_unwind(AssertUnwindSafe(|| {
+        let modes = p.screen().input_mode_formatted();
+        let (mut f, _) = rebuilt(p, lines);
+        f.process(&modes);
+        f
+    }));
+    *p = fresh.unwrap_or_else(|_| {
+        let (rows, cols) = p.screen().size();
+        vt100::Parser::new(rows, cols, lines)
+    });
+    false
 }
 
 /// Answer terminal queries that TUI apps send while probing capabilities.
@@ -904,6 +1082,26 @@ mod tests {
         }
         p.screen_mut().set_scrollback(usize::MAX);
         assert_eq!(p.screen().scrollback(), 100);
+    }
+
+    #[test]
+    fn a_resize_that_cuts_a_wide_char_lays_the_screen_out_again() {
+        let mut t = Pane::new("/tmp".into());
+        t.resize(5, 11);
+        {
+            let mut p = t.parser.lock().unwrap();
+            p.process("history\r\n".repeat(20).as_bytes());
+            p.process("\x1b[2;1Hkept\x1b[2;10H日".as_bytes());
+        }
+        // One column fewer: 日 would start in the last column.
+        t.resize(5, 10);
+        let mut p = t.parser.lock().unwrap();
+        // The edit that panicked vt100 there goes through.
+        assert!(process_guarded(&mut p, b"\x1b[2;10H\x1b[K", 100));
+        assert!(process_guarded(&mut p, b"\x1b[2;10Hx", 100));
+        assert!(p.screen().contents().contains("kept"));
+        p.screen_mut().set_scrollback(usize::MAX);
+        assert!(p.screen().scrollback() > 0, "the history came along");
     }
 
     #[test]

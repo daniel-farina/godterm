@@ -116,12 +116,22 @@ fn tick_at(r: &mut Rig, secs: u64) {
     r.app.updates_tick();
 }
 
+/// What update mode put out: asked roundups as panel notes, unasked news
+/// as events for the assistant (it is not said by GodTerm itself).
 fn notes(app: &App) -> Vec<String> {
     app.assistant
         .log
         .iter()
         .filter(|e| e.who == Who::Note && e.text.starts_with("Update "))
         .map(|e| e.text.clone())
+        .chain(
+            app.assistant
+                .events
+                .events
+                .iter()
+                .filter(|e| e.kind == crate::app_events::EventKind::Update)
+                .map(|e| format!("Update (event): {}", e.text)),
+        )
         .collect()
 }
 
@@ -279,8 +289,8 @@ fn silence_rules_hold_updates_back() {
     );
 }
 
-/// With no voice the update is a panel line only; with talk back on it
-/// is said too, in the same words.
+/// Unasked news is never said by GodTerm itself, voice on or off: it is
+/// an event for the assistant, which tells the user.
 #[test]
 fn voice_off_shows_text_and_voice_on_says_it() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -294,7 +304,7 @@ fn voice_off_shows_text_and_voice_on_says_it() {
     assert_eq!(r.app.updates.said, vec![said.clone()]);
     assert!(notes(&r.app)[0].ends_with(&said));
     assert!(!r.app.assistant.quiet.said.contains(&said), "not spoken");
-    // Talk back on: said as well.
+    // Talk back on: still not said by GodTerm, handed to the assistant.
     r.app.cfg.voice.tts = true;
     r.app.panes[0].tabs[0].activity = Activity::Working;
     tick_at(&mut r, 12);
@@ -306,7 +316,14 @@ fn voice_off_shows_text_and_voice_on_says_it() {
     tick_at(&mut r, 80);
     let second = "hyper finished: now the docs are written.".to_string();
     assert_eq!(r.app.updates.said.last(), Some(&second));
-    assert!(r.app.assistant.quiet.said.contains(&second), "spoken");
+    assert!(
+        !r.app.assistant.quiet.said.contains(&second),
+        "not said directly"
+    );
+    assert!(
+        notes(&r.app).iter().any(|n| n.ends_with(&second)),
+        "an event"
+    );
     // The speaker muted: shown only.
     r.app.cfg.voice.speaker_muted = true;
     assert!(!r.app.updates_spoken());

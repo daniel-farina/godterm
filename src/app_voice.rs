@@ -37,7 +37,6 @@ pub struct VoiceState {
     pub listen_after_speech: bool,
     /// What a bare wake word answered (tests and the HUD).
     pub said_wake: Vec<String>,
-    spoken: crate::notify::Limiter<(usize, usize, bool)>,
     notified: crate::notify::Limiter<(usize, usize, bool)>,
     /// Terminal focus as reported by focus events (None: never reported).
     pub term_focused: Option<bool>,
@@ -140,7 +139,6 @@ impl Default for VoiceState {
             wake_until: None,
             listen_after_speech: false,
             said_wake: vec![],
-            spoken: crate::notify::Limiter::new(Duration::from_secs(60), Duration::from_secs(5)),
             notified: crate::notify::Limiter::new(Duration::from_secs(60), Duration::from_secs(3)),
             term_focused: None,
             open_mic: false,
@@ -247,7 +245,7 @@ impl App {
             }
         }
         // Recent project folders and session titles, so a name like
-        // "botmesh" is transcribed as said; "trading-room" also as
+        // "fotmesh" is transcribed as said; "trading-room" also as
         // "trading room", the way it is spoken.
         {
             let ix = self.session_index.lock().unwrap_or_else(|e| e.into_inner());
@@ -389,12 +387,14 @@ impl App {
             self.voice.always_on = always_on;
             return;
         }
-        let source = match &self.voice.file {
-            Some(f) => Source::File {
+        let source = match (&self.voice.file, self.web_mic()) {
+            (Some(f), _) => Source::File {
                 path: f.clone(),
                 realtime: true,
             },
-            None => Source::Mic(self.cfg.voice.device.clone()),
+            // A browser with voice on (the web app) is the mic.
+            (None, Some(m)) => Source::Web(m),
+            (None, None) => Source::Mic(self.cfg.voice.device.clone()),
         };
         // A file is a recording of hands free use, so listen for the wake word.
         let always_on = always_on || self.voice.file.is_some();
@@ -787,7 +787,9 @@ impl App {
             "kokoro" => crate::voice::catalog::kokoro_name(&vc.kokoro_voice),
             "chatterbox" | "ming" => format!(
                 "{}, {}",
-                crate::voice::local_tts::info(engine).map(|i| i.name).unwrap_or(engine),
+                crate::voice::local_tts::info(engine)
+                    .map(|i| i.name)
+                    .unwrap_or(engine),
                 crate::voice::local_tts::voice_label(engine, vc)
             ),
             "grok" => format!("Grok {}", vc.grok.voice),
@@ -1222,11 +1224,13 @@ impl App {
         crate::prompt_cli::describe_request_for(h, &screen)
     }
 
-    /// Answer one waiting tab. Only ever called on an explicit request.
-    pub fn answer_tab(&mut self, slot: usize, tab: usize, choice: Choice) -> String {
+    /// Whether `choice` can be answered on the tab's prompt now: Err says
+    /// why not (not waiting, or a CLI whose prompt GodTerm cannot read or
+    /// that has no such option).
+    pub fn tab_answerable(&self, slot: usize, tab: usize, choice: Choice) -> Result<(), String> {
         let who = self.describe(slot, tab);
         if self.panes[slot].tabs[tab].activity != Activity::Permission {
-            return format!("{who} is not waiting for approval");
+            return Err(format!("{who} is not waiting for approval"));
         }
         if let Some(h) = self.pane_harness(slot).filter(|h| !h.integrated()) {
             // The 1 / 2 / Esc fallback is Claude's. Another CLI is only
@@ -1241,11 +1245,20 @@ impl App {
                 .and_then(|p| p.index_for(choice))
                 .is_none()
             {
-                return format!(
+                return Err(format!(
                     "{who} runs {}: I cannot read its approval prompt, answer it with the keyboard",
                     h.label()
-                );
+                ));
             }
+        }
+        Ok(())
+    }
+
+    /// Answer one waiting tab. Only ever called on an explicit request.
+    pub fn answer_tab(&mut self, slot: usize, tab: usize, choice: Choice) -> String {
+        let who = self.describe(slot, tab);
+        if let Err(e) = self.tab_answerable(slot, tab, choice) {
+            return e;
         }
         let (key, picked) = self.answer_keys(slot, tab, choice);
         self.send_keys(slot, tab, &key);
@@ -1408,13 +1421,10 @@ impl App {
         self.assistant_follow_up(any_speaking);
         self.listen_after_reply(any_speaking);
         self.quiet_tick();
-        if self.attention.is_empty() {
-            self.updates_tick();
-            return;
-        }
+        // Tabs never talk to the user themselves: a finish or an approval
+        // is an event for the assistant (app_events), which decides what
+        // the user hears. Nothing is said or flashed here.
         let items = std::mem::take(&mut self.attention);
-        let every = Duration::from_secs(self.cfg.voice.announce_every_s.max(3) as u64);
-        self.voice.spoken.set_per_key(every * 3);
         for a in items {
             // The tab as it is now: gone, or no longer waiting, means the
             // notice is stale and nothing is said.
@@ -1426,52 +1436,36 @@ impl App {
             if need && now != Activity::Permission {
                 continue;
             }
-            let who = self.describe(slot, tab);
-            let msg = if need {
-                format!("{who} needs approval")
-            } else {
-                format!("{who} finished")
-            };
             let tid = crate::control::tab_id(a.uid);
-            let src = crate::told::Source {
-                tab: Some(a.uid),
-                account: self.panes[slot].account,
-                fact: Some(format!(
-                    "{tid} state {} to {} (now {})",
-                    a.from.label(),
-                    a.what.label(),
-                    now.label()
-                )),
-            };
-            crate::log::info(&format!("attention: {msg} ({tid})"));
-            let key = (slot, tab, need);
-            let notify = self.cfg.notifications
-                && self.voice.term_focused != Some(true)
-                && self.voice.notified.allow(key);
-            self.told_from("attention", src, |app| {
-                app.flash(msg.clone());
-                // Desktop notification when the terminal is not in front
-                // (or when it never reports focus at all).
-                if notify {
-                    app.notify_user("godterm", &msg);
+            crate::log::info(&format!(
+                "attention: {tid} {} to {} (now {}): an event for the assistant",
+                a.from.label(),
+                a.what.label(),
+                now.label()
+            ));
+            // In direct mode that tab speaks for itself (app_direct).
+            if self.direct_with(a.uid) {
+                continue;
+            }
+            if need {
+                self.tab_approval_event(a.uid);
+                // An approval must reach the user even with the terminal
+                // in the back: the desktop notification stays (only for
+                // approvals; notifications switch).
+                let key = (slot, tab, true);
+                if self.cfg.notifications
+                    && self.voice.term_focused != Some(true)
+                    && self.voice.notified.allow(key)
+                {
+                    let who = self.describe(slot, tab);
+                    self.notify_user("godterm", &format!("{who} needs approval"));
                 }
-                // Paused: held, and summarized on resume.
-                if app.cfg.voice.announce && app.hold_announcement(&msg) {
-                    return;
-                }
-                if !app.cfg.voice.announce || app.voice.engine.is_none() || app.voice.asleep {
-                    return;
-                }
-                // Said at the next quiet moment, never over the user.
-                if app.voice.spoken.allow(key) {
-                    app.say_update(crate::app_quiet::Voice::Announce, &msg);
-                    // Update mode does not say it again.
-                    app.updates_note_announced(a.uid, need);
-                }
-            });
+            } else {
+                self.tab_finished_event(a.uid);
+            }
         }
-        // After the announcer, so what it said is not said again.
         self.updates_tick();
+        self.events_tick();
     }
 
     pub fn voice_hud_visible(&self) -> bool {

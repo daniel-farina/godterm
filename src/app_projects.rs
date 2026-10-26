@@ -12,6 +12,7 @@ use crate::control::{plural, tab_id};
 
 pub const TOOL_NAMES: &[&str] = &[
     "search_projects",
+    "git_status",
     "describe_project",
     "describe_session",
     "rename_session",
@@ -95,7 +96,11 @@ impl App {
             let sc = (sc + 0.05).min(1.05);
             if m.kind == "project" {
                 saved_paths.push(PathBuf::from(&m.key));
-                out.push((sc, json!({"type": "project", "path": m.key, "folder": crate::config::tilde(Path::new(&m.key)), "label": if m.description.is_empty() { crate::config::tilde(Path::new(&m.key)) } else { crate::sessions::snippet(&m.description, 80) }, "why": why, "saved": saved, "then": "open_tab with dir set to path, open_path, or list_dir"})));
+                let mut v = json!({"type": "project", "path": m.key, "folder": crate::config::tilde(Path::new(&m.key)), "label": if m.description.is_empty() { crate::config::tilde(Path::new(&m.key)) } else { crate::sessions::snippet(&m.description, 80) }, "why": why, "saved": saved, "then": "open_tab with dir set to path, open_path, or list_dir"});
+                if let Some(g) = crate::project_git::line_for(&ix, Path::new(&m.key)) {
+                    v["git"] = json!(g);
+                }
+                out.push((sc, v));
             } else {
                 out.push((sc, json!({"type": "session", "id": m.key, "label": crate::sessions::snippet(&m.description, 80), "why": why, "saved": saved, "then": "open_session"})));
             }
@@ -105,6 +110,9 @@ impl App {
                 continue;
             }
             let mut v = json!({"type": "project", "path": h.path.to_string_lossy(), "folder": crate::config::tilde(&h.path), "label": if h.rel.is_empty() { crate::config::tilde(&h.root) } else { h.rel.clone() }, "why": h.why, "root": crate::config::tilde(&h.root), "then": "open_tab with dir set to path, open_path, or list_dir"});
+            if let Some(g) = crate::project_git::line_for(&ix, &h.path) {
+                v["git"] = json!(g);
+            }
             if let Some(m) = store.get("project", &h.path.to_string_lossy()) {
                 v["saved"] = crate::project_memory::json(m, None);
             }
@@ -120,6 +128,7 @@ impl App {
         }
         Some(match tool {
             "search_projects" => self.search_projects(args),
+            "git_status" => self.git_status(args),
             "describe_project" => self.save_description(args, "project"),
             "describe_session" => self.save_description(args, "session"),
             _ => self.planned("rename_session", args),
@@ -203,7 +212,18 @@ impl App {
                 plural(roots.len(), "project folder")
             )
         };
-        let mut out = json!({"hits": hits, "roots": roots.iter().map(|r| crate::config::tilde(r)).collect::<Vec<_>>(), "entries_seen": r.seen, "files_read": r.files_read, "truncated": r.truncated, "timed_out": r.timed_out, "say": say});
+        let git: serde_json::Map<String, Value> = {
+            let ix = self.project_index.lock().unwrap_or_else(|e| e.into_inner());
+            roots
+                .iter()
+                .take(40)
+                .filter_map(|r| {
+                    crate::project_git::line_for(&ix, r)
+                        .map(|g| (crate::config::tilde(r), json!(g)))
+                })
+                .collect()
+        };
+        let mut out = json!({"hits": hits, "roots": roots.iter().map(|r| crate::config::tilde(r)).collect::<Vec<_>>(), "entries_seen": r.seen, "files_read": r.files_read, "truncated": r.truncated, "timed_out": r.timed_out, "git": git, "say": say});
         if !hits_found(&out) && !content {
             out["next"] = json!(
                 "Try again with content true to grep inside files, or list_dir into a likely root."

@@ -1,0 +1,697 @@
+:root{
+ --bg:#1b1d21;--panel:#23262b;--panel2:#2a2d33;--line:#33373e;--text:#d9d6cf;--dim:#8d8a84;
+ --accent:#c9a46a;--accent-ink:#1b1d21;--ok:#8fae7e;--warn:#d08a5a;--busy:#b9a25e;--err:#c07a6e;--info:#8fa3b0;
+ --term:#1b1d21;--scrim:rgba(0,0,0,.45);--shadow:0 6px 24px rgba(0,0,0,.35);
+ --sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);--sal:env(safe-area-inset-left,0px);--sar:env(safe-area-inset-right,0px);
+ --vh:100dvh;--vtop:0px;--hh:93px;color-scheme:dark;
+ --frame:var(--term);--code:var(--term);--code-ink:#d9d6cf;
+ --sw-sage:#8fae7e;--sw-sand:#c9a46a;--sw-slate:#7f99ad;--sw-clay:#c07a6e;--sw-mauve:#a68ba8;--sw-stone:#a09c90;--sw-moss:#8f9a6a;--sw-teal:#7a9c98;--sw-rose:#b48c92;--sw-dusk:#8a8cae;
+ --chip:#26292e;--chip-line:#3a3e45;--chip-text:#d9d6cf;--chip-dim:#a9a59d;--chip-press:rgba(255,255,255,.08)
+}
+/* The theme is Dark unless js/theme.js (run before the first paint) puts
+   data-theme="light" on <html>: the Light setting, or Match system on a
+   light system. The terminal itself stays dark in both. */
+:root[data-theme=light]{
+ --bg:#f4f1ea;--panel:#ebe7de;--panel2:#e2ddd2;--line:#d3ccbf;--text:#2b2a27;--dim:#6f6b63;
+ --accent:#9a7a3f;--accent-ink:#fbf9f4;--ok:#5e7f4f;--warn:#b06a3c;--busy:#8f7a35;--err:#a2574b;--info:#58707f;
+ --scrim:rgba(40,36,30,.35);--shadow:0 6px 24px rgba(60,50,30,.18);color-scheme:light;
+ --frame:var(--bg);--code:var(--panel2);--code-ink:var(--text);
+ --sw-sage:#5e7f4f;--sw-sand:#9a7a3f;--sw-slate:#56718a;--sw-clay:#a2574b;--sw-mauve:#7e6280;--sw-stone:#7a7568;--sw-moss:#66713f;--sw-teal:#4e7470;--sw-rose:#91606a;--sw-dusk:#5f6190;
+ --chip:rgba(251,249,244,.9);--chip-line:#cfc8ba;--chip-text:#2b2a27;--chip-dim:#6f6b63;--chip-press:rgba(0,0,0,.06)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;touch-action:pan-x pan-y;background:var(--bg);color:var(--text);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overscroll-behavior:none}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus{outline:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+[hidden]{display:none!important}
+svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.dim{color:var(--dim)}
+body{position:fixed;inset:0}
+#app{position:fixed;left:0;right:0;top:var(--vtop);height:var(--vh);display:grid;
+ grid-template-columns:var(--sidew,280px) minmax(0,1fr) 0;grid-template-rows:auto auto auto minmax(0,1fr);
+ grid-template-areas:"top top top" "upd upd upd" "toast main chat" "side main chat";padding-left:var(--sal);padding-right:var(--sar)}
+#app.chat-open{grid-template-columns:var(--sidew,280px) minmax(0,1fr) 380px}
+/* The top bar: row 1 says where you are (the tab, its state) with the
+   settings and approvals; row 2 is the toolbar. While the keyboard is up
+   on a phone only row 1 shows. */
+#top{grid-area:top;display:flex;flex-direction:column;padding:var(--sat) 0 0;min-height:calc(var(--hh) + var(--sat));border-bottom:1px solid var(--line);background:var(--panel)}
+#top .tr1{display:flex;align-items:center;gap:2px;height:48px;padding:0 4px}
+#top .tr2{display:flex;align-items:center;gap:2px;height:44px;padding:0 4px;border-top:1px solid var(--line);overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain}
+#top .tr2::-webkit-scrollbar{display:none}
+.tr2-gap{flex:1;min-width:4px}
+body.kb{--hh:48px}
+body.kb #top .tr2{display:none}
+#title{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;gap:1px;line-height:1.2;padding:0 6px;height:44px;border:0;border-radius:10px;background:none;text-align:left}
+#title:hover{background:var(--panel2)}
+#title .t1{display:flex;align-items:center;gap:7px;max-width:100%;min-width:0}
+#title b,#t-sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+#title b{font-size:16px}
+#t-dot{flex:none}
+#t-dot:not([class*=" "]){display:none}
+#t-sub{font-size:12px;color:var(--dim)}
+.tb{flex:none;gap:7px}
+.tb .lb{display:none;font-size:13.5px;white-space:nowrap}
+#b-ptt.tb{display:inline-flex;align-items:center;gap:5px;padding:0 10px 0 8px;border-radius:22px}
+#b-ptt .ml-s{font-size:12.5px;font-weight:600;letter-spacing:.02em}
+#b-ptt .ml-l{display:none}
+@media (max-width:380px){#top .tr2{gap:0;padding:0 2px}#b-ptt.tb{padding:0 8px 0 6px}}
+.hbtns{display:flex;align-items:center}
+.ib{position:relative;display:inline-grid;place-items:center;min-width:44px;height:44px;padding:0 6px;border:0;border-radius:10px;background:none}
+.ib:hover{background:var(--panel2)}
+.ib.on,.ib[aria-pressed=true]{color:var(--accent)}
+.ib.sm{min-width:36px;height:36px}
+.badge{position:absolute;top:5px;right:4px;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--warn);color:var(--accent-ink);font-size:11px;font-weight:600;line-height:17px;text-align:center}
+.conn{width:9px;height:9px;border-radius:50%;background:var(--dim);flex:none;margin:0 4px}
+.conn.live{background:var(--ok)}.conn.down{background:var(--err)}
+#under{grid-area:upd;display:flex;flex-direction:column;min-width:0}
+/* A newer web build: a filled pill in the top bar. */
+.upd{display:inline-flex;align-items:center;gap:6px;min-height:30px;padding:0 12px 0 10px;margin-right:6px;border:0;border-radius:15px;background:var(--accent);color:var(--accent-ink);font-size:13px;font-weight:600;white-space:nowrap}
+.upd[hidden]{display:none}
+.upd svg{width:15px;height:15px}
+.upd:hover{filter:brightness(1.08)}
+.touch .upd{min-height:34px}
+#update{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--panel2);border-bottom:1px solid var(--line);font-size:14px}
+#update span{flex:1;min-width:0}
+#update-go{border:1px solid var(--accent);background:none;color:var(--accent);border-radius:8px;min-height:36px;padding:0 14px}
+#app.noside,#app.noside.chat-open{grid-template-columns:0 minmax(0,1fr) 0}
+#app.noside.chat-open{grid-template-columns:0 minmax(0,1fr) 380px}
+#app.noside #side{visibility:hidden}
+#app.noside{grid-template-areas:"top top top" "upd upd upd" "toast toast toast" "side main chat"}
+.ib.dot-new::after{content:"";position:absolute;top:9px;right:9px;width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.ib.off,.tog.off{opacity:.45}
+/* side */
+#side{grid-area:side;position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--panel);border-right:1px solid var(--line)}
+.side-top{display:flex;gap:6px;padding:8px}
+.side-top input{flex:1;min-width:0}
+.side-opts{display:flex;gap:8px;padding:0 8px 8px}
+.side-opts label{flex:1;min-width:0;display:flex;align-items:center;gap:6px;color:var(--dim);font-size:12px}
+.side-opts select{flex:1;min-width:0;height:32px;font-size:13px}
+/* The side list's right edge: drag to resize (desktop), double click resets. */
+.side-grip{position:absolute;top:0;right:-5px;bottom:0;width:9px;z-index:6;cursor:col-resize;touch-action:none}
+.side-grip::after{content:"";position:absolute;top:0;bottom:0;left:4px;width:1px;background:transparent;transition:background .12s}
+.side-grip:hover::after,.side-grip:focus-visible::after,.side-drag .side-grip::after{background:var(--dim)}
+.side-grip:focus-visible{outline:none}
+.side-drag,.side-drag *{cursor:col-resize!important;user-select:none!important;-webkit-user-select:none!important}
+#app.noside .side-grip{display:none}
+input[type=search],input[type=text],select,textarea.f{height:40px;padding:0 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);outline:none}
+textarea.f{height:auto;padding:8px 10px;resize:vertical}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+select{padding-right:4px}
+.chips{display:flex;gap:6px;padding:0 8px 8px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;flex:none}
+/* The status chips: a strip a finger or a mouse drag scrolls sideways. */
+#chips{overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;touch-action:pan-x}
+#chips.dragging{cursor:grabbing}#chips.dragging .chip{pointer-events:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;height:32px;padding:0 12px;border:1px solid var(--line);border-radius:16px;background:none;font-size:13px;color:var(--dim);white-space:nowrap}
+.chip.on{border-color:var(--accent);color:var(--text);background:var(--panel2)}
+#list{flex:1;overflow-y:auto;overscroll-behavior:contain;padding-bottom:8px}
+.acct{display:flex;align-items:center;gap:8px;padding:12px 12px 4px;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+.acct .an{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meter{width:46px;height:5px;border-radius:3px;background:var(--line);overflow:hidden;flex:none}
+.meter i{display:block;height:100%;background:var(--ok)}
+.meter i.lo{background:var(--warn)}.meter i.out{background:var(--err)}
+.row{display:flex;align-items:center;gap:10px;min-height:52px;padding:6px 4px 6px 12px;cursor:pointer;border-left:3px solid transparent;user-select:none}
+.row:hover{background:var(--panel2)}
+.row.on{background:var(--panel2);border-left-color:var(--accent)}
+/* A tab's accent color (its own, else its group's): the row's left
+   stripe (the shown row keeps its background), the pane header's left
+   edge, a mark by the title, a swatch in the status bar. */
+.row.tc,.row.tc.on{border-left-color:var(--tc)}
+.tcm{flex:none;width:3px;height:15px;border-radius:2px;background:var(--tc)}
+.tcm:not(.tc){display:none}
+.row .tx{flex:1;min-width:0}
+.row .n,.row .s{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .s{color:var(--dim);font-size:12px}
+.row .pin{color:var(--accent);font-size:11px}
+.dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--dim)}
+.dot.ready{background:var(--ok)}.dot.working,.dot.background,.dot.busy{background:var(--busy)}
+.dot.approval,.dot.waiting{background:var(--warn)}.dot.error,.dot.limit{background:var(--err)}
+.empty{padding:24px 16px;color:var(--dim);text-align:center}
+/* The filter's sections: open tabs, archived, other sessions */
+.fhead{padding-top:14px}
+.fhead:first-child{padding-top:10px}
+.empty.fnone{padding:8px 16px 4px;font-size:13px}
+.row.frow .n{display:flex;align-items:center;gap:6px}
+.frow .ft{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.frow .fgo{flex:none;font-size:12px;color:var(--accent);padding:0 10px 0 4px}
+.fmore{width:100%;justify-content:center;color:var(--accent);background:none;border:0;font:inherit;font-size:13px;min-height:40px;cursor:pointer}
+.fmore:hover{background:var(--panel2)}
+.side-foot{display:flex;gap:6px;padding:8px 8px calc(8px + var(--sab));border-top:1px solid var(--line)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;min-height:44px;padding:0 14px;border:1px solid var(--line);border-radius:10px;background:var(--bg);flex:1}
+.btn:hover{border-color:var(--dim)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.bad{border-color:var(--err);color:var(--err)}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.sm{min-height:36px;padding:0 10px;font-size:13px;flex:none}
+/* main / panes */
+#main{grid-area:main;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--panel)}
+#panes{flex:1;min-height:0;display:grid;gap:1px;background:var(--line);grid-template-columns:1fr;grid-template-rows:1fr}
+#panes[data-n="2"]{grid-template-columns:1fr 1fr}
+#panes[data-n="4"]{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+.pane{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--frame)}
+.pane-head{display:flex;align-items:center;gap:6px;height:34px;padding:0 4px 0 10px;font-size:12px;color:var(--dim);border-bottom:1px solid var(--line);background:var(--panel)}
+.pane.focus .pane-head{color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)}
+.pane.tc .pane-head{box-shadow:inset 3px 0 0 var(--tc)}
+.pane.focus.tc .pane-head{box-shadow:inset 3px 0 0 var(--tc),inset 0 -2px 0 var(--accent)}
+.pane-head .pn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:grab}
+.pane-head .ib{min-width:30px;height:30px;font-size:12px}
+.pane-head .ib svg{width:16px;height:16px}
+.sz{font-variant-numeric:tabular-nums}
+.pane-body{position:relative;flex:1;min-height:0;overflow:hidden;touch-action:none;background:var(--term)}
+/* Light: the terminal is a dark screen set in a light frame. */
+[data-theme=light] .pane-body{margin:6px;border-radius:8px}
+@media (max-width:899px),(max-height:559px){[data-theme=light] .pane-body{margin:4px;border-radius:6px}}
+.pane-body .xt{position:absolute;left:0;top:0;background:var(--term)}
+.xt .xterm{padding:2px}
+.touch .xt .xterm{padding:3px 7px}
+.pane.drop{outline:2px dashed var(--accent);outline-offset:-4px}
+.pane-msg{position:absolute;inset:0;display:grid;place-items:center;padding:20px;text-align:center;color:#8d8a84;pointer-events:none}
+.pane-hint{position:absolute;right:10px;bottom:10px;z-index:4;min-height:30px;padding:0 12px;border:1px solid var(--chip-line);border-radius:8px;background:var(--chip);color:var(--chip-dim);font-size:12.5px;opacity:.92}
+.pane-hint:hover{color:var(--chip-text);border-color:var(--dim);opacity:1}
+.touch .pane-hint{min-height:40px;font-size:14px}
+.pane-hint.on{opacity:.55}
+.pane-hint.copy{left:50%;right:auto;top:10px;bottom:auto;transform:translateX(-50%);min-height:44px;padding:0 22px;font-size:15px;color:var(--chip-text);opacity:1}
+.jump{position:absolute;right:10px;bottom:10px;z-index:4;display:grid;place-items:center;width:44px;height:44px;border-radius:50%;border:1px solid var(--chip-line);background:var(--chip);color:var(--chip-text);opacity:.94;touch-action:manipulation}
+.pane-hint:not([hidden])~.jump{bottom:56px}
+.xterm .xterm-viewport{overflow-y:hidden}
+.xterm-viewport::-webkit-scrollbar{display:none}
+/* keybar */
+#keyrow{display:none;flex:none;align-items:stretch;padding:0 max(4px,var(--sar)) var(--sab) 0;background:var(--panel);border-top:1px solid var(--line)}
+.touch #keyrow{display:flex}
+body.kb #keyrow{padding-bottom:0}
+#b-ksend{flex:none;align-self:center;min-width:68px;height:44px;margin:4px 0 4px 4px;padding:0 14px;border:0;border-radius:9px;background:var(--accent);color:var(--accent-ink);font-weight:600;font-size:15px;-webkit-user-select:none;user-select:none;touch-action:manipulation}
+#keybar{display:flex;flex:1;min-width:0;gap:4px;padding:4px 4px 4px max(4px,var(--sal));overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:none;touch-action:pan-x;user-select:none;-webkit-user-select:none}
+#keybar::-webkit-scrollbar{display:none}
+#keybar.more-r,#chips.more-r{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 28px),transparent)}
+#keybar.more-l,#chips.more-l{-webkit-mask-image:linear-gradient(90deg,transparent,#000 28px);mask-image:linear-gradient(90deg,transparent,#000 28px)}
+#keybar.more-l.more-r,#chips.more-l.more-r{-webkit-mask-image:linear-gradient(90deg,transparent,#000 28px,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(90deg,transparent,#000 28px,#000 calc(100% - 28px),transparent)}
+#keybar button{flex:none;min-width:44px;height:44px;padding:0 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);font-size:15px;touch-action:pan-x;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+#keybar button.down{background:var(--panel2)}
+#keybar button.on{border-color:var(--accent);color:var(--accent)}
+#keybar button.lock{background:var(--accent);color:var(--accent-ink)}
+#keybar .sep{flex:none;width:1px;margin:6px 2px;background:var(--line)}
+/* chat */
+#chat{grid-area:chat;display:none;flex-direction:column;min-width:0;min-height:0;background:var(--panel);border-left:1px solid var(--line)}
+#app.chat-open #chat{display:flex}
+.chat-head{display:flex;align-items:center;gap:8px;min-height:48px;padding:0 4px 0 14px;border-bottom:1px solid var(--line)}
+.chat-head b{flex:1}
+.tog{min-height:34px;padding:0 10px;border:1px solid var(--line);border-radius:17px;background:none;font-size:13px}
+.tog[aria-pressed=true]{border-color:var(--warn);color:var(--warn)}
+.tog:disabled,.ib:disabled{opacity:.4;cursor:default}
+#voice-note{font-size:12px;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#msgs{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:12px;display:flex;flex-direction:column;gap:10px}
+.msg{flex:none;max-width:92%;padding:9px 12px;border-radius:12px;background:var(--bg);border:1px solid var(--line);overflow-wrap:anywhere}
+.msg.user{align-self:flex-end;background:var(--panel2)}
+.msg.system{align-self:center;background:none;border:0;color:var(--dim);font-size:13px}
+.msg.streaming::after{content:"";display:inline-block;width:7px;height:14px;margin-left:3px;vertical-align:-2px;background:var(--dim);animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:0}}
+.msg p{margin:0 0 .5em}.msg p:last-child{margin:0}
+.msg pre{margin:.4em 0;padding:8px 10px;border-radius:8px;background:var(--code);color:var(--code-ink);overflow-x:auto;font:12.5px/1.4 ui-monospace,Menlo,monospace}
+.msg code{font:13px ui-monospace,Menlo,monospace;background:var(--panel2);padding:1px 4px;border-radius:4px}
+.msg pre code{background:none;padding:0}
+.msg ul,.msg ol{margin:.3em 0;padding-left:1.3em}
+.msg h1,.msg h2,.msg h3{font-size:1em;margin:.4em 0}
+.msg a{color:var(--accent)}
+.msg blockquote{margin:.3em 0;padding-left:10px;border-left:3px solid var(--line);color:var(--dim)}
+#composer{display:flex;align-items:flex-end;gap:4px;padding:8px 6px calc(8px + var(--sab));border-top:1px solid var(--line)}
+body.kb #composer{padding-bottom:8px}
+#say{flex:1;min-width:0;min-height:44px;max-height:40vh;padding:11px 12px;border:1px solid var(--line);border-radius:12px;background:var(--bg);resize:none;outline:none;line-height:1.35}
+.ib.send{color:var(--accent)}
+.ib.talking{color:var(--accent-ink);background:var(--warn)}
+/* sheet */
+#scrim{position:fixed;inset:0;background:var(--scrim);opacity:0;pointer-events:none;transition:opacity .16s;z-index:19}
+#scrim.on{opacity:1;pointer-events:auto}
+#sheet{position:fixed;z-index:21;left:50%;top:calc(var(--vtop) + var(--vh));width:min(560px,100%);max-height:calc(var(--vh) - var(--sat) - 24px);transform:translate(-50%,4%);visibility:hidden;transition:transform .18s ease-out,visibility 0s .18s;
+ display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-bottom:0;border-radius:16px 16px 0 0;box-shadow:var(--shadow)}
+#sheet.on{transform:translate(-50%,-100%);visibility:visible;transition:transform .18s ease-out}
+#sheet.tall{height:calc(var(--vh) - var(--sat) - 24px)}
+.sheet-grip{width:40px;height:5px;margin:8px auto 2px;border-radius:3px;background:var(--line);flex:none}
+#sheet-body{overflow-y:auto;overscroll-behavior:contain;padding:6px 16px calc(16px + var(--sab));display:flex;flex-direction:column;gap:12px;min-height:0;flex:1}
+body.kb #sheet-body{padding-bottom:16px}
+.sh-title{display:flex;align-items:center;gap:8px;font-weight:600;font-size:17px}
+.sh-title>span:first-child{flex:1}
+#sheet-body>*{flex-shrink:0}
+/* menus and lists: grouped rows with hairlines, small section labels */
+.mbody{display:flex;flex-direction:column;gap:10px}
+.slide{animation:slin .16s ease-out}
+@keyframes slin{from{transform:translateX(14px);opacity:0}}
+.mhead{display:flex;flex-direction:column;gap:2px;min-width:0}
+.mhead .mt{display:flex;align-items:center;gap:8px;font-weight:600;font-size:17px;min-width:0}
+.mhead .mt span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mhead .mm,.mnote{font-size:12.5px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mnote{white-space:normal}
+.quick{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.quick button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;min-height:64px;padding:6px 2px;border:1px solid var(--line);border-radius:12px;background:var(--bg);font-size:12.5px}
+.quick button svg{width:20px;height:20px;stroke-width:1.5;color:var(--dim)}
+.quick button:disabled{opacity:.45}
+.gl{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);margin:2px 4px -5px}
+.list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;background:var(--bg);overflow:hidden;flex:none}
+.li{display:flex;align-items:center;gap:12px;width:100%;min-height:44px;padding:0 12px;border:0;background:none;text-align:left;color:var(--text)}
+.li+.li,.list>.lrow+.lrow{border-top:1px solid var(--line)}
+.li>span:first-child{display:inline-grid;color:var(--dim)}
+.li svg{width:18px;height:18px;stroke-width:1.5}
+.li .ll{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li .lh{flex:none;max-width:48%;color:var(--dim);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li .lc{display:inline-grid;color:var(--dim);margin-right:-4px}.li .lc svg{width:15px;height:15px}
+.li:hover:not(:disabled){background:var(--panel2)}
+.li:disabled{opacity:.45;cursor:default}
+.li.bad,.li.bad>span:first-child{color:var(--err)}
+.keys{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 4px}
+.keys .gk{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);margin-right:auto}
+.keys button{min-height:34px;padding:0 14px;border:1px solid var(--line);border-radius:17px;background:var(--bg);font:12.5px ui-monospace,Menlo,monospace}
+.subhead{display:flex;align-items:center;gap:4px;font-weight:600;font-size:16px;margin-left:-8px}
+.inrow{display:flex;gap:8px}.inrow input{flex:1;min-width:0}
+.lrow{display:flex;flex-direction:column;gap:6px;padding:10px 12px;min-width:0}
+.lrow .ct{display:flex;gap:8px;align-items:baseline}.lrow .ct b{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow .cs{font-size:12.5px;color:var(--dim);overflow-wrap:anywhere}
+.lrow .ct .cs{text-align:right;max-width:62%}
+.lrow .acts{gap:6px}
+select.inl{height:32px;max-width:55%;font-size:14px}
+label.li{cursor:pointer}label.li input[type=checkbox]{width:18px;height:18px;margin:0;accent-color:var(--accent)}
+.li.on .lh{color:var(--ok)}
+.li.open .lc{transform:rotate(90deg)}
+.lrow.appr{padding:12px;gap:10px}
+.lrow.appr .ct b{white-space:normal}
+.fbody{display:flex;flex-direction:column;border-top:1px solid var(--line);padding:4px 0}
+.frow{display:flex;align-items:center;gap:10px;min-height:44px;padding:2px 0 2px 12px;min-width:0}
+.frow .fl{flex:none;width:62px;font-size:12.5px;color:var(--dim)}
+.frow .inrow,.frow>input{flex:1;min-width:0;margin-right:12px}
+.frow .inrow select{flex:1;min-width:0}
+.fchips{flex:1;min-width:0;padding:0 12px 0 0}
+.fchips .chip{height:30px;padding:0 11px;font-size:12.5px}
+.slist .srow{border-bottom:0;padding:10px 12px;min-height:0}
+.slist .srow+.srow,.slist>.li{border-top:1px solid var(--line)}
+/* the desktop popover */
+#pop{position:fixed;z-index:22;width:320px;max-height:calc(100vh - 16px);overflow-y:auto;overscroll-behavior:contain;padding:8px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+#pop .mbody{gap:7px}
+#pop .mhead{padding:2px 4px 0}#pop .mhead .mt{font-size:14px}#pop .mhead .mm{font-size:12px}
+#pop .list{border-radius:9px}
+#pop .li{min-height:32px;padding:0 10px;gap:10px;font-size:13.5px}
+#pop .li svg{width:16px;height:16px}
+#pop .li .lh{font-size:12px}
+#pop .gl{font-size:10.5px;margin:1px 4px -3px}
+#pop .keys{padding:0 4px}#pop .keys .gk{font-size:10.5px}#pop .keys button{min-height:28px;padding:0 11px}
+#pop .subhead{font-size:14px;margin-left:-6px}#pop .subhead .ib{min-width:30px;height:30px}
+#pop .inrow input{height:34px}#pop .inrow .btn{min-height:34px}
+.field{display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--dim)}
+.field input,.field select,.field textarea{color:var(--text);font-size:16px}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+.sec{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);margin:2px 4px -5px}
+.card{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--bg);display:flex;flex-direction:column;gap:8px;overflow-wrap:anywhere}
+.card .ct{display:flex;gap:8px;align-items:baseline}
+.card .ct b{flex:1;min-width:0}
+.card .cs{font-size:13px;color:var(--dim)}
+.card .ct .cs{max-width:60%;text-align:right}
+.appr-q{font-size:16px;white-space:pre-wrap}
+.appr-btns{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px}
+.appr-btns .btn{min-height:56px;font-size:17px;font-weight:600}
+.bar{display:flex;align-items:center;gap:8px;font-size:13px}
+.bar .bn{width:auto;min-width:56px;max-width:42%;flex:none;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar .bt{flex:1;min-width:40px;height:8px;border-radius:4px;background:var(--line);overflow:hidden}
+.bar .bt i{display:block;height:100%;background:var(--ok)}
+.bar .bt i.lo{background:var(--warn)}.bar .bt i.out{background:var(--err)}
+.bar .bv{flex:none;white-space:nowrap;text-align:right;color:var(--dim);font-variant-numeric:tabular-nums;font-size:12px}
+.srow{display:flex;flex-direction:column;gap:2px;padding:10px 4px;border-bottom:1px solid var(--line);cursor:pointer;min-height:56px}
+.srow:hover{background:var(--panel2)}
+.srow .st{display:flex;gap:8px;align-items:baseline}
+.srow .st b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.srow .sm{font-size:12px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tagl{font-size:11px;padding:1px 6px;border-radius:8px;border:1px solid var(--line);color:var(--dim);flex:none}
+.tagl.live{border-color:var(--ok);color:var(--ok)}
+.srow-bar{display:flex;gap:6px;align-items:center}
+.srow-bar input{flex:1;min-width:0}
+/* toasts */
+/* In the layout, never over it: under the header on phones (the chat and
+   the terminal move down), at the top of the tab list on a desktop. */
+#toasts{grid-area:toast;z-index:13;display:flex;flex-direction:column;gap:6px;padding:6px 8px;background:var(--panel);border-bottom:1px solid var(--line);min-width:0;overflow:hidden}
+#toasts:empty{display:none}
+.toast{display:flex;align-items:center;gap:10px;padding:6px 10px;min-height:44px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);border-left:4px solid var(--info);font-size:14px;animation:tin .16s ease-out;touch-action:pan-y;user-select:none;cursor:pointer}
+.toast.gone{transition:transform .15s ease-in,opacity .15s ease-in;opacity:0}
+.toast.warn{border-left-color:var(--warn)}.toast.error{border-left-color:var(--err)}.toast.ok{border-left-color:var(--ok)}
+.toast span{flex:1;min-width:0;overflow-wrap:anywhere}
+.toast button{border:0;background:none;color:var(--accent);font-weight:600;min-height:36px}
+@keyframes tin{from{opacity:0}}
+.desk{display:none}
+@media (min-width:900px) and (min-height:560px){.desk{display:inline-grid}
+ .tb{display:inline-flex;align-items:center;padding:0 12px 0 10px}
+ .tb .lb{display:inline}
+ #b-ptt .ml-s{display:none}#b-ptt .ml-l{display:inline;font-size:13.5px;font-weight:400}
+ #top .tr1{padding:0 8px}#top .tr2{padding:0 8px}}
+@media (max-width:899px),(max-height:559px){
+ #app,#app.chat-open,#app.noside{grid-template-columns:minmax(0,1fr);grid-template-areas:"top" "upd" "toast" "main"}
+ #side{position:fixed;z-index:20;top:calc(var(--vtop) + var(--hh) + var(--sat) + var(--pushh,0px));height:calc(var(--vh) - var(--hh) - var(--sat) - var(--pushh,0px));left:0;width:min(88vw,360px);transform:translateX(calc(-100% - 32px));transition:transform .18s ease-out;padding-left:var(--sal);box-shadow:var(--shadow)}
+ #side.open{transform:none}
+ .side-grip{display:none}
+ .pane-head{display:none}
+ #app.chat-open #chat{position:fixed;z-index:12;left:0;right:0;top:calc(var(--vtop) + var(--hh) + var(--sat) + var(--pushh,0px));height:calc(var(--vh) - var(--hh) - var(--sat) - var(--pushh,0px));border-left:0;padding-left:var(--sal);padding-right:var(--sar)}
+ #app.chat-open #main{visibility:hidden}
+ .chat-head .ib{display:none}
+ .row{min-height:56px}
+}
+
+.msg.system.tool{cursor:pointer;font:12.5px ui-monospace,Menlo,monospace;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msg.system.tool.open{white-space:pre-wrap;text-align:left;align-self:stretch;background:var(--panel2);border-radius:8px}
+.msg.system.tool[data-count]::after{content:" " attr(data-count);color:var(--dim);margin-left:4px}
+.linkb{border:0;background:none;padding:0;color:var(--accent);font:inherit;text-decoration:underline;cursor:pointer}
+#att{display:flex;gap:6px;padding:8px 8px 0;overflow-x:auto}
+#att[hidden]{display:none}
+.thumb{position:relative;flex:none}
+.thumb img{display:block;height:56px;max-width:96px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+.thumb button{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:1px solid var(--line);background:var(--panel);color:var(--text);font-size:14px;line-height:1;padding:0}
+.msg .thumbs{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.msg .thumbs img{height:72px;max-width:140px;object-fit:cover;border-radius:6px}
+.lrow.appr .appr-btns .btn{min-height:48px;font-size:16px}
+.att-in{display:flex;gap:6px;flex-wrap:wrap}.att-in:empty{display:none}.att-in img{height:64px;max-width:110px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+/* Phones: inputs at 16 px (smaller ones make iOS zoom in on focus), no
+   double tap zoom delay on controls, bigger chips. */
+.touch input,.touch select,.touch textarea,.touch #say{font-size:16px}
+.touch .xterm .xterm-helper-textarea{font-size:16px!important}
+/* The terminal's hidden input sits under the header, not at the
+   cursor: iOS scrolls the page to keep a focused field above the
+   keyboard, and the cursor is usually at the bottom, under it. */
+.touch .xterm .xterm-helper-textarea{position:fixed!important;top:calc(var(--vtop) + var(--sat) + var(--hh) + 4px)!important;left:var(--sal)!important;height:20px!important}
+button,select,.row,.chip,.li,.srow,label{touch-action:manipulation}
+#chips .chip{touch-action:pan-x}
+.touch .chip,.touch .fchips .chip{height:44px;padding:0 15px;border-radius:22px;font-size:14px}
+.touch .keys button,.touch .tog,.touch .toast button,.touch .pane-hint{min-height:44px}
+.touch .toast button{padding:0 10px}
+.touch input[type=search],.touch input[type=text],.touch select,.touch textarea.f{min-height:44px}
+.touch select,.touch select.inl{height:44px}
+.touch .ib.sm{min-width:44px;height:44px}
+.touch .btn.sm{min-height:44px}
+@media (max-width:420px){.hbtns .ib{min-width:44px;padding:0}#top{gap:0;padding-left:max(2px,var(--sal))}}
+
+body.kb .pane-hint:not(.copy){display:none}
+@media (max-width:899px),(max-height:559px){.chat-head{padding-right:10px}}
+.mhead .mm{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+/* Phones: the page behind the keyboard's accessory bar matches the key
+   bar, so no strip of another color shows under it. */
+@media (max-width:899px),(max-height:559px){html,body{background:var(--panel)}}
+/* The floating zoom control (touch). */
+.fzoom{display:none;position:absolute;top:8px;right:8px;z-index:5;align-items:center;gap:2px;padding:2px;border-radius:12px;border:1px solid var(--chip-line);background:var(--chip);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);color:var(--chip-text);transition:opacity .35s ease;user-select:none;-webkit-user-select:none}
+.touch .fzoom{display:flex}
+.fzoom.faded{opacity:0}
+.fzoom button{min-width:44px;height:44px;padding:0 8px;border:0;border-radius:10px;background:none;color:inherit;font-size:15px;touch-action:manipulation;-webkit-touch-callout:none}
+.fzoom button:active{background:var(--chip-press)}
+.fzoom .fz-fit{font-size:13px;color:var(--chip-dim);border-left:1px solid var(--chip-line);border-radius:0 10px 10px 0}
+.fzoom.user .fz-fit{color:var(--accent)}
+.fz-n{min-width:26px;text-align:center;font-size:12px;color:var(--chip-dim);font-variant-numeric:tabular-nums}
+/* Phones: the size hint sits in the empty top left (the tab is anchored
+   to the bottom), never over the prompt rows. */
+@media (max-width:899px),(max-height:559px){.pane-hint:not(.copy){top:8px;left:8px;right:auto;bottom:auto}.pane-body:not(.roomy) .pane-hint:not(.copy){display:none}.pane-hint:not([hidden])~.jump{bottom:10px}}
+#keybar button.kic{display:inline-grid;place-items:center;padding:0 12px}
+/* Usage bars line up: one label column and one value column. */
+.bar .bn{width:6.8em;max-width:38%}
+.bar .bv{min-width:9.4em}
+/* voice: the mic buttons show what voice is doing, the bar says it with a level */
+#b-ptt,#b-ptt2{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#b-ptt[data-voice],#b-ptt2[data-voice]{border-radius:22px}
+[data-voice=starting]{color:var(--dim);box-shadow:inset 0 0 0 1.5px var(--line)}
+[data-voice=listening]{color:var(--accent-ink);background:var(--warn)!important}
+[data-voice=sending]{color:var(--accent-ink);background:var(--busy)!important}
+[data-voice=thinking]{color:var(--busy);box-shadow:inset 0 0 0 1.5px var(--busy)}
+[data-voice=speaking],[data-voice=locked]{color:var(--ok);box-shadow:inset 0 0 0 1.5px var(--ok)}
+[data-voice=error]{color:var(--err);box-shadow:inset 0 0 0 1.5px var(--err)}
+/* The header's hands-free button: a soft tint in the state's colour with
+   the label in plain text (a solid fill is for holding to talk). */
+#b-openmic[data-voice],body.hf #b-ptt[data-voice]{--vc:var(--ok);display:inline-flex;align-items:center;gap:7px;box-shadow:none;color:var(--text)!important;border-color:color-mix(in srgb,var(--vc) 50%,var(--line));background:color-mix(in srgb,var(--vc) 13%,transparent)!important}
+#b-openmic[data-voice]::before,body.hf #b-ptt[data-voice]::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--vc);flex:none}
+#b-openmic[data-voice] svg,body.hf #b-ptt[data-voice] svg{color:var(--vc)}
+#b-openmic[data-voice=listening]::before,body.hf #b-ptt[data-voice=listening]::before{animation:vc-pulse 1.6s ease-in-out infinite}
+#b-openmic[data-voice=sending],#b-openmic[data-voice=thinking],body.hf #b-ptt[data-voice=sending],body.hf #b-ptt[data-voice=thinking]{--vc:var(--busy)}
+#b-openmic[data-voice=starting],body.hf #b-ptt[data-voice=starting]{--vc:var(--dim)}
+#b-openmic[data-voice=error],body.hf #b-ptt[data-voice=error]{--vc:var(--err)}
+/* In the actions row (wide screens): a compact pill, the mic button
+   beside it only when the strip is not shown. */
+.tr2 #mic-strip{min-height:34px;max-width:min(460px,38vw);margin:0 6px;padding:0 2px 0 6px;gap:8px;font-size:13px;border:1px solid var(--line);border-radius:17px;background:var(--panel2)}
+.tr2 #mic-strip[hidden]{display:none}
+.tr2 #mic-strip .ms-ic{width:24px;height:24px}.tr2 #mic-strip .ms-ic svg{width:14px;height:14px}
+.tr2 #mic-strip .ms-main{flex-direction:row;align-items:baseline;gap:8px}
+.tr2 #mic-strip .ms-sub{font-size:12px}
+.tr2 #mic-strip .ms-act{min-height:26px;padding:0 10px}
+.tr2 #mic-strip .ms-chg{width:28px;height:28px}
+.tr2 #mic-strip:not([hidden])+#b-ptt{display:none}
+/* Desktop: the actions for the right hand side (voice, Manage, the
+   Assistant panel, the tab panel) sit at the right of the row. */
+@media (min-width:900px){
+ .tr2 .tr2-gap{order:1}
+ .tr2 #mic-strip,.tr2 #b-ptt{order:2}
+ .tr2 #b-more{order:3}
+ .tr2 #b-chat{order:4}
+ .tr2 #b-tabmenu{order:5}
+}
+@keyframes vc-pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){#b-openmic[data-voice]::before{animation:none}}
+#voice-bar{position:fixed;z-index:60;left:50%;transform:translateX(-50%);top:calc(var(--vtop) + var(--hh) + var(--sat) + var(--pushh,0px) + 8px);
+ display:flex;align-items:center;gap:10px;width:min(560px,calc(100vw - 24px));padding:8px 6px 8px 14px;border-radius:14px;
+ background:var(--panel2);color:var(--text);border:1px solid var(--line);box-shadow:var(--shadow);font-size:14px}
+#voice-bar .vb-dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--dim)}
+#voice-bar[data-state=listening] .vb-dot{background:var(--warn)}
+#voice-bar[data-state=sending] .vb-dot,#voice-bar[data-state=thinking] .vb-dot{background:var(--busy)}
+#voice-bar[data-state=speaking] .vb-dot,#voice-bar[data-state=locked] .vb-dot{background:var(--ok)}
+#voice-bar[data-state=error]{border-color:var(--err)}
+#voice-bar[data-state=error] .vb-dot{background:var(--err)}
+#voice-bar .vb-text{flex:1;min-width:0;line-height:1.3}
+#voice-bar .vb-meter{flex:none;width:64px;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+#voice-bar .vb-meter i{display:block;height:100%;background:var(--ok);transform-origin:left;transform:scaleX(0);transition:transform 60ms linear}
+#voice-bar .vb-act{flex:none;min-height:32px;padding:0 12px;border:1px solid var(--line);border-radius:16px;background:none}
+#voice-bar .vb-x{flex:none;display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:8px;background:none;color:var(--dim)}
+#voice-bar .vb-lv,#mic-strip .ms-lv,#talk .tk-lv{flex:none;display:flex;align-items:center;gap:6px}
+.vb-db,.ms-db,.tk-db{font:12px/1 ui-monospace,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums;color:var(--dim);min-width:5.4em;text-align:right;white-space:nowrap}
+/* The header's mic: the mode at a glance. */
+#b-ptt[data-mode=off],#b-ptt2[data-mode=off]{color:var(--dim)}
+#b-ptt[data-mode=push]{color:var(--accent)}
+#b-ptt[data-mode]:not([data-mode=off]){box-shadow:inset 0 0 0 1px var(--line)}
+#b-ptt[data-mode=open],#b-ptt2[data-mode=open]{color:var(--ok)}
+#b-ptt[data-mode=wake],#b-ptt2[data-mode=wake]{color:var(--info)}
+/* The strip under the header while open mic or wake word is on. */
+#mic-strip{display:flex;align-items:center;gap:10px;min-height:44px;padding:4px 4px 4px 12px;background:var(--panel2);border-bottom:1px solid var(--line);font-size:14px;cursor:pointer;-webkit-user-select:none;user-select:none}
+#mic-strip .ms-ic{flex:none;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;color:var(--ok);box-shadow:inset 0 0 0 1.5px currentColor}
+#mic-strip .ms-ic svg{width:17px;height:17px}
+#mic-strip[data-mode=wake] .ms-ic{color:var(--info)}
+#mic-strip[data-state=hearing] .ms-ic,#mic-strip[data-state=heard] .ms-ic{color:var(--warn);background:color-mix(in srgb,var(--warn) 16%,transparent)}
+#mic-strip[data-state=paused] .ms-ic,#mic-strip[data-state=starting] .ms-ic,#mic-strip[data-state=asking] .ms-ic{color:var(--dim)}
+#mic-strip[data-state=noaudio] .ms-ic,#mic-strip[data-state=error] .ms-ic{color:var(--err)}
+#mic-strip[data-state=noaudio] .ms-t,#mic-strip[data-state=noaudio] .ms-db,#mic-strip[data-state=error] .ms-t{color:var(--err)}
+#mic-strip .ms-main{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.25}
+#mic-strip .ms-t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#mic-strip .ms-sub{font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#mic-strip .ms-sub:empty{display:none}
+#mic-strip .ms-meter,#talk .tk-meter{flex:none;width:56px;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+#mic-strip .ms-meter i,#talk .tk-meter i{display:block;height:100%;background:var(--ok);transform-origin:left;transform:scaleX(0);transition:transform 60ms linear}
+#mic-strip .ms-db{min-width:4.6em}
+#mic-strip .ms-act{flex:none;min-height:32px;padding:0 12px;border:1px solid var(--line);border-radius:16px;background:var(--panel)}
+#mic-strip .ms-chg{flex:none;display:grid;place-items:center;width:36px;height:36px;border:0;border-radius:8px;background:none;color:var(--dim)}
+/* The mic mute and the agent's voice on the strip: quiet buttons; muted
+   is a calm clay ring and words, never a glow. */
+#mic-strip .ms-mute,#mic-strip .ms-spk{flex:none;display:inline-flex;align-items:center;justify-content:center;gap:3px;min-width:34px;height:34px;padding:0 6px;border:0;border-radius:17px;background:none;color:var(--dim)}
+#mic-strip .ms-mute:hover,#mic-strip .ms-spk:hover{background:var(--panel);color:var(--text)}
+#mic-strip .ms-mute svg,#mic-strip .ms-spi svg{width:17px;height:17px}
+#mic-strip .ms-spi{display:inline-grid}
+#mic-strip .ms-spv{font:11.5px/1 ui-monospace,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}
+#mic-strip .ms-spv:empty{display:none}
+#mic-strip .ms-mute[aria-pressed=true]{color:var(--err);background:color-mix(in srgb,var(--err) 14%,transparent)}
+#mic-strip .ms-spk[aria-pressed=true]{color:var(--err)}
+#mic-strip[data-state=muted] .ms-ic{color:var(--err);box-shadow:inset 0 0 0 1.5px currentColor;opacity:.85}
+#mic-strip[data-state=muted] .ms-t{color:var(--err)}
+.tr2 #mic-strip .ms-mute,.tr2 #mic-strip .ms-spk{height:28px;min-width:28px}
+.tr2 #mic-strip .ms-mute svg,.tr2 #mic-strip .ms-spi svg{width:15px;height:15px}
+#b-ptt.muted,#b-ptt2.muted{color:var(--err)}
+#b-openmic[data-voice=muted],body.hf #b-ptt[data-voice=muted]{--vc:var(--err)}
+body.hf #b-ptt[data-voice=muted]::before{animation:none}
+/* The agent's voice volume (the mic menu, the voice sheet). */
+.vol-row{display:flex;align-items:center;gap:10px;min-height:46px;padding:4px 10px 4px 10px}
+.vol-row .vr-b{flex:none;display:grid;place-items:center;width:30px;height:30px;border:0;border-radius:8px;background:none;color:var(--dim)}
+.vol-row .vr-b:hover{background:var(--panel2);color:var(--text)}
+.vol-row .vr-b[aria-pressed=true]{color:var(--err)}
+.vol-row .vr-t{flex:none;display:flex;flex-direction:column;font-size:15px;line-height:1.25;min-width:0}
+.vol-row .vr-t small{font-size:12px;color:var(--dim)}
+.vol-row .vr-r{flex:1;min-width:60px;accent-color:var(--accent)}
+.vol-row .vr-r.off{opacity:.45}
+.vol-row .vr-v{flex:none;min-width:3.4em;text-align:right;font:12px/1 ui-monospace,"SF Mono",Menlo,monospace;color:var(--dim)}
+.mm .vol-row .vr-t small{display:none}
+.vs .vol-row{padding:0}
+@media (max-width:420px){#mic-strip .ms-meter{width:40px}#mic-strip .ms-db{display:none}#mic-strip .ms-mute,#mic-strip .ms-spk{min-width:30px;padding:0 4px}}
+/* Push to talk: the Talk button stays on screen, above the key bar. */
+#panes{position:relative}
+#talk{position:absolute;z-index:6;right:12px;bottom:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-width:76px;height:76px;padding:0 10px;border-radius:38px;
+ border:1.5px solid var(--chip-line);background:var(--chip);color:var(--chip-text);box-shadow:var(--shadow);touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#talk .tk-ic svg{width:24px;height:24px}
+#talk .tk-l{font-size:13px;font-weight:600;line-height:1.1;white-space:nowrap}
+#talk .tk-lv{flex-direction:column;gap:3px}
+#talk .tk-meter{width:52px;height:5px}
+#talk .tk-db{min-width:0;text-align:center;font-size:11px;color:inherit;opacity:.85}
+#talk[aria-pressed=true]{min-width:112px;height:104px;border-radius:30px;bottom:12px}
+#talk[data-state=listening]{background:var(--warn);border-color:var(--warn);color:var(--accent-ink)}
+#talk[data-state=listening] .tk-meter{background:rgba(0,0,0,.18)}
+#talk[data-state=listening] .tk-meter i{background:var(--accent-ink)}
+#talk[data-state=starting],#talk[data-state=asking]{border-color:var(--warn);color:var(--warn)}
+#talk[data-state=noaudio]{border-color:var(--err);color:var(--err)}
+#talk[data-state=sending],#talk[data-state=thinking]{border-color:var(--busy);color:var(--busy)}
+#talk[data-state=speaking]{border-color:var(--ok);color:var(--ok)}
+body.ptt .jump{bottom:100px}
+/* The mic menu. */
+#pop.mic-pop{padding:6px}
+.mm{display:flex;flex-direction:column}
+.mm-i{display:flex;align-items:center;gap:12px;min-height:50px;padding:6px 10px;border:0;border-radius:9px;background:none;text-align:left;color:var(--text)}
+.mm-i:hover,.mm-i:active{background:var(--panel2)}
+.mm-i:disabled{opacity:.5}
+.mm-i[aria-checked=true]{background:var(--panel2)}
+.mm-ic{flex:none;display:grid;place-items:center;width:30px;color:var(--dim)}
+.mm-i[data-m=open] .mm-ic{color:var(--ok)}.mm-i[data-m=wake] .mm-ic{color:var(--info)}.mm-i[data-m=push] .mm-ic{color:var(--accent)}
+.mm-t{flex:1;min-width:0;display:flex;flex-direction:column;font-size:15px;line-height:1.25}
+.mm-t small{font-size:12px;color:var(--dim)}
+.mm-ck{flex:none;width:22px;color:var(--accent)}
+.mm-sep{height:1px;margin:5px 6px;background:var(--line)}
+.mm-sw{flex:none;position:relative;width:38px;height:22px;border-radius:11px;background:var(--line);transition:background .15s}
+.mm-sw i{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--text);transition:transform .15s}
+.mm-tog[aria-checked=true] .mm-sw{background:var(--accent)}
+.mm-tog[aria-checked=true] .mm-sw i{transform:translateX(16px);background:var(--accent-ink)}
+/* The tab a header swipe went to. */
+#swtip{position:fixed;z-index:30;left:50%;top:calc(var(--vtop) + var(--hh) + var(--sat) + 10px);transform:translateX(-50%);max-width:80vw;padding:7px 14px;border-radius:16px;background:var(--panel2);border:1px solid var(--line);color:var(--text);font-size:14px;white-space:pre;overflow:hidden;text-overflow:ellipsis;box-shadow:var(--shadow);pointer-events:none;transition:opacity .2s}
+#swtip.out{opacity:0}
+/* Phones: messages float over the bottom of the screen, above the key bar
+   or the composer (in thumb reach, and the terminal does not refit for
+   each one). */
+@media (max-width:899px),(max-height:559px){
+ #toasts{position:absolute;grid-area:auto;left:max(8px,var(--sal));right:max(8px,var(--sar));bottom:calc(60px + var(--sab));z-index:40;padding:0;background:none;border:0;overflow:visible;flex-direction:column-reverse}
+ body.kb #toasts{bottom:60px}
+ #app.chat-open #toasts{bottom:calc(72px + var(--sab))}
+ .toast{box-shadow:var(--shadow)}
+}
+.toast.appr{border-left-color:var(--warn)}
+.toast.appr span{cursor:pointer}
+.toast button.pri{background:var(--accent);color:var(--accent-ink);border-radius:8px;padding:0 16px}
+/* Touch: every button shows the press at once (no haptics on iOS web), a
+   quiet darkening and a slight shrink. */
+.touch button:active,.touch .row:active,.touch .chip:active{background-color:var(--chip-press);transition:none}
+.touch .ib:active,.touch .btn:active,.touch .toast button:active{transform:scale(.96)}
+.touch .btn.pri:active,.touch .toast button.pri:active{filter:brightness(.92)}
+.chips.dirs{flex-wrap:wrap;overflow:visible;padding:0 0 10px;margin-top:-4px}
+/* Settings (the gear): a search box and section links on top, the
+   sections below. A wide panel with the links in a column on a desktop. */
+.stg{display:flex;flex-direction:column;gap:12px;min-height:0}
+.st-top{position:sticky;top:-6px;z-index:2;display:flex;flex-direction:column;gap:8px;padding:6px 0 8px;margin-top:-6px;background:var(--panel)}
+.st-q{width:100%}
+.st-nav{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;margin:0 -16px;padding:0 16px}
+.st-nav::-webkit-scrollbar{display:none}
+.st-nav button{flex:none;min-height:34px;padding:0 12px;border:1px solid var(--chip-line);border-radius:17px;background:var(--chip);color:var(--chip-text);font-size:13.5px;white-space:nowrap}
+.st-nav button{display:inline-flex;align-items:center;gap:8px}
+.st-nav button.on{border-color:var(--accent);color:var(--text);background:var(--panel2)}
+.st-nav button.none{opacity:.4}
+.st-nav .st-n{font-size:11.5px;color:var(--dim)}.st-nav .st-n:empty{display:none}
+.st-main{display:flex;flex-direction:column;gap:18px}
+.st-sec{display:flex;flex-direction:column;gap:8px;scroll-margin-top:110px}
+.st-body{display:flex;flex-direction:column;gap:10px}
+.st-sub{font-size:12px;color:var(--dim);margin:2px 4px -4px}
+.st-note{padding:0 4px}
+.li.st{min-height:52px;padding:8px 12px;gap:12px;cursor:default}
+.li.st .stl{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;line-height:1.25}
+.li.st .stl small{font-size:12px;color:var(--dim);white-space:normal}
+.li.st select.inl,.li.st input.inl{flex:none;max-width:46%;min-height:34px;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:0 8px}
+.li.st input[type=number].inl{width:96px}
+.li.st input[type=checkbox]{flex:none;width:22px;height:22px;accent-color:var(--accent)}
+.li.st .lh{max-width:40%}
+.stepper{flex:none;display:flex;align-items:center;gap:4px}
+.stepper .fv{min-width:2.2em;text-align:center;font-variant-numeric:tabular-nums}
+.st-block{display:flex;flex-direction:column;gap:8px;padding:10px 12px}
+.st-block .stl{display:flex;flex-direction:column;gap:2px}.st-block small{font-size:12px;color:var(--dim)}
+.st-block+.li,.list>.li.st+.li.st{border-top:1px solid var(--line)}
+.st-seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.st-seg button{flex:1;min-height:40px;border:0;background:none;color:inherit;font-size:13.5px;padding:0 4px}
+.st-seg button+button{border-left:1px solid var(--line)}
+.st-seg button[aria-pressed=true]{background:var(--line);font-weight:600}
+.st-tts{padding:0 12px 10px;border-top:0!important}
+.st-tts .tts-box{display:flex;flex-direction:column;gap:6px}
+.tts-box .row{display:flex;align-items:center;gap:10px;min-height:36px}
+.tts-box .row>span{flex:1;min-width:0;display:flex;flex-direction:column}
+.tts-box small,.tts-box .note{color:var(--dim);font-size:12px;margin:0}
+.tts-box select{min-height:34px;max-width:56%;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:inherit;padding:0 8px}
+@media (min-width:900px) and (min-height:560px){
+ #sheet.wide{width:min(920px,calc(100% - 48px))}
+ #sheet.wide .stg{flex-direction:row;align-items:flex-start;gap:20px}
+ #sheet.wide .st-top{flex:none;width:210px;position:sticky;top:0;margin:0;padding:0}
+ #sheet.wide .st-nav{flex-direction:column;margin:0;padding:0;overflow:visible}
+ #sheet.wide .st-nav button{text-align:left;border-radius:9px;border-color:transparent;background:none}
+ #sheet.wide .st-nav button:hover{background:var(--panel2)}
+ #sheet.wide .st-nav button{justify-content:space-between}
+ #sheet.wide .st-nav button.on{background:var(--panel2);color:var(--text);border-color:transparent;box-shadow:inset 2px 0 0 var(--accent)}
+ #sheet.wide .st-main{flex:1;min-width:0}
+ /* A big dialog in the middle of the window (the Git screen). */
+ #sheet.big{top:50%;width:min(1100px,92vw);height:min(85vh,calc(var(--vh) - 48px));max-height:none;border-bottom:1px solid var(--line);border-radius:16px;transform:translate(-50%,-48%);opacity:0;transition:transform .16s ease-out,opacity .16s,visibility 0s .16s}
+ #sheet.big.on{transform:translate(-50%,-50%);opacity:1;transition:transform .16s ease-out,opacity .16s}
+ #sheet.big .sheet-grip{visibility:hidden;margin-bottom:0}
+ #sheet.big #sheet-body{padding:4px 22px 18px}
+}
+/* A phone on its side: the two rows side by side, one bar high. */
+@media (max-height:500px) and (min-width:600px){
+ :root{--hh:48px}
+ #top{flex-direction:row;align-items:center}
+ #top .tr1{flex:1;min-width:0}
+ #top .tr2{flex:none;height:48px;border-top:0;border-left:1px solid var(--line);max-width:62%}
+ .tr2-gap{display:none}
+}
+/* GodTerm Sync: a tab another machine owns (read only), or moving there. */
+.lease-bar{flex:none;display:flex;flex-direction:column;gap:4px;padding:8px 10px;border-bottom:1px solid var(--line);background:var(--panel2);font-size:13px;color:var(--text)}
+.lease-bar[hidden]{display:none}
+.lease-bar .lb-t{font-weight:600;overflow-wrap:anywhere}
+.lease-bar .lb-n{color:var(--dim);overflow-wrap:anywhere}
+.lease-bar .lb-n.warn,.lease-bar.stopping .lb-t,.lease-bar.offline .lb-t{color:var(--warn)}
+.lease-bar .lb-b{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:2px}
+.lease-bar .lb-b .btn.sm{min-height:34px}
+.lease-bar.waiting .lb-t{font-weight:400;color:var(--dim)}
+/* Settings > Sync */
+.sy-line{padding:8px 12px;color:var(--dim);font-size:13px;overflow-wrap:anywhere}
+.lh.sy-warn{color:var(--warn)}
+.lh.sy-dim{color:var(--dim)}
+/* The docked tab panel and the status bar (desktop): the terminals, the
+   status bar under them, the panel at their right. Phones keep the sheet
+   and the key bar. */
+#tabpanel,#sbar{display:none}
+@media (min-width:900px) and (min-height:560px){
+ #main{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:minmax(0,1fr) auto auto}
+ #main>#panes{grid-area:1/1/2/2}
+ #main>#sbar{grid-area:2/1/3/2}
+ #main>#tabpanel{grid-area:1/2/3/3}
+ #main>#keyrow{grid-area:3/1/4/3}
+ #tabpanel:not([hidden]){display:flex;flex-direction:column;position:relative;width:var(--tpw,420px);min-height:0;background:var(--panel);border-left:1px solid var(--line)}
+ #sbar:not([hidden]){display:flex}
+}
+#tabpanel .side-grip{left:-5px;right:auto}
+#tp-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:10px 10px 14px}
+#tabpanel .mbody{gap:7px}
+#tabpanel .mhead{padding:2px 4px 0}#tabpanel .mhead .mt{font-size:14px}#tabpanel .mhead .mm{font-size:12px}
+#tabpanel .tp-x{margin-left:auto;min-width:28px;height:28px;color:var(--dim)}#tabpanel .tp-x svg{width:15px;height:15px}
+#tabpanel .list{border-radius:9px}
+#tabpanel .li{min-height:32px;padding:0 10px;gap:10px;font-size:13.5px}
+#tabpanel .li svg{width:16px;height:16px}
+#tabpanel .li .lh{font-size:12px}
+#tabpanel .gl{font-size:10.5px;margin:4px 4px -3px}
+#tabpanel .keys{padding:0 4px}#tabpanel .keys .gk{font-size:10.5px}#tabpanel .keys button{min-height:28px;padding:0 11px}
+#tabpanel .subhead{font-size:14px;margin-left:-6px}#tabpanel .subhead .ib{min-width:30px;height:30px}
+#tabpanel .inrow input,#tabpanel input[type=text]{height:34px}#tabpanel .inrow .btn{min-height:34px}
+#tabpanel .btn{min-height:34px;font-size:13px}
+#tabpanel .lrow{padding:8px 10px}
+#tabpanel .bar .bn{width:5.4em}#tabpanel .bar .bv{min-width:0}
+.effs{display:flex;flex-wrap:wrap;gap:6px;padding:0 2px}
+.effs .chip{height:28px;padding:0 10px;font-size:12.5px}
+#pop .effs .chip{height:26px}
+/* The status bar: the shown tab at a glance, each item a button. */
+#sbar{align-items:stretch;gap:1px;height:26px;padding:0 4px;background:var(--panel);border-top:1px solid var(--line);font-size:12px;color:var(--dim);overflow:hidden;white-space:nowrap}
+.sb-i{display:inline-flex;align-items:center;gap:5px;min-width:0;padding:0 8px;border:0;border-radius:6px;background:none;color:var(--dim);font-size:12px}
+.sb-i:hover{background:var(--panel2);color:var(--text)}
+.sb-i .sb-v{color:var(--text);overflow:hidden;text-overflow:ellipsis}
+.sb-i .sb-d{overflow:hidden;text-overflow:ellipsis}
+.sb-i .sb-q{color:var(--info)}
+.sb-ic{display:inline-grid}.sb-ic svg{width:13px;height:13px;stroke-width:1.6}
+.sb-meter{flex:none;width:38px;height:5px;border-radius:3px;background:var(--line);overflow:hidden}
+.sb-meter i{display:block;height:100%;background:var(--ok)}
+.sb-meter i.lo{background:var(--warn)}.sb-meter i.out{background:var(--err)}
+.sb-i.faint .sb-v{color:var(--dim)}.sb-i.faint{opacity:.75}
+.sb-i.ok .sb-v{color:var(--ok)}
+.sb-i.warn .sb-v,.sb-i .sb-w{color:var(--warn)}
+.sb-i.bad .sb-v{color:var(--err)}
+.sb-gap{flex:1;min-width:4px}
+.sb-sw{flex:none;width:9px;height:9px;border-radius:3px;background:var(--tc)}
+.sb-i.sb-state .dot{width:7px;height:7px}

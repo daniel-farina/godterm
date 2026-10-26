@@ -5,8 +5,8 @@
 pub mod apple;
 pub mod audio;
 pub mod barge;
-pub mod catalog;
 pub mod capture;
+pub mod catalog;
 pub mod denoise;
 pub mod devices;
 pub mod engines;
@@ -24,6 +24,8 @@ pub mod speaker_gate;
 pub mod stt;
 pub mod tts;
 pub mod wake_profile;
+pub mod web_tts;
+pub mod webdec;
 
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -180,7 +182,7 @@ impl Voice {
         let (tx, rx) = mpsc::channel();
         let speaking = Arc::new(AtomicBool::new(false));
         let levels = Arc::new(Levels::default());
-        let speaker = Arc::new(tts::Speaker::start(cfg, Arc::clone(&speaking)));
+        let speaker = Arc::new(tts::Speaker::start_voice(cfg, Arc::clone(&speaking)));
         let mut ecfg = cfg.clone();
         if ecfg.engine == "grok" && !ecfg.grok_stt.local_partials {
             ecfg.partial_model = "off".into();
@@ -307,7 +309,14 @@ impl Voice {
 
     /// A short system sound when the wake word is heard.
     pub fn chime(&self) {
-        if !self.chime || tts::audio_muted() {
+        if !self.chime {
+            return;
+        }
+        // A browser that is the voice plays it (the Mac stays quiet).
+        if tts::web_chime() {
+            return;
+        }
+        if tts::audio_muted() {
             return;
         }
         let speaking = Arc::clone(&self.speaking);
@@ -682,6 +691,10 @@ impl Engine {
         let mut ep = Endpointer::new(vad_cfg(&self.cfg));
         let mut frame = Vec::with_capacity(audio::FRAME);
         let mut ptt = false;
+        // A push to talk release waits for queued browser audio.
+        let mut stop_queued = false;
+        // Voice debugging: the endpointer once a second.
+        let mut dbg = (Instant::now(), 0usize, -90f32, 0usize);
         let mut got_audio = false;
         let mut cap_started = Instant::now();
         let mut peak = -90f32;
@@ -727,7 +740,13 @@ impl Engine {
             }
             // Control messages (block briefly when the mic is closed).
             loop {
-                let msg = if cap.is_none() {
+                // A release with browser audio still queued ends once that
+                // audio is read (it may have waited for the model to load).
+                let drained = cap.as_ref().is_none_or(|c| c.queued() < audio::FRAME);
+                let msg = if stop_queued && drained {
+                    stop_queued = false;
+                    Ok(Ctl::StopTalk)
+                } else if cap.is_none() {
                     match self.rx.recv_timeout(Duration::from_millis(200)) {
                         Ok(m) => Ok(m),
                         Err(mpsc::RecvTimeoutError::Timeout) => Err(TryRecvError::Empty),
@@ -740,6 +759,7 @@ impl Engine {
                 };
                 match msg {
                     Ok(Ctl::PushToTalk) => {
+                        stop_queued = false;
                         mic_off = false;
                         // Talking to us cuts off whatever we were saying.
                         self.speaker.stop();
@@ -771,8 +791,20 @@ impl Engine {
                         ep.forced = true;
                         self.status(VoiceStatus::Listening);
                     }
+                    Ok(Ctl::StopTalk) if ptt && !drained => {
+                        stop_queued = true;
+                        continue;
+                    }
                     Ok(Ctl::StopTalk) => {
-                        if let Some(u) = ep.flush() {
+                        let thr = audio::db(ep.threshold());
+                        let u = ep.flush();
+                        if ptt && u.is_none() {
+                            crate::log::info(&format!(
+                                "voice: push to talk released with no speech heard (nothing over {thr:.0} dBFS for {} ms)",
+                                self.cfg.min_speech_ms
+                            ));
+                        }
+                        if let Some(u) = u {
                             let partials = std::mem::take(
                                 &mut *partial_log.lock().unwrap_or_else(|e| e.into_inner()),
                             );
@@ -978,6 +1010,24 @@ impl Engine {
                 store(&self.levels.floor, audio::db(ep.floor()));
                 store(&self.levels.threshold, audio::db(ep.threshold()));
                 self.levels.open.store(true, Ordering::Relaxed);
+            }
+            if audio::voice_debug() {
+                dbg.1 += 1;
+                dbg.2 = dbg.2.max(l);
+                dbg.3 += usize::from(audio::rms(&frame) > ep.threshold());
+                if dbg.0.elapsed() >= Duration::from_secs(1) {
+                    crate::log::info(&format!(
+                        "voice debug: engine read {} frames, loudest {:.0} dBFS, {} over the threshold {:.0} dBFS (floor {:.0}), {}, {}",
+                        dbg.1,
+                        dbg.2,
+                        dbg.3,
+                        audio::db(ep.threshold()),
+                        audio::db(ep.floor()),
+                        if ep.snapshot().is_some() { "in speech" } else { "no speech" },
+                        if ptt { "push to talk held" } else if self.always_on { "open" } else { "not talking" },
+                    ));
+                    dbg = (Instant::now(), 0, -90.0, 0);
+                }
             }
             // Do not hear ourselves: the mic is muted while we talk back,
             // unless someone talks over us (barge-in, when enabled).

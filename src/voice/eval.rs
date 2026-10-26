@@ -285,6 +285,7 @@ pub fn command(out: Option<PathBuf>, grok: Option<usize>) -> Result<()> {
         w.start_server()?;
         Ok(w)
     };
+    #[allow(clippy::type_complexity)]
     let mut engines: Vec<(&str, Box<dyn FnMut() -> Result<Engine>>)> = vec![
         (
             "whisper turbo, greedy (before)",

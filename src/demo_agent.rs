@@ -1514,8 +1514,10 @@ pub fn run(flavor: Flavor) -> Result<()> {
         println!("{}", cli::version_line(flavor));
         return Ok(());
     }
-    if matches!(args.first().map(String::as_str), Some("login"))
-        || (flavor == Flavor::OpenCode && args.first().map(String::as_str) == Some("auth"))
+    let integrated = matches!(flavor, Flavor::Claude | Flavor::Grok);
+    if !integrated
+        && (matches!(args.first().map(String::as_str), Some("login"))
+            || (flavor == Flavor::OpenCode && args.first().map(String::as_str) == Some("auth")))
     {
         println!("Already logged in (demo).");
         return Ok(());
@@ -1533,6 +1535,34 @@ pub fn run(flavor: Flavor) -> Result<()> {
     let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     if crate::config::is_real_user_dir(&config) || !canon(&config).starts_with(canon(&home)) {
         anyhow::bail!("demo agent: refusing {}", config.display());
+    }
+    // Logins and tokens, shown as the real CLIs show them (fake URLs and
+    // a fake token; nothing leaves the demo home).
+    let first = args.first().map(String::as_str);
+    match (flavor, first, args.get(1).map(String::as_str)) {
+        (Flavor::Claude, Some("setup-token"), _) => return demo_setup_token(),
+        (Flavor::Claude, Some("auth"), Some("logout")) | (Flavor::Grok, Some("logout"), _) => {
+            let f = if flavor == Flavor::Claude {
+                ".credentials.json"
+            } else {
+                "auth.json"
+            };
+            let _ = std::fs::remove_file(config.join(f));
+            println!("Successfully logged out from your account.");
+            return Ok(());
+        }
+        (Flavor::Grok, Some("login"), _) => {
+            if !config.join("auth.json").exists() {
+                demo_grok_login(&config)?;
+            } else {
+                println!("Already logged in (demo).");
+            }
+            return Ok(());
+        }
+        (Flavor::Claude, _, _) if !config.join(".credentials.json").exists() => {
+            demo_claude_login(&config)?;
+        }
+        _ => {}
     }
     let cwd = std::env::current_dir()?;
     let sc = load_scenario(&home, &cwd);
@@ -1609,7 +1639,7 @@ pub fn run(flavor: Flavor) -> Result<()> {
     let _ = signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&sigterm));
     let mut ctrl_c: Option<Instant> = None;
     let mut status = "idle";
-    let mut last_draw = Instant::now() - Duration::from_secs(1);
+    let mut last_draw = crate::clock::ago(Duration::from_secs(1));
     let exit = |out: &mut std::io::Stdout| {
         let _ = write!(
             out,
@@ -1725,16 +1755,11 @@ pub fn run(flavor: Flavor) -> Result<()> {
                                 interrupt.store(true, Ordering::SeqCst);
                             }
                         }
-                        KeyCode::Enter => {
-                            let t = std::mem::take(&mut screen.input);
-                            if !t.trim().is_empty() {
+                        _ if !asking => {
+                            if let Some(t) = compose_key(&mut screen.input, &k) {
                                 let _ = in_tx.send(Input::Prompt(t));
                             }
                         }
-                        KeyCode::Backspace => {
-                            screen.input.pop();
-                        }
-                        KeyCode::Char(c) if !asking => screen.input.push(c),
                         _ => {}
                     }
                 }
@@ -1760,6 +1785,34 @@ pub fn run(flavor: Flavor) -> Result<()> {
     }
     exit(&mut out);
     Ok(())
+}
+
+/// A new line in the demo agent's prompt, as drawn.
+const NEWLINE: char = '⏎';
+
+/// A key typed into the prompt (nothing asked): the prompt to send when
+/// it is submitted. A new line goes in as every real CLI takes it: ESC CR
+/// (Alt+Enter, what GodTerm sends for Shift+Enter) and Ctrl+J, shown as ⏎.
+/// Ctrl+U clears the prompt; other control keys type nothing.
+fn compose_key(input: &mut String, k: &crossterm::event::KeyEvent) -> Option<String> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    match k.code {
+        KeyCode::Enter if k.modifiers.contains(KeyModifiers::ALT) => input.push(NEWLINE),
+        KeyCode::Char('j') if ctrl => input.push(NEWLINE),
+        KeyCode::Enter => {
+            let t = std::mem::take(input).replace(NEWLINE, "\n");
+            return (!t.trim().is_empty()).then_some(t);
+        }
+        KeyCode::Backspace => {
+            input.pop();
+        }
+        KeyCode::Char('u') if ctrl => input.clear(),
+        KeyCode::Char(_) if ctrl => {}
+        KeyCode::Char(c) => input.push(c),
+        _ => {}
+    }
+    None
 }
 
 /// The task runner thread.
@@ -1897,13 +1950,110 @@ fn brain(args: &[String]) -> Result<()> {
             .last()
             .unwrap_or("")
             .replace("(spoken) ", "");
-        let reply = brain_turn(&asked);
+        let reply = if text.contains("(Events from GodTerm, not from the user.") {
+            event_turn(&text)
+        } else if let Some(r) = text
+            .contains("web: this request was typed in the web app")
+            .then(|| web_turn(&asked))
+            .flatten()
+        {
+            r
+        } else {
+            brain_turn(&asked)
+        };
         stream_text(&reply);
         emit(
             json!({"type": "result", "subtype": "success", "result": reply, "is_error": false, "total_cost_usd": 0.0}),
         );
     }
     Ok(())
+}
+
+/// A layout request typed in the web app: it changes that browser's
+/// panes (web_layout), one tab per account ("each claude account").
+fn web_turn(asked: &str) -> Option<String> {
+    let q = asked.to_lowercase();
+    let layout = [
+        "split",
+        "side by side",
+        "each",
+        "per account",
+        "panes",
+        "panels",
+    ]
+    .iter()
+    .any(|w| q.contains(w));
+    if !layout
+        || ["terminal", "mac", "godterm window"]
+            .iter()
+            .any(|w| q.contains(w))
+    {
+        return None;
+    }
+    let st = call_tool("get_state", json!({}));
+    let st = &st["result"];
+    let want = ["claude", "grok"].into_iter().find(|h| q.contains(h));
+    let n = if q.contains('2') || q.contains("two") || q.contains("side by side") {
+        2
+    } else {
+        4
+    };
+    let mut tabs = vec![];
+    for a in st["accounts"].as_array().cloned().unwrap_or_default() {
+        let h = a["harness"].as_str().unwrap_or("claude");
+        if want.is_some_and(|w| w != h) || a["logged_in"] == json!(false) {
+            continue;
+        }
+        let num = &a["account"];
+        if let Some(t) = st["tabs"]
+            .as_array()
+            .and_then(|ts| ts.iter().find(|t| &t["account"] == num))
+        {
+            tabs.push(t["id"].clone());
+        }
+        if tabs.len() == n {
+            break;
+        }
+    }
+    let r = call_tool("web_layout", json!({"panes": n, "tabs": tabs}));
+    Some(
+        r["result"]["say"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                format!("That did not work: {}", r["error"].as_str().unwrap_or("?"))
+            }),
+    )
+}
+
+/// A turn of GodTerm's own about tab events, as a real assistant takes it:
+/// an approval is worth one sentence, finished turns nothing (`ignore`).
+fn event_turn(text: &str) -> String {
+    let asks: Vec<(String, String)> = text
+        .lines()
+        .filter_map(|l| {
+            let (who, what) = l
+                .strip_prefix("- ")?
+                .split_once(" waits for the user's approval: ")?;
+            let name = who
+                .split_once(" (")
+                .and_then(|(_, r)| r.split(',').next())
+                .unwrap_or(who);
+            Some((name.to_string(), what.trim_end_matches('.').to_string()))
+        })
+        .collect();
+    match asks.as_slice() {
+        [] => {
+            let _ = call_tool("ignore", json!({"reason": "nothing the user needs now"}));
+            String::new()
+        }
+        [(name, what)] => format!("{name} wants your approval: {what}."),
+        more => format!(
+            "{} tabs want your approval, {} first.",
+            number_word(more.len()),
+            more[0].0
+        ),
+    }
 }
 
 /// Call a control tool the way claude would: tool_use, then its result.
@@ -2228,9 +2378,147 @@ fn number_word(n: usize) -> String {
     W.get(n).map(|s| s.to_string()).unwrap_or(n.to_string())
 }
 
+/// A demo sign in page's code: any line of 6+ letters and digits passes,
+/// "bad" anything else is refused as the real CLI refuses a wrong code.
+fn demo_code_ok(l: &str) -> bool {
+    let l = l.replace("\x1b[200~", "").replace("\x1b[201~", "");
+    let l = l.trim();
+    l.len() >= 6 && !l.starts_with('/') && !l.to_lowercase().starts_with("bad")
+}
+
+fn demo_auth_url(scope: &str) -> String {
+    format!(
+        "https://claude.com/cai/oauth/authorize?code=true&client_id=demo-not-real&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope={scope}&code_challenge=demo&code_challenge_method=S256&state=demo{}",
+        std::process::id()
+    )
+}
+
+/// `claude` in a demo account that is logged out: the login screen, then
+/// the session once a code is pasted.
+fn demo_claude_login(config: &Path) -> Result<()> {
+    print!("\x1b[2J\x1b[H Claude Code (demo) needs a login.\r\n\r\n Browser didn't open? Use the url below to sign in (c to copy)\r\n\r\n{}\r\n\r\n Paste code here if prompted > ", demo_auth_url("user%3Ainference+user%3Aprofile"));
+    std::io::stdout().flush()?;
+    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+        if demo_code_ok(&line) {
+            let far = chrono::Utc::now().timestamp_millis() + 365 * 86_400_000;
+            std::fs::write(
+                config.join(".credentials.json"),
+                json!({"claudeAiOauth": {"accessToken": "demo-not-a-real-token", "refreshToken": "demo-not-a-real-token",
+                       "expiresAt": far, "scopes": ["user:inference"], "subscriptionType": "max"}})
+                .to_string(),
+            )?;
+            print!("\r\n Login successful. Press Enter to continue\r\n");
+            std::io::stdout().flush()?;
+            let _ = std::io::stdin().lock().lines().next();
+            return Ok(());
+        }
+        print!("\r\n OAuth error: Request failed with status code 400\r\n\r\n Paste code here if prompted > ");
+        std::io::stdout().flush()?;
+    }
+    Ok(())
+}
+
+/// `claude setup-token` in the demo: the sign in, a code, then a fake
+/// token printed (wrapped, colored) the way the real CLI prints one.
+fn demo_setup_token() -> Result<()> {
+    print!(" This will guide you through long-lived (1-year) auth token setup for your Claude account. Claude\r\n subscription required.\r\n\r\n Browser didn't open? Use the url below to sign in (c to copy)\r\n\r\n{}\r\n\r\n Paste code here if prompted > ", demo_auth_url("user%3Ainference"));
+    std::io::stdout().flush()?;
+    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+        if demo_code_ok(&line) {
+            let mut b = [0u8; 48];
+            crate::platform::fill_random(&mut b);
+            let body: String = b
+                .iter()
+                .map(|x| {
+                    let c = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+                    c[(*x as usize) % c.len()] as char
+                })
+                .collect();
+            let tok = format!("sk-ant-oat01-DEMO{body}{body}-demoAA");
+            print!("\r\n\r\n\x1b[32m\u{2713} Long-lived authentication token created successfully!\x1b[39m\r\n\r\nYour OAuth token (valid for 1 year):\r\n\r\n\x1b[33m{tok}\x1b[39m\r\n\r\n\x1b[2mStore this token securely. You won't be able to see it again.\x1b[22m\r\n\r\n\x1b[2mUse this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>\x1b[22m\r\n");
+            std::io::stdout().flush()?;
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            return Ok(());
+        }
+        print!("\r\n OAuth error: Request failed with status code 400\r\n\r\n Press Enter to retry.\r\n");
+        std::io::stdout().flush()?;
+        let _ = std::io::stdin().lock().lines().next();
+        print!("\r\n Paste code here if prompted > ");
+        std::io::stdout().flush()?;
+    }
+    Ok(())
+}
+
+/// `grok login` in the demo: the device code page, approved by itself
+/// after a few seconds.
+fn demo_grok_login(config: &Path) -> Result<()> {
+    print!("To sign in, open this URL in your browser:\r\n\r\n  https://accounts.x.ai/oauth2/device?user_code=DEMO-1234\r\n\r\nConfirm this code in your browser:\r\n\r\n  DEMO-1234\r\n\r\nWaiting for authorization...\r\n");
+    std::io::stdout().flush()?;
+    std::thread::sleep(std::time::Duration::from_secs(8));
+    std::fs::write(
+        config.join("auth.json"),
+        json!({"demo": true, "user": {"email": "demo@example.com"}, "access_token": "demo-not-a-real-token"}).to_string(),
+    )?;
+    print!("\r\nSuccessfully logged in.\r\n");
+    std::io::stdout().flush()?;
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_prompt_takes_new_lines_as_the_real_clis_do() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let key = |c, m| KeyEvent::new(c, m);
+        let mut input = String::new();
+        let n = KeyModifiers::NONE;
+        for c in "one".chars() {
+            assert_eq!(
+                super::compose_key(&mut input, &key(KeyCode::Char(c), n)),
+                None
+            );
+        }
+        // ESC CR (Alt+Enter) and Ctrl+J: a new line, not a submit.
+        assert_eq!(
+            super::compose_key(&mut input, &key(KeyCode::Enter, KeyModifiers::ALT)),
+            None
+        );
+        super::compose_key(&mut input, &key(KeyCode::Char('t'), n));
+        assert_eq!(
+            super::compose_key(&mut input, &key(KeyCode::Char('j'), KeyModifiers::CONTROL)),
+            None
+        );
+        super::compose_key(&mut input, &key(KeyCode::Char('x'), n));
+        assert_eq!(input, "one⏎t⏎x");
+        // Other control keys type nothing; Ctrl+U clears.
+        super::compose_key(&mut input, &key(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        assert_eq!(input, "one⏎t⏎x");
+        // Enter sends it with real new lines.
+        assert_eq!(
+            super::compose_key(&mut input, &key(KeyCode::Enter, n)).as_deref(),
+            Some("one\nt\nx")
+        );
+        assert!(input.is_empty());
+        super::compose_key(&mut input, &key(KeyCode::Char('z'), n));
+        super::compose_key(&mut input, &key(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(input.is_empty());
+        assert_eq!(
+            super::compose_key(&mut input, &key(KeyCode::Enter, n)),
+            None
+        );
+    }
+
     use super::*;
+
+    #[test]
+    fn an_event_turn_names_the_approval_once() {
+        let t = "(Events from GodTerm, not from the user.)\n- t2 (Grok Lab, ~/code/search) finished its turn.\n- t4 (Frontend, ~/code/ds) waits for the user's approval: Bash(npm test)\nTell the user...";
+        assert_eq!(
+            event_turn(t),
+            "Frontend wants your approval: Bash(npm test)."
+        );
+    }
 
     #[test]
     fn diff_lines_parse() {

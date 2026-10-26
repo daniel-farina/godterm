@@ -174,9 +174,10 @@ impl AppState {
         app_home().join("state.json")
     }
 
+    /// The saved state; a damaged file is moved aside (recover.rs) and
+    /// reads as none, so the start is clean.
     pub fn load() -> Option<AppState> {
-        let text = fs::read_to_string(Self::path()).ok()?;
-        serde_json::from_str(&text).ok()
+        crate::recover::load_json(&Self::path())
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -309,6 +310,7 @@ mod tests {
                 closed_at: 1,
                 tab_group: None,
                 pinned: false,
+                browser: Some("Profile 2".into()),
                 label: "x".into(),
             }],
             sessions_view: Some(SessionsView {

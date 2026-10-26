@@ -464,15 +464,6 @@ pub mod grok {
         out
     }
 
-    /// Grok Build is installed (the configured binary, ~/.local/bin/grok,
-    /// or grok on PATH).
-    pub fn installed(configured: Option<&str>) -> bool {
-        let bin = Harness::Grok.bin(configured);
-        Path::new(&bin).is_file()
-            || std::env::var_os("PATH")
-                .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(&bin).is_file()))
-    }
-
     /// Logged in: the slot has a non empty auth.json (its contents are only
     /// read for the usage call, never shown or logged).
     pub fn logged_in(home: &Path) -> bool {
@@ -959,6 +950,26 @@ mod tests {
         );
         assert_eq!(
             detect_activity(include_str!("../tests/fixtures/screens/grok_ready.txt")),
+            Activity::Ready
+        );
+        // Grok Build 1.0.69 starts on a home card (Resume session, New
+        // worktree...) above a boxed `❯` input: ready, not "starting"
+        // forever (found by scripts/e2e on a real login).
+        assert_eq!(
+            detect_activity(include_str!("../tests/fixtures/screens/grok_home_1069.txt")),
+            Activity::Ready
+        );
+        // Its turn: a "Waiting for response…" spinner and a Ctrl+c:cancel
+        // footer. Read as ready before, a prompt sent there was reported
+        // dropped although grok answered it.
+        assert_eq!(
+            detect_activity(include_str!(
+                "../tests/fixtures/screens/grok_working_1069.txt"
+            )),
+            Activity::Working
+        );
+        assert_eq!(
+            detect_activity(include_str!("../tests/fixtures/screens/grok_done_1069.txt")),
             Activity::Ready
         );
     }

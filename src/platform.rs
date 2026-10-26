@@ -158,11 +158,38 @@ pub fn own_tty() -> Option<String> {
     }
 }
 
-/// A short directory for sockets when the home's path is too long.
+/// A short directory for sockets when the home's path is too long: one
+/// only this user can write (macOS: the per user $TMPDIR; Linux:
+/// $XDG_RUNTIME_DIR; else /tmp/godterm-<uid>, 0700 and ours), so another
+/// user cannot take the socket's name first. Plain /tmp only when none of
+/// those can be had.
 pub fn short_socket_dir() -> std::path::PathBuf {
     #[cfg(unix)]
     {
-        std::path::PathBuf::from("/tmp")
+        use std::os::unix::fs::MetadataExt;
+        use std::path::PathBuf;
+        let me = uid();
+        let private = |d: &std::path::Path| {
+            std::fs::symlink_metadata(d)
+                .is_ok_and(|m| m.is_dir() && m.uid() == me && m.mode() & 0o022 == 0)
+        };
+        let env = if cfg!(target_os = "macos") {
+            "TMPDIR"
+        } else {
+            "XDG_RUNTIME_DIR"
+        };
+        if let Some(d) = std::env::var_os(env).map(PathBuf::from) {
+            let d = d.canonicalize().unwrap_or(d);
+            if d.is_absolute() && d.as_os_str().len() < 64 && private(&d) {
+                return d;
+            }
+        }
+        let d = PathBuf::from(format!("/tmp/godterm-{me}"));
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&d);
+        if private(&d) {
+            return d;
+        }
+        PathBuf::from("/tmp")
     }
     #[cfg(windows)]
     {

@@ -477,7 +477,7 @@ pub(crate) fn field_matches(f: &str, v: u32, min: u32) -> bool {
                 (n, n)
             }
         };
-        v >= lo && v <= hi && (v - lo) % step == 0
+        v >= lo && v <= hi && (v - lo).is_multiple_of(step)
     })
 }
 

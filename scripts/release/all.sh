@@ -122,7 +122,12 @@ if [[ -f "$UPDATE_KEY" ]]; then
     fi
     SIGN_PY="$SIGN_VENV/bin/python"
   fi
-  "$SIGN_PY" "$WT/scripts/update-signing/minisign.py" sign "$UPDATE_KEY" "$DIST/SHA256SUMS" >/dev/null
+  # The version goes into the signed comment: the updater refuses a
+  # release without it, or one offered under another version's tag.
+  REL_VERSION="$(sed -nE 's/^version = "([^"]+)"/\1/p' "$WT/Cargo.toml" | head -1)"
+  [[ -n "$REL_VERSION" ]] || { echo "no version in $WT/Cargo.toml" >&2; exit 1; }
+  "$SIGN_PY" "$WT/scripts/update-signing/minisign.py" sign "$UPDATE_KEY" "$DIST/SHA256SUMS" "$REL_VERSION" >/dev/null
+  grep -q "version:$REL_VERSION" "$DIST/SHA256SUMS.minisig" || { echo "SHA256SUMS.minisig lacks the signed version" >&2; exit 1; }
   pub="$(sed -nE 's/^pub const UPDATE_PUBKEY: &str = "([^"]+)";/\1/p' "$WT/src/update.rs" 2>/dev/null || true)"
   if [[ -n "$pub" ]] && command -v minisign >/dev/null; then
     minisign -Vm "$DIST/SHA256SUMS" -P "$pub" -q || { echo "SHA256SUMS.minisig does not verify" >&2; exit 1; }

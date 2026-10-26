@@ -8,9 +8,12 @@ never enters the repository.
   minisign.py keygen SECRET_KEY_FILE PUBLIC_KEY_FILE
       A new unencrypted key pair (the secret file is 0600). The public key
       line goes into UPDATE_PUBKEY in src/update.rs.
-  minisign.py sign SECRET_KEY_FILE FILE
+  minisign.py sign SECRET_KEY_FILE FILE [VERSION]
       FILE.minisig: a prehashed (ED) signature, as `minisign -S -H` makes,
-      verifiable with `minisign -Vm FILE -P <public key>`.
+      verifiable with `minisign -Vm FILE -P <public key>`. With VERSION the
+      signed (trusted) comment also says `version:VERSION`: GodTerm's
+      updater refuses a release whose signed version is missing or is not
+      the version it is offered as (no old signed build under a new tag).
 
 Needs Python 3 with the `cryptography` package.
 """
@@ -82,11 +85,15 @@ def load_secret(path):
     return key_id, Ed25519PrivateKey.from_private_bytes(sk64[:32])
 
 
-def sign(sec_path, file_path):
+def sign(sec_path, file_path, version=None):
     key_id, sk = load_secret(sec_path)
     data = open(file_path, "rb").read()
     sig = sk.sign(hashlib.blake2b(data).digest())
     trusted = f"timestamp:{int(time.time())}\tfile:{os.path.basename(file_path)}\thashed"
+    if version:
+        if any(c.isspace() for c in version):
+            sys.exit("a version has no spaces")
+        trusted += f"\tversion:{version}"
     global_sig = sk.sign(sig + trusted.encode())
     out = file_path + ".minisig"
     with open(out, "w") as f:
@@ -100,7 +107,7 @@ def sign(sec_path, file_path):
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "keygen":
         keygen(sys.argv[2], sys.argv[3])
-    elif len(sys.argv) == 4 and sys.argv[1] == "sign":
-        sign(sys.argv[2], sys.argv[3])
+    elif len(sys.argv) in (4, 5) and sys.argv[1] == "sign":
+        sign(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) == 5 else None)
     else:
         sys.exit(__doc__)

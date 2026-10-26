@@ -16,10 +16,14 @@ use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 pub const AGENTS: [(&str, &str, &str); 6] = [
     ("claude", "Claude Code", "Anthropic subscription login"),
     ("grok", "Grok Build", "xAI Grok Build login"),
-    ("codex", "Codex CLI", "Own CODEX_HOME"),
-    ("cursor", "Cursor CLI", "Native shared login"),
-    ("antigravity", "Antigravity CLI", "Native shared login"),
-    ("opencode", "OpenCode", "Native shared login"),
+    ("codex", "Codex CLI", "A login for each account"),
+    ("cursor", "Cursor CLI", "Shared login on this machine"),
+    (
+        "antigravity",
+        "Antigravity CLI",
+        "Shared login on this machine",
+    ),
+    ("opencode", "OpenCode", "Shared login on this machine"),
 ];
 
 /// The form's fields, top to bottom.
@@ -53,8 +57,14 @@ pub struct AddForm {
     /// Index into config::PERMISSION_MODES.
     pub mode: usize,
     pub focus: Field,
-    pub grok_ok: bool,
-    pub native_ok: [bool; 4],
+    /// Each agent's CLI is installed (AGENTS order).
+    pub ok: [bool; 6],
+    /// How to get each missing CLI, in one line (empty when installed).
+    pub how: [String; 6],
+    /// GodTerm can install that CLI itself (i in the form).
+    pub can_install: [bool; 6],
+    /// The first run's picker: a welcome title and the step it is.
+    pub first: bool,
     /// Recent folders to pick from, newest first ("~" style).
     pub recents: Vec<String>,
     pub error: Option<String>,
@@ -88,7 +98,7 @@ impl AddForm {
             label = format!("Account {i}");
             i += 1;
         }
-        AddForm {
+        let mut f = AddForm {
             label,
             label_pristine: true,
             agent: 0,
@@ -96,16 +106,36 @@ impl AddForm {
             folder: "~".into(),
             mode,
             focus: Field::Agent,
-            grok_ok: crate::harness::grok::installed(app.cfg.grok_bin.as_deref()),
-            native_ok: [
-                crate::harness::Harness::Codex,
-                crate::harness::Harness::Cursor,
-                crate::harness::Harness::Antigravity,
-                crate::harness::Harness::OpenCode,
-            ]
-            .map(|h| h.installed(&app.cfg)),
+            ok: [true; 6],
+            how: Default::default(),
+            can_install: [false; 6],
+            first: false,
             recents,
             error: None,
+        };
+        f.refresh(&app.deps());
+        // Start on an agent that is installed (Claude Code when it is).
+        if let Some(i) = (0..AGENTS.len()).find(|&i| f.ok[i]) {
+            f.agent = i;
+        }
+        f
+    }
+
+    /// Read again which CLIs are installed (after an install, or a key).
+    pub fn refresh(&mut self, deps: &[crate::deps::Dep]) {
+        for (i, (id, _, _)) in AGENTS.iter().enumerate() {
+            match deps.iter().find(|d| d.id == *id) {
+                Some(d) if !d.status.ok() => {
+                    self.ok[i] = false;
+                    self.can_install[i] = d.installable();
+                    self.how[i] = crate::first_run::how_to_install(d);
+                }
+                _ => {
+                    self.ok[i] = true;
+                    self.can_install[i] = false;
+                    self.how[i].clear();
+                }
+            }
         }
     }
 
@@ -114,23 +144,31 @@ impl AddForm {
         self.focus = FIELDS[(i + d).rem_euclid(FIELDS.len() as isize) as usize];
     }
 
-    /// Pick an agent card; Grok only when it is installed.
+    /// Pick an agent card. A missing one can be picked too: the form then
+    /// says how to install it, and Enter waits until it is there.
     pub fn pick_agent(&mut self, i: usize) {
-        if i == 1 && !self.grok_ok {
-            self.error = Some("grok not found: install Grok Build first (or set grok_bin)".into());
-            return;
-        }
-        if (2..AGENTS.len()).contains(&i) && !self.native_ok[i - 2] {
-            let h = crate::harness::Harness::of(AGENTS[i].0);
-            self.error = Some(format!(
-                "{} not found: install it or set {}",
-                h.label(),
-                h.bin_key()
-            ));
-            return;
-        }
         self.agent = i.min(AGENTS.len() - 1);
-        self.error = None;
+        self.error = if self.ok[self.agent] {
+            None
+        } else {
+            Some(self.missing_line())
+        };
+    }
+
+    /// The selected agent is not installed: what to do, in one line.
+    pub fn missing_line(&self) -> String {
+        let i = self.agent;
+        let name = AGENTS[i].1;
+        if self.can_install[i] {
+            format!(
+                "{name} is not installed. Press i to install it ({}).",
+                self.how[i]
+            )
+        } else if self.how[i].is_empty() {
+            format!("{name} is not installed.")
+        } else {
+            format!("{name} is not installed. {}", self.how[i])
+        }
     }
 
     fn cycle(&mut self, d: isize) {
@@ -167,11 +205,8 @@ impl AddForm {
         if !crate::config::expand_tilde(self.folder.trim()).is_dir() {
             return Err(format!("{} is not a folder", self.folder.trim()));
         }
-        if self.agent == 1 && !self.grok_ok {
-            return Err("grok not found".into());
-        }
-        if self.agent >= 2 && !self.native_ok[self.agent - 2] {
-            return Err(format!("{} not found", AGENTS[self.agent].1));
+        if !self.ok[self.agent] {
+            return Err(self.missing_line());
         }
         Ok(())
     }
@@ -221,9 +256,9 @@ impl AddForm {
             KeyCode::Char(c) if !ctrl && self.focus == Field::Folder => self.folder.push(c),
             _ => {}
         }
-        if !matches!(k.code, KeyCode::Char('1' | '2')) || text {
-            self.error = None;
-        }
+        // A missing agent stays explained while it is the one picked.
+        self.error =
+            (self.focus == Field::Agent && !self.ok[self.agent]).then(|| self.missing_line());
         false
     }
 
@@ -250,14 +285,67 @@ impl App {
 
     pub fn on_add_account_key(&mut self, k: KeyEvent) {
         if k.code == KeyCode::Esc {
+            let first = matches!(&self.modal, Modal::AddAccount(f) if f.first);
             self.modal = Modal::None;
+            if first {
+                self.flash(crate::first_run::SKIPPED_FIRST_ACCOUNT);
+            }
             return;
         }
+        // What is installed may have changed (an install, a new terminal).
+        let deps = self.deps();
         let Modal::AddAccount(form) = &mut self.modal else {
             return;
         };
+        form.refresh(&deps);
+        let text = matches!(form.focus, Field::Label | Field::Folder);
+        if !text
+            && matches!(k.code, KeyCode::Char('i' | 'I'))
+            && !k.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.add_form_install();
+            return;
+        }
         if form.key(k) {
             self.submit_add_account();
+        }
+    }
+
+    /// i in the form: install the picked agent's CLI (the first press says
+    /// what runs, the second runs it), or say how to get it.
+    pub fn add_form_install(&mut self) {
+        let Modal::AddAccount(form) = &self.modal else {
+            return;
+        };
+        let i = form.agent;
+        let (id, name, _) = AGENTS[i];
+        let msg = if form.ok[i] {
+            format!("{name} is installed already. Enter adds the account.")
+        } else if !form.can_install[i] {
+            form.missing_line()
+        } else if self.setup.running.iter().any(|r| r == id) {
+            format!("Installing {name}. This takes a minute; the card turns green when done.")
+        } else {
+            let again =
+                self.setup.confirm.as_ref().is_some_and(|(k, t)| {
+                    k == id && t.elapsed() < std::time::Duration::from_secs(15)
+                });
+            if again {
+                self.setup.confirm = None;
+                self.run_install(&[id.to_string()]);
+                format!("Installing {name}. This takes a minute; the card turns green when done.")
+            } else {
+                match self.install_question(&[id]) {
+                    Ok(q) => {
+                        self.setup.confirm = Some((id.to_string(), std::time::Instant::now()));
+                        format!("{q} Press i again to go ahead.")
+                    }
+                    Err(e) => e,
+                }
+            }
+        };
+        if let Modal::AddAccount(form) = &mut self.modal {
+            form.error = Some(msg);
         }
     }
 
@@ -272,6 +360,7 @@ impl App {
         }
         let f = (**form).clone();
         self.modal = Modal::None;
+        let n0 = self.cfg.accounts.len();
         let mode = crate::config::PERMISSION_MODES[f.mode];
         let spec = crate::app::NewAccount {
             label: f.label.trim().to_string(),
@@ -282,6 +371,9 @@ impl App {
             permission_mode: (mode != self.cfg.permission_mode).then(|| mode.to_string()),
         };
         self.add_account(spec);
+        if f.first && self.cfg.accounts.len() > n0 {
+            self.first_account_added(n0);
+        }
     }
 
     pub fn on_add_account_click(&mut self, a: AddUi) {
@@ -366,17 +458,31 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
     // Clicks inside the dialog never fall through and close it.
     hits.add(r, UiAction::AddAcct(AddUi::Inside), "");
     let limit = (r.x + r.width).saturating_sub(2);
-    text(
+    let tx = text(
         buf,
         r.x + 2,
         r.y,
         limit,
-        " Add account ",
+        if form.first {
+            " Welcome: add your first account "
+        } else {
+            " Add account "
+        },
         Style::default()
             .fg(FG)
             .bg(BAR_BG)
             .add_modifier(Modifier::BOLD),
     );
+    if form.first {
+        text(
+            buf,
+            tx + 1,
+            r.y,
+            limit,
+            &format!(" {} ", crate::first_run::step_label(2)),
+            Style::default().fg(DIM).bg(BAR_BG),
+        );
+    }
     let bg = BAR_BG;
     let x0 = r.x + 2;
     let lx = x0 + 13; // where values start
@@ -463,7 +569,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
         let cy = y + (i / 3) as u16 * 4;
         let card = Rect::new(cx, cy, cw, 4);
         let chosen = form.agent == i;
-        let disabled = (i == 1 && !form.grok_ok) || (i >= 2 && !form.native_ok[i - 2]);
+        let disabled = !form.ok[i];
         let cbg = if chosen { SEL_BG } else { bg };
         fill(buf, card, Style::default().bg(cbg));
         let border = if disabled {
@@ -482,7 +588,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
             Style::default().fg(FG).bg(cbg)
         };
         let dot = if chosen { "●" } else { "○" };
-        text(
+        let tx = text(
             buf,
             cx + 2,
             cy + 1,
@@ -490,10 +596,27 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
             &format!("{dot} {}  {name}", i + 1),
             tst,
         );
-        let sub = if disabled && i == 1 {
-            "grok not found"
+        // Installed or not, on the right of the name where it fits.
+        let (mark, mc) = if disabled {
+            ("missing", theme::CLAY)
+        } else {
+            ("✓", theme::SAGE)
+        };
+        let mw = mark.chars().count() as u16;
+        if cx + cw >= tx + mw + 3 {
+            text(
+                buf,
+                cx + cw - 2 - mw,
+                cy + 1,
+                cx + cw - 1,
+                mark,
+                Style::default().fg(mc).bg(cbg),
+            );
+        }
+        let sub = if disabled && form.can_install[i] {
+            "press i to install it"
         } else if disabled {
-            "not installed"
+            "how to get it: see below"
         } else {
             sub
         };
@@ -504,11 +627,11 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
             cx + cw - 1,
             sub,
             Style::default()
-                .fg(if disabled { theme::CLAY } else { DIM })
+                .fg(if disabled { theme::SAND } else { DIM })
                 .bg(cbg),
         );
         let hint = if disabled {
-            format!("{name} is not installed")
+            form.how[i].clone()
         } else {
             format!("{name}: {sub} ({})", i + 1)
         };
@@ -646,24 +769,24 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
     y += 2;
     // Error, or what Enter does.
     let (msg, c) = match &form.error {
+        Some(e) if e.to_lowercase().contains("install") => (e.clone(), theme::SAND),
         Some(e) => (e.clone(), theme::CLAY),
         None => (
             format!(
-                "Tab moves between fields, ←/→ change, 1–6 pick the agent. Enter starts {}.",
+                "Tab moves, ←/→ change, 1 to 6 pick the agent. Enter adds it and starts its login in {}.",
                 AGENTS[form.agent].1
             ),
             FAINT,
         ),
     };
-    if y < r.y + r.height - 1 {
-        text(
-            buf,
-            x0,
-            y,
-            limit,
-            &crate::sessions::snippet(&msg, limit.saturating_sub(x0) as usize),
-            Style::default().fg(c).bg(bg),
-        );
+    // Up to two lines (an install command can be long).
+    let width = limit.saturating_sub(x0) as usize;
+    for (k, line) in crate::first_run::wrap(&msg, width, 2).iter().enumerate() {
+        let yy = y + k as u16;
+        if yy >= r.y + r.height - 1 {
+            break;
+        }
+        text(buf, x0, yy, limit, line, Style::default().fg(c).bg(bg));
     }
     drop(hits);
     crate::ui_chrome::modal_chrome(
@@ -698,8 +821,10 @@ mod tests {
             folder: "~".into(),
             mode: 0,
             focus: Field::Agent,
-            grok_ok: true,
-            native_ok: [true; 4],
+            ok: [true; 6],
+            how: Default::default(),
+            can_install: [false; 6],
+            first: false,
             recents: vec!["~/code".into()],
             error: None,
         }
@@ -713,10 +838,21 @@ mod tests {
             assert_eq!(f.agent, i + 2);
             assert!(f.error.is_none());
         }
-        f.native_ok[0] = false;
+        // A missing one can be picked, says how to get it, and Enter waits.
+        f.ok[2] = false;
+        f.how[2] = "Install Codex CLI from https://x, or set codex_bin in config.toml.".into();
         f.pick_agent(2);
-        assert_eq!(f.agent, 5);
+        assert_eq!(f.agent, 2);
         assert!(f.error.as_ref().unwrap().contains("codex_bin"));
+        assert!(f
+            .check()
+            .unwrap_err()
+            .contains("Codex CLI is not installed"));
+        // Another key on the agent row keeps the explanation up.
+        f.key(key(KeyCode::Char('3')));
+        assert!(f.error.is_some());
+        f.key(key(KeyCode::Char('1')));
+        assert!(f.error.is_none());
     }
 
     #[test]
@@ -751,14 +887,22 @@ mod tests {
     }
 
     #[test]
-    fn grok_disabled_without_grok() {
+    fn grok_missing_offers_the_install() {
         let mut f = form();
-        f.grok_ok = false;
+        f.ok[1] = false;
+        f.can_install[1] = true;
+        f.how[1] = "curl -fsSL https://x.ai/cli/install.sh | bash".into();
         f.key(key(KeyCode::Char('2')));
-        assert_eq!(f.agent, 0);
-        assert!(f.error.as_deref().unwrap().contains("grok not found"));
+        assert_eq!(f.agent, 1);
+        let e = f.error.clone().unwrap();
+        assert!(
+            e.contains("Grok Build is not installed. Press i to install it"),
+            "{e}"
+        );
+        assert!(f.check().is_err());
         f.key(key(KeyCode::Right));
-        assert_eq!(f.agent, 0);
+        assert_eq!(f.agent, 2);
+        assert!(f.error.is_none());
     }
 
     #[test]

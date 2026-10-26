@@ -66,7 +66,8 @@ pub struct Player {
 
 /// Linear resampling, enough for speech going from 24 kHz to 44.1 or 48.
 pub fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
-    if from == to || input.is_empty() {
+    // A zero rate (a damaged WAV header) would divide by zero.
+    if from == to || input.is_empty() || from == 0 || to == 0 {
         return input.to_vec();
     }
     let n = (input.len() as u64 * to as u64 / from as u64) as usize;

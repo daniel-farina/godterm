@@ -11,7 +11,7 @@ fn w(p: &Path, text: &str) {
     std::fs::write(p, text).unwrap();
 }
 
-/// base/code/{platform, botmesh, billing}: platform has npm and pnpm
+/// base/code/{platform, fotmesh, billing}: platform has npm and pnpm
 /// workspaces, turbo, apps/billing-dashboard, services/webhooks (Go,
 /// README), packages/ui, plus things that must be skipped.
 fn fixture(tag: &str) -> PathBuf {
@@ -79,8 +79,8 @@ fn fixture_in(at: &Path, tag: &str) -> PathBuf {
     w(&pf.join(".env"), "LEAK_TOKEN=abc\n");
     // A plain repo, and a folder named exactly "billing".
     w(
-        &base.join("code/botmesh/Cargo.toml"),
-        "[package]\nname = \"botmesh\"\ndescription = \"Bot generator\"\n",
+        &base.join("code/fotmesh/Cargo.toml"),
+        "[package]\nname = \"fotmesh\"\ndescription = \"Bot generator\"\n",
     );
     w(&base.join("code/billing/README.md"), "# Billing\n");
     base
@@ -94,7 +94,7 @@ fn index_of(roots: &[PathBuf]) -> (Shared, Stats) {
 }
 
 fn roots(base: &Path) -> Vec<PathBuf> {
-    ["platform", "botmesh", "billing"]
+    ["platform", "fotmesh", "billing"]
         .iter()
         .map(|n| base.join("code").join(n))
         .collect()
@@ -142,8 +142,8 @@ fn spoken_queries_find_the_subproject_with_reason_and_path() {
     for q in ["web hooks", "the webhook retry thing", "webhooks service"] {
         assert_eq!(top(&sh, q).path, pf.join("services/webhooks"), "{q}");
     }
-    let h = top(&sh, "bot mesh");
-    assert_eq!(h.path, base.join("code/botmesh"));
+    let h = top(&sh, "fot mesh");
+    assert_eq!(h.path, base.join("code/fotmesh"));
     assert!(h.why.starts_with("project "), "{}", h.why);
     let h = top(&sh, "invoices");
     assert_eq!(h.path, pf.join("apps/billing-dashboard"));
@@ -307,12 +307,12 @@ fn a_change_rescans_only_that_root() {
     // A manifest edited in place counts too.
     std::thread::sleep(Duration::from_millis(20));
     w(
-        &base.join("code/botmesh/Cargo.toml"),
-        "[package]\nname = \"botmesh\"\ndescription = \"Swarm simulator\"\n",
+        &base.join("code/fotmesh/Cargo.toml"),
+        "[package]\nname = \"fotmesh\"\ndescription = \"Swarm simulator\"\n",
     );
     refresh(&sh, &rs, &Limits::default(), true, &[]);
     assert_eq!(sh.lock().unwrap().last.scanned, 1);
-    assert_eq!(top(&sh, "swarm simulator").path, base.join("code/botmesh"));
+    assert_eq!(top(&sh, "swarm simulator").path, base.join("code/fotmesh"));
     let _ = std::fs::remove_dir_all(&base);
 }
 

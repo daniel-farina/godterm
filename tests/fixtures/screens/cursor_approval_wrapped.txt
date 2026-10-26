@@ -1,0 +1,12 @@
+  ⬢ Write src/components/Tooltip.tsx
+    84 lines
+──────────────────────────────────────
+ $  npm install @floating-ui/react in .
+ Run this command?
+ Not in allowlist: npm
+  → Run (once) (y)
+    Add Shell(npm) to allowlist?
+    (tab)
+    Run Everything (shift+tab)
+    Skip & tell the agent what to do
+    instead (esc or n)

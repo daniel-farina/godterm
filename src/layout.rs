@@ -514,11 +514,20 @@ mod tests {
     #[test]
     fn caret_steps_three_columns() {
         let w = resize_col(&[], 3, 300, 1, true);
-        assert!((w[1] - 1.3).abs() < 0.001 && (w[2] - 0.7).abs() < 0.001 && w[0] == 1.0, "{w:?}");
+        assert!(
+            (w[1] - 1.3).abs() < 0.001 && (w[2] - 0.7).abs() < 0.001 && w[0] == 1.0,
+            "{w:?}"
+        );
         let w = resize_col(&[], 3, 300, 2, true);
-        assert!((w[2] - 1.3).abs() < 0.001 && (w[1] - 0.7).abs() < 0.001, "{w:?}");
+        assert!(
+            (w[2] - 1.3).abs() < 0.001 && (w[1] - 0.7).abs() < 0.001,
+            "{w:?}"
+        );
         let w = resize_col(&[], 3, 300, 0, false);
-        assert!((w[0] - 0.7).abs() < 0.001 && (w[1] - 1.3).abs() < 0.001, "{w:?}");
+        assert!(
+            (w[0] - 0.7).abs() < 0.001 && (w[1] - 1.3).abs() < 0.001,
+            "{w:?}"
+        );
         let total: f32 = w.iter().sum();
         assert!((total - 3.0).abs() < 0.001);
     }

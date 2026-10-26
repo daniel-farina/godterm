@@ -123,7 +123,12 @@ fn carets_change_the_width_clamp_and_persist() {
     assert_eq!((wider.y, narrower.y, close.y), (p.y, p.y, p.y), "title row");
     assert!(wider.x < narrower.x && narrower.x + narrower.width < close.x);
     assert_eq!(
-        line(&t, p.y).chars().skip(p.x as usize).collect::<String>().matches(" < > ").count(),
+        line(&t, p.y)
+            .chars()
+            .skip(p.x as usize)
+            .collect::<String>()
+            .matches(" < > ")
+            .count(),
         1
     );
     click(&mut app, &ctl(PanelCtl::Wider));

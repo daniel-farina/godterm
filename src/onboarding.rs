@@ -31,7 +31,7 @@ pub const MARKER: &str = "voice_onboarding";
 /// The hook, spoken in the first seconds of the welcome.
 pub const HOOK_SPOKEN: &str = "Welcome to GodTerm. With voice on, you run every Claude and Grok session just by saying what you want, hands free. Say yes or press Enter to turn it on, or press Escape to skip.";
 /// The hook as shown.
-pub const HOOK_TITLE: &str = "Run every Claude and Grok session just by talking.";
+pub const HOOK_TITLE: &str = "Run all your coding agent sessions just by talking.";
 pub const HOOK_BODY: &str = "Ask how anything works, open projects, log in, approve, switch layouts: say it, and GodTerm does it. Hands free, on this machine.";
 /// After this long on the welcome with no answer, a gentle reminder.
 pub const REMIND_AFTER_S: u64 = 20;

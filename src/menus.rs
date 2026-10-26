@@ -1158,8 +1158,8 @@ impl App {
             KeyCode::Down => set(&mut o, step(sel, 1)),
             KeyCode::Left if in_sub => o.sub = None,
             KeyCode::Left | KeyCode::Right
-                if !in_sub
-                    && !(k.code == KeyCode::Right
+                if !(in_sub
+                    || k.code == KeyCode::Right
                         && sel.and_then(|i| es.get(i)).is_some_and(|e| e.sub.is_some())) =>
             {
                 // Next or previous menu along the bar.
@@ -1224,23 +1224,20 @@ impl App {
             }
             return;
         }
-        match self.region_at(col, row).map(|r| r.action) {
-            Some(UiAction::MenuRow(id, i)) => {
-                let mut o = o;
-                if id == o.id {
-                    o.sel = Some(i);
-                    let e = entries(self, id).get(i).cloned();
-                    o.sub = e
-                        .and_then(|e| e.sub.filter(|_| e.disabled.is_none()))
-                        .map(|s| (s, None));
-                } else if let Some((s, _)) = o.sub {
-                    if s == id {
-                        o.sub = Some((s, Some(i)));
-                    }
+        if let Some(UiAction::MenuRow(id, i)) = self.region_at(col, row).map(|r| r.action) {
+            let mut o = o;
+            if id == o.id {
+                o.sel = Some(i);
+                let e = entries(self, id).get(i).cloned();
+                o.sub = e
+                    .and_then(|e| e.sub.filter(|_| e.disabled.is_none()))
+                    .map(|s| (s, None));
+            } else if let Some((s, _)) = o.sub {
+                if s == id {
+                    o.sub = Some((s, Some(i)));
                 }
-                self.modal = Modal::Menu(o);
             }
-            _ => {}
+            self.modal = Modal::Menu(o);
         }
     }
 

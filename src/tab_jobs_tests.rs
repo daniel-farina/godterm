@@ -5,8 +5,11 @@
 //! stubs and homes are test homes.
 
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+#[cfg(windows)]
+use uds_windows::UnixStream;
 
 use crate::app::{App, AppEvent, Modal};
 use crate::config::testing::LOCK as ENV_LOCK;
@@ -574,6 +577,7 @@ fn a_claude_launch_gets_the_server_the_tools_and_the_hint() {
     assert!(args.contains(&"mcp__godterm__adopt_loop".to_string()));
     assert!(!args.iter().any(|a| a == "mcp__godterm__get_state"));
     // The file holds a token: private.
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&args[i + 1])

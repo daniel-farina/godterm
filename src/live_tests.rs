@@ -39,7 +39,7 @@ fn session(app: &crate::app::App, cwd: &str, id: &str, lines: &[serde_json::Valu
     std::fs::write(dir.join(format!("{id}.jsonl")), text).unwrap();
 }
 
-/// "rarion refactor" finds the session the user named RARIUM REFACTOR;
+/// "varion refactor" finds the session the user named VARIUM REFACTOR;
 /// "it's in the home directory" is a folder filter; no match offers the
 /// closest ones.
 #[test]
@@ -52,7 +52,7 @@ fn sessions_by_spoken_name_and_home_folder() {
         "/x/hyper",
         "1111aaaa-0000-4000-8000-000000000001",
         &[
-            json!({"type": "custom-title", "customTitle": "RARIUM REFACTOR"}),
+            json!({"type": "custom-title", "customTitle": "VARIUM REFACTOR"}),
             user("split the reducer"),
         ],
     );
@@ -82,14 +82,14 @@ fn sessions_by_spoken_name_and_home_folder() {
             })
             .unwrap_or_default()
     };
-    for q in ["rarion refactor", "rarium refactor", "refactor"] {
+    for q in ["varion refactor", "varium refactor", "refactor"] {
         let v = app.control_call("sessions", &json!({"text": q}));
         assert_eq!(ids(&v), vec!["1111"], "{q}: {v}");
     }
     assert_eq!(
-        app.control_call("sessions", &json!({"text": "rarion refactor"}))["result"]["sessions"][0]
+        app.control_call("sessions", &json!({"text": "varion refactor"}))["result"]["sessions"][0]
             ["title"],
-        "RARIUM REFACTOR"
+        "VARIUM REFACTOR"
     );
     let v = app.control_call("sessions", &json!({"project": "~"}));
     assert_eq!(
@@ -338,7 +338,7 @@ fn system_check_reads_and_refuses() {
 fn closing_asks_only_when_it_should() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("close-tiers");
-    for n in ["dan", "api", "web"] {
+    for n in ["notes", "api", "web"] {
         let d = home.join(n);
         std::fs::create_dir_all(&d).unwrap();
         app.panes[1].add_tab(d);
@@ -349,13 +349,13 @@ fn closing_asks_only_when_it_should() {
         app.assistant.last_user = t.into();
     };
     // Direct and idle: closed, no question, Undo offered.
-    let dan = uid(&app, app.panes[1].tabs.len() - 3);
+    let notes = uid(&app, app.panes[1].tabs.len() - 3);
     say(&mut app, "okay now close it");
-    let v = app.control_call("close_tabs", &json!({"tab": format!("t{dan}")}));
+    let v = app.control_call("close_tabs", &json!({"tab": format!("t{notes}")}));
     assert!(v["needs_confirmation"].is_null(), "{v}");
     assert_eq!(v["result"]["closed"], json!(1), "{v}");
     assert!(v["result"]["say"].as_str().unwrap().contains("undo"), "{v}");
-    assert!(app.find_tab(dan).is_none());
+    assert!(app.find_tab(notes).is_none());
     // A question is not a command; a busy tab always asks.
     let api = uid(&app, app.panes[1].tabs.len() - 2);
     say(&mut app, "should I close the api tab?");
@@ -958,10 +958,10 @@ fn grok_login_picker_shows_usage() {
         win("seven_day", "Weekly", 100.0),
         win("product:Voice", "Voice", 18.0),
     ]));
-    app.accounts[2].profile.email = Some("dan@example.com".into());
+    app.accounts[2].profile.email = Some("alice@example.com".into());
     let line = app.grok_source_line("demo8");
     assert!(
-        line.starts_with("demo8 (dan@example.com) · Voice 82% · weekly 0%"),
+        line.starts_with("demo8 (alice@example.com) · Voice 82% · weekly 0%"),
         "{line}"
     );
     assert!(
@@ -989,7 +989,7 @@ fn grok_login_picker_shows_usage() {
     app.rt_privacy = Some(true);
     let p = app.grok_source_line("demo8");
     assert!(
-        !p.contains("dan@example.com") && p.starts_with("demo8 ·"),
+        !p.contains("alice@example.com") && p.starts_with("demo8 ·"),
         "{p}"
     );
     app.rt_privacy = None;
@@ -999,7 +999,7 @@ fn grok_login_picker_shows_usage() {
     assert!(app.grok_source_line("test").contains("out of credits at "));
     assert!(app
         .grok_source_line("auto")
-        .starts_with("auto → demo8 (dan@example.com)"));
+        .starts_with("auto → demo8 (alice@example.com)"));
     // The picker: cards with usage bars, products, status and actions.
     app.open_grok_logins();
     assert!(matches!(app.modal, crate::app::Modal::GrokLogins(_)));
@@ -1083,13 +1083,9 @@ fn tab_states_stand_out() {
     let p = ix(&app, "paused");
     app.panes[0].tabs[p].suspended = true;
     let bg_uid = app.panes[0].tabs[ix(&app, "bg")].uid;
-    app.bg_cache.borrow_mut().insert(
-        bg_uid,
-        (
-            std::time::Instant::now(),
-            Some("background · 2 agents".into()),
-        ),
-    );
+    app.bg_cache
+        .borrow_mut()
+        .insert(bg_uid, (std::time::Instant::now(), Some("2 agents".into())));
     for t in app.panes[0].tabs.iter_mut() {
         if t.name() != "work"
             && t.name() != "ask"

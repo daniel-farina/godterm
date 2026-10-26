@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::app::{App, Modal};
-use crate::pane::{Activity, LaunchKind};
+use crate::pane::LaunchKind;
 
 /// How many closed tabs are kept.
 pub const KEEP: usize = 20;
@@ -53,6 +53,9 @@ pub struct ClosedTab {
     pub tab_group: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// The tab's Chrome profile folder (its Browser binding).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
 }
 
 /// When to ask before closing one tab (config `confirm_close`).
@@ -65,15 +68,8 @@ pub fn needs_confirm(mode: &str, running: bool, busy: bool, loops: usize) -> boo
 }
 
 impl App {
-    /// Working or waiting for an answer.
-    pub fn tab_busy(&self, s: usize, t: usize) -> bool {
-        self.panes
-            .get(s)
-            .and_then(|p| p.tabs.get(t))
-            .is_some_and(|x| {
-                x.is_running() && matches!(x.activity, Activity::Working | Activity::Permission)
-            })
-    }
+    // (tab_busy, in activity.rs: working, waiting for an answer, or work
+    // running in the background.)
 
     /// Close a tab, asking first per `confirm_close` (busy or looping
     /// tabs by default).
@@ -126,6 +122,7 @@ impl App {
             label: tab.name(),
             tab_group: tab.group.clone(),
             pinned: tab.pinned,
+            browser: tab.browser.clone(),
         })
     }
 
@@ -212,7 +209,9 @@ impl App {
                 let busy = self.tab_busy(s, i);
                 let nl = self.loops_in(t.uid);
                 let mut what = vec![];
-                if busy {
+                if let Some(w) = self.tab_background_work(s, i) {
+                    what.push(format!("busy in the background: {w}"));
+                } else if busy {
                     what.push("working".to_string());
                 }
                 if nl > 0 {
@@ -422,6 +421,11 @@ impl App {
         self.panes[p].tabs[t].custom_name = c.name.clone();
         self.panes[p].tabs[t].accent = c.accent.clone();
         self.panes[p].tabs[t].pinned = c.pinned;
+        // Its Browser binding comes back too (a folder name only).
+        self.panes[p].tabs[t].browser = c
+            .browser
+            .clone()
+            .filter(|d| crate::tab_browser::valid_profile_dir(d));
         if let Some(g) = &c.tab_group {
             self.panes[p].group_tabs(&[t], g, None);
         }

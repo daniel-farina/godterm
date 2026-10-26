@@ -224,9 +224,7 @@ fn pin_slots(config: &Path, pins: &[(String, String)]) -> Result<()> {
     let out = doc.to_string();
     crate::config::Config::parse(&out)
         .context("config.toml would not parse after pinning slots")?;
-    let tmp = config.with_extension("toml.tmp");
-    std::fs::write(&tmp, out)?;
-    std::fs::rename(tmp, config)?;
+    crate::config::write_atomic(config, out.as_bytes())?;
     Ok(())
 }
 

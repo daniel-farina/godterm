@@ -57,7 +57,7 @@ impl App {
         } else {
             self.flash("Memory saver off: normal history; paused tabs resume when you open them");
         }
-        self.mem_ticked = Instant::now() - Duration::from_secs(5);
+        self.mem_ticked = crate::clock::ago(Duration::from_secs(5));
         self.memory_tick();
         // Asked for: the tab on screen gets its new size now too (unless
         // it is scrolled back; then once it is at the bottom).
@@ -167,6 +167,8 @@ impl App {
                 .any(|m| m.source_uid == tab.uid || m.target_uid == tab.uid)
             && !self.queued_moves.iter().any(|m| m.uid == tab.uid)
             && !self.stop_reqs.iter().any(|r| r.uid == tab.uid)
+            // Background shells or subagents: busy, and pausing would kill them.
+            && self.tab_background_work(s, t).is_none()
     }
 
     /// Stop a tab's claude; it resumes its conversation when shown.

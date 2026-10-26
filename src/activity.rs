@@ -51,7 +51,7 @@ pub fn parse_ps(text: &str) -> Vec<Proc> {
 }
 
 /// Every process below `pid`.
-pub fn descendants<'a>(table: &'a [Proc], pid: u32) -> Vec<&'a Proc> {
+pub fn descendants(table: &[Proc], pid: u32) -> Vec<&Proc> {
     let mut out: Vec<&Proc> = vec![];
     let mut frontier = vec![pid];
     while let Some(p) = frontier.pop() {
@@ -278,6 +278,52 @@ impl crate::app::App {
             children,
             self.loops_in(tab.uid),
         )
+    }
+
+    /// What still runs under a tab whose screen is at its prompt:
+    /// "2 subagents, 1 shell" from its process tree and subagent
+    /// transcripts (cached 2 s), or "background work" when only claude's
+    /// footer says so. None when nothing runs, or when the tab is working
+    /// or asking (busy anyway).
+    ///
+    /// Busy is not the same as "ready for a prompt". A tab with background
+    /// work is busy: it must never be called idle, swept by archive_tabs,
+    /// paused by the memory saver or moved without waiting (stopping its
+    /// claude stops the shells and subagents too). It still takes a
+    /// prompt like a ready tab (claude handles it alongside the background
+    /// work), so prompt delivery does not wait for it.
+    pub fn tab_background_work(&self, s: usize, t: usize) -> Option<String> {
+        let tab = self.panes.get(s)?.tabs.get(t)?;
+        if let Some(w) = crate::ui_chrome::background_work(self, s, t) {
+            return Some(w);
+        }
+        (tab.bg_wait && tab.is_running() && tab.activity == crate::pane::Activity::Ready)
+            .then(|| "background work".to_string())
+    }
+
+    /// Busy: working, waiting for an approval, or work still running in
+    /// the background (tab_background_work). The opposite of idle.
+    pub fn tab_busy(&self, s: usize, t: usize) -> bool {
+        let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
+            return false;
+        };
+        (tab.is_running()
+            && matches!(
+                tab.activity,
+                crate::pane::Activity::Working | crate::pane::Activity::Permission
+            ))
+            || self.tab_background_work(s, t).is_some()
+    }
+
+    /// Stopping its claude now would cut work off: it is working, or work
+    /// runs in the background. (Moves and failover wait for this; a tab
+    /// waiting for an approval keeps its own rules there.)
+    pub fn tab_has_running_work(&self, s: usize, t: usize) -> bool {
+        let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
+            return false;
+        };
+        (tab.is_running() && tab.activity == crate::pane::Activity::Working)
+            || self.tab_background_work(s, t).is_some()
     }
 }
 

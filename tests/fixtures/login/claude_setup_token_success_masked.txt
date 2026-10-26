@@ -1,0 +1,12 @@
+ This will guide you through long-lived (1-year) auth token setup for your Claude account. Claude
+ subscription required.
+
+✓ Long-lived authentication token created successfully!
+
+Your OAuth token (valid for 1 year):
+
+sk-ant-•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+Store this token securely. You won't be able to see it again.
+
+Use this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>

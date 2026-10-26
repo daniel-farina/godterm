@@ -582,9 +582,7 @@ impl App {
         let along: Vec<&Border> = a
             .borders
             .iter()
-            .filter(|b| {
-                b.vertical && b.rect.y <= rect.y && rect.y < b.rect.y + b.rect.height
-            })
+            .filter(|b| b.vertical && b.rect.y <= rect.y && rect.y < b.rect.y + b.rect.height)
             .collect();
         if along.is_empty() {
             return None;

@@ -150,6 +150,17 @@ GodTerm only passes ids that are plain identifiers (letters, digits and
 `._:-`, not starting with `-`); anything else starts a fresh conversation,
 so a stored id can never be read as an option.
 
+**The session index** (the assistant's `sessions` tool, the web tab
+filter's Other sessions) lists Codex and Cursor sessions too
+(src/session_other.rs): each Codex slot's `CODEX_HOME/sessions` rollouts
+(a rollout whose `session_meta.source` names a subagent is skipped) and
+the shared Cursor store's `projects/<slug>/agent-transcripts/<id>/<id>.jsonl`
+(read once, as the first Cursor slot's; the folder is the existing path
+the slug spells). Opening one resumes it on that slot. The main
+`~/.codex` is not indexed (a slot cannot resume it without a copy), nor
+are Antigravity's and OpenCode's databases. These readers follow the
+formats above but were checked only against fixtures.
+
 **How GodTerm learns the id.** It reads no transcripts for these CLIs (the
 formats are their own databases and change between versions) and cannot
 tell which of several sessions in one folder is a tab's. What is reliable
@@ -206,6 +217,35 @@ prints its resume line.
 Folder trust and menus (Codex update, Cursor trust, Antigravity trust) count
 as "needs approval". A screen GodTerm cannot read (OpenCode's permission
 prompt) is answered with the keyboard, and the voice says so.
+
+## The web app per harness (verified)
+
+Checked with the real CLIs through GodTerm Web (claude 2.1.310, grok
+1.0.69, codex 0.153.4, agy 1.4.4, opencode 2.0.32; Cursor showed only its
+login screen inside the sandbox, so its rows are from its docs and the
+demo) and kept as `scripts/e2e/web_matrix.py` (docs/TESTING.md):
+
+| | New line in the prompt | Screen at the prompt (scrolling) | An image pasted as its path |
+| --- | --- | --- | --- |
+| Claude Code | ESC CR (sent) and Ctrl+J | main screen, no mouse: local history | `[Image #1]` |
+| Grok Build | ESC CR (sent) | alternate screen with mouse (1003, SGR): wheel to the app | `Image: <path>` stays text (Grok's convention) |
+| Codex | Ctrl+J (sent) and ESC CR | main screen, no mouse: local history | `[Image #1]` |
+| Cursor | ESC CR (sent; unverified, login only) | not seen | not seen |
+| Antigravity | ESC CR (sent) and Ctrl+J | main screen at the prompt (alternate for the trust menu): local history | the path stays text (also with `@`) |
+| OpenCode | Ctrl+J (sent) and ESC CR | alternate screen with mouse: wheel to the app | `[Image 1]` |
+
+The phone's Return sends the new line, Send and a desktop's Enter send
+CR, Shift+Enter on a desktop sends the new line. A prompt typed into the
+web app's Prompt box goes as a paste and its Enter as a separate write
+once the tab shows the text: read together, Claude Code takes the CR as a
+new line in the paste. All six turn on bracketed paste.
+
+In a phone sized tab (about 42 to 50 columns) the CLIs wrap their prompts
+and options; GodTerm reads Antigravity's folder trust, Codex's and
+Antigravity's wrapped numbered options and Cursor's wrapped or cut
+options (tests/fixtures/screens/*_narrow, *_wrapped, *_cut). A prompt it
+cannot read (Codex's update menu) shows no Yes / No in the web app, only
+Show, to answer it in the tab.
 
 ## Per-tab MCP (job and browser tools)
 

@@ -78,7 +78,7 @@ fn write(p: &Path, e: &Entry) {
         let _ = std::fs::create_dir_all(d);
     }
     let tmp = p.with_extension("json.tmp");
-    if std::fs::write(&tmp, serde_json::to_string(e).unwrap_or_default()).is_ok() {
+    if crate::config::write_private(&tmp, serde_json::to_string(e).unwrap_or_default()).is_ok() {
         let _ = std::fs::rename(&tmp, p);
     }
 }

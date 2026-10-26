@@ -347,14 +347,22 @@ fn handed_to_background_agents_is_not_finished_until_they_are_done() {
         !app.panes[s].tabs[t].finished,
         "not finished: work still runs"
     );
-    let finished_said = |app: &App| {
+    // A finish is an event for the assistant (never said by GodTerm).
+    let finished_event = |app: &App| {
+        app.assistant
+            .events
+            .events
+            .iter()
+            .any(|e| e.kind == crate::app_events::EventKind::Finished)
+    };
+    let said = |app: &App| {
         app.told
             .borrow()
             .ring
             .iter()
-            .any(|r| r.kind == "attention" && r.text.ends_with("finished"))
+            .any(|r| r.kind == "attention" || r.text.ends_with("finished"))
     };
-    assert!(!finished_said(&app), "no finished announcement yet");
+    assert!(!finished_event(&app), "no finished event yet");
     assert_eq!(app.tab_label(s, t), Some(TabLabel::Background));
     // Still running a while later: still not finished.
     app.tick();
@@ -364,7 +372,8 @@ fn handed_to_background_agents_is_not_finished_until_they_are_done() {
     app.tick();
     assert!(app.panes[s].tabs[t].finished);
     assert_eq!(app.tab_label(s, t), Some(TabLabel::Finished));
-    assert!(finished_said(&app), "announced once the work is done");
+    assert!(finished_event(&app), "an event once the work is done");
+    assert!(!said(&app), "nothing said by GodTerm itself");
     idle_all(&mut app);
     let _ = std::fs::remove_dir_all(&home);
 }

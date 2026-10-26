@@ -28,6 +28,12 @@ fn write(level: &str, msg: &str) {
             .open(&p)
     } {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        // A long-lived token never reaches the log, whoever wrote it.
+        let msg = if msg.contains(crate::acct_tokens::PREFIX) {
+            std::borrow::Cow::Owned(crate::acct_tokens::mask_all(msg))
+        } else {
+            std::borrow::Cow::Borrowed(msg)
+        };
         let _ = writeln!(f, "{ts} {level} {msg}");
     }
 }

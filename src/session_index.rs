@@ -1,6 +1,6 @@
 //! One index of every session on this Mac, for the assistant's `sessions`
-//! tool: every GodTerm account (Claude Code and Grok), the main `~/.claude`
-//! and the main `~/.grok`. Built in the background and refreshed by file
+//! tool: every GodTerm account (Claude Code, Grok and Codex), the shared
+//! Cursor store, the main `~/.claude` and the main `~/.grok`. Built in the background and refreshed by file
 //! mtimes, so a query is a filter over memory. Only metadata and short
 //! snippets ever leave it; `detail` reads one transcript on request.
 
@@ -64,8 +64,17 @@ fn stamp(p: &Path) -> Option<(u128, u64)> {
 
 /// What one source holds: main transcripts with their subagent files.
 enum Item {
-    Claude { main: PathBuf, subs: Vec<PathBuf> },
-    Grok { summary: PathBuf },
+    Claude {
+        main: PathBuf,
+        subs: Vec<PathBuf>,
+    },
+    Grok {
+        summary: PathBuf,
+    },
+    /// A Codex rollout or a Cursor agent transcript.
+    Other {
+        path: PathBuf,
+    },
 }
 
 fn list(h: Harness, home: &Path) -> Vec<Item> {
@@ -118,6 +127,16 @@ fn list(h: Harness, home: &Path) -> Vec<Item> {
                 }
             }
         }
+        Harness::Codex => out.extend(
+            crate::session_other::list_codex(home)
+                .into_iter()
+                .map(|path| Item::Other { path }),
+        ),
+        Harness::Cursor => out.extend(
+            crate::session_other::list_cursor(home)
+                .into_iter()
+                .map(|path| Item::Other { path }),
+        ),
         _ => {}
     }
     out
@@ -126,6 +145,10 @@ fn list(h: Harness, home: &Path) -> Vec<Item> {
 fn parse_one(p: &Path) -> Option<SessionInfo> {
     if p.file_name().is_some_and(|f| f == "summary.json") {
         crate::harness::grok::parse_session_any(p.parent()?, true)
+    } else if crate::session_other::is_codex(p) {
+        crate::session_other::parse_codex(p)
+    } else if crate::session_other::is_cursor(p) {
+        crate::session_other::parse_cursor(p)
     } else {
         crate::sessions::parse_file_quick(p)
     }
@@ -162,6 +185,7 @@ pub fn rebuild(shared: &Shared, sources: &[Source]) {
             let ps: Vec<&PathBuf> = match it {
                 Item::Claude { main, subs } => std::iter::once(main).chain(subs.iter()).collect(),
                 Item::Grok { summary } => vec![summary],
+                Item::Other { path } => vec![path],
             };
             for p in ps {
                 if let Some(st) = stamp(p) {
@@ -249,8 +273,12 @@ pub fn rebuild(shared: &Shared, sources: &[Source]) {
                         info,
                     });
                 }
-                Item::Grok { summary } => {
-                    if let Some((_, _, info)) = files.get(summary) {
+                Item::Grok { summary: path } | Item::Other { path } => {
+                    // A Codex or Cursor session nobody typed into is not one.
+                    let empty = |i: &SessionInfo| {
+                        matches!(it, Item::Other { .. }) && i.first_prompt.is_none()
+                    };
+                    if let Some((_, _, info)) = files.get(path).filter(|f| !empty(&f.2)) {
                         rows.push(Row {
                             src: *src,
                             harness: *h,
@@ -336,7 +364,7 @@ pub fn parse_when(s: &str, now: chrono::DateTime<chrono::Local>) -> Option<Syste
 /// matches score higher. None when a word is missing.
 /// How well a spoken query names a session, 0 to 1: its name or title,
 /// the folder's name, and runs of words in the title and first prompt,
-/// compared by spelling and sound ("rarion refactor" -> RARIUM REFACTOR).
+/// compared by spelling and sound ("varion refactor" -> VARIUM REFACTOR).
 pub fn fuzzy_score(
     query: &str,
     info: &crate::sessions::SessionInfo,

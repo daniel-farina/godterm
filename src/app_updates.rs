@@ -1,6 +1,6 @@
 //! Update mode: while it is on, GodTerm tells you, as things move, what
 //! changed in each active project, like a colleague keeping you posted
-//! ("EXELON: the test deploy finished the plan and is applying now.
+//! ("ACME: the test deploy finished the plan and is applying now.
 //! Hyper: three of seven steps done, now applying the migration.").
 //!
 //! Every few seconds it reads what is new: the part of each Claude tab's
@@ -22,8 +22,11 @@
 //! off, the speaker or mic muted, or voice asleep, the same words show as
 //! one line in the assistant panel (every update is logged there too).
 //! "What's the latest?" gives a roundup on demand, even with the mode
-//! off. No model is called: the wording is built from the facts
-//! (updates.rs), so it costs nothing.
+//! off. The wording is built from the facts (updates.rs). Unasked news
+//! is not said by GodTerm itself: it goes to the assistant as an event
+//! (app_events), which tells the user; only an asked roundup is said
+//! directly, as the answer to the user's request. Subagents finishing
+//! are never mentioned.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -263,6 +266,10 @@ impl App {
         if matches!(tab.activity, Activity::Working | Activity::Permission) || tab.bg_wait {
             return true;
         }
+        // Background shells or subagents under a tab at its prompt: busy.
+        if self.tab_background_work(s, t).is_some() {
+            return true;
+        }
         if self.updates.pending.contains_key(&tab.uid) {
             return true;
         }
@@ -434,7 +441,9 @@ impl App {
         e.1.dropped += 1;
     }
 
-    /// The announcer said "X needs approval" or "X finished".
+    /// "X needs approval" or "X finished" was said already (the announcer
+    /// no longer speaks; kept for callers that tell it some other way).
+    #[allow(dead_code)]
     pub fn updates_note_announced(&mut self, uid: u64, approval: bool) {
         if self.updates_on() && !self.updates.announced.contains(&(uid, approval)) {
             self.updates.announced.push((uid, approval));
@@ -554,6 +563,14 @@ impl App {
         if n > 30 {
             self.updates.said.drain(..n - 30);
         }
+        // News nobody asked for just now goes to the assistant, which
+        // tells it (tabs and GodTerm never talk to the user themselves).
+        if !asked {
+            self.update_event(text);
+            return;
+        }
+        // Asked for ("what's the latest"): the answer to the user's own
+        // request, in the assistant's voice.
         let at = chrono::Local::now().format("%H:%M");
         self.note(format!("Update {at}: {text}"));
         if self.updates_spoken() {
@@ -605,8 +622,13 @@ impl App {
                 let line = match tab.activity {
                     Activity::Permission => format!("{name} is waiting for your approval"),
                     Activity::Working => format!("{name} is still working{todo}"),
-                    _ if tab.bg_wait => format!("{name} has background work running"),
-                    _ => continue,
+                    _ => match self.tab_background_work(s, t) {
+                        Some(w) if w != "background work" => {
+                            format!("{name} is busy in the background: {w}")
+                        }
+                        Some(_) => format!("{name} has background work running"),
+                        None => continue,
+                    },
                 };
                 if !parts.contains(&line) {
                     parts.push(line);

@@ -140,6 +140,7 @@ impl App {
 
     /// The lines of one card: (text, style) runs per line, and its
     /// buttons (label, action) on the first line.
+    #[allow(clippy::type_complexity)]
     fn grok_card(&self, id: &str) -> (Vec<Vec<(String, Style)>>, Vec<(&'static str, u8)>) {
         use crate::voice::grok_tts;
         let dim = Style::default().fg(DIM);

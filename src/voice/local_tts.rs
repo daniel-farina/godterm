@@ -73,7 +73,13 @@ pub fn info(id: &str) -> Option<&'static LocalInfo> {
 }
 
 /// Ming-3.0's built in English voices.
-pub const MING_VOICES: &[&str] = &["US_Emma", "US_Stella", "US_James", "UK_George", "UK_Charlotte"];
+pub const MING_VOICES: &[&str] = &[
+    "US_Emma",
+    "US_Stella",
+    "US_James",
+    "UK_George",
+    "UK_Charlotte",
+];
 
 /// mlx-audio at the commit both models were measured with (Ming-3.0 is on
 /// its main branch only).
@@ -266,7 +272,7 @@ fn read_msgs(out: impl Read, tx: mpsc::Sender<Msg>) {
         let bytes = v["bytes"].as_u64().unwrap_or(0) as usize;
         let mut pcm = vec![];
         if bytes > 0 {
-            if bytes > MAX_FRAME || bytes % 4 != 0 {
+            if bytes > MAX_FRAME || !bytes.is_multiple_of(4) {
                 let _ = tx.send(Msg::Gone);
                 return;
             }
@@ -290,7 +296,9 @@ fn read_msgs(out: impl Read, tx: mpsc::Sender<Msg>) {
                 rate: v["rate"].as_u64().unwrap_or(24_000) as u32,
                 pcm,
             },
-            "done" => Msg::Done { id: id.unwrap_or(0) },
+            "done" => Msg::Done {
+                id: id.unwrap_or(0),
+            },
             "error" => Msg::Error {
                 id,
                 msg: v["msg"].as_str().unwrap_or("error").to_string(),
@@ -583,7 +591,11 @@ impl LocalEngine {
         }
         match Helper::spawn(&self.spec) {
             Ok(h) => {
-                crate::log::info(&format!("tts: {} helper started (pid {})", self.id, h.pid()));
+                crate::log::info(&format!(
+                    "tts: {} helper started (pid {})",
+                    self.id,
+                    h.pid()
+                ));
                 self.helper = Some(h);
                 Ok(())
             }
@@ -611,7 +623,8 @@ impl LocalEngine {
     fn crashed(&mut self, why: &str) {
         self.helper = None;
         let now = Instant::now();
-        self.crashes.retain(|t| now.duration_since(*t) < CRASH_WINDOW);
+        self.crashes
+            .retain(|t| now.duration_since(*t) < CRASH_WINDOW);
         self.crashes.push(now);
         crate::log::info(&format!("tts: {} helper failed: {why}", self.id));
         if self.crashes.len() >= MAX_CRASHES {
@@ -651,7 +664,11 @@ impl LocalEngine {
 
 impl TtsEngine for LocalEngine {
     fn name(&self) -> String {
-        format!("{} ({})", self.id, info(self.id).map(|i| i.name).unwrap_or(""))
+        format!(
+            "{} ({})",
+            self.id,
+            info(self.id).map(|i| i.name).unwrap_or("")
+        )
     }
 
     fn speak_stream(
@@ -801,10 +818,8 @@ impl Stretch {
         loop {
             let base = self.pos.round() as usize;
             let need = base + n + tol;
-            if need > self.input.len() {
-                if !last || base >= self.input.len() {
-                    break;
-                }
+            if need > self.input.len() && (!last || base >= self.input.len()) {
+                break;
             }
             // The frame within ±tol of `base` most like the natural
             // continuation of the last frame.
@@ -829,6 +844,7 @@ impl Stretch {
                 .map(|i| self.input.get(best + i).copied().unwrap_or(0.0))
                 .collect();
             // Hann cross-fade over the overlap.
+            #[allow(clippy::needless_range_loop)]
             for i in 0..hs {
                 let w = 0.5 - 0.5 * (std::f32::consts::PI * i as f32 / hs as f32).cos();
                 let prev = self.tail.get(i).copied().unwrap_or(0.0);
@@ -924,7 +940,13 @@ pub fn install_steps(
     let mut steps = vec![];
     if !vpy.exists() {
         let argv = match (uv, python) {
-            (Some(uv), _) => vec![s(uv), "venv".into(), "--python".into(), "3.12".into(), s(&venv)],
+            (Some(uv), _) => vec![
+                s(uv),
+                "venv".into(),
+                "--python".into(),
+                "3.12".into(),
+                s(&venv),
+            ],
             (None, Some(py)) => vec![s(py), "-m".into(), "venv".into(), s(&venv)],
             (None, None) => {
                 return Err("no Python 3.10 to 3.13 or uv found (brew install python@3.12)".into())
@@ -1066,7 +1088,7 @@ fn run_install(id: &str, cfg: &LocalTtsCfg) -> Result<String, String> {
             std::thread::sleep(Duration::from_millis(500));
         }
     }
-    let _ = std::fs::write(&dir.join("local_helper.py"), HELPER_PY);
+    let _ = std::fs::write(dir.join("local_helper.py"), HELPER_PY);
     std::fs::write(
         marker(id),
         json!({"repo": info.repo, "mlx_audio": MLX_AUDIO, "at": chrono::Local::now().to_rfc3339()})
@@ -1103,9 +1125,7 @@ pub fn remove_paths(id: &str, cfg: &LocalTtsCfg) -> Vec<PathBuf> {
     if let Some(i) = info(id) {
         v.push(model_cache_dir(i.repo));
     }
-    let others = LOCALS
-        .iter()
-        .any(|l| l.id != id && marker(l.id).exists());
+    let others = LOCALS.iter().any(|l| l.id != id && marker(l.id).exists());
     if !others {
         v.push(venv_dir(cfg));
         v.push(voices_dir().join("local_helper.py"));
@@ -1182,10 +1202,17 @@ pub fn bench_command(args: &[String]) -> anyhow::Result<()> {
             .and_then(|i| args.get(i + 1).cloned())
     };
     let engine = arg("--engine").unwrap_or_else(|| "chatterbox".into());
-    let id: &'static str = if engine == "ming" { "ming" } else { "chatterbox" };
+    let id: &'static str = if engine == "ming" {
+        "ming"
+    } else {
+        "chatterbox"
+    };
     let py = PathBuf::from(arg("--python").ok_or_else(|| anyhow::anyhow!("--python PY"))?);
     let out = PathBuf::from(arg("--out").ok_or_else(|| anyhow::anyhow!("--out WAV"))?);
-    let dir = out.parent().unwrap_or(Path::new(".")).join(format!("helper-{id}"));
+    let dir = out
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(format!("helper-{id}"));
     std::fs::create_dir_all(&dir)?;
     let script = dir.join("local_helper.py");
     std::fs::write(&script, HELPER_PY)?;
@@ -1223,7 +1250,7 @@ pub fn bench_command(args: &[String]) -> anyhow::Result<()> {
     println!("{id}: ready={ok:?} after {} ms", t.elapsed().as_millis());
     let mut all: Vec<f32> = vec![];
     for s in [
-        "EXELON: the test deploy finished the plan and is applying now.",
+        "ACME: the test deploy finished the plan and is applying now.",
         "Hey, Claude Code on Account 2 needs your approval to run the database migration.",
         "Say yes or no.",
     ] {
@@ -1515,7 +1542,10 @@ for line in sys.stdin:
             out.extend(st.finish());
             let want = tone.len() as f32 / speed;
             let got = out.len() as f32;
-            assert!((got - want).abs() / want < 0.08, "speed {speed}: {got} vs {want}");
+            assert!(
+                (got - want).abs() / want < 0.08,
+                "speed {speed}: {got} vs {want}"
+            );
             assert!(out.iter().all(|s| s.abs() <= 0.31));
         }
         assert!(Stretch::new(1.0).identity());
@@ -1530,7 +1560,10 @@ for line in sys.stdin:
         crate::config::testing::set_home(&d);
         let cfg = LocalTtsCfg::default();
         assert!(venv_dir(&cfg).starts_with(&d));
-        assert!(hub_cache().starts_with(&d), "tests never touch the real cache");
+        assert!(
+            hub_cache().starts_with(&d),
+            "tests never touch the real cache"
+        );
         let uv = PathBuf::from("/x/uv");
         let s = install_steps("chatterbox", &cfg, Some(&uv), None).unwrap();
         assert_eq!(s.len(), 3);
@@ -1548,7 +1581,10 @@ for line in sys.stdin:
         std::fs::write(marker("ming"), "{}").unwrap();
         assert!(installed("chatterbox", &cfg));
         // With the venv there, no step makes it again.
-        assert_eq!(install_steps("ming", &cfg, Some(&uv), None).unwrap().len(), 2);
+        assert_eq!(
+            install_steps("ming", &cfg, Some(&uv), None).unwrap().len(),
+            2
+        );
         // Ming still uses the environment: removing Chatterbox keeps it.
         let p = remove_paths("chatterbox", &cfg);
         assert!(p.contains(&marker("chatterbox")));

@@ -18,6 +18,9 @@ pub enum Section {
     Memory,
     Setup,
     Browser,
+    Sync,
+    /// GitHub accounts and repos (owners, folder rules, bindings).
+    Git,
     Keys,
     About,
 }
@@ -33,6 +36,8 @@ pub const SECTIONS: &[(Section, &str)] = &[
     (Section::Browser, "Browser"),
     (Section::Keys, "Keys"),
     (Section::About, "About"),
+    (Section::Sync, "Sync"),
+    (Section::Git, "GitHub"),
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -189,6 +194,11 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("cursor_bin", "Cursor CLI binary", Kind::Text, "Path to cursor-agent or agent; empty detects either on PATH."),
             g("antigravity_bin", "Antigravity CLI binary", Kind::Text, "Path to agy; empty uses PATH."),
             g("opencode_bin", "OpenCode binary", Kind::Text, "Path to opencode; empty uses PATH."),
+            g("web.enabled", "Web app", Kind::Toggle, "Serve GodTerm's interface to a browser on 127.0.0.1, and on this Mac's tailnet address (godterm web-url prints the links; tailscale serve gives the https one a phone needs for the mic). Starts or stops at once."),
+            g("web.port", "Web app port", Kind::Number { min: 1024, max: 65535, step: 1 }, "The port it serves on 127.0.0.1 (and that tailscale serve proxies). A busy port is tried again every 5 seconds. GODTERM_WEB_PORT or --web-port override it for one run."),
+            g("web.tailnet_sign_in", "Tailnet sign in", Kind::Toggle, "Sign in with no token any device logged into this Mac's own tailnet account (and the logins in [web] tailnet_users in config.toml), through tailscale serve or the tailnet address. Other tailnet users and tagged devices are refused. Off: the token link only."),
+            g("web.tailnet_ip", "Serve on the tailnet address", Kind::Toggle, "Also listen on this Mac's tailnet IPv4 (plain http, for browsers that cannot resolve *.ts.net). Follows the address when it changes."),
+            g("web.ip_port", "Tailnet address port", Kind::Number { min: 1024, max: 65535, step: 1 }, "The port on the tailnet address. A busy port is tried again every 5 seconds."),
             g("usage.failover_pct", "Runs out below (% left)", Kind::Float { min: 0.0, max: 50.0, step: 1.0 }, "An account counts as running out under this much left (its binding limit, 5 hour or weekly), or when a tab says it hit its limit."),
         ],
         Section::Layout => vec![
@@ -245,7 +255,14 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("voice_idle_stop_min", "Stop voice helpers when idle (min)", Kind::Number { min: 0, max: 240, step: 5 }, "In push to talk, stop whisper-server and Kokoro after this many idle minutes (0: keep them). The memory saver uses 5."),
             g("viz.reduced_motion", "Reduced motion (live map)", Kind::Toggle, "The live map draws 8 frames a second with fewer particles (it does with the memory saver too)."),
         ],
-        Section::Keys | Section::About | Section::Setup | Section::Browser => vec![],
+        Section::Keys
+        | Section::About
+        | Section::Setup
+        | Section::Browser
+        | Section::Sync
+        | Section::Git => {
+            vec![]
+        }
     }
 }
 
@@ -297,7 +314,9 @@ pub fn display(cfg: &Config, s: &Setting) -> String {
 pub fn describe(cfg: &Config, s: &Setting) -> Option<String> {
     let v = display(cfg, s);
     match s.key {
-        Key::Global("voice.tts_engine") => crate::voice::catalog::engine_line(&v).map(str::to_string),
+        Key::Global("voice.tts_engine") => {
+            crate::voice::catalog::engine_line(&v).map(str::to_string)
+        }
         Key::Global("voice.kokoro_voice") => crate::voice::catalog::kokoro_label(&v),
         Key::Global("voice.local.ming_voice") => {
             crate::voice::catalog::ming_label(&v).map(str::to_string)
@@ -735,12 +754,25 @@ fn local_voice_rows(r: &mut Rows, cfg: &Config) {
         let help: &'static str = "Optional local voices beside Kokoro, on this Mac only. Enter shows what the install needs (size, memory, speed, license) and asks first; when installed, Enter removes it.";
         for (i, (_, key)) in LOCAL_INSTALL.iter().enumerate() {
             let label = format!("{}: install", local_tts::LOCALS[i].name);
-            r.when(local_tts::supported(), "this is a Mac with Apple Silicon", g(key, &label, Kind::Toggle, help));
+            r.when(
+                local_tts::supported(),
+                "this is a Mac with Apple Silicon",
+                g(key, &label, Kind::Toggle, help),
+            );
         }
     }
     r.when(on && eng == "chatterbox", "engine = chatterbox", g("voice.local.chatterbox_ref", "Chatterbox: voice clip", Kind::Text, "A WAV of the voice to clone (over 5 seconds of clear speech); empty for its own voice. Choose... picks a file. Preview speaks a short line."));
     r.when(on && eng == "ming", "engine = ming", g("voice.local.ming_voice", "Ming: voice", Kind::Pick(crate::voice::catalog::ming_choices()), "US_Emma, US_Stella, US_James, UK_George, UK_Charlotte, or design (a voice made from the description). Preview speaks a short line."));
-    r.when(on && eng == "ming" && vc.local.ming_voice == "design", "engine = ming and voice = design", g("voice.local.ming_design", "Ming: voice description", Kind::Text, "Describe the voice, e.g. a calm, warm male narrator in his forties."));
+    r.when(
+        on && eng == "ming" && vc.local.ming_voice == "design",
+        "engine = ming and voice = design",
+        g(
+            "voice.local.ming_design",
+            "Ming: voice description",
+            Kind::Text,
+            "Describe the voice, e.g. a calm, warm male narrator in his forties.",
+        ),
+    );
 }
 
 fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {

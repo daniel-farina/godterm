@@ -88,11 +88,11 @@ fn grok_brain_turns_tools_and_switching() {
     // A first exchange on Claude, then the switch.
     app.assistant.log.push(crate::app_assistant::Entry {
         who: crate::app_assistant::Who::User,
-        text: "remember the botmesh deploy".into(),
+        text: "remember the fotmesh deploy".into(),
     });
     app.assistant.log.push(crate::app_assistant::Entry {
         who: crate::app_assistant::Who::Reply,
-        text: "Noted, botmesh deploys at five.".into(),
+        text: "Noted, fotmesh deploys at five.".into(),
     });
     let v = app.control_call("switch_assistant", &json!({"provider": "grok"}));
     let say = v["result"]["say"].as_str().unwrap().to_string();
@@ -141,7 +141,7 @@ fn grok_brain_turns_tools_and_switching() {
     let argv = std::fs::read_to_string(&args).unwrap();
     // The conversation came along; built in tools are gone, the shell denied.
     assert!(
-        argv.contains("remember the botmesh deploy") && argv.contains("botmesh deploys at five"),
+        argv.contains("remember the fotmesh deploy") && argv.contains("fotmesh deploys at five"),
         "{argv}"
     );
     assert!(

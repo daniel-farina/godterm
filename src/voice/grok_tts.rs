@@ -6,6 +6,7 @@
 //!     auth.json, the same token grok itself sends to api.x.ai/v1/stt),
 //!   - an xAI API key, kept in the Keychain (service GodTerm-xai-api-key),
 //!     never in config.toml.
+//!
 //! Tokens and keys are never logged or shown.
 
 use std::io::Read;
@@ -451,7 +452,7 @@ fn hex(s: &str) -> String {
 }
 
 fn unhex(s: &str) -> Option<String> {
-    if s.is_empty() || s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if s.is_empty() || !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let bytes: Option<Vec<u8>> = (0..s.len())

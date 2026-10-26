@@ -138,7 +138,10 @@ fn registry_models_per_harness_and_overrides() {
     let labels = |h, cfg: &crate::config::Config| -> Vec<String> {
         models_for(h, cfg).into_iter().map(|m| m.label).collect()
     };
-    assert_eq!(labels(Harness::Claude, &cfg), ["Haiku", "Sonnet", "Opus"]);
+    assert_eq!(
+        labels(Harness::Claude, &cfg),
+        ["Haiku", "Sonnet", "Opus", "Fable"]
+    );
     assert_eq!(labels(Harness::Grok, &cfg), ["4.7 fast", "4.7", "4.6"]);
     assert_eq!(models_for(Harness::Claude, &cfg)[0].arg, "haiku");
     // A list of its own: known ones keep their labels, new ones get one.
@@ -155,7 +158,10 @@ fn registry_models_per_harness_and_overrides() {
         "at most 4"
     );
     let m = models_for(Harness::Claude, &cfg);
-    assert_eq!((m[2].arg.as_str(), m[2].label.as_str()), ("fable", "Fable"));
+    assert_eq!(
+        (m[2].arg.as_str(), m[2].label.as_str()),
+        ("claude-fable-5-1", "Fable")
+    );
     // Model ids and display names find their button; the longest wins.
     let g = models_for(Harness::Grok, &crate::config::Config::default());
     assert_eq!(index_of(&g, "grok-4.7-build-fast"), Some(0));
@@ -335,9 +341,13 @@ fn a_busy_tab_is_queued_and_switched_when_its_turn_ends() {
         app.pending_enters.is_empty(),
         "never typed into a working tab"
     );
-    let mut term = Terminal::new(TestBackend::new(240, 50)).unwrap();
+    let mut term = Terminal::new(TestBackend::new(320, 50)).unwrap();
     term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-    assert!(buffer_text(term.backend().buffer()).contains("switching to Haiku after this turn"), "{}", buffer_text(term.backend().buffer()));
+    assert!(
+        buffer_text(term.backend().buffer()).contains("switching to Haiku after this turn"),
+        "{}",
+        buffer_text(term.backend().buffer())
+    );
     // The assistant's state says so.
     assert!(
         app.state_preamble().contains("Opus, Haiku queued"),
@@ -381,7 +391,8 @@ fn the_tool_resolves_model_names() {
         ("claude sonnet 5.5", Some(1)),
         ("the quick one", Some(0)),
         ("the fastest", Some(0)),
-        ("smartest", Some(2)),
+        ("smartest", Some(3)),
+        ("fable", Some(3)),
         ("2", Some(1)),
         ("claude-opus-5-5", Some(2)),
         ("gpt", None),
@@ -519,6 +530,8 @@ fn grok_tabs_switch_with_its_own_model_command() {
     let mut p = vt100::Parser::new(10, 80, 0);
     p.process(" ╭──────────╮\r\n │ draft    │\r\n ╰──────────╯\r\n".as_bytes());
     assert_eq!(input_empty(Harness::Grok, p.screen()), Some(false));
+    // The app is used only by the Unix stub part below.
+    #[cfg_attr(not(unix), allow(unused_mut, unused_variables))]
     let (mut app, home) = test_app("grok");
     // Its session's summary.json.
     let dir = home.join("sess");

@@ -429,6 +429,45 @@ pub fn save_png(bytes: &[u8]) -> Result<(PathBuf, u32, u32)> {
     Ok((p, w, h))
 }
 
+/// Save image bytes (PNG, JPEG, GIF or WebP, as a browser pastes them):
+/// the path and size.
+pub fn save_bytes(bytes: &[u8]) -> Result<(PathBuf, u32, u32)> {
+    let ext = match media_type(bytes) {
+        Some("image/jpeg") => "jpg",
+        Some(mt) => mt.trim_start_matches("image/"),
+        None => anyhow::bail!("not a PNG, JPEG, GIF or WebP image"),
+    };
+    let (w, h) = dimensions(bytes).unwrap_or((0, 0));
+    let p = new_file(ext)?;
+    crate::config::write_private(&p, bytes)?;
+    Ok((p, w, h))
+}
+
+/// Standard base64 (padding optional, whitespace skipped) back to bytes;
+/// None on any other character.
+pub fn unbase64(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b' ' | b'\n' | b'\r' => continue,
+            _ => return None,
+        };
+        acc = ((acc << 6) | v as u32) & 0xff_ffff;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// Copy an image file into the images folder (HEIC made PNG): the copy
 /// and its size.
 pub fn import_file(src: &Path) -> Result<(PathBuf, u32, u32)> {
@@ -721,6 +760,17 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_goes_both_ways() {
+        for n in 0..40usize {
+            let b: Vec<u8> = (0..n).map(|i| (i * 37 + 11) as u8).collect();
+            assert_eq!(unbase64(&base64(&b)), Some(b), "{n} bytes");
+        }
+        assert_eq!(unbase64("aGk"), Some(b"hi".to_vec()), "no padding");
+        assert_eq!(unbase64("aG\nk="), Some(b"hi".to_vec()), "a line break");
+        assert_eq!(unbase64("a-b"), None);
+    }
 
     #[test]
     fn path_paste_forms() {

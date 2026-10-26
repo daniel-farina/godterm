@@ -255,7 +255,7 @@ pub fn test_recognition(cfg: crate::config::VoiceCfg) {
     });
 }
 
-/// The vocabulary string the recognizers share ("hey god, t12, botmesh")
+/// The vocabulary string the recognizers share ("hey god, t12, fotmesh")
 /// as keyterms.
 pub fn terms(vocab: &str) -> Vec<String> {
     vocab
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn request_and_reply() {
-        let f = fields("en-US", &terms("GodTerm, botmesh, , godterm, t12"));
+        let f = fields("en-US", &terms("GodTerm, fotmesh, , godterm, t12"));
         assert_eq!(f[0], ("model", MODEL.to_string()));
         assert!(f.contains(&("language", "en".into())));
         let keys: Vec<&String> = f
@@ -281,7 +281,7 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            ["GodTerm", "botmesh", "t12"],
+            ["GodTerm", "fotmesh", "t12"],
             "deduplicated, no empties"
         );
         assert!(!fields("auto", &[]).iter().any(|(k, _)| *k == "language"));

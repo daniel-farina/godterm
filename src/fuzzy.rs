@@ -1,11 +1,11 @@
 //! Names said aloud: speech recognition splits, merges and mishears them
-//! ("bot mesh", "pod mesh", "bought mesh" for botmesh) and spells out
-//! punctuation ("lol forward slash botmesh"). The tools match what they
+//! ("fot mesh", "vod mesh", "fought mesh" for fotmesh) and spells out
+//! punctuation ("code forward slash fotmesh"). The tools match what they
 //! are given against the names they know with an edit distance and a
 //! rough sound key, so a near miss still finds the right thing.
 
-/// Spoken punctuation to symbols, case kept: "lol forward slash botmesh"
-/// -> "lol/botmesh", "index dot html" -> "index.html".
+/// Spoken punctuation to symbols, case kept: "code forward slash fotmesh"
+/// -> "code/fotmesh", "index dot html" -> "index.html".
 pub fn spoken_punctuation(s: &str) -> String {
     let words: Vec<&str> = s.split_whitespace().collect();
     let mut out = String::new();
@@ -46,7 +46,7 @@ pub fn spoken_punctuation(s: &str) -> String {
 }
 
 /// Compare key: spoken punctuation resolved, lower case, without spaces,
-/// hyphens, underscores and dots ("Bot-Mesh" and "bot mesh" are equal).
+/// hyphens, underscores and dots ("Fot-Mesh" and "fot mesh" are equal).
 pub fn key(s: &str) -> String {
     spoken_punctuation(s)
         .to_lowercase()
@@ -57,7 +57,7 @@ pub fn key(s: &str) -> String {
 
 /// A rough sound key: consonants by how they sound (b/p, d/t, g/k/c/q,
 /// f/v/ph, s/z/sh/ch), silent "gh", vowels dropped after the first letter,
-/// repeats folded. "botmesh", "podmesh", "bought mesh", "botmash" share one.
+/// repeats folded. "fotmesh", "vodmesh", "fought mesh", "fotmash" share one.
 pub fn sound(s: &str) -> String {
     let w: Vec<char> = key(s)
         .chars()
@@ -204,7 +204,7 @@ where
     }
 }
 
-/// The last `n` components of a path ("/Users/x/lol/botmesh", 2 -> "lol/botmesh").
+/// The last `n` components of a path ("/Users/x/code/fotmesh", 2 -> "code/fotmesh").
 pub fn tail(path: &str, n: usize) -> String {
     let parts: Vec<&str> = path
         .trim_end_matches('/')
@@ -214,7 +214,7 @@ pub fn tail(path: &str, n: usize) -> String {
     parts[parts.len().saturating_sub(n)..].join("/")
 }
 
-/// Match a spoken folder ("lol slash pod mesh") against known folders,
+/// Match a spoken folder ("code slash vod mesh") against known folders,
 /// comparing with as many trailing components as the query has.
 pub fn best_folder<'a>(query: &str, folders: impl IntoIterator<Item = &'a str>) -> Match {
     let q = spoken_punctuation(query);
@@ -231,35 +231,35 @@ mod tests {
     use super::*;
 
     const FOLDERS: &[&str] = &[
-        "/Users/me/lol/botmesh",
-        "/Users/me/lol/trading-room",
+        "/Users/me/code/fotmesh",
+        "/Users/me/code/trading-room",
         "/Users/me/hacker-sim",
         "/Users/me/meme",
         "/Users/me/claudego",
     ];
 
     #[test]
-    fn misheard_folders_find_botmesh() {
+    fn misheard_folders_find_fotmesh() {
         for q in [
-            "pod mesh",
-            "bot mesh",
-            "lol slash pod mesh",
-            "botmash",
-            "bought mesh",
-            "lol/bot mesh",
-            "lol forward slash podmesh",
-            "lol/podmesh",
-            "Bot-Mesh",
+            "vod mesh",
+            "fot mesh",
+            "code slash vod mesh",
+            "fotmash",
+            "fought mesh",
+            "code/fot mesh",
+            "code forward slash vodmesh",
+            "code/vodmesh",
+            "Fot-Mesh",
         ] {
             assert_eq!(
                 best_folder(q, FOLDERS.iter().copied()),
-                Match::Sure("/Users/me/lol/botmesh".into()),
+                Match::Sure("/Users/me/code/fotmesh".into()),
                 "{q}"
             );
         }
         assert_eq!(
             best_folder("trading room", FOLDERS.iter().copied()),
-            Match::Sure("/Users/me/lol/trading-room".into())
+            Match::Sure("/Users/me/code/trading-room".into())
         );
         assert_eq!(
             best_folder("something else entirely", FOLDERS.iter().copied()),
@@ -269,9 +269,9 @@ mod tests {
 
     #[test]
     fn alike_names_are_offered_not_guessed() {
-        let f = ["/a/botmesh", "/a/potmesh", "/a/botmash"];
-        match best_folder("bot mesh", f.iter().copied()) {
-            Match::Sure(v) => assert_eq!(v, "/a/botmesh", "exact key wins"),
+        let f = ["/a/fotmesh", "/a/votmesh", "/a/fotmash"];
+        match best_folder("fot mesh", f.iter().copied()) {
+            Match::Sure(v) => assert_eq!(v, "/a/fotmesh", "exact key wins"),
             m => panic!("{m:?}"),
         }
         match best_folder("pod mess", f.iter().copied()) {
@@ -283,8 +283,8 @@ mod tests {
     #[test]
     fn keys_and_sounds() {
         assert_eq!(
-            spoken_punctuation("lol forward slash botmesh"),
-            "lol/botmesh"
+            spoken_punctuation("code forward slash fotmesh"),
+            "code/fotmesh"
         );
         assert_eq!(spoken_punctuation("index dot html"), "index.html");
         assert_eq!(
@@ -292,10 +292,10 @@ mod tests {
             "/Users/Alex/My Project",
             "case and spaces kept"
         );
-        assert_eq!(spoken_punctuation("lol slash pod mesh"), "lol/pod mesh");
-        assert_eq!(key("Bot Mesh"), "botmesh");
-        assert_eq!(sound("botmesh"), sound("bought mesh"));
-        assert_eq!(sound("botmesh"), sound("pod mesh"));
-        assert_eq!(sound("botmesh"), sound("botmash"));
+        assert_eq!(spoken_punctuation("code slash vod mesh"), "code/vod mesh");
+        assert_eq!(key("Fot Mesh"), "fotmesh");
+        assert_eq!(sound("fotmesh"), sound("fought mesh"));
+        assert_eq!(sound("fotmesh"), sound("vod mesh"));
+        assert_eq!(sound("fotmesh"), sound("fotmash"));
     }
 }

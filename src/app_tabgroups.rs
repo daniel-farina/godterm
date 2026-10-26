@@ -28,8 +28,8 @@ pub const PIN: &str = "▴";
 
 /// Whether a tab's words (`fields`: its names, folder, status) match what
 /// was typed or said: the query anywhere in them (case, spaces, hyphens
-/// and dots ignored: "bot mesh" finds bot-mesh), else every word of it in
-/// them or close to one of their words ("botmash" finds botmesh).
+/// and dots ignored: "fot mesh" finds fot-mesh), else every word of it in
+/// them or close to one of their words ("fotmash" finds fotmesh).
 pub fn filter_match(query: &str, fields: &[String]) -> bool {
     let qk = crate::fuzzy::key(query);
     if qk.is_empty() {
@@ -178,6 +178,7 @@ impl App {
     /// Keys while a tab search has them: typing filters, Up / Down pick
     /// among the matches, Enter keeps the pick and gives the keys back,
     /// Esc clears the search. False: not searching.
+    #[allow(clippy::collapsible_match)]
     pub fn on_tab_search_key(&mut self, k: KeyEvent) -> bool {
         use crossterm::event::KeyModifiers;
         let Some(p) = self.tab_search else {
@@ -490,7 +491,7 @@ impl App {
                 if !tab.pinned {
                     tab.group = into;
                 }
-                let at = if t2 > t { t2 } else { t2 };
+                let at = t2;
                 slot.tabs.insert(at.min(slot.tabs.len()), tab);
                 slot.active = slot.find_uid(active).unwrap_or(0);
                 if slot.sort != TabSort::Manual {
@@ -599,6 +600,7 @@ impl App {
     }
 
     /// The lines and buttons of the group dialogs, for ui.rs.
+    #[allow(clippy::type_complexity)]
     pub fn group_modal_body(
         &self,
     ) -> Option<(String, Vec<String>, Vec<(String, crate::hits::UiAction)>)> {

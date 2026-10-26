@@ -127,9 +127,11 @@ fn save_state(s: &State) {
 
 fn log(msg: &str) {
     let _ = std::fs::create_dir_all(dir());
+    use crate::platform::OpenOptionsExt;
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(dir().join("supervisor.log"))
     {
         let _ = writeln!(

@@ -766,7 +766,7 @@ pub fn remote_rows(app: &App) -> Vec<(String, Option<UiAction>)> {
                 "fresh each start (resume off)".to_string()
             } else {
                 match crate::app_resume::load().filter(|k| !k.id.is_empty()) {
-                    Some(k) => format!("kept across restarts ({})", &k.id[..k.id.len().min(8)]),
+                    Some(k) => format!("kept across restarts ({})", crate::paths::head(&k.id, 8)),
                     None => "kept across restarts".into(),
                 }
             }
@@ -776,18 +776,46 @@ pub fn remote_rows(app: &App) -> Vec<(String, Option<UiAction>)> {
     v
 }
 
+/// The account the assistant spends: the running brain's when it is of
+/// the chosen provider (a brain left from before a switch does not count),
+/// else the one it would start on.
+pub fn brain_account(app: &App) -> Option<usize> {
+    let p = crate::providers::by_id(&app.cfg.assistant.provider);
+    app.assistant
+        .brain
+        .as_ref()
+        .filter(|b| b.provider == p.id)
+        .and_then(|b| b.account)
+        .or_else(|| app.assistant_account())
+}
+
+/// The status row under the toolbar, and whether it is a sign in prompt
+/// (then a click starts the login). A provider with its own login (Grok)
+/// never needs an account: it asks for its own login only when missing.
+pub fn login_note(app: &App, acct: Option<usize>) -> (String, bool) {
+    let p = crate::providers::by_id(&app.cfg.assistant.provider);
+    match (p.own_home, acct) {
+        (Some(home), _) if !crate::harness::grok::logged_in(&home()) => (
+            format!(
+                "{} needs its own login: click to sign in (or say log in the assistant's {})",
+                p.name, p.name
+            ),
+            true,
+        ),
+        (None, None) => (format!("log in a {} account to use it", p.name), false),
+        _ => (status_line(app), false),
+    }
+}
+
 /// The title: "assistant · Claude · Account 2 · 5h 89% · wk 3% · haiku ▾",
 /// as parts (tone 2: the binding bucket when it is low). Narrow, whole
 /// pieces go: the other buckets, then "assistant", then the provider and
 /// the account; the binding bucket and the model stay.
 pub fn title_parts(app: &App, room: usize) -> Vec<(String, u8)> {
     let p = crate::providers::by_id(&app.cfg.assistant.provider);
-    let model = app
-        .assistant
-        .brain
-        .as_ref()
-        .map(|b| b.model.clone())
-        .unwrap_or_else(|| crate::providers::model_for(p, &app.cfg.assistant));
+    // The chosen model, not the running brain's: right after a switch
+    // (even mid answer) the title already names what the next turn uses.
+    let model = crate::providers::model_for(p, &app.cfg.assistant);
     let short_model = if p.id == "claude" {
         model
             .trim_start_matches("claude-")
@@ -806,13 +834,11 @@ pub fn title_parts(app: &App, room: usize) -> Vec<(String, u8)> {
         segs.push((view.name().into(), 1, 0));
     }
     segs.push((p.name.into(), 0, 3));
-    let acct = app
-        .assistant
-        .brain
-        .as_ref()
-        .and_then(|b| b.account)
-        .or_else(|| app.assistant_account());
+    let acct = brain_account(app);
     match (p.own_home, acct) {
+        (Some(home), _) if !crate::harness::grok::logged_in(&home()) => {
+            segs.push(("not signed in".into(), 2, 0))
+        }
         (Some(_), _) => {}
         (None, Some(a)) => segs.push((app.account_cfg(a).display().to_string(), 0, 4)),
         (None, None) => segs.push(("no logged in account".into(), 0, 0)),
@@ -868,12 +894,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         *app.assistant_text.borrow_mut() = None;
         return;
     }
-    let acct = app
-        .assistant
-        .brain
-        .as_ref()
-        .and_then(|b| b.account)
-        .or_else(|| app.assistant_account());
+    let acct = brain_account(app);
     // The title row's right side: the width carets and window controls.
     let room =
         area.width
@@ -1017,20 +1038,24 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             "Back to the assistant (Ctrl-a K, Esc here, or say \"back to the assistant\")",
         );
     }
-    let st = status_line(app);
-    let note = match acct {
-        None => "log in an account to use it".to_string(),
-        Some(_) if st.is_empty() => String::new(),
-        Some(_) => st,
-    };
+    let (note, login) = login_note(app, acct);
     if app.direct.on.is_none() {
+        if login {
+            hits.add(
+                Rect::new(inner.x, y + 1, inner.width, 1),
+                UiAction::Menu(crate::menus::Cmd::AssistantLogin),
+                "Sign the assistant's own Grok in (your Grok accounts are not touched)",
+            );
+        }
         crate::hits::text(
             buf,
             inner.x,
             y + 1,
             limit,
             &crate::sessions::snippet(&note, inner.width as usize),
-            Style::default().fg(FAINT).bg(BAR_BG),
+            Style::default()
+                .fg(if login { theme::SAND } else { FAINT })
+                .bg(BAR_BG),
         );
     }
     let mut top = y + 2;
@@ -1199,6 +1224,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // keeps its whole width.
     let chat_w = inner.width;
     let tlimit = limit;
+    #[allow(clippy::type_complexity)]
     let mut physical: Vec<(u16, Vec<(String, Style)>, Option<UiAction>)> = vec![];
     for r in &rows {
         for l in wrap(r, chat_w) {

@@ -21,6 +21,107 @@ pub fn audio_muted() -> bool {
     cfg!(test) || crate::config::env_var("NO_AUDIO").is_some()
 }
 
+/// Speech for a browser instead of this Mac's speakers: the web app sets
+/// this while a browser has voice on.
+pub enum WebAudio {
+    /// Mono samples at a rate.
+    Pcm(Vec<f32>, u32),
+    /// Drop what is queued (the reply was cut off).
+    Stop,
+}
+
+type WebOut = Box<dyn Fn(WebAudio) + Send>;
+static WEB_OUT: Mutex<Option<WebOut>> = Mutex::new(None);
+
+/// Route speech to a browser (Some) or back to the speakers (None).
+pub fn set_web_out(f: Option<WebOut>) {
+    *WEB_OUT.lock().unwrap_or_else(|e| e.into_inner()) = f;
+}
+
+/// Hand audio to the browser; false when none takes it.
+fn web_out(a: WebAudio) -> bool {
+    match WEB_OUT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        Some(f) => {
+            f(a);
+            true
+        }
+        None => false,
+    }
+}
+
+fn web_on() -> bool {
+    WEB_OUT.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
+/// The wake chime for a browser that is the voice: two soft notes, 0.2 s.
+/// False when no browser takes the audio.
+pub fn web_chime() -> bool {
+    if !web_on() {
+        return false;
+    }
+    let rate = 24000u32;
+    let mut v = Vec::with_capacity(rate as usize / 5);
+    for (f, n) in [(880.0f32, rate / 10), (1320.0, rate / 10)] {
+        for i in 0..n {
+            let t = i as f32 / rate as f32;
+            // A short fade in and out on each note, no click.
+            let env = (i.min(n - i) as f32 / 240.0).min(1.0);
+            v.push((t * f * std::f32::consts::TAU).sin() * 0.18 * env);
+        }
+    }
+    web_out(WebAudio::Pcm(v, rate))
+}
+
+/// Speech for a browser goes as a few sensible clips, not as the engine's
+/// stream pieces (tens of milliseconds each, some empty): the first clip
+/// of a reply as soon as it holds a moment of audio (so it starts fast),
+/// then about a second each, and the rest of every sentence at its end.
+#[derive(Default)]
+pub struct WebBatch {
+    buf: Vec<f32>,
+    rate: u32,
+    /// Clips sent so far in this reply.
+    pub clips: usize,
+    /// Seconds sent so far in this reply.
+    pub secs: f64,
+}
+
+/// The first clip of a reply: this much audio (s).
+const WEB_FIRST_S: f64 = 0.35;
+/// Later clips: this much.
+const WEB_NEXT_S: f64 = 1.2;
+
+impl WebBatch {
+    /// Add samples; returns a full clip to send, if one is ready.
+    pub fn push(&mut self, samples: &[f32], rate: u32) -> Option<(Vec<f32>, u32)> {
+        let mut out = None;
+        if rate != self.rate && !self.buf.is_empty() {
+            out = self.take();
+        }
+        self.rate = rate;
+        self.buf.extend_from_slice(samples);
+        let want = if self.clips == 0 {
+            WEB_FIRST_S
+        } else {
+            WEB_NEXT_S
+        };
+        if out.is_none() && self.buf.len() as f64 >= want * f64::from(rate.max(1)) {
+            out = self.take();
+        }
+        out
+    }
+
+    /// What is held (the end of a sentence), never an empty clip.
+    pub fn take(&mut self) -> Option<(Vec<f32>, u32)> {
+        if self.buf.is_empty() || self.rate == 0 {
+            return None;
+        }
+        self.clips += 1;
+        self.secs += self.buf.len() as f64 / f64::from(self.rate);
+        Some((std::mem::take(&mut self.buf), self.rate))
+    }
+}
+
 /// What a phrase is, so each kind can be switched off on its own.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
@@ -217,6 +318,13 @@ pub fn provider_of(cfg: &VoiceCfg) -> Provider {
 
 /// Load Kokoro as configured.
 pub fn load_kokoro(cfg: &VoiceCfg) -> anyhow::Result<Kokoro> {
+    load_kokoro_with(cfg, true)
+}
+
+/// Load Kokoro; `strict`: fail when the configured voice is not in the
+/// voices file (else warm up with one that is: a browser's choice is
+/// checked per sentence, and the model serves every voice).
+fn load_kokoro_with(cfg: &VoiceCfg, strict: bool) -> anyhow::Result<Kokoro> {
     let mut k = Kokoro::load(
         &expand_tilde(&cfg.kokoro_model),
         &expand_tilde(&cfg.kokoro_voices),
@@ -224,16 +332,20 @@ pub fn load_kokoro(cfg: &VoiceCfg) -> anyhow::Result<Kokoro> {
         provider_of(cfg),
         cfg.tts_threads,
     )?;
-    if k.voices.style(&cfg.kokoro_voice, 1).is_none() {
-        anyhow::bail!("voice {} is not in {}", cfg.kokoro_voice, cfg.kokoro_voices);
+    let mut voice = cfg.kokoro_voice.clone();
+    if k.voices.style(&voice, 1).is_none() {
+        if strict {
+            anyhow::bail!("voice {} is not in {}", cfg.kokoro_voice, cfg.kokoro_voices);
+        }
+        voice = k.voices.names().into_iter().next().unwrap_or_default();
     }
     // Warm up so the first real sentence is quick.
     // A medium sentence sizes onnxruntime's buffers, so the first real
     // one does not pay for growing them.
-    let _ = k.synth("Ready.", &cfg.kokoro_voice, 1.0);
+    let _ = k.synth("Ready.", &voice, 1.0);
     let _ = k.synth(
         "Claude wants to run the tests in the project folder, then commit the changes and push.",
-        &cfg.kokoro_voice,
+        &voice,
         1.0,
     );
     Ok(k)
@@ -290,6 +402,17 @@ impl Speaker {
     /// `speaking` is shared with the capture side, which stops listening
     /// while it is set (so we never hear ourselves).
     pub fn start(cfg: &VoiceCfg, speaking: Arc<AtomicBool>) -> Speaker {
+        Speaker::start_with(cfg, speaking, false)
+    }
+
+    /// The voice engine's speaker: while a browser is the voice, it speaks
+    /// to it with the browser's own engine and voice (web_tts.rs). Previews
+    /// and the CLI keep the settings they were given.
+    pub fn start_voice(cfg: &VoiceCfg, speaking: Arc<AtomicBool>) -> Speaker {
+        Speaker::start_with(cfg, speaking, true)
+    }
+
+    fn start_with(cfg: &VoiceCfg, speaking: Arc<AtomicBool>, browser: bool) -> Speaker {
         let (tx, rx) = mpsc::channel();
         let gen = Arc::new(AtomicU64::new(0));
         let player = Arc::new(Mutex::new(None));
@@ -324,6 +447,9 @@ impl Speaker {
                     ming: None,
                     out: None,
                     seq: 0,
+                    browser,
+                    web_said: None,
+                    kokoro_failed: None,
                 }
                 .run()
             });
@@ -381,6 +507,7 @@ impl Speaker {
         self.flush.store(true, Ordering::SeqCst);
         // Listening again right away (the echo reference covers the tail).
         self.speaking_flag.store(false, Ordering::SeqCst);
+        web_out(WebAudio::Stop);
         if let Some(pid) = self.player.lock().unwrap_or_else(|e| e.into_inner()).take() {
             crate::platform::kill(pid as i32, crate::platform::SIGTERM);
         }
@@ -410,6 +537,12 @@ struct Worker {
     ming: Option<super::local_tts::LocalEngine>,
     out: Option<Player>,
     seq: u64,
+    /// Follows a browser's voice choice while a browser is the voice.
+    browser: bool,
+    /// The last "browser speech with ..." line logged (once per change).
+    web_said: Option<String>,
+    /// When loading Kokoro for a browser last failed (not retried at once).
+    kokoro_failed: Option<Instant>,
 }
 
 impl Worker {
@@ -481,7 +614,11 @@ impl Worker {
                     None => format!("grok {}", self.cfg.grok.voice),
                 },
                 id @ ("chatterbox" | "ming") => {
-                    let e = if id == "ming" { &self.ming } else { &self.chatterbox };
+                    let e = if id == "ming" {
+                        &self.ming
+                    } else {
+                        &self.chatterbox
+                    };
                     let voice = super::local_tts::voice_label(id, &self.cfg);
                     match e {
                         Some(e) => match e.down_reason() {
@@ -559,8 +696,11 @@ impl Worker {
             };
             idle_since = Instant::now();
             if let Job::Say { .. } = job {
-                let chain = super::engines::chain(&self.cfg);
-                if self.kokoro.is_none() && chain.contains(&"kokoro") {
+                let (cfg, client) = self.effective();
+                let chain = super::engines::chain(&cfg);
+                if client.is_some() {
+                    self.ensure(&cfg, &chain);
+                } else if self.kokoro.is_none() && chain.contains(&"kokoro") {
                     self.load();
                 }
             }
@@ -611,20 +751,134 @@ impl Worker {
         }
     }
 
+    /// The settings to speak with now: the browser's choice on top of the
+    /// Mac's while a browser is the voice (and its client), else the Mac's.
+    fn effective(&self) -> (VoiceCfg, Option<u64>) {
+        if self.browser && web_on() {
+            if let Some((client, choice)) = super::web_tts::route() {
+                return (
+                    super::web_tts::web_cfg(&self.cfg, choice.as_ref()),
+                    Some(client),
+                );
+            }
+        }
+        (self.cfg.clone(), None)
+    }
+
+    /// Start what the browser's chain needs that the Mac's did not (the
+    /// Kokoro model once: every voice is a table in it).
+    fn ensure(&mut self, cfg: &VoiceCfg, chain: &[&str]) {
+        let retry = self
+            .kokoro_failed
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
+        if chain.contains(&"kokoro") && self.kokoro.is_none() && retry {
+            match load_kokoro_with(cfg, false) {
+                Ok(k) => {
+                    crate::log::info(&format!(
+                        "tts: kokoro loaded for the browser ({:?}, {} threads, {} ms)",
+                        k.provider, k.threads, k.load_ms
+                    ));
+                    self.kokoro = Some(k);
+                    self.kokoro_failed = None;
+                }
+                Err(e) => {
+                    crate::log::info(&format!("tts: kokoro failed for the browser: {e}"));
+                    self.kokoro_failed = Some(Instant::now());
+                }
+            }
+        }
+        if chain.contains(&"grok") && self.grok.is_none() {
+            self.grok = Some(super::engines::GrokEngine::new(cfg.grok.clone()));
+        }
+        for id in ["chatterbox", "ming"] {
+            let slot = if id == "ming" {
+                &mut self.ming
+            } else {
+                &mut self.chatterbox
+            };
+            if chain.contains(&id) && slot.is_none() {
+                let mut e = super::local_tts::LocalEngine::new(id, cfg);
+                if !audio_muted() {
+                    let _ = e.start();
+                }
+                *slot = Some(e);
+            }
+        }
+    }
+
+    /// "kokoro af_heart", "grok ara", "say Samantha": what speaks first.
+    fn speaks_with(cfg: &VoiceCfg, engine: &str) -> String {
+        match engine {
+            "kokoro" => format!("kokoro {}", cfg.kokoro_voice),
+            "grok" => format!("grok {}", cfg.grok.voice),
+            "say" => format!(
+                "say {}",
+                cfg.tts_voice.as_deref().unwrap_or("(system voice)")
+            ),
+            id @ ("chatterbox" | "ming") => {
+                format!("{id} {}", super::local_tts::voice_label(id, cfg))
+            }
+            e => e.to_string(),
+        }
+    }
+
     fn current(&self, gen: u64) -> bool {
         gen == self.gen.load(Ordering::SeqCst)
     }
 
     fn speak(&mut self, gen: u64, text: &str) {
-        if audio_muted() {
+        // A browser with voice on gets the audio; the speakers stay quiet.
+        let web = web_on();
+        if audio_muted() && !web {
             crate::log::info(&format!("tts (muted, not played): {text}"));
             return;
         }
-        let text = kokoro::apply_fixes(text, &fixes(&self.cfg));
+        // The browser's own voice while one is the voice (else the Mac's).
+        let (mut cfg, client) = if web {
+            self.effective()
+        } else {
+            (self.cfg.clone(), None)
+        };
+        let chain = super::engines::chain(&cfg);
+        if let Some(client) = client {
+            // A Kokoro voice the voices file lacks: Heart, or the Mac's.
+            if let Some(k) = &self.kokoro {
+                if k.voices.style(&cfg.kokoro_voice, 1).is_none() {
+                    cfg.kokoro_voice = ["af_heart", self.cfg.kokoro_voice.as_str()]
+                        .into_iter()
+                        .find(|v| k.voices.style(v, 1).is_some())
+                        .unwrap_or("af_heart")
+                        .to_string();
+                }
+            }
+            let first = chain.first().copied().unwrap_or("nothing");
+            let mut line = Self::speaks_with(&cfg, first);
+            if first != cfg.tts_engine {
+                line = format!("{line} ({} is unavailable here)", cfg.tts_engine);
+            }
+            let line = format!("voice: browser speech with {line} (client {client})");
+            if self.web_said.as_deref() != Some(line.as_str()) {
+                crate::log::info(&line);
+                self.web_said = Some(line);
+            }
+        } else {
+            self.web_said = None;
+        }
+        // Voices and speed for this reply (a change applies from the next).
+        if let Some(g) = self.grok.as_mut() {
+            g.cfg = cfg.grok.clone();
+        }
+        for e in [&mut self.chatterbox, &mut self.ming].into_iter().flatten() {
+            e.set_cfg(&cfg);
+        }
+        let text = kokoro::apply_fixes(text, &fixes(&cfg));
         let t0 = Instant::now();
         let mut first = true;
-        let chain = super::engines::chain(&self.cfg);
-        if self.out.is_none() && !chain.is_empty() {
+        // Seconds of audio sent to the browser, from when the first went.
+        let mut web_s = 0f64;
+        let mut web_t0: Option<Instant> = None;
+        let mut batch = WebBatch::default();
+        if !web && self.out.is_none() && !chain.is_empty() {
             let t = Instant::now();
             match Player::open(&self.cfg.output_device, Arc::clone(&self.flush)) {
                 Ok(p) => {
@@ -671,6 +925,21 @@ impl Worker {
                     ));
                     first = false;
                 }
+                if web {
+                    if samples.is_empty() {
+                        return true;
+                    }
+                    let v: Vec<f32> = samples.iter().map(|x| x * vol).collect();
+                    let Some((clip, r)) = batch.push(&v, rate) else {
+                        return true;
+                    };
+                    let n = clip.len();
+                    if web_out(WebAudio::Pcm(clip, r)) {
+                        web_t0.get_or_insert_with(Instant::now);
+                        web_s += n as f64 / r.max(1) as f64;
+                        return true;
+                    }
+                }
                 match out {
                     Some(o) => o.push(samples, rate, vol),
                     None => {
@@ -681,13 +950,13 @@ impl Worker {
                 true
             };
             let mut say = super::engines::SayEngine {
-                voice: self.cfg.tts_voice.clone(),
+                voice: cfg.tts_voice.clone(),
                 speed,
                 dir: say_dir.clone(),
             };
             let mut kk = self.kokoro.as_mut().map(|k| super::engines::KokoroEngine {
                 k,
-                voice: self.cfg.kokoro_voice.clone(),
+                voice: cfg.kokoro_voice.clone(),
                 speed,
             });
             let mut engines: Vec<&mut dyn super::engines::TtsEngine> = vec![];
@@ -718,6 +987,14 @@ impl Worker {
             let (who, failed) =
                 super::engines::speak_with_fallback(&mut engines, &sentence, &mut sink);
             drop(engines);
+            // The rest of the sentence, as one clip.
+            if let Some((clip, r)) = batch.take() {
+                let n = clip.len();
+                if self.current(gen) && web_out(WebAudio::Pcm(clip, r)) {
+                    web_t0.get_or_insert_with(Instant::now);
+                    web_s += n as f64 / r.max(1) as f64;
+                }
+            }
             for (name, why) in &failed {
                 crate::log::info(&format!("tts: {name} failed on {sentence:?}: {why}"));
                 // A local voice that fails says so once, in plain words
@@ -751,8 +1028,8 @@ impl Worker {
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
                 if now.contains("loading") || now.contains("unavailable") {
-                    let chain = super::engines::chain(&self.cfg);
-                    self.set_engine(self.describe(&chain, None));
+                    let mac = super::engines::chain(&self.cfg);
+                    self.set_engine(self.describe(&mac, None));
                 }
                 let ms = [&self.chatterbox, &self.ming]
                     .into_iter()
@@ -789,6 +1066,22 @@ impl Worker {
             }
         }
         self.wait_fallback(&mut fallback);
+        // The browser plays it in real time: speaking lasts that long (the
+        // mic side stays deaf to it), unless it is cut off.
+        if let Some(t) = web_t0 {
+            crate::log::info(&format!(
+                "tts: {:.1} s of speech to the browser in {} clips",
+                web_s, batch.clips
+            ));
+            let end = t + Duration::from_secs_f64(web_s + 0.15);
+            while Instant::now() < end {
+                if self.flush.swap(false, Ordering::SeqCst) || !self.current(gen) {
+                    web_out(WebAudio::Stop);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        }
         // Wait for the queued audio to play out, or for an interrupt.
         while let Some(out) = &self.out {
             if self.flush.swap(false, Ordering::SeqCst) || !self.current(gen) {
@@ -1042,5 +1335,29 @@ mod tests {
         let (e, why) = effective_engine(&c);
         assert_eq!(e, "say");
         assert!(why.is_some());
+    }
+
+    #[test]
+    fn browser_speech_goes_as_few_clips_never_empty() {
+        let mut b = WebBatch::default();
+        let mut clips = vec![];
+        // A streaming engine: 40 ms pieces, some empty, 3 s in all.
+        for i in 0..75 {
+            let piece = if i % 5 == 0 {
+                vec![]
+            } else {
+                vec![0.1f32; 1200]
+            };
+            clips.extend(b.push(&piece, 24000));
+        }
+        clips.extend(b.take());
+        assert!(b.take().is_none(), "nothing held after the end");
+        assert!(clips.iter().all(|(c, _)| !c.is_empty()));
+        assert!(clips.len() <= 4, "{} clips", clips.len());
+        // The first one starts the reply quickly.
+        assert!(clips[0].0.len() <= 24000 / 2);
+        let total: usize = clips.iter().map(|(c, _)| c.len()).sum();
+        assert_eq!(total, 60 * 1200);
+        assert_eq!(b.clips, clips.len());
     }
 }

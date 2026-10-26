@@ -1,0 +1,40 @@
+Starting local login server on http://localhost:1455.
+If your browser did not open, navigate to this URL to authenticate:
+
+https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&re
+direct_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid%20profile%20email%20offline_
+access%20api.connectors.read%20api.connectors.invoke&code_challenge=sr10ROfWPko5L1T96jgxFjH5eS8amK9l
+hyaktPGX11k&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=tru
+e&state=susrNasPW05Qrf5nyErBgLifP-g_PzG08ylHSDDV96c&originator=codex_cli_rs
+
+On a remote or headless machine? Use `codex login --device-auth` instead.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

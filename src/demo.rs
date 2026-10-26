@@ -256,7 +256,10 @@ fn acct(name: &str) -> Option<&'static crate::demo_seed::Acct> {
 /// is never read.
 pub fn browser_env() -> crate::browser::Env {
     crate::browser::Env {
-        bin_dirs: vec![],
+        // No bsk, unless an end to end test hands the demo a fake one.
+        bin_dirs: crate::config::env_var("DEMO_BSK_DIR")
+            .map(|d| vec![std::path::PathBuf::from(d)])
+            .unwrap_or_default(),
         chrome_root: home().join("chrome"),
         timeout: std::time::Duration::from_secs(2),
         skill_sources: vec![],

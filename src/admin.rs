@@ -400,6 +400,7 @@ pub struct Install {
 
 /// The source of an install, as the model gives it.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Source {
     Catalog(Entry),
     Url { url: String, transport: String },

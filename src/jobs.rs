@@ -139,6 +139,10 @@ pub struct Job {
     /// Adopted from a session loop: its id there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adopted_from: Option<String>,
+    /// The machine it runs on, for a job with no session (GodTerm Sync;
+    /// a job with a session runs where its lease is).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
 }
 
 impl Job {
@@ -183,13 +187,13 @@ pub fn local_words(t: i64) -> String {
 pub fn every_words(n: u32) -> String {
     if n == 1 {
         "every minute".into()
-    } else if n % 1440 == 0 {
+    } else if n.is_multiple_of(1440) {
         if n == 1440 {
             "every day".into()
         } else {
             format!("every {} days", n / 1440)
         }
-    } else if n % 60 == 0 {
+    } else if n.is_multiple_of(60) {
         if n == 60 {
             "every hour".into()
         } else {
@@ -425,11 +429,10 @@ pub fn path() -> PathBuf {
 }
 
 impl Store {
+    /// The saved jobs; a damaged file is moved aside (recover.rs), not
+    /// overwritten by the next save.
     pub fn load() -> Store {
-        std::fs::read_to_string(path())
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+        crate::recover::load_json(&path()).unwrap_or_default()
     }
 
     /// Write atomically (a temp file, then rename), owner only.
@@ -539,6 +542,7 @@ mod tests {
             runs: 0,
             finished: None,
             adopted_from: None,
+            machine: None,
         }
     }
 

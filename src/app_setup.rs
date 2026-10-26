@@ -403,6 +403,8 @@ impl App {
                 }
             }
         }
+        // The Add account form, if open, shows the new state.
+        self.refresh_add_form();
         if voice && self.voice.engine.is_some() {
             let wake = self.voice.always_on;
             crate::log::info("setup: restarting the voice engine on the new pieces");

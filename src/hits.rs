@@ -144,12 +144,29 @@ pub enum UiAction {
     BrowserSkill,
     /// Settings > Browser: the next Chrome profile as the default for links.
     BrowserDefault,
+    /// Settings > Browser: sign in and Remote Control links in that
+    /// profile, or the system browser.
+    BrowserLoginLinks,
     /// The Browser button on pane `.0`'s bottom bar: its dialog.
     TabBrowser(usize),
     /// A profile row of the Browser dialog.
     BrowserRow(usize),
     /// The Browser dialog's "No browser".
     BrowserClear,
+    /// The Git section: a key press (its buttons).
+    GitKey(char),
+    /// The Git section: row `.0` (an action or a branch).
+    GitRow(usize),
+    /// A tab's git warning badge: open its Git section (pane, tab).
+    GitOpen(usize, usize),
+    /// Settings > GitHub: open the accounts and rules editor.
+    GitCfgOpen,
+    /// The accounts and rules editor: a key press (its buttons).
+    GitCfgKey(char),
+    /// The accounts and rules editor: selectable row `.0`.
+    GitCfgRow(usize),
+    /// The Browser dialog: bring up the tab's Chrome profile.
+    BrowserOpenTab,
     /// The assistant panel's input (or anywhere in it): give it the keys.
     AssistantFocus,
     /// The chat's scrollbar column.
@@ -311,6 +328,8 @@ pub enum UiAction {
     MenuOpen(crate::menus::MenuId),
     MenuRow(crate::menus::MenuId, usize),
     Menu(crate::menus::Cmd),
+    /// A row of Find in every tab: go to that tab.
+    FindAllRow(usize),
     /// The Voice dropdown (menu bar button, status bar chip), its rows.
     VoiceMenu,
     /// The mic badge on the pane (which) that holds the voice in direct

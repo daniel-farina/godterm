@@ -24,6 +24,7 @@ pub enum TabAct {
     CopyPath,
     Finder,
     Terminal,
+    Git,
     TalkDirect,
     Archive,
     Close,
@@ -149,6 +150,13 @@ impl App {
                 None,
             ),
             row(
+                Git,
+                "Git...",
+                'G',
+                "Status, commit, push and pull, branches, the GitHub repo (nothing happens without your yes)",
+                None,
+            ),
+            row(
                 TalkDirect,
                 if self.direct_with(tab.uid) {
                     "Stop talking directly"
@@ -185,7 +193,9 @@ impl App {
     pub fn panel_rows(&self, s: usize, t: usize) -> Vec<TabActRow> {
         self.tab_actions(s, t)
             .into_iter()
-            .filter(|r| r.act != TabAct::Move)
+            // Move is the panel's top section; Git opens its own section
+            // from the right click menu (the panel stays 80x24).
+            .filter(|r| r.act != TabAct::Move && r.act != TabAct::Git)
             .collect()
     }
 
@@ -254,6 +264,7 @@ impl App {
                 self.jump_to(s, t);
                 self.terminal_here(s);
             }
+            TabAct::Git => self.open_git(s, t),
             TabAct::TalkDirect => {
                 if self.direct_with(uid) {
                     self.end_direct("tab menu", true);

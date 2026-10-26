@@ -52,6 +52,7 @@ pub(crate) fn job_for(app: &App, s: usize, t: usize, name: &str, prompt: &str, e
         runs: 0,
         finished: None,
         adopted_from: None,
+        machine: None,
     }
 }
 
@@ -955,6 +956,9 @@ fn a_moved_tabs_jobs_follow_it_to_its_new_id_and_account() {
     assert_eq!(j.target.uid, Some(9001));
     assert_eq!(j.target.account, "account3");
     assert_ne!(app.jobs.find(&other).unwrap().target.uid, Some(9001));
-    assert_eq!(crate::jobs::Store::load().find(&id).unwrap().target.uid, Some(9001));
+    assert_eq!(
+        crate::jobs::Store::load().find(&id).unwrap().target.uid,
+        Some(9001)
+    );
     let _ = std::fs::remove_dir_all(home);
 }

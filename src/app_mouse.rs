@@ -15,36 +15,51 @@ const WHEEL_STREAM: Duration = Duration::from_millis(60);
 pub const TOUR: &[(&str, &str)] = &[
     (
         "Menu bar",
-        "Tabs, View, Voice and Settings are menus, like the macOS menu bar: click one (then hover across to the others), pick with the mouse or arrows and Enter, Esc or a click outside closes. Each item shows its Ctrl-a shortcut. Approvals and the Mic mute (solid red ● MUTED when muted) are one click. To come back here, the grid of all your sessions, click the ◆ GodTerm logo (or Grid) or press Esc.",
+        "Tabs, View, Voice and Settings are menus: click one, then pick an item. Each item shows its Ctrl-a key. Esc, or the ◆ GodTerm logo, brings you back to this grid. Lost? Ctrl-a : finds any action by name.",
     ),
     (
         "Panes",
-        "Every account side by side, each logged in separately (more than fit go on pages). Click a pane to focus it; what you type goes to the focused claude.",
+        "Each account gets a pane, each with its own login. Click a pane to focus it; what you type goes to its session.",
     ),
     (
         "Tabs",
-        "Each pane lists its tabs (left by default; right or top with Ctrl-a S or the account menu). Click a tab to switch, double click for its panel (Move to another account plus every option: name, session title, color, pin, group, restart, folder, close), right click for the same options, x to close, + New tab to add one, « to collapse the list.",
+        "A pane lists its tabs. Click one to switch, + New tab (Ctrl-a t) adds one, x closes it (Ctrl-a W brings it back). Right click a tab to rename, move it to another account, pin or color it.",
     ),
     (
         "Usage footer",
-        "How much is left in the 5 hour and weekly windows for that account. Click it to open the dashboard for the account.",
+        "What is left in this account's 5 hour and weekly limits. Click it for the dashboard.",
     ),
     (
         "Approvals",
-        "Tabs start in bypass mode (the badge in each header; click it to change). In other modes, or for claude's one time bypass warning, Approve / Always / Deny buttons appear under the pane and the Approvals button lists every waiting tab.",
+        "Tabs start in bypass mode (the badge in each header; click it to change). In other modes Approve, Always and Deny buttons show under the pane, and Approvals lists every tab that waits.",
     ),
     (
         "Status bar",
-        "Modes show as chips at the bottom left, always in the same order: the voice mode (click to change it), MEM SAVER, PRIVACY, ZOOMED, the assistant's account, UNDO MOVE. Click a chip to change or undo it.",
+        "Chips at the bottom left show what is on: voice, memory saver, privacy, zoom. Click one to change it. The right side says what keys work where you are.",
     ),
     (
         "Voice",
-        "Click Mic (or Ctrl-a space) and say what you want: \"open a tab on account two\", \"what did it say\". The Voice menu picks push to talk, wake word or open mic.",
+        "Click Mic (or Ctrl-a space) and say what you want: \"open a tab on account two\", \"what did it say\". Ctrl-a ? lists every key, Ctrl-a T replays this tour.",
     ),
 ];
 
 /// Encode a mouse event for a child that enabled mouse reporting (SGR).
+#[cfg(test)]
 pub fn encode_mouse(m: &MouseEvent, col: u16, row: u16) -> Option<Vec<u8>> {
+    encode_mouse_as(m, col, row, vt100::MouseProtocolEncoding::Sgr)
+}
+
+/// Encode a mouse event in the encoding the child turned on: SGR (1006)
+/// `ESC [ < b ; x ; y M/m`, else the classic X10 `ESC [ M b x y` with
+/// each value plus 32 in one byte (UTF-8, mode 1005, for values past 127).
+/// None for an event that has no report, or a cell too far right or down
+/// for the classic encoding (xterm sends nothing then either).
+pub fn encode_mouse_as(
+    m: &MouseEvent,
+    col: u16,
+    row: u16,
+    enc: vt100::MouseProtocolEncoding,
+) -> Option<Vec<u8>> {
     let (code, release) = match m.kind {
         MouseEventKind::Down(b) => (button_code(b), false),
         MouseEventKind::Up(b) => (button_code(b), true),
@@ -54,25 +69,86 @@ pub fn encode_mouse(m: &MouseEvent, col: u16, row: u16) -> Option<Vec<u8>> {
         MouseEventKind::Moved => (35, false),
         _ => return None,
     };
-    let mut code = code;
+    let mut mods = 0;
     if m.modifiers.contains(KeyModifiers::SHIFT) {
-        code += 4;
+        mods += 4;
     }
     if m.modifiers.contains(KeyModifiers::ALT) {
-        code += 8;
+        mods += 8;
     }
     if m.modifiers.contains(KeyModifiers::CONTROL) {
-        code += 16;
+        mods += 16;
     }
-    Some(
-        format!(
-            "\x1b[<{code};{};{}{}",
-            col + 1,
-            row + 1,
-            if release { 'm' } else { 'M' }
-        )
-        .into_bytes(),
-    )
+    if enc == vt100::MouseProtocolEncoding::Sgr {
+        return Some(
+            format!(
+                "\x1b[<{};{};{}{}",
+                code + mods,
+                col + 1,
+                row + 1,
+                if release { 'm' } else { 'M' }
+            )
+            .into_bytes(),
+        );
+    }
+    // The classic encodings have no button on a release (3: "released").
+    let b = if release { 3 } else { code } + mods;
+    let mut out = b"\x1b[M".to_vec();
+    for v in [b as u32 + 32, col as u32 + 33, row as u32 + 33] {
+        if enc == vt100::MouseProtocolEncoding::Utf8 {
+            let c = char::from_u32(v).filter(|_| v < 2048)?;
+            let mut buf = [0; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        } else {
+            out.push(u8::try_from(v).ok()?);
+        }
+    }
+    Some(out)
+}
+
+/// What `n` wheel notches at screen cell (col, row) send the app of
+/// `screen`, as the terminal UI's wheel over a pane does: mouse reports in
+/// the app's own encoding when it turned reporting on, else arrow keys on
+/// the alternate screen (the terminal's "alternate scroll"). None when the
+/// app takes no wheel (the main screen without mouse reports: the history
+/// is the terminal's to scroll).
+pub fn wheel_input(
+    screen: &vt100::Screen,
+    up: bool,
+    n: u16,
+    col: u16,
+    row: u16,
+) -> Option<Vec<u8>> {
+    let n = n.clamp(1, WHEEL_BURST) as usize;
+    let (rows, cols) = screen.size();
+    let (col, row) = (
+        col.min(cols.saturating_sub(1)),
+        row.min(rows.saturating_sub(1)),
+    );
+    if screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None {
+        let m = MouseEvent {
+            kind: if up {
+                MouseEventKind::ScrollUp
+            } else {
+                MouseEventKind::ScrollDown
+            },
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        return encode_mouse_as(&m, col, row, screen.mouse_protocol_encoding())
+            .map(|b| b.repeat(n));
+    }
+    if screen.alternate_screen() {
+        let key: &[u8] = match (up, screen.application_cursor()) {
+            (true, true) => b"\x1bOA",
+            (true, false) => b"\x1b[A",
+            (false, true) => b"\x1bOB",
+            (false, false) => b"\x1b[B",
+        };
+        return Some(key.repeat(n));
+    }
+    None
 }
 
 /// A wheel event (up or down).
@@ -331,6 +407,7 @@ impl App {
                         self.modal,
                         Modal::Help
                             | Modal::Palette(_)
+                            | Modal::FindAll(_)
                             | Modal::Approvals(_)
                             | Modal::AccountMenu(..)
                     ) {
@@ -618,16 +695,17 @@ impl App {
             return false;
         }
         let t = self.panes[i].cur_mut();
-        let mode = t
-            .parser
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .screen()
-            .mouse_protocol_mode();
+        let (mode, enc) = {
+            let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                p.screen().mouse_protocol_mode(),
+                p.screen().mouse_protocol_encoding(),
+            )
+        };
         if mode == vt100::MouseProtocolMode::None || !t.is_running() {
             return false;
         }
-        if let Some(b) = encode_mouse(m, m.column - term.x, m.row - term.y) {
+        if let Some(b) = encode_mouse_as(m, m.column - term.x, m.row - term.y, enc) {
             t.write(&b.repeat(n.max(1)));
             return true;
         }
@@ -1613,7 +1691,35 @@ impl App {
                 self.browser_choose(i);
             }
             UiAction::BrowserClear => self.browser_clear(),
+            UiAction::GitRow(i) => self.git_click_row(i),
+            UiAction::GitOpen(s, t) => self.open_git(s, t),
+            UiAction::GitCfgOpen => self.open_gitcfg(),
+            UiAction::GitCfgRow(i) => self.gitcfg_click_row(i),
+            UiAction::GitCfgKey(c) => {
+                let code = match c {
+                    '\n' => crossterm::event::KeyCode::Enter,
+                    '\x1b' => crossterm::event::KeyCode::Esc,
+                    c => crossterm::event::KeyCode::Char(c),
+                };
+                self.on_gitcfg_key(crossterm::event::KeyEvent::from(code));
+            }
+            UiAction::GitKey(c) => {
+                let code = match c {
+                    '\n' => crossterm::event::KeyCode::Enter,
+                    '\x1b' => crossterm::event::KeyCode::Esc,
+                    c => crossterm::event::KeyCode::Char(c),
+                };
+                self.on_git_key(crossterm::event::KeyEvent::from(code));
+            }
+            UiAction::FindAllRow(i) => self.find_all_go(i),
+            UiAction::BrowserOpenTab => {
+                if let Modal::Browser(d) = &self.modal {
+                    let uid = d.uid;
+                    self.open_tab_chrome(uid);
+                }
+            }
             UiAction::BrowserDefault => self.browser_default_cycle(),
+            UiAction::BrowserLoginLinks => self.toggle_login_links(),
             UiAction::LoopsDrawerEdge(i) => {
                 self.focus = i;
                 self.loops_drawer_focus = Some(i);
@@ -1778,9 +1884,7 @@ impl App {
             Modal::ConfirmBypass(..)
             | Modal::OfferRestart(_)
             | Modal::ConfirmRemoveAccount(_)
-            | Modal::ConfirmLocalVoice(..) => {
-                self.on_key(enter)
-            }
+            | Modal::ConfirmLocalVoice(..) => self.on_key(enter),
             Modal::AccountMenu(_, sel) => {
                 let sel = *sel;
                 self.click_row(List::AccountMenu, sel, false);
@@ -1866,5 +1970,60 @@ mod tests {
             ..m
         };
         assert_eq!(encode_mouse(&wheel, 9, 9).unwrap(), b"\x1b[<81;10;10M");
+    }
+
+    #[test]
+    fn classic_and_utf8_encodings() {
+        use vt100::MouseProtocolEncoding as E;
+        let m = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(encode_mouse_as(&m, 4, 2, E::Default).unwrap(), b"\x1b[M`%#");
+        let up = MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            ..m
+        };
+        assert_eq!(
+            encode_mouse_as(&up, 0, 0, E::Default).unwrap(),
+            b"\x1b[M#!!"
+        );
+        // Past column 222 the classic encoding has no byte; UTF-8 does.
+        assert!(encode_mouse_as(&m, 230, 0, E::Default).is_none());
+        let u = encode_mouse_as(&m, 230, 0, E::Utf8).unwrap();
+        assert_eq!(u, "\x1b[M`\u{107}!".as_bytes());
+    }
+
+    #[test]
+    fn wheel_input_follows_the_apps_modes() {
+        let mut p = vt100::Parser::new(10, 40, 0);
+        // The main screen, no reports: the terminal's own history.
+        assert!(wheel_input(p.screen(), true, 3, 1, 1).is_none());
+        // Reports in SGR (Claude Code's fullscreen view): one per notch,
+        // at the cell given, clamped to the screen.
+        p.process(b"\x1b[?1049h\x1b[?1003h\x1b[?1006h");
+        assert_eq!(
+            wheel_input(p.screen(), true, 2, 4, 2).unwrap(),
+            b"\x1b[<64;5;3M\x1b[<64;5;3M"
+        );
+        assert_eq!(
+            wheel_input(p.screen(), false, 1, 99, 99).unwrap(),
+            b"\x1b[<65;40;10M"
+        );
+        // The classic encoding when 1006 is off.
+        p.process(b"\x1b[?1006l");
+        assert_eq!(
+            wheel_input(p.screen(), true, 1, 0, 0).unwrap(),
+            b"\x1b[M`!!"
+        );
+        // No reports on the alternate screen: arrow keys (application
+        // cursor mode too).
+        p.process(b"\x1b[?1003l\x1b[?1h");
+        assert_eq!(
+            wheel_input(p.screen(), false, 2, 0, 0).unwrap(),
+            b"\x1bOB\x1bOB"
+        );
     }
 }

@@ -1,0 +1,21 @@
+• Running printf 'hello' > t.txt
+
+  Would you like to run the following
+  command?
+
+  Environment: local
+
+  Reason: May I create t.txt containing
+  hello? The filesystem sandbox is
+  read-only.
+
+  $ printf 'hello' > t.txt
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for
+     commands that start with `printf
+     'hello' > t.txt` (p)
+  3. No, and tell Codex what to do
+     differently (esc)
+
+  Press enter to confirm or esc to cancel

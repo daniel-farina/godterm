@@ -26,6 +26,8 @@ serde_json = "1"
 signal-hook = "0.3"
 libc = "0.2"
 sha2 = "0.10"
+# The web app served from a folder is gzipped like the built in one.
+flate2 = "1"
 toml = "0.8"
 toml_edit = "0.22"
 unicode-width = "0.2"
@@ -37,6 +39,14 @@ ndarray = "0.16"
 cpal = "0.15"
 nnnoiseless = { version = "0.5", default-features = false }
 minisign-verify = "0.2"
+# Web Push: VAPID signing and RFC 8291 encryption (already in the tree
+# through rustls).
+ring = "0.17"
+# The web app's WebSocket (sync, on plain threads; see src/web).
+tungstenite = "0.28"
+# Git sync: secret patterns and the [git] rules' globs.
+regex = "1"
+glob = "0.3"
 
 # Windows: the control socket over AF_UNIX (Windows 10 1803+), and process
 # control for the platform shims.
@@ -53,6 +63,11 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSDictionary", "NSObject", "NSValue"] }
 objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "MPRemoteCommand", "MPRemoteCommandCenter", "MPRemoteCommandEvent", "MPNowPlayingInfoCenter", "MPMediaItem"] }
+
+# build.rs embeds web/ gzipped, with a hash of it as the build id.
+[build-dependencies]
+flate2 = "1"
+sha2 = "0.10"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

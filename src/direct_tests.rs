@@ -93,7 +93,7 @@ impl Drop for Rig {
 }
 
 /// An app whose tab "claudego" runs the stub (with a transcript), and
-/// with `second`, a tab "botmesh" too.
+/// with `second`, a tab "fotmesh" too.
 fn rig(tag: &str, mode: &str, second: bool) -> Option<Rig> {
     use crate::creds::CredSource;
     if !have_python() {
@@ -148,11 +148,11 @@ fn rig(tag: &str, mode: &str, second: bool) -> Option<Rig> {
     }
     app.launch_tab(0, 0, crate::pane::LaunchKind::Normal);
     if second {
-        let w2 = home.join("botmesh");
+        let w2 = home.join("fotmesh");
         std::fs::create_dir_all(&w2).unwrap();
         std::fs::write(w2.join("mode"), "ready").unwrap();
         let i = app.panes[0].add_tab(w2.clone());
-        app.panes[0].tabs[i].custom_name = Some("botmesh".into());
+        app.panes[0].tabs[i].custom_name = Some("fotmesh".into());
         app.launch_tab(0, i, crate::pane::LaunchKind::Normal);
     }
     let uid = app.panes[0].tabs[0].uid;
@@ -477,35 +477,35 @@ fn the_assistant_gets_a_summary_on_exit() {
     assert!(!r.submitted().contains("usage"));
 }
 
-/// "talk to botmesh" switches the target; the next utterance goes there.
+/// "talk to fotmesh" switches the target; the next utterance goes there.
 #[test]
 fn talk_to_another_tab_switches() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut r) = rig("switch", "ready", true) else {
         return;
     };
-    let w2 = r.home.join("botmesh");
-    r.until(20, "botmesh ready", |r| {
+    let w2 = r.home.join("fotmesh");
+    r.until(20, "fotmesh ready", |r| {
         r.app.panes[0].tabs[1].activity == crate::pane::Activity::Ready
     });
     r.enter();
     let other = r.app.panes[0].tabs[1].uid;
-    r.hear("Talk to botmesh.");
+    r.hear("Talk to fotmesh.");
     assert!(r.app.direct_with(other), "{}", r.said());
     assert!(
-        r.said().contains("You're now talking to botmesh directly."),
+        r.said().contains("You're now talking to fotmesh directly."),
         "{}",
         r.said()
     );
     r.hear("Rebuild the index please.");
-    r.until(20, "the paste in botmesh", |_| {
+    r.until(20, "the paste in fotmesh", |_| {
         std::fs::read_to_string(w2.join("submitted.txt"))
             .unwrap_or_default()
             .contains("Rebuild the index")
     });
     assert!(!r.submitted().contains("Rebuild"));
     assert!(
-        !r.submitted().contains("botmesh"),
+        !r.submitted().contains("fotmesh"),
         "the switch is not typed in"
     );
     // The first tab's part is kept for the assistant.

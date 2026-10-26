@@ -95,10 +95,10 @@ fn matrix(app: &mut crate::app::App, mode: &str, plain_runs: bool, ptt: bool) {
         asked(app).is_empty() || !asked(app).last().unwrap().is_empty(),
         "{mode}: nothing empty sent"
     );
-    hear(app, "what is running in botmesh", false);
+    hear(app, "what is running in fotmesh", false);
     assert_eq!(
         asked(app).last().map(String::as_str),
-        Some("what is running in botmesh"),
+        Some("what is running in fotmesh"),
         "{mode}: the follow up runs"
     );
     done_turn(app);
@@ -179,7 +179,7 @@ fn paused_then_wake_resumes() {
     app.voice.always_on = true;
     // During a pause other speech is dropped.
     app.pause_listening(Some(60), None);
-    hear(&mut app, "what is running in botmesh", false);
+    hear(&mut app, "what is running in fotmesh", false);
     assert!(app.paused() && asked(&app).is_empty());
     hear(&mut app, "Thank you.", false);
     assert!(app.paused());
@@ -188,8 +188,8 @@ fn paused_then_wake_resumes() {
     assert!(!app.paused());
     assert_eq!(app.voice.said_wake.last().unwrap(), "I'm back.");
     assert!(app.voice.wake_until.is_some());
-    hear(&mut app, "what is running in botmesh", false);
-    assert_eq!(asked(&app).last().unwrap(), "what is running in botmesh");
+    hear(&mut app, "what is running in fotmesh", false);
+    assert_eq!(asked(&app).last().unwrap(), "what is running in fotmesh");
     done_turn(&mut app);
     // The wake word with a command resumes and runs it.
     app.pause_listening(Some(60), None);

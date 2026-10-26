@@ -128,7 +128,10 @@ mod tests {
     fn kokoro_table_is_the_28_english_voices() {
         assert_eq!(KOKORO_EN.len(), 28);
         assert_eq!(KOKORO_EN[0].0, "af_heart");
-        assert_eq!(kokoro_label("af_heart").unwrap(), "American female, grade A");
+        assert_eq!(
+            kokoro_label("af_heart").unwrap(),
+            "American female, grade A"
+        );
         assert_eq!(kokoro_label("bm_george").unwrap(), "British male, grade C");
         assert!(kokoro_label("zf_xiaobei").is_none());
         assert_eq!(kokoro_name("af_heart"), "Heart");

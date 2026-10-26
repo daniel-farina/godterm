@@ -173,6 +173,27 @@ impl App {
         v
     }
 
+    /// Why a tab of `slot` cannot move to account `target`: a CLI whose
+    /// sessions GodTerm does not read, or an account of another harness
+    /// (a Claude conversation cannot continue on Grok). None: it can.
+    pub fn move_refusal(&self, slot: usize, target: usize) -> Option<String> {
+        let src = self.panes.get(slot)?.account?;
+        let from = self.cfg.accounts.get(src)?.harness();
+        if let Some(why) = from.no_move_reason() {
+            return Some(why);
+        }
+        let to = self.cfg.accounts.get(target)?;
+        (to.harness() != from).then(|| {
+            format!(
+                "{} is a {} account: a {} conversation moves only to another {} account",
+                to.display(),
+                to.harness().label(),
+                from.label(),
+                from.label()
+            )
+        })
+    }
+
     /// Double click on a tab, Ctrl-a m, the tab menu, voice.
     pub fn open_move_picker(&mut self, slot: usize, tab: usize, copy: bool) {
         if self.panes.get(slot).and_then(|s| s.tabs.get(tab)).is_none() {
@@ -244,7 +265,7 @@ impl App {
             Ok(Some(id)) => self.flash(format!(
                 "Copied the session to {}; resume it there from Sessions ({})",
                 self.cfg.accounts[target].display(),
-                &id[..id.len().min(8)]
+                crate::paths::head(&id, 8)
             )),
             Ok(None) => self.flash("This tab has no conversation to copy yet"),
             Err(e) => self.flash(format!("Could not copy the session: {e}")),
@@ -292,7 +313,8 @@ impl App {
         let Some(t) = self.panes.get(slot).and_then(|s| s.tabs.get(tab)) else {
             return;
         };
-        if t.is_running() && matches!(t.activity, Activity::Working) {
+        // Working or background work running: a move would stop it.
+        if self.tab_has_running_work(slot, tab) {
             self.modal = Modal::MoveBusy(QueuedMove {
                 uid: t.uid,
                 target,
@@ -378,7 +400,7 @@ impl App {
         let Some(src_acct) = self.panes[slot].account else {
             return;
         };
-        if let Some(why) = self.cfg.accounts[src_acct].harness().no_move_reason() {
+        if let Some(why) = self.move_refusal(slot, target) {
             self.flash(why);
             return;
         }
@@ -464,9 +486,7 @@ impl App {
         let queued = std::mem::take(&mut self.queued_moves);
         for q in queued {
             match self.find_tab(q.uid) {
-                Some((s, t)) if matches!(self.panes[s].tabs[t].activity, Activity::Working) => {
-                    self.queued_moves.push(q)
-                }
+                Some((s, t)) if self.tab_has_running_work(s, t) => self.queued_moves.push(q),
                 Some((s, t)) => self.move_tab_now(s, t, q.target, q.copy, q.same_folder),
                 None => {}
             }

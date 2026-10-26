@@ -17,6 +17,12 @@ nothing is public until a maintainer publishes the draft.
 | `GodTerm-<v>-windows-x64-setup.exe` | per user Windows installer (Inno Setup): Start menu entry, optional PATH and desktop icon, clean uninstall. Unsigned (no Authenticode certificate yet) |
 | `SHA256SUMS` (+ `SHA256SUMS.minisig` or `.asc` when a key is set up) | checksums of everything above |
 
+The minisig's signed (trusted) comment carries `version:<v>` (all.sh passes
+the Cargo.toml version to `minisign.py sign`). The self updater refuses a
+release whose signature lacks it or names another version, so sign every
+release through all.sh, or by hand with
+`minisign.py sign <key> SHA256SUMS <v>`.
+
 ## Repositories
 
 - `daniel-farina/godterm` (public): one squashed history. Never push local

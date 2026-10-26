@@ -32,6 +32,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn btn(
     buf: &mut Buffer,
     app: &App,
@@ -94,6 +95,7 @@ fn draw_full(f: &mut Frame, app: &mut App, p: Phase, area: Rect) {
     let limit = x + w;
     // The wordmark, then where we are.
     let step = match p {
+        Phase::Welcome if app.cfg.accounts.is_empty() => crate::first_run::step_label(1),
         Phase::Welcome => String::new(),
         Phase::Install => "voice setup 1 of 3: pieces".into(),
         Phase::Mic => "voice setup 2 of 3: mic".into(),
@@ -188,9 +190,9 @@ fn welcome(f: &mut Frame, app: &mut App, r: Rect, limit: u16) {
         x + 2,
         y,
         limit,
-        "Esc  Skip",
+        "Esc  Skip voice",
         ob::BTN_SKIP_ALL,
-        "Go straight to GodTerm (replay it later from the palette)",
+        "Go on without voice (turn it on later: palette > voice onboarding)",
     );
     let listening = app.voice.engine.is_some();
     let hint = if listening {
@@ -205,6 +207,17 @@ fn welcome(f: &mut Frame, app: &mut App, r: Rect, limit: u16) {
     );
     if let Some(m) = meter_line(app) {
         para(f, Rect::new(r.x, y + 4, r.width, 1), vec![m]);
+    }
+    // A brand new home: what comes after this screen.
+    if app.onb.on.as_ref().is_some_and(|o| o.login_walk) || app.cfg.accounts.is_empty() {
+        para(
+            f,
+            Rect::new(r.x, y + 10, r.width, 1),
+            vec![Line::from(vec![
+                s("Getting started   ", FAINT),
+                s(crate::first_run::roadmap(), DIM),
+            ])],
+        );
     }
     if let Some(h) = app.onb.on.as_ref().and_then(|o| o.heard.clone()) {
         para(

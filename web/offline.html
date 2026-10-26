@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="refresh" content="5">
+<meta name="theme-color" content="#1b1d21">
+<title>GodTerm is not reachable</title>
+<style>
+:root{--bg:#1b1d21;--text:#d9d6cf;--dim:#8d8a84;color-scheme:dark}
+[data-theme=light]{--bg:#f4f1ea;--text:#2b2a27;--dim:#6f6b63;color-scheme:light}
+body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:24px 16px;background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;text-align:center}
+img{width:56px;height:56px;border-radius:12px;opacity:.8}
+h1{font-size:20px;margin:12px 0 6px}
+p{margin:0;color:var(--dim)}
+</style>
+<!-- The theme the app keeps on this device (js/theme.js), Dark by
+     default. Inline: this page is shown when the server is unreachable,
+     and it is served without the app's script policy. -->
+<script>
+(function () {
+  var p = 'dark';
+  try { var v = JSON.parse(localStorage.getItem('gt.theme')); if (v === 'light' || v === 'system') p = v; } catch (e) {}
+  var t = p === 'system' ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : p;
+  document.documentElement.setAttribute('data-theme', t);
+  if (t === 'light') document.querySelector('meta[name=theme-color]').setAttribute('content', '#f4f1ea');
+})();
+</script>
+</head>
+<body>
+<div><img src="icon-192.png" alt=""><h1>GodTerm is not reachable</h1><p>The Mac may be asleep or off the tailnet. Trying again every 5 seconds.</p></div>
+</body>
+</html>

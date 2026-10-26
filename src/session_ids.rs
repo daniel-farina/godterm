@@ -104,7 +104,8 @@ pub fn bg_jobs(config_dir: &Path) -> Vec<BgJob> {
 /// own conversation).
 pub fn is_bg_session(config_dir: &Path, id: &str) -> bool {
     id.len() >= 8
-        && bg_job(config_dir, &id[..8]).is_some_and(|j| j.session_id.as_deref() == Some(id))
+        && bg_job(config_dir, crate::paths::head(id, 8))
+            .is_some_and(|j| j.session_id.as_deref() == Some(id))
 }
 
 /// A transcript with at least one real message (not only a title).

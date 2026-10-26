@@ -23,6 +23,8 @@ pub enum Action {
     StopTalking,
     AccountMenu,
     ToggleTrust,
+    /// A long-lived token for the focused pane's account (setup-token).
+    CreateToken,
     /// The focused pane a step wider or narrower, or all equal.
     PaneWidth(i8),
     /// Permission mode for the focused pane's account.
@@ -35,6 +37,14 @@ pub enum Action {
     VoiceOnboarding,
     /// The phrases card of the voice onboarding.
     VoicePhrases,
+    /// Settings > Setup: install agent CLIs and the voice pieces.
+    Setup,
+    /// Bring up the focused tab's Chrome profile.
+    BrowserOpenTab,
+    /// Jump to the open tab with this id, in any pane.
+    GoTab(u64),
+    /// Find text in every tab's recent output.
+    FindAll,
 }
 
 pub const ACTIONS: &[(&str, Action)] = &[
@@ -57,6 +67,10 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("restart tab (resume)", Action::Key('r')),
     ("stop tab", Action::Key('x')),
     ("log in account", Action::Key('I')),
+    (
+        "create long-lived token (claude setup-token, kept in the keychain)",
+        Action::CreateToken,
+    ),
     ("switch pane to next account", Action::Key('a')),
     ("add account", Action::Key('A')),
     ("refresh usage", Action::Key('u')),
@@ -90,7 +104,12 @@ pub const ACTIONS: &[(&str, Action)] = &[
         Action::HeadphoneTap,
     ),
     ("approvals queue", Action::Key('y')),
+    ("find: search every tab's recent output", Action::FindAll),
     ("browser: Chrome profile for this tab", Action::Key('i')),
+    (
+        "browser: open this tab's Chrome profile",
+        Action::BrowserOpenTab,
+    ),
     ("loops: scheduled prompts in running tabs", Action::Key('@')),
     ("stop all loops", Action::StopAllLoops),
     ("memory saver on / off", Action::Key('Z')),
@@ -163,12 +182,119 @@ pub const ACTIONS: &[(&str, Action)] = &[
         Action::DuplicateTab,
     ),
     ("undo the last tab move", Action::Key('U')),
+    ("reopen the last closed tab", Action::Key('W')),
+    ("pin or unpin this tab", Action::Key('P')),
+    ("back to the grid (home)", Action::Key('g')),
+    ("install agents and voice (setup and checks)", Action::Setup),
     ("take the tour", Action::Key('T')),
     ("help", Action::Key('?')),
     ("quit", Action::Key('q')),
 ];
 
-/// Subsequence match score (lower is better), None if no match.
+/// Plain words people type for an action, beyond its name (matched as
+/// word prefixes, so "sign in" finds "log in account").
+pub const ALIASES: &[(&str, &str)] = &[
+    ("new tab", "open start session project folder create"),
+    (
+        "add account",
+        "new account connect sign up claude grok codex cursor antigravity opencode agent",
+    ),
+    ("log in account", "login sign in signin auth relogin"),
+    ("switch pane to next account", "change account other"),
+    (
+        "account menu (switch, log in, log out, tab position)",
+        "switch account logout sign out",
+    ),
+    ("rename tab", "name title label"),
+    (
+        "move this tab to another account (continue the conversation there)",
+        "transfer send",
+    ),
+    ("undo the last tab move", "revert back"),
+    ("close tab", "delete remove kill end"),
+    (
+        "reopen the last closed tab",
+        "undo close restore bring back",
+    ),
+    ("quit", "exit leave close godterm"),
+    ("help", "keys shortcuts keyboard commands what can i do"),
+    ("take the tour", "intro guide tutorial walkthrough"),
+    ("settings", "preferences options config configure"),
+    (
+        "install agents and voice (setup and checks)",
+        "install missing doctor dependencies deps setup claude grok codex cursor",
+    ),
+    ("voice: push to talk", "speak mic microphone talk"),
+    ("voice: turn off", "mute disable"),
+    ("zoom pane", "fullscreen maximize bigger"),
+    ("approvals queue", "permission waiting approve allow"),
+    ("sessions", "history resume past old conversations"),
+    ("dashboard and usage", "limits quota left plan"),
+    (
+        "restart to update (or check for updates)",
+        "upgrade version new release",
+    ),
+    (
+        "loops: scheduled prompts in running tabs",
+        "schedule cron timer repeat",
+    ),
+    ("broadcast a prompt", "send all everyone every"),
+    ("copy the selected text", "clipboard"),
+    ("go to pane number...", "jump"),
+    ("privacy mode: hide emails everywhere", "hide email"),
+    ("memory saver on / off", "ram"),
+    ("back to the grid (home)", "home grid main panes"),
+];
+
+fn aliases(name: &str) -> &'static str {
+    ALIASES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, a)| *a)
+        .unwrap_or("")
+}
+
+/// Every query word starts a word of the name or its aliases.
+fn words_match(query: &str, name: &str) -> bool {
+    let hay: Vec<String> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .chain(aliases(name).split(' '))
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let mut any = false;
+    for q in query
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+    {
+        // Small words never decide a match.
+        if matches!(q, "a" | "an" | "the" | "my" | "to" | "i") {
+            continue;
+        }
+        any = true;
+        if !hay.iter().any(|w| w.starts_with(q)) {
+            return false;
+        }
+    }
+    any
+}
+
+/// The shortcut shown next to an action, if it has one.
+pub fn key_hint(a: Action) -> Option<String> {
+    match a {
+        Action::Key(' ') | Action::VoicePushToTalk => Some("Ctrl-a space".into()),
+        Action::Key(c) => Some(format!("Ctrl-a {c}")),
+        Action::Broadcast => Some("Ctrl-a b".into()),
+        Action::VoiceToggleWake => Some("Ctrl-a v".into()),
+        Action::VoicePhrases => Some("Ctrl-a J".into()),
+        _ => None,
+    }
+}
+
+/// Match score (lower is better), None if no match: the typed text in
+/// the name, then plain words (the name's or its aliases), then its
+/// letters in order.
 pub fn fuzzy_score(query: &str, item: &str) -> Option<usize> {
     let q: Vec<char> = query
         .to_lowercase()
@@ -181,6 +307,9 @@ pub fn fuzzy_score(query: &str, item: &str) -> Option<usize> {
     let item_l = item.to_lowercase();
     if item_l.contains(&query.to_lowercase()) {
         return Some(item_l.find(&query.to_lowercase()).unwrap_or(0));
+    }
+    if words_match(query, item) {
+        return Some(60);
     }
     let mut qi = 0;
     let mut gaps = 0;
@@ -203,6 +332,7 @@ pub struct Palette {
     pub sel: usize,
 }
 
+#[cfg(test)]
 impl Palette {
     pub fn matches(&self) -> Vec<(&'static str, Action)> {
         let mut v: Vec<(usize, &'static str, Action)> = ACTIONS
@@ -212,6 +342,57 @@ impl Palette {
         v.sort_by_key(|(s, _, _)| *s);
         v.into_iter().map(|(_, n, a)| (n, a)).collect()
     }
+}
+
+/// How many open tabs the palette lists at most.
+const TAB_ITEMS: usize = 12;
+
+/// What the palette lists: its actions and, once something is typed, the
+/// open tabs whose name, account or folder matches ("go to tab: billing ·
+/// Work · ready"), best first; on a tie the action comes first. Hidden
+/// panes count (going there shows the pane); closed accounts do not.
+pub fn items(app: &crate::app::App, pl: &Palette) -> Vec<(String, Action)> {
+    let mut v: Vec<(usize, u8, String, Action)> = ACTIONS
+        .iter()
+        .filter_map(|(n, a)| fuzzy_score(&pl.input, n).map(|s| (s, 0, n.to_string(), *a)))
+        .collect();
+    if !pl.input.trim().is_empty() {
+        let mut tabs = vec![];
+        for slot in &app.panes {
+            if slot.account.is_some_and(|a| app.account_closed(a)) {
+                continue;
+            }
+            let acct = slot
+                .account
+                .map(|a| app.account_cfg(a).display().to_string())
+                .unwrap_or_default();
+            for tab in &slot.tabs {
+                let name = tab.name();
+                let folder = crate::paths::tilde(&tab.cwd);
+                let state = if tab.is_running() {
+                    crate::ui_chrome::short_state(tab.activity.label())
+                } else {
+                    "not started".to_string()
+                };
+                let label = format!("go to tab: {name} · {acct} · {state}");
+                let score = [
+                    fuzzy_score(&pl.input, &name),
+                    fuzzy_score(&pl.input, &label),
+                    fuzzy_score(&pl.input, &format!("{acct} {folder}")).map(|s| s + 50),
+                ]
+                .into_iter()
+                .flatten()
+                .min();
+                if let Some(sc) = score {
+                    tabs.push((sc, 1, label, Action::GoTab(tab.uid)));
+                }
+            }
+        }
+        tabs.sort_by_key(|t| t.0);
+        v.extend(tabs.into_iter().take(TAB_ITEMS));
+    }
+    v.sort_by_key(|(s, kind, _, _)| (*s, *kind));
+    v.into_iter().map(|(_, _, n, a)| (n, a)).collect()
 }
 
 #[cfg(test)]
@@ -234,5 +415,46 @@ mod tests {
             sel: 0,
         };
         assert_eq!(p.matches()[0].0, "next tab");
+    }
+
+    fn top(q: &str) -> &'static str {
+        Palette {
+            input: q.into(),
+            sel: 0,
+        }
+        .matches()[0]
+            .0
+    }
+
+    #[test]
+    fn plain_words_find_actions() {
+        assert_eq!(top("sign in"), "log in account");
+        assert_eq!(top("login"), "log in account");
+        assert_eq!(top("new account"), "add account");
+        assert_eq!(top("connect codex"), "add account");
+        assert_eq!(top("exit"), "quit");
+        assert_eq!(top("shortcuts"), "help");
+        assert_eq!(top("history"), "sessions");
+        assert_eq!(
+            top("install"),
+            "install agents and voice (setup and checks)"
+        );
+        assert_eq!(top("reopen"), "reopen the last closed tab");
+        assert_eq!(top("switch account"), "switch pane to next account");
+        assert_eq!(top("rename"), "rename tab");
+    }
+
+    #[test]
+    fn every_alias_names_an_action() {
+        for (n, _) in ALIASES {
+            assert!(ACTIONS.iter().any(|(a, _)| a == n), "{n}");
+        }
+    }
+
+    #[test]
+    fn key_hints() {
+        assert_eq!(key_hint(Action::Key('t')).as_deref(), Some("Ctrl-a t"));
+        assert_eq!(key_hint(Action::Broadcast).as_deref(), Some("Ctrl-a b"));
+        assert_eq!(key_hint(Action::FreeNow), None);
     }
 }

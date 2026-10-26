@@ -69,6 +69,7 @@ fn archive_then_restore_resumes_the_exact_session() {
     app.panes[1].tabs[t].accent = Some("#7a9".into());
     app.panes[1].tabs[t].pinned = true;
     app.panes[1].tabs[t].model = Some("opus".into());
+    app.panes[1].tabs[t].browser = Some("Profile 3".into());
     let cwd = app.panes[1].tabs[t].cwd.clone();
     let before = app.panes[1].tabs.len();
 
@@ -79,6 +80,11 @@ fn archive_then_restore_resumes_the_exact_session() {
     assert_eq!(e.provider, "claude");
     assert_eq!(e.model.as_deref(), Some("opus"));
     assert!(e.pinned && e.archived_at > 0 && e.last_activity > 0);
+    assert_eq!(
+        e.browser.as_deref(),
+        Some("Profile 3"),
+        "the Browser binding is kept"
+    );
     // Persisted on disk, and a fresh app sees it.
     let on_disk = crate::archive::Store::load();
     assert_eq!(on_disk.entries.len(), 1);
@@ -99,6 +105,11 @@ fn archive_then_restore_resumes_the_exact_session() {
     assert_eq!(back.cwd, cwd);
     assert!(back.pinned);
     assert_eq!(back.accent.as_deref(), Some("#7a9"));
+    assert_eq!(
+        back.browser.as_deref(),
+        Some("Profile 3"),
+        "restored with its browser"
+    );
     assert!(app.archive.entries.is_empty());
     assert!(crate::archive::Store::load().entries.is_empty());
     let _ = std::fs::remove_dir_all(home);
@@ -495,5 +506,57 @@ fn right_click_menu_restores_or_deletes_and_search_reaches_the_archive() {
     click(&mut app, &UiAction::ArchMenuItem(1));
     assert!(app.archive.entries.is_empty(), "forgotten");
     assert!(matches!(app.modal, Modal::None));
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_reopened_closed_tab_keeps_its_browser_binding() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("closed-browser");
+    let t = running(&mut app, 1, "web", "sess-web-1");
+    app.panes[1].tabs[t].browser = Some("Profile 2".into());
+    let c = app.snapshot_tab(1, t, 0).expect("snapshot");
+    assert_eq!(c.browser.as_deref(), Some("Profile 2"));
+    // It survives the round trip through state.json's closed list.
+    let back: crate::closed::ClosedTab =
+        serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+    assert_eq!(back, c);
+    app.panes[1].tabs.remove(t);
+    app.panes[1].active = 0;
+    app.reopen_closed_tab(back).expect("reopened");
+    let tab = app.panes[1]
+        .tabs
+        .iter()
+        .find(|x| x.custom_name.as_deref() == Some("web"))
+        .expect("reopened tab");
+    assert_eq!(tab.browser.as_deref(), Some("Profile 2"));
+    // A hand edited path never becomes a binding.
+    let mut bad = c.clone();
+    bad.browser = Some("../../etc".into());
+    bad.name = Some("bad".into());
+    bad.session_id = Some("sess-bad".into());
+    app.reopen_closed_tab(bad).expect("reopened");
+    let tab = app.panes[1]
+        .tabs
+        .iter()
+        .find(|x| x.custom_name.as_deref() == Some("bad"))
+        .expect("reopened bad");
+    assert_eq!(tab.browser, None);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_tab_archived_from_the_web_app_says_so() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("arch-web");
+    let real = now();
+    app.archive_clock = Some(real + 3 * DAY);
+    let t = running(&mut app, 0, "old", "s-old");
+    transcript(&app, 0, t, real);
+    let id = crate::control::tab_id(app.panes[0].tabs[t].uid);
+    let v = app.control_call("archive_tabs", &json!({"tab": id, "_client": "web"}));
+    assert_eq!(v["ok"], json!(true), "{v}");
+    let l = app.control_call("list_archived", &json!({}));
+    assert!(l.to_string().contains(r#""by":"web""#), "{l}");
     let _ = std::fs::remove_dir_all(home);
 }

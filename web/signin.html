@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1b1d21">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GodTerm">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Sign in · GodTerm</title>
+<style>
+:root{--bg:#1b1d21;--panel:#23262b;--line:#33373e;--text:#d9d6cf;--dim:#8d8a84;--accent:#c9a46a;--ink:#1b1d21;color-scheme:dark}
+[data-theme=light]{--bg:#f4f1ea;--panel:#ebe7de;--line:#d3ccbf;--text:#2b2a27;--dim:#6f6b63;--accent:#9a7a3f;--ink:#fbf9f4;color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:calc(24px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom));background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+main{width:min(420px,100%);display:flex;flex-direction:column;gap:14px}
+img{width:64px;height:64px;border-radius:14px}
+h1{font-size:22px;margin:0}
+p{margin:0;color:var(--dim)}
+code{font:14px ui-monospace,Menlo,monospace;color:var(--text)}
+label{display:flex;flex-direction:column;gap:6px;font-size:14px;color:var(--dim)}
+input{height:48px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text);font:16px ui-monospace,Menlo,monospace;outline:none}
+input:focus{border-color:var(--accent)}
+button{height:48px;border:0;border-radius:10px;background:var(--accent);color:var(--ink);font:600 16px -apple-system,BlinkMacSystemFont,sans-serif}
+</style>
+<script src="signin.js"></script>
+</head>
+<body>
+<main>
+<img src="icon-192.png" alt="">
+<h1>Sign in to GodTerm</h1>
+<p>On the Mac, run <code>godterm web-url</code> and open its link here, or paste the link or its token below.</p>
+<form id="f" action="./" method="get">
+<label>Sign in link or token<input id="t" name="t" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" required></label>
+</form>
+<button form="f" type="submit">Sign in</button>
+<p>On your tailnet, the owner's devices sign in by themselves through the https link.</p>
+</main>
+</body>
+</html>

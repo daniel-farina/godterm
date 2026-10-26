@@ -163,6 +163,9 @@ pub fn denoise_on(cfg: &VoiceCfg, vp: bool) -> bool {
 /// Open the mic (or file) with the configured capture, falling back to
 /// ffmpeg when Apple capture fails and the setting is "auto".
 pub fn open(cfg: &VoiceCfg, src: &Source) -> std::io::Result<Capture> {
+    if let Source::Web(mic) = src {
+        return Ok(Capture::web(mic));
+    }
     let bt_default = cfg.capture == "auto"
         && cfg!(target_os = "macos")
         && matches!(src, Source::Mic(d) if d.is_empty() || d == "default")
@@ -418,7 +421,8 @@ fn start_helper(bin: &std::path::Path, vp: bool, remote: bool) -> std::io::Resul
         Err(mpsc::RecvTimeoutError::Timeout) => vp,
     };
     Ok(Capture {
-        child,
+        child: Some(child),
+        web: None,
         err: Some(err),
         vp: on,
     })
@@ -596,7 +600,7 @@ sleep 2
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut cap = start_helper(&bin, true, false).expect("started without voice processing");
         // Not one for other tests' engine shutdowns to kill.
-        super::super::untrack(cap.child.id());
+        super::super::untrack(cap.child.as_ref().map_or(0, |c| c.id()));
         assert!(!cap.vp, "the helper said it runs without voice processing");
         let mut frame = vec![];
         assert!(cap.frame(&mut frame).is_some(), "audio comes");

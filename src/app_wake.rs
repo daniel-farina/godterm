@@ -9,6 +9,7 @@ use crate::voice::wake_profile::{UttStats, WakeProfile, NORMAL_SENTENCES};
 pub const TAKES: usize = 5;
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Phase {
     Intro,
     /// Saying the wake word, take n (0 based).

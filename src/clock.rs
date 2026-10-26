@@ -60,6 +60,14 @@ pub fn age(t: Instant) -> Duration {
     t.elapsed() + slept_since(t)
 }
 
+/// The instant `d` ago, or now when the clock does not reach back that
+/// far: `Instant::now() - d` panics then (Windows counts from boot, so a
+/// GodTerm started within a minute of boot would crash on it).
+pub fn ago(d: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_sub(d).unwrap_or(now)
+}
+
 /// Pretend the Mac just slept for `d` (tests).
 #[cfg(test)]
 pub fn simulate_sleep(d: Duration) {

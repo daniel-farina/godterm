@@ -502,7 +502,7 @@ pub fn notes_between(
     if !v.iter().any(|r| r.tag == latest.tag) {
         v.push(latest.clone());
     }
-    v.sort_by(|a, b| b.version().cmp(&a.version()));
+    v.sort_by_key(|b| std::cmp::Reverse(b.version()));
     v.dedup_by(|a, b| a.tag == b.tag);
     // Empty notes: the release's CHANGELOG.md, one download for all.
     if v.iter().any(|r| r.body.trim().is_empty()) {
@@ -749,13 +749,40 @@ pub fn parse_sums(text: &str) -> Vec<(String, String)> {
 }
 
 /// SHA256SUMS against its minisign signature.
+#[cfg(test)]
 pub fn verify_sig(sums: &[u8], sig: &str, pubkey: &str) -> Result<()> {
+    signed_comment(sums, sig, pubkey).map(|_| ())
+}
+
+/// The signature's trusted comment, once the signature (over SHA256SUMS
+/// and over that comment) checks out.
+fn signed_comment(sums: &[u8], sig: &str, pubkey: &str) -> Result<String> {
     let pk = minisign_verify::PublicKey::from_base64(pubkey.trim())
         .map_err(|e| anyhow!("bad public key: {e}"))?;
     let s =
         minisign_verify::Signature::decode(sig).map_err(|e| anyhow!("bad signature file: {e}"))?;
     pk.verify(sums, &s, false)
-        .map_err(|e| anyhow!("signature check failed: {e}"))
+        .map_err(|e| anyhow!("signature check failed: {e}"))?;
+    Ok(s.trusted_comment().to_string())
+}
+
+/// The signature checks out and was made for `version`: its signed
+/// comment says `version:<it>` (scripts/release/all.sh puts it there).
+/// The tag on GitHub is not signed, so without this an old signed build
+/// could be offered under a newer tag and installed as an "update".
+pub fn verify_release_sig(sums: &[u8], sig: &str, pubkey: &str, version: &str) -> Result<()> {
+    let c = signed_comment(sums, sig, pubkey)?;
+    let signed = c
+        .split('\t')
+        .find_map(|f| f.trim().strip_prefix("version:"))
+        .map(str::trim);
+    match signed {
+        Some(s) if s == version.trim_start_matches('v') => Ok(()),
+        Some(s) => bail!("the signature is for version {s}, but the release says {version}"),
+        None => {
+            bail!("the signature does not name the version (an older release under a new tag?)")
+        }
+    }
 }
 
 fn small(src: &Source, url: &str) -> Result<Vec<u8>> {
@@ -972,7 +999,7 @@ pub fn stage(
     match rel.asset("SHA256SUMS.minisig") {
         Some(a) => {
             let sig = String::from_utf8_lossy(&small(src, &a.url)?).to_string();
-            verify_sig(&sums, &sig, &src.pubkey).context("refused")?;
+            verify_release_sig(&sums, &sig, &src.pubkey, &v).context("refused")?;
             crate::log::info(&format!("update: SHA256SUMS of {v} signature ok"));
         }
         None if src.require_sig => bail!(
@@ -1546,6 +1573,9 @@ pub mod tests {
     pub const TEST_PUB: &str = include_str!("../tests/fixtures/update/test.pub");
     pub const SUMS: &[u8] = include_bytes!("../tests/fixtures/update/SHA256SUMS");
     pub const SIG: &str = include_str!("../tests/fixtures/update/SHA256SUMS.minisig");
+    /// The same SHA256SUMS signed the old way, without a version.
+    pub const UNVERSIONED_SIG: &str =
+        include_str!("../tests/fixtures/update/SHA256SUMS.unversioned.minisig");
     pub const ARCHIVE: &[u8] = include_bytes!("../tests/fixtures/update/godterm-test.tar.gz");
 
     fn test_pubkey() -> String {
@@ -1913,6 +1943,14 @@ pub mod tests {
         // The signature itself verifies over the original file.
         verify_sig(SUMS, SIG, &test_pubkey()).unwrap();
         assert!(verify_sig(b"tampered", SIG, &test_pubkey()).is_err());
+        // It names the version it was made for: only that one passes.
+        verify_release_sig(SUMS, SIG, &test_pubkey(), "9.9.9").unwrap();
+        let e = verify_release_sig(SUMS, SIG, &test_pubkey(), "99.0.0").unwrap_err();
+        assert!(e.to_string().contains("for version 9.9.9"), "{e}");
+        // An old style signature (no version) is refused for any release.
+        verify_sig(SUMS, UNVERSIONED_SIG, &test_pubkey()).unwrap();
+        let e = verify_release_sig(SUMS, UNVERSIONED_SIG, &test_pubkey(), "9.9.9").unwrap_err();
+        assert!(e.to_string().contains("does not name the version"), "{e}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

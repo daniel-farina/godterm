@@ -954,6 +954,13 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
         bail!("refusing to use {} as the demo home", home.display());
     }
     let marker = home.join(".godterm-demo");
+    // The web app's sign in outlives the rebuild, so a browser signed in
+    // to the demo reconnects after a restart.
+    let web_token = Paths::of(home).app.join("web-token");
+    let kept_token = marker
+        .is_file()
+        .then(|| std::fs::read(&web_token).ok())
+        .flatten();
     if home.exists() {
         let empty = std::fs::read_dir(home)
             .map(|mut d| d.next().is_none())
@@ -976,6 +983,18 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
     link_agents(&p)?;
     for d in [&p.app, &p.work, &p.usage, &p.main_claude, &p.main_grok] {
         std::fs::create_dir_all(d)?;
+    }
+    if let Some(t) = kept_token {
+        use crate::platform::OpenOptionsExt;
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&web_token)
+        {
+            let _ = f.write_all(&t);
+        }
     }
     // Scenarios.
     let mut scen = scenarios();

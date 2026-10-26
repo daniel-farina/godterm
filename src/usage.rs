@@ -129,13 +129,16 @@ impl std::fmt::Display for UsageError {
             UsageError::NotLoggedIn => write!(f, "not logged in"),
             UsageError::Unauthorized => write!(
                 f,
-                "token expired or revoked, open this account's session to refresh it"
+                "token expired or revoked: open this account's session to refresh it, or Ctrl-a I to log in again"
             ),
             UsageError::RateLimited(_) => {
                 write!(f, "the usage service asked us to slow down")
             }
             UsageError::Http(c) => write!(f, "usage API returned HTTP {c}"),
-            UsageError::Network(e) => write!(f, "network error: {e}"),
+            UsageError::Network(e) => write!(
+                f,
+                "no connection to the usage service ({e}); it tries again on its own, Ctrl-a u retries now"
+            ),
             UsageError::Parse(e) => write!(f, "unexpected response: {e}"),
         }
     }
@@ -397,6 +400,17 @@ mod tests {
 
     const FIXTURE: &str = include_str!("../tests/fixtures/usage.json");
     const FULL: &str = include_str!("../tests/fixtures/usage_full.json");
+
+    #[test]
+    fn errors_say_what_to_do_next() {
+        let off = UsageError::Network("timed out".into()).to_string();
+        assert!(
+            off.contains("tries again") && off.contains("Ctrl-a u"),
+            "{off}"
+        );
+        let exp = UsageError::Unauthorized.to_string();
+        assert!(exp.contains("Ctrl-a I"), "{exp}");
+    }
 
     #[test]
     fn parses_fixture() {

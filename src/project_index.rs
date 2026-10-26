@@ -85,6 +85,9 @@ pub struct Entry {
     /// Listed as a workspace member by the root.
     #[serde(default)]
     pub member: bool,
+    /// A git repo of its own (holds .git).
+    #[serde(default)]
+    pub git: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -118,6 +121,12 @@ pub struct Index {
     pub building: bool,
     pub last: Stats,
     loaded: bool,
+    /// Git facts per repo top level (project_git).
+    pub git: HashMap<PathBuf, crate::project_git::Facts>,
+    /// The last git update.
+    pub git_checked: Option<Instant>,
+    /// A fetch the user asked for is running.
+    pub git_fetching: bool,
 }
 
 pub type Shared = Arc<Mutex<Index>>;
@@ -126,12 +135,63 @@ pub fn disk_path() -> PathBuf {
     crate::config::app_home().join("project-index.json")
 }
 
-const DISK_VERSION: u32 = 1;
+const DISK_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize, Default)]
 struct Disk {
     version: u32,
     roots: Vec<RootMap>,
+    #[serde(default)]
+    git: Vec<crate::project_git::Facts>,
+}
+
+/// Load the saved index once (roots and git facts).
+pub fn load(shared: &Shared) {
+    let mut ix = shared.lock().unwrap_or_else(|e| e.into_inner());
+    if ix.loaded || ix.building {
+        return;
+    }
+    load_into(&mut ix);
+}
+
+fn load_into(ix: &mut Index) {
+    ix.loaded = true;
+    if cfg!(test) {
+        return;
+    }
+    if let Ok(t) = std::fs::read(disk_path()) {
+        if let Ok(d) = serde_json::from_slice::<Disk>(&t) {
+            if d.version == DISK_VERSION {
+                for r in d.roots {
+                    ix.roots.entry(r.root.clone()).or_insert(r);
+                }
+                for g in d.git {
+                    ix.git.entry(g.top.clone()).or_insert(g);
+                }
+            }
+        }
+    }
+}
+
+/// Write the index to disk (roots and git facts).
+pub fn save(shared: &Shared) {
+    if cfg!(test) {
+        return;
+    }
+    let d = {
+        let ix = shared.lock().unwrap_or_else(|e| e.into_inner());
+        Disk {
+            version: DISK_VERSION,
+            roots: ix.roots.values().cloned().collect(),
+            git: ix.git.values().cloned().collect(),
+        }
+    };
+    if let Ok(t) = serde_json::to_vec(&d) {
+        let tmp = disk_path().with_extension("json.tmp");
+        if crate::config::write_private(&tmp, t).is_ok() {
+            let _ = std::fs::rename(&tmp, disk_path());
+        }
+    }
 }
 
 fn stamp(p: &Path) -> Option<(u128, u64)> {
@@ -501,8 +561,12 @@ pub fn scan_root(root: &Path, lim: &Limits, allowed: &[PathBuf]) -> RootMap {
             map.watched.push((dir.clone(), m, l));
         }
         let (mut files, mut dirs) = (vec![], vec![]);
+        let mut is_git = false;
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
+            if n == ".git" {
+                is_git = true;
+            }
             match e.file_type() {
                 Ok(t) if t.is_dir() && !ignored_dir(&n) => dirs.push(n),
                 Ok(t) if t.is_file() => files.push(n),
@@ -521,6 +585,7 @@ pub fn scan_root(root: &Path, lim: &Limits, allowed: &[PathBuf]) -> RootMap {
         }
         entry.rel = rel_of(root, &dir);
         entry.member = member;
+        entry.git = is_git;
         if depth == 0 {
             root_members = members;
             map.workspaces = tools;
@@ -602,18 +667,13 @@ pub fn refresh(shared: &Shared, roots: &[PathBuf], lim: &Limits, force: bool, al
     let t0 = Instant::now();
     let (mut have, loaded) = {
         let mut ix = shared.lock().unwrap_or_else(|e| e.into_inner());
-        ix.building = true;
-        (std::mem::take(&mut ix.roots), ix.loaded)
-    };
-    if !loaded && !cfg!(test) {
-        if let Ok(t) = std::fs::read(disk_path()) {
-            if let Ok(d) = serde_json::from_slice::<Disk>(&t) {
-                if d.version == DISK_VERSION {
-                    have.extend(d.roots.into_iter().map(|r| (r.root.clone(), r)));
-                }
-            }
+        let loaded = ix.loaded;
+        if !loaded {
+            load_into(&mut ix);
         }
-    }
+        ix.building = true;
+        (std::mem::take(&mut ix.roots), loaded)
+    };
     let mut want: Vec<PathBuf> = vec![];
     let mut seen = HashSet::new();
     for r in roots {
@@ -658,18 +718,6 @@ pub fn refresh(shared: &Shared, roots: &[PathBuf], lim: &Limits, force: bool, al
     }
     let changed = st.scanned > 0 || !have.is_empty() || !loaded;
     st.took_ms = t0.elapsed().as_millis();
-    if changed && !cfg!(test) {
-        let d = Disk {
-            version: DISK_VERSION,
-            roots: out.values().cloned().collect(),
-        };
-        if let Ok(t) = serde_json::to_vec(&d) {
-            let tmp = disk_path().with_extension("json.tmp");
-            if crate::config::write_private(&tmp, t).is_ok() {
-                let _ = std::fs::rename(&tmp, disk_path());
-            }
-        }
-    }
     let mut ix = shared.lock().unwrap_or_else(|e| e.into_inner());
     if st.scanned > 0 {
         crate::log::info(&format!(
@@ -685,6 +733,10 @@ pub fn refresh(shared: &Shared, roots: &[PathBuf], lim: &Limits, force: bool, al
     ix.loaded = true;
     ix.building = false;
     ix.last = st;
+    drop(ix);
+    if changed {
+        save(shared);
+    }
 }
 
 /// Refresh for every folder sessions ran in (most recent first, each
@@ -888,7 +940,7 @@ pub fn score_fields(q: &[String], fields: &[Field]) -> Option<(f64, &'static str
                 .fold(0.0, f64::max);
             give(i, m * f.tier, fi);
         }
-        // Two spoken words for one name word ("bot mesh" for botmesh).
+        // Two spoken words for one name word ("fot mesh" for fotmesh).
         for i in 0..q.len().saturating_sub(1) {
             let joined = format!("{}{}", q[i], q[i + 1]);
             let m = toks[fi]
