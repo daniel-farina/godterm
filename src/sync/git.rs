@@ -127,6 +127,24 @@ impl Remote {
     }
 }
 
+impl Remote {
+    /// A repo's visibility ("PRIVATE", "PUBLIC", "INTERNAL"); None when it
+    /// cannot be told. A folder remote reads a `visibility` file in the
+    /// bare repo (tests, local mirrors): no file is unknown.
+    pub fn visibility(&self, owner: &str, name: &str) -> Option<String> {
+        match self {
+            Remote::Local { base } => {
+                let f = base
+                    .join(owner)
+                    .join(format!("{name}.git"))
+                    .join("visibility");
+                Some(std::fs::read_to_string(f).ok()?.trim().to_uppercase())
+            }
+            Remote::GitHub { account, .. } => visibility(account, &format!("{owner}/{name}")),
+        }
+    }
+}
+
 /// `gh repo create` arguments: always private, never pushed by gh.
 pub fn create_args(full: &str) -> Vec<String> {
     vec![

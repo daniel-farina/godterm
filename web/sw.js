@@ -18,6 +18,9 @@ const OFFLINE = 'offline.html?v=' + BUILD;
 FILES.push('js/gitcfg.js?v=' + BUILD);
 FILES.push('js/statusbar.js?v=' + BUILD);
 FILES.push('js/find.js?v=' + BUILD);
+FILES.push('js/syncui.js?v=' + BUILD);
+FILES.push('js/keys.js?v=' + BUILD);
+FILES.push('js/debughooks.js?v=' + BUILD);
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => Promise.all(FILES.map((f) => c.add(f).catch(() => {})))));

@@ -1,8 +1,12 @@
-//! Just enough HTTP/1.1 for the web app: read one request head, answer
+//! Just enough HTTP/1.1 for the web app: read a request head, answer
 //! with a static file, a redirect or an error, or hand the connection to
-//! the WebSocket.
+//! the WebSocket. A connection serves one request after another
+//! (keep-alive) until the client closes it, asks for a close, or stays
+//! quiet for `KEEP_IDLE`: a page load's 25 files need no 25 handshakes.
 
+use std::cell::Cell;
 use std::io::{Read, Write};
+use std::net::TcpStream;
 
 /// Request heads over this are refused.
 const MAX_HEAD: usize = 16 << 10;
@@ -14,6 +18,22 @@ pub struct Request {
     pub path: String,
     pub query: String,
     pub headers: Vec<(String, String)>,
+    /// The connection may serve another request after this one
+    /// (HTTP/1.1 without `Connection: close`; HTTP/1.0 only with
+    /// `Connection: keep-alive`).
+    pub keep_alive: bool,
+}
+
+thread_local! {
+    /// Whether the answer written next says the connection stays open
+    /// (set by the connection's thread from its request).
+    static KEEP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Answers written by this thread from now on say `Connection:
+/// keep-alive` (true) or `close`.
+pub fn set_keep(keep: bool) {
+    KEEP.with(|k| k.set(keep));
 }
 
 impl Request {
@@ -68,7 +88,8 @@ pub fn parse(head: &str) -> Option<Request> {
     let mut parts = first.split(' ');
     let method = parts.next()?.to_string();
     let target = parts.next()?;
-    if !parts.next()?.starts_with("HTTP/1.") {
+    let version = parts.next()?;
+    if !version.starts_with("HTTP/1.") {
         return None;
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
@@ -83,30 +104,56 @@ pub fn parse(head: &str) -> Option<Request> {
         let (k, v) = l.split_once(':')?;
         headers.push((k.trim().to_string(), v.trim().to_string()));
     }
-    Some(Request {
+    let mut req = Request {
         method,
         path: path.to_string(),
         query: query.to_string(),
         headers,
-    })
+        keep_alive: version != "HTTP/1.0",
+    };
+    if let Some(c) = req.header("connection") {
+        let says = |w: &str| c.split(',').any(|t| t.trim().eq_ignore_ascii_case(w));
+        if says("close") {
+            req.keep_alive = false;
+        } else if says("keep-alive") {
+            req.keep_alive = true;
+        }
+    }
+    Some(req)
 }
 
 /// Read one request head from `s`. Bytes after the head stay unread
-/// (a GET has no body; the WebSocket client waits for our 101).
-pub fn read_head(s: &mut impl Read) -> Option<Request> {
-    let mut buf = Vec::with_capacity(1024);
-    let mut b = [0u8; 1];
-    // Byte by byte: a head is small, and nothing past it is consumed.
-    while buf.len() < MAX_HEAD {
-        match s.read(&mut b) {
-            Ok(1) => buf.push(b[0]),
-            _ => return None,
+/// (a GET has no body; the WebSocket client waits for our 101): the
+/// socket is peeked for the head's end and exactly that much is taken,
+/// a few calls per request instead of one per byte. None on a closed
+/// or silent socket, or a head over MAX_HEAD.
+pub fn read_head(s: &mut TcpStream) -> Option<Request> {
+    let mut head: Vec<u8> = Vec::with_capacity(1024);
+    let mut peek = [0u8; 4096];
+    loop {
+        let n = s.peek(&mut peek).ok()?;
+        if n == 0 {
+            return None;
         }
-        if buf.ends_with(b"\r\n\r\n") {
-            return parse(std::str::from_utf8(&buf).ok()?);
+        // The terminator may straddle what was taken and what is peeked.
+        let from = head.len().saturating_sub(3);
+        let mut window = head[from..].to_vec();
+        window.extend_from_slice(&peek[..n]);
+        if let Some(i) = window.windows(4).position(|w| w == b"\r\n\r\n") {
+            let take = from + i + 4 - head.len();
+            let mut rest = vec![0u8; take];
+            s.read_exact(&mut rest).ok()?;
+            head.extend_from_slice(&rest);
+            return parse(std::str::from_utf8(&head).ok()?);
         }
+        if head.len() + n > MAX_HEAD {
+            return None;
+        }
+        // Not there yet: take what came (the next peek waits for more).
+        let mut got = vec![0u8; n];
+        s.read_exact(&mut got).ok()?;
+        head.extend_from_slice(&got);
     }
-    None
 }
 
 /// Headers every response carries.
@@ -127,8 +174,13 @@ pub fn respond(
         h.push_str(&format!("{k}: {v}\r\n"));
     }
     h.push_str(&format!(
-        "Content-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
+        "Content-Length: {}\r\nConnection: {}\r\n\r\n",
+        body.len(),
+        if KEEP.with(Cell::get) {
+            "keep-alive"
+        } else {
+            "close"
+        }
     ));
     s.write_all(h.as_bytes())?;
     if !head_only {

@@ -21,14 +21,12 @@ fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     }
     app.assistant.show = true;
     app.assistant.focused = true;
-    app.assistant.log.push(Entry {
-        who: Who::User,
-        text: "which tabs are busy".into(),
-    });
-    app.assistant.log.push(Entry {
-        who: Who::Reply,
-        text: "Two tabs are working on Bravo.".into(),
-    });
+    app.assistant
+        .log
+        .push(Entry::new(Who::User, "which tabs are busy"));
+    app.assistant
+        .log
+        .push(Entry::new(Who::Reply, "Two tabs are working on Bravo."));
     (app, home)
 }
 
@@ -206,17 +204,11 @@ fn replies_while_away_show_a_dot() {
     draw(&mut app, &mut t);
     assert_eq!(app.unread_replies(), 0);
     open_view(&mut app, PanelView::Admin);
-    app.assistant.log.push(Entry {
-        who: Who::Reply,
-        text: "Done.".into(),
-    });
+    app.assistant.log.push(Entry::new(Who::Reply, "Done."));
     let s = draw(&mut app, &mut t);
     assert_eq!(app.unread_replies(), 1);
     assert!(s.contains("‹ Conversation ●"), "{s}");
-    app.assistant.log.push(Entry {
-        who: Who::Reply,
-        text: "Also done.".into(),
-    });
+    app.assistant.log.push(Entry::new(Who::Reply, "Also done."));
     let s = draw(&mut app, &mut t);
     assert!(s.contains("‹ Conversation ● 2"), "{s}");
     click(&mut app, &UiAction::AssistantConversation);

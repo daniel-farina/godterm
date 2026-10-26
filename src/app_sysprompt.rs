@@ -131,10 +131,10 @@ impl App {
     /// next turn boundary.
     pub fn prompt_changed(&mut self, say: &str) {
         self.assistant.prompt_dirty = true;
-        self.assistant.log.push(crate::app_assistant::Entry {
-            who: crate::app_assistant::Who::Note,
-            text: format!("Prompt: {say}"),
-        });
+        self.assistant.log.push(crate::app_assistant::Entry::new(
+            crate::app_assistant::Who::Note,
+            format!("Prompt: {say}"),
+        ));
         self.flash(format!("Assistant prompt: {say}"));
     }
 }

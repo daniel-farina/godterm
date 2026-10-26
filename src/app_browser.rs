@@ -168,6 +168,16 @@ impl App {
         } else {
             s.to_json()
         };
+        // Whose each browser is, when the user linked it or its label
+        // names one profile.
+        let who =
+            crate::tab_browser::assign_browsers(&s.browsers, &s.profiles, &self.cfg.browser.links);
+        if let Some(arr) = v["browsers"].as_array_mut() {
+            for (b, (_, dir, how)) in arr.iter_mut().zip(who.iter()) {
+                b["profile_dir"] = json!(dir);
+                b["match"] = json!(how);
+            }
+        }
         if stale {
             v["refreshing"] = json!(true);
         }

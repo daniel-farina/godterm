@@ -31,13 +31,17 @@ pub struct WebSide {
     /// The last entry sent belongs to a turn GodTerm started itself.
     in_system: bool,
     next_id: u64,
-    /// The reply being streamed, as last sent.
+    /// The reply being streamed, as last sent, and when it started.
     live: String,
+    live_at: i64,
     approvals: Vec<String>,
     update: String,
     flash: Option<String>,
     /// Sizes browsers took: tab uid -> client.
     taken: HashMap<u64, u64>,
+    /// The device that took it, in words ("iPhone", "a browser"): the
+    /// other devices say who has the size.
+    taken_by: HashMap<u64, String>,
     /// Sizes whose browser left, kept a moment for it to come back (a
     /// phone back from another app reconnects and takes them again, so
     /// the tab is not resized twice): tab uid -> when they go back.
@@ -59,10 +63,12 @@ impl WebSide {
             in_system: false,
             next_id: 1,
             live: String::new(),
+            live_at: 0,
             approvals: vec![],
             update: String::new(),
             flash: None,
             taken: HashMap::new(),
+            taken_by: HashMap::new(),
             left_sizes: vec![],
             voice: None,
             push: Default::default(),
@@ -109,9 +115,8 @@ pub(super) fn hidden(e: &Entry, in_system: &mut bool) -> bool {
     }
 }
 
-fn message(id: u64, e: &Entry, hidden: bool) -> Value {
-    let mut m =
-        json!({"t": "assistant", "id": id, "role": role(&e.who), "text": e.text, "done": true});
+pub(super) fn message(id: u64, e: &Entry, hidden: bool) -> Value {
+    let mut m = json!({"t": "assistant", "id": id, "role": role(&e.who), "text": e.text, "done": true, "at": e.at});
     if hidden {
         m["hidden"] = json!(true);
     }
@@ -148,6 +153,7 @@ impl App {
     pub fn web_size_back(&mut self, uid: u64) {
         if let Some(w) = self.web.as_mut() {
             w.taken.remove(&uid);
+            w.taken_by.remove(&uid);
             w.changed = true;
         }
         if let Some((s, t)) = self.find_tab(uid) {
@@ -278,6 +284,9 @@ impl App {
                 }
                 if let Some(c) = self.web.as_ref().and_then(|w| w.taken.get(&tab.uid)) {
                     v["size_taken_by"] = json!(c);
+                    if let Some(d) = self.web.as_ref().and_then(|w| w.taken_by.get(&tab.uid)) {
+                        v["size_device"] = json!(d);
+                    }
                 }
                 // Its repo in numbers for the status bar (branch,
                 // uncommitted files, unpushed commits), from the cache.
@@ -516,9 +525,18 @@ impl App {
                     match size {
                         Some(_) => {
                             w.taken.insert(uid, client);
+                            match &by {
+                                Some(b) => {
+                                    w.taken_by.insert(uid, b.clone());
+                                }
+                                None => {
+                                    w.taken_by.remove(&uid);
+                                }
+                            }
                         }
                         None => {
                             w.taken.remove(&uid);
+                            w.taken_by.remove(&uid);
                         }
                     }
                 }
@@ -558,6 +576,7 @@ impl App {
                 let due = Instant::now() + SIZE_GRACE;
                 for u in mine {
                     w.taken.remove(&u);
+                    w.taken_by.remove(&u);
                     w.left_sizes.push((u, due));
                 }
                 w.changed = true;
@@ -660,6 +679,7 @@ impl App {
             "state": self.web_state(),
             "messages": messages,
             "live": (!self.assistant.current.is_empty()).then(|| self.assistant.current.clone()),
+            "live_at": (!self.assistant.current.is_empty()).then(|| w.live_at),
             "update": self.web_update(),
         });
         // The log as sent is caught up first, so the hello carries it.
@@ -810,9 +830,12 @@ impl App {
             }
         }
         if live != w.live {
+            if w.live.is_empty() && !live.is_empty() {
+                w.live_at = crate::app_assistant::now_ms();
+            }
             if ready {
                 w.hub.broadcast(
-                    &json!({"t": "assistant", "id": "live", "role": "assistant", "text": live, "done": live.is_empty()})
+                    &json!({"t": "assistant", "id": "live", "role": "assistant", "text": live, "done": live.is_empty(), "at": w.live_at})
                         .to_string(),
                 );
             }

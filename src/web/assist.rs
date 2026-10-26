@@ -20,7 +20,7 @@ impl App {
             .map(|c| c.view.lock().unwrap_or_else(|e| e.into_inner()).clone())
             .unwrap_or(Value::Null);
         format!(
-            "web: this request was typed in the web app (browser {id}{}). Its view is its own, apart from the terminal UI's: layout words (\"split 4 ways\", \"side by side\", \"open X\", \"show the chat\") mean this browser: use web_layout, web_show, web_view, web_font, not the terminal UI's layout tools, unless the user names the terminal, the Mac or the GodTerm window.\n",
+            "web: this request came from the web app, typed or spoken there (browser {id}{}). Its view is its own, apart from the terminal UI's: layout words (\"split 4 ways\", \"side by side\", \"open X\", \"show the chat\") mean this browser: use web_layout, web_show, web_view, web_font, not the terminal UI's layout tools, unless the user names the terminal, the Mac or the GodTerm window.\n",
             describe(&view)
         )
     }

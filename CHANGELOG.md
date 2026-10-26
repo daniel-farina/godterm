@@ -9,7 +9,7 @@ copies the section for a tag into the GitHub release notes.
 
 Platforms: macOS (Apple silicon and Intel, universal), Linux (x86_64 and aarch64) and Windows (x64; built on GitHub Actions). The Windows installer and zip are not code signed, so SmartScreen will warn: click More info, then Run anyway.
 
-This release adds GodTerm Web, the whole app in a browser on a desktop or a phone, plus a Git section per tab, GodTerm Sync between machines, an Accounts screen and a live view of a tab's browser. GodTerm Web, Git and Sync are new, so feedback is welcome.
+This release adds GodTerm Web, the whole app in a browser on a desktop, a tablet or a phone, plus a Git section per tab, GodTerm Sync between machines, an Accounts screen and a live view of a tab's browser. GodTerm Web, Git and Sync are new, so feedback is welcome.
 
 ### Added
 - GodTerm Web: the whole interface in a browser, served by the running
@@ -38,6 +38,50 @@ This release adds GodTerm Web, the whole app in a browser on a desktop or a phon
   - One Settings screen with a search through every row, one theme
     (Dark by default), a debug log (`godterm web-log`), and an Update
     button when a newer web build is served.
+  - Layouts from a phone to a large display: the desktop layout from
+    760 px (an iPad upright), a squeeze that keeps the terminal 520 px
+    wide and narrows the panel and the chat before folding the tab
+    list, a status bar and pane header that drop items by priority,
+    splits that respect a minimum pane, centred dialogs on a desktop,
+    and larger chrome and wider defaults from 1800 px.
+  - The assistant panel reworked: times on older messages and day
+    dividers, Retry on a failed question, an Open button for the tab a
+    reply names, one wording for the mic on every control, and no "Not
+    connected" flash while the page first connects.
+  - Keyboard access: F6 and Shift+F6 move between the areas (nothing
+    reaches the terminal), Shift+Esc goes to the pane header, one focus
+    ring on every control, the focus kept inside a sheet and given back
+    on close, a ? sheet with the shortcuts, a title on every icon-only
+    button, and AA contrast for the secondary text in both themes.
+  - An Open on Mac button brings the GodTerm app to the front. A pane
+    sized by another device says so and takes the size back only on
+    typing or the hint.
+  - Settings > Sync is a screen with Preview, Enable, Join, Sync now,
+    Pause and leases. The Git screen asks the tab's agent (Commit and
+    sync, Commit only, Sync with remote, Review changes, Clean up
+    untracked, or a question) with the repo facts and the safety rules;
+    the direct git buttons sit in a collapsed Manual git actions
+    section.
+  - The Browser section chooses, adds, makes primary, removes, clears
+    and opens a tab's Chrome profiles (several per tab) and links a
+    connected browser to its profile. The pane header shows the tab's
+    folder (a click copies it), account, model, branch and state.
+- Voice status answers: "what's going on", "give me an update" and "how
+  about X" start with `work_status`, one cheap local call that reads
+  every tab's transcript, its subagents' transcripts and its screen, and
+  returns the tabs grouped needs you, working, finished and idle, each
+  with what it is doing, what it needs from you, its background work
+  and its jobs and loops. "What else" continues the list. A tab whose
+  Agent tool subagents still run counts as working, never idle, in the
+  tab list, the web app and the assistant's answers alike, and a tab's
+  answer held for a quiet moment is told after 90 seconds at the latest.
+- Sync from the app and the assistant: `sync_plan`, `sync_init`,
+  `sync_clone`, `sync_pause` and a richer `sync_status`, a pause switch,
+  checks before init or clone, and a clone that refuses a repo that is
+  not private.
+- Assistant log entries carry when they were written, and
+  `scripts/e2e/web_perf.mjs` measures the web app (load, keys, stream,
+  flood, resize, reconnect, soak) against the budgets in docs/WEB_APP.md.
 - Git section per tab (tab options > Git..., the ⚠ next to a tab's name,
   or the web tab menu > Git): branch, remote, the GitHub owner, repo and
   gh account it belongs to, warnings ("Not backed up: no GitHub repo",
@@ -92,6 +136,28 @@ This release adds GodTerm Web, the whole app in a browser on a desktop or a phon
   the README key lists match the real bindings, and Help scrolls on
   short terminals.
 
+- GodTerm Web's first screen is under 100 KB gzip: only the first
+  screen's modules load before the first paint (keys, push, images, the
+  debug log's hooks and voice come after it or on first use), a pane's
+  terminal is made when the pane is first shown, the socket opens
+  before the modules set up, and the server keeps HTTP connections
+  alive and gzips big snapshots for browsers that ask.
+- GodTerm Web on phones and tablets: every control a finger lands on is
+  44 px, the key bar is ordered by use and keeps one safe area inset, a
+  finger drags a bottom sheet down to close it, a key puts the on-screen
+  keyboard away, a phone on its side drops the header while the
+  keyboard is up, an iPad with a hardware keyboard hides the key bar,
+  Retry rows where a load can fail, sticky sheet titles, skeleton rows
+  while lists load, empty states with a hint and an action, raw values
+  in words, Add to Home Screen on iOS Safari, and an install tip that is
+  rarer and dismissible.
+- Web voice: barge-in from a browser's mic as from the Mac's (stop at
+  once, duck); when GodTerm's own mic mute refuses the mic, the strip
+  offers Unmute; a reply's clips fade at their edges and stay under full
+  scale.
+- A request spoken into the web app is that browser's (open and layout
+  words change its view), as a typed one is.
+
 ### Fixed
 - Cross harness: Grok Build 1.0.69 tabs read as ready and working, so
   prompts sent to them are no longer reported dropped; Cursor's approval
@@ -109,6 +175,21 @@ This release adds GodTerm Web, the whole app in a browser on a desktop or a phon
   the default Chrome profile.
 - The Homebrew cask installs on every supported macOS (it refused all
   but one).
+
+- GodTerm Web: an opened tab starts at its end (no jump to the top, no
+  NaN position or WebGL errors), a lost WebGL context is retried, the
+  phone keyboard layout never reuses a height from another orientation,
+  messages stay under open sheets and above the chat's attachments, a
+  swipe that starts on a tab row no longer opens its options, every
+  dialog's buttons are back, toasts sit under an open dialog's scrim and
+  above the Talk button while push to talk is on, the status bar keeps
+  the keyboard focus across a repaint, popovers stay out of the safe
+  areas, and a logged out account's Usage row says so.
+- A slash command counts as done when the screen shows its answer or
+  the tab's model or effort changed; it is dropped only while it still
+  sits in the input box.
+- The Sync screen says that a restart is needed when GodTerm has no
+  sync plan yet, and a join check no longer warns "there already".
 
 ### Security
 - The update signature names the version, so an old signed build cannot

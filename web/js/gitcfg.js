@@ -4,7 +4,7 @@
 // (`git` frame op cfg_check), this shows what changes, and only the
 // user's Confirm saves it (cfg_save with the id that check returned).
 // The assistant has no way to send these frames.
-import { h, on, toast } from './util.js';
+import { h, on, toast, skeleton, failRow } from './util.js';
 import { send } from './conn.js';
 
 let seq = 0;
@@ -82,7 +82,7 @@ const put = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k !
 // The section's element (filled when GodTerm answers).
 export function gitcfgSection() {
   style();
-  const root = h('div.gc', { 'data-q': 'github git owner owners account accounts gh rule rules folder glob repo binding bindings placeholder state' }, h('div.mnote', {}, 'Reading the GitHub settings...'));
+  const root = h('div.gc', { 'data-q': 'github git owner owners account accounts gh rule rules folder glob repo binding bindings placeholder state' }, skeleton(3));
   const st = { view: null, saved: null, draft: null, starter: false, test: '', checked: null, tries: 0 };
   load(root, st);
   return root;
@@ -90,7 +90,7 @@ export function gitcfgSection() {
 
 async function load(root, st, keep) {
   const r = await ask({ op: 'cfg_view' });
-  if (!r.ok) { put(root, h('div.mnote', {}, 'The GitHub settings did not load: ' + (r.error || 'no answer'))); return; }
+  if (!r.ok) { put(root, failRow(r.error || 'The GitHub settings did not load', () => load(root, st, keep), 'GitHub accounts and repos')); return; }
   st.view = r.view;
   st.saved = clone(r.view.draft);
   if (!keep) {

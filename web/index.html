@@ -22,8 +22,8 @@
 <!-- Every module the first screen needs, fetched at once instead of one
      import at a time. -->
 <link rel="modulepreload" href="js/main.js">
-<link rel="modulepreload" href="js/debuglog.js">
 <link rel="modulepreload" href="js/util.js">
+<link rel="modulepreload" href="js/debuglog.js">
 <link rel="modulepreload" href="js/conn.js">
 <link rel="modulepreload" href="js/state.js">
 <link rel="modulepreload" href="js/term.js">
@@ -33,26 +33,23 @@
 <link rel="modulepreload" href="js/chat.js">
 <link rel="modulepreload" href="js/md.js">
 <link rel="modulepreload" href="js/sheet.js">
-<link rel="modulepreload" href="js/voice.js">
-<link rel="modulepreload" href="js/mic.js">
-<link rel="modulepreload" href="js/images.js">
+<link rel="modulepreload" href="js/find.js">
 <link rel="modulepreload" href="js/install.js">
-<link rel="modulepreload" href="js/push.js">
-<link rel="modulepreload" href="js/statusbar.js">
 </head>
 <body>
 <div id="app">
  <header id="top">
   <div class="tr1">
-   <button class="ib" id="b-menu" aria-label="Tabs" data-i="menu"></button>
+   <button class="ib" id="b-menu" aria-label="Tabs" title="Tab list" data-i="menu"></button>
    <button id="title" type="button" aria-label="Tab options"><span class="t1"><span class="tcm" id="t-tc"></span><span class="dot" id="t-dot"></span><b id="t-name">GodTerm</b></span><span id="t-sub"></span></button>
    <button type="button" class="upd" id="b-upd" hidden data-i="reopen"><span class="lb">Update</span></button>
    <span id="conn" class="conn" title="connecting"></span>
-   <button class="ib" id="b-gear" aria-label="Settings" data-i="gear"></button>
-   <button class="ib" id="b-appr" aria-label="Approvals" data-i="check"><span class="badge" id="appr-n" hidden>0</span></button>
+   <button class="ib" id="b-mac" aria-label="Open GodTerm on the Mac" title="Bring the GodTerm app to the front on the Mac" data-i="desktop"></button>
+   <button class="ib" id="b-gear" aria-label="Settings" title="Settings" data-i="gear"></button>
+   <button class="ib" id="b-appr" aria-label="Approvals" title="Approvals" data-i="check"><span class="badge" id="appr-n" hidden>0</span></button>
   </div>
   <div class="tr2" role="toolbar" aria-label="Actions">
-   <button class="ib tb" id="b-ptt" aria-label="Voice: tap to pick the mic mode"></button>
+   <button class="ib tb" id="b-ptt" aria-label="Voice off. Tap to change" title="Voice off. Tap to change" data-mode="off"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path d="M4 3l16 18"/></svg><span class="ml-s">Off</span><span class="ml-l">Voice off</span></button>
    <button class="ib tb" id="b-chat" aria-label="Assistant" title="Assistant" data-i="chat"><span class="lb">Assistant</span></button>
    <button class="ib tb" id="b-find" aria-label="Find a tab" title="Find a tab" data-i="search"><span class="lb">Find</span></button>
    <button class="ib tb" id="b-sessions" aria-label="Sessions" title="Sessions" data-i="history"><span class="lb">Sessions</span></button>
@@ -64,7 +61,7 @@
   </div>
  </header>
  <div id="under">
- <div id="update" hidden><span id="update-text">Update available</span><button id="update-go">Reload</button><button class="ib sm" id="update-x" aria-label="Dismiss" data-i="x"></button></div>
+ <div id="update" hidden><span id="update-text">Update available</span><button id="update-go">Reload</button><button class="ib sm" id="update-x" aria-label="Dismiss" title="Dismiss" data-i="x"></button></div>
  </div>
  <div id="toasts" aria-live="polite"></div>
  <aside id="side">
@@ -96,21 +93,23 @@
    <b>Assistant</b>
    <span id="voice-note" class="dim"></span>
    <button class="tog" id="b-openmic" aria-pressed="false">Open mic</button>
-   <button class="ib" id="b-voice" aria-label="Voice settings" data-i="filter"></button>
-   <button class="ib" id="b-chat-x" aria-label="Close" data-i="x"></button>
+   <button class="ib" id="b-voice" aria-label="Voice settings" title="Voice settings" data-i="filter"></button>
+   <button class="ib" id="b-chat-x" aria-label="Close" title="Close the assistant" data-i="x"></button>
   </div>
-  <div id="msgs"></div>
-  <div id="att" hidden></div>
+  <div id="msgs" role="log" aria-label="Conversation"></div>
+  <div id="chat-sr" class="sr-only" aria-live="polite"></div>
+  <button type="button" id="jump" class="jump" hidden aria-label="Scroll to the end"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg><span></span></button>
+  <div id="att" hidden aria-label="Attached images"></div>
   <form id="composer">
-   <button type="button" class="ib" id="b-ptt2" aria-label="Hold to talk" data-i="mic"></button>
-   <button type="button" class="ib" id="b-img" aria-label="Attach an image" data-i="image"></button>
+   <button type="button" class="ib" id="b-ptt2" aria-label="Hold to talk" title="Hold to talk" data-i="mic"></button>
+   <button type="button" class="ib" id="b-img" aria-label="Attach an image" title="Attach an image" data-i="image"></button>
    <input type="file" id="f-img" accept="image/*" multiple hidden>
-   <textarea id="say" rows="1" placeholder="Ask the assistant" enterkeyhint="send"></textarea>
-   <button class="ib send" id="b-send" aria-label="Send" data-i="send"></button>
+   <textarea id="say" rows="1" placeholder="Ask the assistant" aria-label="Message to the assistant" enterkeyhint="send"></textarea>
+   <button class="ib send" id="b-send" aria-label="Send" title="Send (Enter)" data-i="send" disabled></button>
   </form>
  </section>
  <div id="scrim"></div>
- <div id="sheet" role="dialog" aria-modal="true"><div class="sheet-grip"></div><div id="sheet-body"></div></div>
+ <div id="sheet" role="dialog" aria-modal="true" tabindex="-1"><div class="sheet-grip"></div><div id="sheet-body"></div></div>
 </div>
 <script defer src="vendor/xterm.js"></script>
 <script defer src="vendor/addon-fit.js"></script>

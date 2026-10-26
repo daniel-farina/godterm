@@ -8,6 +8,7 @@ Three levels, from cheapest to most real:
 | e2e, demo world | the real binary in tmux on `godterm --demo` (made up accounts, the demo agent, no network) | `scripts/e2e/run.py` | tmux, python3 |
 | e2e, real accounts | the real binary under `sandbox-exec`, one cheap prompt per logged in harness | `scripts/e2e/run.py --suite accounts` | macOS, logged in CLIs |
 | Web matrix | GodTerm Web in WebKit and Chromium (phone and desktop) on every harness, plus WebSocket stress and a soak | `scripts/e2e/web_matrix.py` | tmux, python3, node with Playwright |
+| Web perf | GodTerm Web's load, input, streaming, reconnect and memory numbers against a demo or fake instance (docs/WEB_APP.md, Performance) | `scripts/e2e/web_perf.mjs` | node with Playwright (`PW_DIR`) |
 | Clean machine | a fresh tart VM: install from the release artifacts, first run, setup, onboarding, Homebrew | `scripts/sandbox/vm/...` (below) | tart, the cirruslabs images |
 
 Results go to `e2e-results/<suite>-<time>/` (gitignored): `report.md`,
@@ -111,6 +112,7 @@ free one (never 7878 or 7880), and is stopped and deleted at the end.
 ln -s <a dir with playwright>/node_modules web/dev/
 scripts/e2e/web_matrix.py                          # demo world, both engines and sizes
 scripts/e2e/web_matrix.py --instance demo,demofull,fake
+scripts/e2e/web_matrix.py --instance demo,mock --groups layout,keyboard,shared,clip
 scripts/e2e/web_matrix.py --instance unauth        # the real CLIs, signed out
 scripts/e2e/web_matrix.py --instance real          # real accounts, host sandbox
 scripts/e2e/web_matrix.py --soak 30                # + 30 minutes of soak
@@ -134,6 +136,8 @@ Instances:
 - `fake`: Codex and OpenCode slots running `scripts/e2e/fakecli.py`, a
   stand-in CLI on the main screen with 300 lines of history that logs
   every byte it reads and floods on demand (`flood 30`).
+- `mock`: `web/dev/mock.py` alone (no GodTerm): fake tabs and speech
+  clips on demand, for the `clip` group.
 - `unauth`: the real CLIs with HOME in a temp root (signed out; the
   profile denies reads of every real agent dir). Only passive checks:
   a tab showing a login or setup screen gets no keys at all.
@@ -166,7 +170,26 @@ move to another CLI refused, archive without a session id refused, close
 of a pinned tab asks first), `chat` (a web turn, web_layout reaching this
 browser, an image into the chat), `voice` (push to talk with Chromium's
 fake microphone), `stress` (40 rapid tab switches, rotation, keyboard
-open and close loops), `turn` (real only).
+open and close loops), `layout` (desktop: 820x1180 is the desktop
+layout and 844x390 the phone one; 1000x700 with the tab panel and the
+chat keeps the terminal 520 px wide, the side list folds into an overlay
+the Tabs button opens and the scrim shuts; the status bar's "..." item
+opens the dropped items as a menu above it; split 4 at 800x600 falls back
+to 2 stacked and comes back with the room), `keyboard` (desktop: F6 and
+Shift+F6 walk the areas with nothing sent to the tab, Shift+Esc leaves the
+terminal for its pane header, ? opens the shortcuts sheet and Esc gives
+the focus back, ? in the terminal is typed, a dialog is centred and closes
+on Escape and the scrim), `keybar` (phone: the keys by use, the first
+seven beside Send on a 390 px phone), `sheet` (phone: a message stays
+under the sheet, a pull down or a flick closes it, a short pull settles
+back), `retry` (the Sessions screen's Retry row from a failing tool reply
+the test writes itself, an older GodTerm named as such, the Open on Mac
+button's reply as a message where messages go on this device), `shared`
+(a second page on the same tab takes the size: the first yields with
+"Sized by ...", scrolling there leaves it alone, typing takes it back),
+`clip` (mock only, Chromium: the speech clips `/dev/clip` sends are faded
+at their edges and a full scale one is scaled under clipping), `turn`
+(real only).
 
 Without a browser, over the WebSocket: every tab subscribed and
 streaming with the UI thread's round trip, a client that reads nothing,

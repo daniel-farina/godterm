@@ -397,10 +397,10 @@ machine: Accounts > "Sync tokens to my other machines" (asks first) and
 ## 6. UI
 ### 6.1 Git section per tab (TUI tab options "Git...", web tab menu "Git")
 Header: repo top, branch (or detached), remote owner/repo, account, binding source (remote, rule, manual), state line (`Facts::state_word`), fetched ago. Commits: last 20 with unpushed marks. Changes: `git diff --stat` staged/unstaged, untracked count, up to 10 files. Actions: Commit (assistant drafts from the diff, user edits and confirms; all or staged only), Push, Pull, Sync, Fetch, Branches (list, switch with clean tree or stash on a yes, create), Define repo / Change binding / Create private repo, Auto sync toggle, WIP backup toggle. Undefined project: only "No repo defined. Define..." and the rule picker. Web sheet `web/js/git.js` uses the same data through a `git` WebSocket message; a button press plus the sheet's confirm dialog is the user's yes.
-### 6.2 Sync screen (TUI view, web Manage > Sync)
+### 6.2 Sync screen (TUI view, web Settings > Sync)
 State repo, last pull/push, changes waiting, errors; machines (label, last heartbeat, version); conversations owned here / elsewhere / pending takeover (Release, Take over now); paused jobs; transcript secret warnings; size per month repo and `sync plan`; undefined and diverged projects.
 ### 6.3 Assistant tools
-Read only: `git_status` (from project-git), `git_log`, `git_diff`, `git_branches`, `git_bindings`, `sync_status` (includes the projects not backed up). `sync_now` needs no confirmation (it only touches GodTerm's own state repos). Project-changing git actions (commit, push, pull, sync, branch create/switch, bind, create repo) are UI-only actions: the assistant may draft a commit message or explain what is missing, but cannot run them, not even through `control::planned`; the user presses the button in the Git section and confirms. Through `control::planned`: `take_over {session}`, `release_session {session}` (Phase 3). No tool can override a secret finding, create a public repo, force push, or delete a repo.
+Read only: `git_status` (from project-git), `git_log`, `git_diff`, `git_branches`, `git_bindings`, `sync_status` (includes the projects not backed up), `sync_plan`. Through `control::planned`: `sync_init`, `sync_clone` (see "Turning it on from the app"). `sync_now` and `sync_pause` need no confirmation (it only touches GodTerm's own state repos). Project-changing git actions (commit, push, pull, sync, branch create/switch, bind, create repo) are UI-only actions: the assistant may draft a commit message or explain what is missing, but cannot run them, not even through `control::planned`; the user presses the button in the Git section and confirms. Through `control::planned`: `take_over {session}`, `release_session {session}` (Phase 3). No tool can override a secret finding, create a public repo, force push, or delete a repo.
 Read only: `git_status` (from project-git), `git_log`, `git_diff`, `git_branches`, `git_bindings`, `sync_status`. Change something, through `control::planned` (asked in one turn, run only on the user's yes in a later turn): `git_commit {dir,message,all}`, `git_push`, `git_pull`, `git_sync`, `git_branch {create|switch}`, `git_bind {dir,owner,repo,account}`, `git_create_repo {dir,owner,name}` (always private, no visibility arg), `git_auto_sync {dir,on}`, `env_adopt {dir}`, `take_over {session}`, `release_session {session}`. `sync_now` needs no confirmation. No tool can override a secret finding, create a public repo, force push, or delete a repo.
 ### 6.4 CLI
 `godterm sync init | clone <owner/repo> | status | now | plan | doctor | takeover <session> | release <session>`, `godterm git-credential --account <acct>` (internal helper).
@@ -494,3 +494,57 @@ Not built in Phase 3, or different:
 - No `godterm sync takeover <session>` / `release <session>` CLI subcommands yet (the app, the web and the assistant's tools do it).
 - Machine clocks are trusted: heartbeats compare one machine's write time with another's clock, so a clock several minutes off shortens or stretches the 10 minutes.
 - A Grok session's lease works the same way; its read only view has no transcript preview yet.
+
+## Turning it on from the app (as built 2026-10-26)
+
+Sync can be enabled, joined, checked and paused without a shell: from
+the web's Settings > Sync (docs/WEB_APP.md) or by asking the assistant.
+Both use the same control tools (src/app_sync.rs), which reuse the CLI's
+code paths (`plan::plan`, `restore::init`, `restore::clone`).
+
+- `sync_plan {owner?, account?, repo?}` (read only, off the UI thread):
+  the dry run plus `plan::preflight`: owner, gh account, state repo,
+  the monthly repo pattern, the gh logins, whether the repo exists and
+  its visibility, `can_init` / `can_clone`, and warnings (no gh login,
+  there already, not private, .env files that go in as they are, .env
+  files not ignored by git, conversations mentioning the vault left
+  out). With `repo` it checks a state repo to join. The last plan is
+  kept 10 minutes.
+- `sync_init {owner?, account?}`: through `control::planned`. It needs
+  a plan from the last 10 minutes for the same owner and account that
+  says it can, then asks once ("Create the PRIVATE GitHub repo
+  OWNER/godterm-state with the gh account ACCOUNT, push this machine's
+  first backup (...)?"); only a clear yes in a later turn (or the web
+  dialog's Yes, sent as the user's turn) runs it. The CLI's typed yes is
+  replaced by that answer; everything else is `restore::init`, which
+  only creates repos private and checks them private after.
+- `sync_clone {repo, account?, label?}`: asked the same way, then
+  `restore::clone`. Clone now refuses a state repo that reads as
+  anything but PRIVATE (CLI too). Starting with another machine's tabs
+  is CLI only (`--tabs`), since it would rewrite state.json under the
+  running app.
+- Both run on a background thread; `sync_status.op` has the kind, the
+  repo, started and finished times, ok or the error, and a summary.
+  The thread's context carries the app link, so pulled archive and jobs
+  changes go through the app (`restore::reload` keeps the link now).
+- `sync_pause {pause}`: `[sync] paused = true` stops the background
+  sync (the watcher and the periodic runs); `sync_now` still runs one,
+  and the lease worker keeps going (ownership must stay correct).
+- `sync_status` adds `paused`, the worker, `next` (when the next sync
+  runs), `repos` (state and monthly repos with size and visibility;
+  GitHub is asked off the UI thread at most every 5 minutes, `CHECKING`
+  until then), `machines`, `warnings`, `token_sync`, `op`, and the tab
+  of each leased conversation.
+- The assistant's prompt has a GodTerm Sync section: what sync does and
+  never does, check with `sync_status`, turning it on is always
+  `sync_plan` first and then `sync_init` or `sync_clone` with the
+  user's yes (confirm_token), and `take_over` / `release_session` only
+  when the user asks for that conversation.
+- Tests: src/sync/setup_tests.rs (preflight, warnings, owner
+  resolution, clone refuses a public repo) and src/sync/ui_tests.rs
+  (the app: "enable sync" with no plan is refused, plan, one question,
+  same turn and unclear answers refused, yes runs init in the
+  background, status, pause and resume; join check, no, yes, clone;
+  the web dialog's yes). Fixture homes and local bare repos (a
+  `visibility` file in a bare repo stands in for GitHub's answer);
+  without a fixture home the tools refuse in tests.

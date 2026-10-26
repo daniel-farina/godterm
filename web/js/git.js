@@ -3,8 +3,13 @@
 // changes until the user presses a button here and confirms the plan the
 // server checked (secrets, sizes, names); a secret finding also needs
 // "push anyway" typed. The assistant has no way to send these frames.
-import { h, on, toast, isDesk } from './util.js';
-import { send } from './conn.js';
+// On top, "Ask this tab's agent": one tap sends this tab's own agent a
+// git task (commit and sync, review...) through send_prompt, with the
+// repo, branch, binding and the safety rules spelled out; the direct git
+// buttons sit below in a collapsed "Manual git actions" section.
+import { h, on, toast, isDesk, store, icon, stateWords, skeleton, failRow } from './util.js';
+import { send, tool } from './conn.js';
+import { tabById } from './state.js';
 import { openSheet, closeSheet } from './sheet.js';
 
 let seq = 0;
@@ -47,9 +52,10 @@ function style() {
 .gsh .gchip.ok{border-color:color-mix(in srgb,var(--ok) 55%,var(--chip-line));color:var(--ok)}
 .gsh .gchip.warn{border-color:color-mix(in srgb,var(--warn) 55%,var(--chip-line));color:var(--warn)}
 .gsh .gacts{display:flex;flex-wrap:wrap;gap:6px}
-.gsh .gab{min-height:32px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px;white-space:nowrap}
+.gsh .gab{min-height:32px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text);font-size:13px;white-space:nowrap}
 .gsh .gab:hover:not(:disabled){border-color:var(--dim);background:var(--panel2)}
 .gsh .gab:disabled{opacity:.45;cursor:default}
+.gsh .gab.pri:disabled{opacity:1;background:none;border-color:var(--line);color:var(--dim);font-weight:500}
 .gsh .gab.g2{color:var(--dim)}
 .gsh .gab.g2:hover:not(:disabled){color:var(--text)}
 .gsh .ggrp{display:flex;flex-direction:column;gap:8px;min-width:0}
@@ -62,6 +68,8 @@ function style() {
 .gsh .gfrow .gn .a{color:var(--ok)}.gsh .gfrow .gn .r{color:var(--err)}
 .gsh .gmore{padding:5px 10px;font-size:12px;color:var(--dim);border-top:1px solid var(--line)}
 .gsh .gclean{font-size:13px;color:var(--dim);padding:2px 4px}
+.gsh .gnone{font-size:13.5px;padding:2px 4px;overflow-wrap:anywhere}
+.gsh .gnone small{display:block;color:var(--dim);font-size:12.5px;margin-top:2px}
 .gsh .gcm{display:flex;flex-direction:column;gap:2px;padding:7px 10px;min-width:0}
 .gsh .list>.gcm+.gcm{border-top:1px solid var(--line)}
 .gsh .gcm .s{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -79,13 +87,48 @@ function style() {
 .gsh .gpick code{font-family:ui-monospace,Menlo,monospace;font-size:12px;overflow-wrap:anywhere}
 .gsh.gw .gcols{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
 .gsh.gw .gsub{width:100%;max-width:760px;display:flex;flex-direction:column;gap:10px}
-.touch .gsh .gab{min-height:42px}
+.touch .gsh .gab{min-height:44px}
+.touch .gsh .gai .gaibig{min-height:44px}
+.touch .gsh details.gman>summary{min-height:44px}
 .gsh.gp{gap:8px}
 .gsh.gp .gab{min-height:30px;padding:0 10px;font-size:12.5px}
+.touch .gsh.gp .gab{min-height:44px}
 .gsh.gp .gacts.main{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
 .gsh.gp .gcm{padding:6px 10px}
 .gsh.gp .gchip{height:22px;font-size:12px}
 .gsh.gp .gfoot .btn{flex:1}
+.gsh .gai{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel2);min-width:0}
+.gsh .gai .gait{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:13.5px;font-weight:600}
+.gsh .gai .gait small{font-weight:400;color:var(--dim);font-size:12px}
+.gsh .gai .gairow{display:flex;flex-wrap:wrap;gap:6px}
+.gsh .gab.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.gsh .gab.pri:hover:not(:disabled){background:var(--accent);border-color:var(--accent);filter:brightness(1.06)}
+.gsh .gai .gaibig{min-height:38px;font-size:14px;padding:0 16px}
+.gsh .gai .gaiask{display:flex;gap:6px;min-width:0}
+.gsh .gai .gaiask input{flex:1;min-width:0}
+.gsh .gai .gaist{font-size:12.5px;color:var(--dim);overflow-wrap:anywhere}
+.gsh .gai .gaist.ok{color:var(--ok)}.gsh .gai .gaist.bad{color:var(--err)}.gsh .gai .gaist.warn{color:var(--warn)}
+.gsh details.gman{border:1px solid var(--line);border-radius:12px;background:var(--bg);min-width:0}
+.gsh details.gman>summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;font-size:13px;color:var(--dim);user-select:none}
+.gsh details.gman>summary::-webkit-details-marker{display:none}
+.gsh details.gman>summary::before{content:"▸";font-size:11px;transition:transform .15s}
+.gsh details.gman[open]>summary::before{transform:rotate(90deg)}
+.gsh details.gman>summary:hover{color:var(--text)}
+.gsh details.gman>summary small{margin-left:auto;font-size:11.5px}
+.gsh details.gman>.gmanb{display:flex;flex-direction:column;gap:8px;padding:0 12px 12px}
+.gsh details.gman .mnote{font-size:12.5px;color:var(--dim)}
+.gsh details.gman .list{border-radius:10px}
+.gsh details.guntr>summary{cursor:pointer;list-style:none}
+.gsh details.guntr>summary::-webkit-details-marker{display:none}
+.gsh details.guntr>summary .gl::before{content:"▸ ";}
+.gsh details.guntr[open]>summary .gl::before{content:"▾ ";}
+.gsh details.guntr[open]>.list{margin-top:8px}
+.gsh.gp .gai{padding:9px 10px}
+.gsh.gp .gai .gaibig{width:100%}
+.gsh.gp .gai .gairow.sec{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+.gsh:not(.gw):not(.gp) .gai .gaibig{width:100%}
+.gsh:not(.gw):not(.gp) .gai .gairow.sec{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+.gsh .gai .gairow.sec .gab{overflow:hidden;text-overflow:ellipsis}
 `));
 }
 
@@ -103,13 +146,13 @@ const modeOf = (body) => body.mode || 'phone';
 export async function gitSheet(t, place) {
   style();
   const mode = place ? 'panel' : isDesk() ? 'wide' : 'phone';
-  const body = h('div.gsh' + (mode === 'wide' ? '.gw' : mode === 'panel' ? '.gp' : ''), {}, h('div.mnote', {}, 'Reading git...'));
+  const body = h('div.gsh' + (mode === 'wide' ? '.gw' : mode === 'panel' ? '.gp' : ''), {}, skeleton(mode === 'wide' ? 4 : 3, mode === 'wide' ? '' : '.sm'));
   body.place = place || null;
   body.mode = mode;
   if (place) place.mount(body);
-  else openSheet({ kind: 'git', tall: true, big: mode === 'wide' }, h('div.sh-title', {}, h('span', {}, 'Git · ' + (t.name || t.id))), body);
+  else openSheet({ kind: 'git', tall: true, big: mode === 'wide' }, h('div.sh-title', {}, h('span', {}, 'Git · ' + (t.name || t.id)), h('button.ib', { 'aria-label': 'Close', title: 'Close', onclick: closeSheet, html: icon('x') })), body);
   const r = await ask({ op: 'view', tab: t.id });
-  if (!r.ok) { put(body, h('div.gbad', {}, r.error || 'It did not work')); return; }
+  if (!r.ok) { put(body, failRow(r.error, () => gitSheet(t, place), 'The Git screen')); return; }
   render(t, body, r.view);
 }
 
@@ -129,15 +172,19 @@ function header(v, body) {
   const r = v.resolved || {};
   const slug = r.owner && r.repo ? `${r.owner}/${r.repo}` : '';
   const src = srcWord(r);
-  const ask = r.ask && !needsAccount(r) ? h('div.gbad', {}, r.ask) : null;
+  const ask = r.ask && !needsAccount(r) && v.is_repo ? h('div.gbad', {}, r.ask) : null;
   const prop = v.proposal ? h('div.mnote', {}, `The assistant proposes ${v.proposal.owner}/${v.proposal.repo} as ${v.proposal.account}: Define to use it.`) : null;
+  // Not a repo: said once, with what to do (the init button is below),
+  // not as a chip, a line, a warning and a red sentence.
+  const none = v.is_repo ? null : h('div.gnone', {}, 'This folder is not a git repo yet.', h('small', {}, 'Make it one below; then define which GitHub repo it belongs to, so it is backed up.'));
+  const warnings = (v.warnings || []).filter((w) => v.is_repo || !/not in git|not a git repo/i.test(w));
   if (modeOf(body) === 'phone') {
     return [
       h('div.mhead', {},
         h('div.mm.gmono', {}, short(v.top || v.dir, 70)),
-        h('div.mm', {}, v.is_repo ? [v.branch, v.remote, v.state, v.fetched].filter(Boolean).join(' · ') : 'not a git repo'),
-        h('div.mm', {}, slug ? `GitHub ${slug}${r.account ? ' as ' + r.account : ', account not set'} (${src})` : 'No repo defined')),
-      ask, warnRow(v), prop,
+        v.is_repo ? h('div.mm', {}, [v.branch, v.remote, v.state, v.fetched].filter(Boolean).join(' · ')) : null,
+        v.is_repo ? h('div.mm', {}, slug ? `GitHub ${slug}${r.account ? ' as ' + r.account : ', account not set'} (${src})` : 'No GitHub repo defined') : null),
+      none, ask, warnRow({ warnings }), prop,
     ];
   }
   const chip = (text, tone = '', title = '') => h('span.gchip' + (tone ? '.' + tone : ''), { title: title || text }, text);
@@ -149,25 +196,42 @@ function header(v, body) {
     if (v.behind) chips.push(chip('↓ ' + v.behind + ' behind', 'warn', 'Commits to pull'));
     if (v.state && !/ahead|behind/.test(v.state)) chips.push(chip(v.state, 'dim', 'State'));
     if (v.fetched) chips.push(chip(v.fetched, 'dim', 'Last fetch'));
-  } else chips.push(chip('not a git repo', 'warn'));
-  if (slug) chips.push(chip(`GitHub ${slug}` + (r.account ? ' as ' + r.account : ''), r.account ? 'ok' : 'warn', src ? 'Binding: ' + src : ''));
-  else chips.push(chip('No repo defined', 'warn'));
-  for (const w of v.warnings || []) chips.push(chip('⚠ ' + w, 'warn'));
+  }
+  if (v.is_repo) {
+    if (slug) chips.push(chip(`GitHub ${slug}` + (r.account ? ' as ' + r.account : ''), r.account ? 'ok' : 'warn', src ? 'Binding: ' + src : ''));
+    else if (!ask) chips.push(chip('No GitHub repo defined', 'warn'));
+  }
+  for (const w of warnings) chips.push(chip('⚠ ' + w, 'warn'));
   return [
-    h('div.ghead', {}, h('div.gpath.gmono', { title: v.top || v.dir }, short(v.top || v.dir, 120)), h('div.gchips', {}, chips)),
-    ask, prop,
+    h('div.ghead', {}, h('div.gpath.gmono', { title: v.top || v.dir }, short(v.top || v.dir, 120)), chips.length ? h('div.gchips', {}, chips) : null),
+    none, ask, prop,
   ];
 }
 
 const MAIN_ACTS = new Set(['init', 'commit', 'push', 'pull', 'sync', 'fetch', 'branches']);
 
+// The direct git buttons, in a collapsed "Manual git actions" section
+// (open or closed is remembered per browser). Everything here runs git
+// itself, without the agent; each still shows its checked plan first.
+// A folder that is not a repo yet opens it (init and define live here).
+function manualEl(v, body, go) {
+  const kids = actionsEl(v, body, go).filter(Boolean);
+  if (!kids.length) return null;
+  const n = (v.actions || []).length;
+  const d = h('details.gman', { open: !v.is_repo || !!store.get('git.manual', false) },
+    h('summary', {}, 'Manual git actions', h('small', {}, n + ' direct')),
+    h('div.gmanb', {}, h('div.mnote', {}, 'These run git directly, without the agent. Each one shows what it will do and asks you to confirm.'), ...kids));
+  d.addEventListener('toggle', () => { if (v.is_repo) store.set('git.manual', d.open); });
+  return d;
+}
+
 function actionsEl(v, body, go) {
   const acts = v.actions || [];
   if (modeOf(body) === 'phone') {
-    return [h('div.gl', {}, 'Actions'), h('div.list', {}, acts.map((a) => h('button.li', { type: 'button', disabled: !!a.disabled, title: a.disabled || a.hint, onclick: () => go(a.id) },
+    return [h('div.gl', {}, 'Actions'), h('div.list', {}, acts.map((a) => h('button.li' + (a.id === 'init' && !v.is_repo ? '.on' : ''), { type: 'button', disabled: !!a.disabled, title: a.disabled || a.hint, onclick: () => go(a.id) },
       h('span.ll', {}, a.label), h('span.lh', {}, a.disabled || ''))))];
   }
-  const b = (a, sec) => h('button.gab' + (sec ? '.g2' : ''), { type: 'button', disabled: !!a.disabled, title: (a.disabled ? a.disabled + ' · ' : '') + (a.hint || ''), onclick: () => go(a.id) }, a.label);
+  const b = (a, sec) => h('button.gab' + (sec ? '.g2' : '') + (a.id === 'init' && !v.is_repo ? '.pri' : ''), { type: 'button', disabled: !!a.disabled, title: (a.disabled ? a.disabled + ' · ' : '') + (a.hint || ''), onclick: () => go(a.id) }, a.label);
   const main = acts.filter((a) => MAIN_ACTS.has(a.id));
   const rest = acts.filter((a) => !MAIN_ACTS.has(a.id));
   return [
@@ -175,6 +239,8 @@ function actionsEl(v, body, go) {
     rest.length ? h('div.gacts', {}, rest.map((a) => b(a, true))) : null,
   ];
 }
+
+const UNTRACKED_OPEN = 8;
 
 function changesEl(v, body) {
   const ch = v.changes || {};
@@ -199,12 +265,17 @@ function changesEl(v, body) {
   const files = ch.files || [];
   const staged = files.filter((f) => f.staged).map((f) => row(f.path, nums(f)));
   const unstaged = files.filter((f) => !f.staged).map((f) => row(f.path, nums(f)));
-  const untr = untracked.slice(0, 12).map((p) => row(p, h('span.gn', {}, 'new')));
+  const untr = untracked.slice(0, 40).map((p) => row(p, h('span.gn', {}, 'new')));
+  // A long untracked list starts collapsed (it is often build output).
+  const longU = untracked.length > UNTRACKED_OPEN;
+  const untrEl = !untracked.length ? null : !longU ? group('Untracked', untr.slice(0, 12), untracked.length)
+    : h('details.ggrp.guntr', {}, h('summary', {}, h('div.gl', {}, `Untracked (${untracked.length})`)),
+      h('div.list', {}, untr, untracked.length > untr.length ? h('div.gmore', {}, `and ${untracked.length - untr.length} more`) : null));
   return [
     h('div.gl', {}, `Changes · +${ch.added ?? 0} -${ch.removed ?? 0}`),
     group('Staged', staged, ch.staged_n || 0),
     group('Unstaged', unstaged, ch.unstaged_n || 0),
-    group('Untracked', untr, untracked.length),
+    untrEl,
   ];
 }
 
@@ -225,8 +296,7 @@ function commitsEl(v, body) {
 function footer(t, body) {
   const sm = modeOf(body) === 'phone' ? '' : '.sm';
   return h(modeOf(body) === 'phone' ? 'div.acts' : 'div.gfoot', {},
-    h('button.btn' + sm, { onclick: () => gitSheet(t, body.place) }, 'Refresh'),
-    h('button.btn' + sm, { onclick: () => (body.place ? body.place.back() : closeSheet()) }, body.place ? 'Back' : 'Close'));
+    h('button.btn' + sm, { title: 'Read git again', onclick: () => gitSheet(t, body.place) }, 'Refresh'));
 }
 
 // A sub screen (commit, define, branches, a plan): narrower in the wide
@@ -245,17 +315,162 @@ function render(t, body, v, note) {
   const noteEl = note ? h(note.ok ? 'div.gok' : 'div.gbad', {}, note.text) : null;
   const diverged = note && /^Diverged/.test(note.text) ? h('button.btn' + (modeOf(body) === 'phone' ? '' : '.sm'), { onclick: () => go('push_as_branch') }, 'Push as a branch') : null;
   const picker = needsAccount(r) ? accountPicker(t, body, v) : null;
+  const agent = agentEl(t, body, v);
   if (modeOf(body) === 'phone') {
-    put(body, ...header(v, body), picker, noteEl, diverged, ...actionsEl(v, body, go), ...changesEl(v, body), ...commitsEl(v, body), footer(t, body));
+    put(body, ...header(v, body), picker, noteEl, diverged, agent, manualEl(v, body, go), ...changesEl(v, body), ...commitsEl(v, body), footer(t, body));
     return;
   }
   const ch = changesEl(v, body);
   const cm = commitsEl(v, body);
   put(body,
     ...header(v, body), picker, noteEl, diverged,
-    ...actionsEl(v, body, go),
+    agent, manualEl(v, body, go),
     ch.length || cm.length ? h('div.gcols', {}, ch.length ? h('div.gcol', {}, ch) : null, cm.length ? h('div.gcol', {}, cm) : null) : null,
     footer(t, body));
+}
+
+// ---- ask this tab's own agent ----
+// The git facts the panel knows, so the agent starts from them.
+function gitContext(v) {
+  const r = v.resolved || {};
+  const ch = v.changes || {};
+  const nU = (ch.untracked || []).length;
+  const sync = [v.state, v.ahead ? v.ahead + ' ahead' : '', v.behind ? v.behind + ' behind' : '', v.fetched].filter(Boolean);
+  const uniq = [...new Set(sync)].join(', ');
+  const slug = r.owner && r.repo ? `${r.owner}/${r.repo}` : '';
+  const bind = slug ? `${slug} (${srcWord(r) || 'binding'})` : 'none defined';
+  const acct = r.account ? r.account
+    : r.owner ? `not set for ${r.owner}: do not push; ask me which gh account pushes for ${r.owner}`
+      : 'none (no GitHub owner defined): do not push; ask me first';
+  return [
+    'Git context (from the GodTerm Git panel of this tab):',
+    `- Repo: ${v.top || v.dir}`,
+    `- Branch: ${v.branch || '(none)'}${uniq ? ' (' + uniq + ')' : ''}`,
+    `- Remote: ${v.remote || '(none)'}`,
+    `- GitHub binding: ${bind}`,
+    `- Pushes as gh account: ${acct}`,
+    `- Working tree: ${ch.staged_n || 0} staged, ${ch.unstaged_n || 0} unstaged, ${nU} untracked`,
+  ].join('\n');
+}
+
+const GIT_RULES = [
+  'Rules:',
+  '- Never force push (no --force, no --force-with-lease).',
+  '- Never rewrite published history (no amend, rebase, reset or squash of commits that are already on the remote).',
+  '- On any merge or rebase conflict, stop and ask me; do not resolve it yourself.',
+  '- Never commit secrets (.env files, keys, tokens, credentials) or junk (build output, caches, logs, OS files). Respect .gitignore.',
+  '- Ask me before adding large files or untracked binary files.',
+  '- Push only as the gh account above; if git would push as a different account, stop and tell me.',
+].join('\n');
+
+const COMMIT_WORK = 'Commit all meaningful changes with clear commit messages (separate commits for unrelated changes). Leave out secrets and junk; for untracked files, include only the ones that clearly belong in the repo and ask about the rest.';
+const SYNC_WORK = 'pull from the remote (rebase my unpushed commits onto it, or merge if a rebase is not safe), then push';
+
+// What each quick action asks. `need`: why it is off for this view.
+const AGENT_ACTS = [
+  { id: 'commit_sync', label: 'Commit and sync', main: true, hint: 'Commit all changes, pull, then push',
+    need: (v) => (!v.is_repo ? 'not a git repo' : null),
+    task: (v) => noRemote(v) ? COMMIT_WORK + ' There is no remote yet, so do not pull or push; tell me.' : `${COMMIT_WORK} Then ${SYNC_WORK}. Report what you committed, pulled and pushed, and the final git status.` },
+  { id: 'commit', label: 'Commit only', hint: 'Commit all changes; no pull or push',
+    need: (v) => (!v.is_repo ? 'not a git repo' : !dirtyN(v) ? 'nothing to commit' : null),
+    task: () => `${COMMIT_WORK} Do not pull or push. Report the commits you made.` },
+  { id: 'sync', label: 'Sync with remote', hint: 'Pull and push; no new commits',
+    need: (v) => (!v.is_repo ? 'not a git repo' : noRemote(v) ? 'no remote yet' : null),
+    task: () => `Bring this branch in sync with its remote without making new commits: fetch, ${SYNC_WORK} any unpushed commits. Leave uncommitted changes alone (if the pull needs a clean tree, stash them and restore them after). Report what you pulled and pushed, and the final git status.` },
+  { id: 'review', label: 'Review changes', hint: 'Summary and suggested commits; changes nothing',
+    need: (v) => (!v.is_repo ? 'not a git repo' : !dirtyN(v) ? 'nothing to review' : null),
+    task: () => 'Review the uncommitted changes: summarize the diff, point out anything that looks wrong or should not be committed, and suggest how to split it into commits with messages. Change nothing: no staging, commits or file edits.' },
+  { id: 'cleanup', label: 'Clean up untracked', hint: 'Suggest .gitignore rules; changes nothing until asked',
+    need: (v) => (!v.is_repo ? 'not a git repo' : !(v.changes?.untracked || []).length ? 'no untracked files' : null),
+    task: () => 'Look at the untracked files: suggest .gitignore additions for the junk, and say which files should be committed and which deleted. Change nothing until I say which suggestions to apply.' },
+];
+
+const noRemote = (v) => !v.remote || v.remote === 'no remote';
+const dirtyN = (v) => { const c = v.changes || {}; return (c.staged_n || 0) + (c.unstaged_n || 0) + (c.untracked || []).length; };
+const BUSY = new Set(['working', 'background', 'busy', 'approval', 'waiting', 'starting']);
+
+export function gitPrompt(v, task) {
+  return `[Git panel] ${task}\n\n${gitContext(v)}\n\n${GIT_RULES}`;
+}
+
+// The receipt in words: send_prompt answers with the delivery's mode,
+// status and state (queued, sent, received, started, done...).
+function receiptText(r) {
+  const res = r.result || r;
+  const d = res.prompt || (res.deliveries || [])[0] || {};
+  const failed = (res.failed || [])[0];
+  if (failed) return { tone: 'bad', text: 'Not sent: ' + (failed.reason || 'it failed') };
+  const st = d.state || d.status || '';
+  const queued = d.mode === 'queue' && /queued|received|sending|sent/.test(st) && st !== 'started';
+  const word = { done: 'done', started: 'it started', received: 'the agent has it', sent: 'typed in', sending: 'sending', queued: 'queued', unconfirmed: 'sent (no transcript to confirm)', dropped: 'dropped: send it again', interrupted: 'interrupted: send it again' }[st] || st;
+  const bad = /dropped|interrupted|failed/.test(st + (d.status || ''));
+  const text = (res.say ? res.say.trim() : 'Sent to the agent.') + (word ? ` Receipt: ${word}` : '') + (d.mode_note ? ` (${d.mode_note})` : '') + (d.reason ? ` (${d.reason})` : '');
+  return { tone: bad ? 'bad' : queued ? 'warn' : 'ok', text };
+}
+
+function agentEl(t, body, v) {
+  if (v.refused) return null;
+  // Nothing the agent could do here (not a repo): no box of six disabled buttons.
+  if (AGENT_ACTS.every((a) => a.need(v))) return null;
+  const live = () => tabById(t.id) || t;
+  const st = h('div.gaist');
+  const say = (text, tone = '') => { st.className = 'gaist' + (tone ? ' ' + tone : ''); st.textContent = text || ''; };
+  const busyNote = () => {
+    const s = (live().state || '').split(' ')[0];
+    return BUSY.has(s) || live().busy ? `This tab's agent is ${stateWords(s)}: the request is queued and runs after its current work.` : '';
+  };
+  let sending = false;
+  const btns = [];
+  async function sendTask(label, task) {
+    if (sending) return;
+    sending = true;
+    btns.forEach((b) => (b.disabled = true));
+    const busy = busyNote();
+    say((busy ? busy + ' ' : '') + `Sending "${label}" to the agent...`, busy ? 'warn' : '');
+    // queue: this tab's own session does it (never a forked background
+    // session working on the same tree); the user reads the answer there.
+    let r = await tool('send_prompt', { tab: t.id, text: gitPrompt(v, task), mode: 'queue', expect_reply: false }, 30000);
+    // One tab needs no yes today; if GodTerm ever asks, the tap was it.
+    const conf = r.needs_confirmation ? r : r.result?.needs_confirmation ? r.result : null;
+    if (conf?.token) r = await tool('send_prompt', { confirm_token: conf.token }, 30000, { user_says: 'yes' });
+    sending = false;
+    btns.forEach((b) => (b.disabled = !!b.dataset.off));
+    if (r.ok === false || r.error) {
+      const e = r.error || r.result?.error || 'It did not work';
+      say('Not sent: ' + e, 'bad');
+      toast('Git request not sent: ' + e, 'error');
+      return;
+    }
+    const rc = receiptText(r);
+    say(`${label}: ${rc.text}`, rc.tone);
+    toast(`${label}: ${rc.text}`, rc.tone === 'bad' ? 'error' : rc.tone === 'warn' ? 'warn' : 'ok');
+  }
+  const mk = (a) => {
+    const off = a.need(v);
+    const b = h('button.gab' + (a.main ? '.pri.gaibig' : ''), { type: 'button', disabled: !!off, title: (off ? off + ' · ' : '') + a.hint, onclick: () => sendTask(a.label, a.task(v)) }, a.label);
+    if (off) b.dataset.off = '1';
+    btns.push(b);
+    return b;
+  };
+  const main = AGENT_ACTS.filter((a) => a.main).map(mk);
+  const rest = AGENT_ACTS.filter((a) => !a.main).map(mk);
+  const q = h('input', { type: 'text', placeholder: 'Ask about git…', autocomplete: 'off', enterkeyhint: 'send' });
+  const askIt = () => {
+    const text = q.value.trim();
+    if (!text) return q.focus();
+    sendTask('Question', `${text}\n\n(Answer about this repo. Change nothing unless the request above clearly asks for a change.)`).then(() => { if (!st.classList.contains('bad')) q.value = ''; });
+  };
+  q.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); askIt(); } });
+  const go = h('button.gab', { type: 'button', onclick: askIt }, 'Send');
+  btns.push(go);
+  const busy = busyNote();
+  if (busy) say(busy, 'warn');
+  return h('div.gai', {},
+    h('div.gait', { title: GIT_RULES }, "Ask this tab's agent", h('small', {}, 'It works in its own session: never force pushes, never rewrites published history, stops and asks on conflicts.')),
+    // Wide: one row; narrow (panel, phone): the main one on top.
+    modeOf(body) === 'wide' ? h('div.gairow', {}, main, rest) : [h('div.gairow', {}, main), h('div.gairow.sec', {}, rest)],
+    h('div.gaiask', {}, q, go),
+    st);
 }
 
 function firstMessage(v) {

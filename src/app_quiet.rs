@@ -75,17 +75,42 @@ impl App {
 
     /// Whether an unprompted update may be said now.
     pub fn quiet_moment(&self) -> bool {
+        self.not_quiet_because().is_none()
+    }
+
+    /// Why an update must wait (the first gate that holds it), None
+    /// when it is quiet.
+    pub fn not_quiet_because(&self) -> Option<&'static str> {
         let n = Duration::from_secs(self.cfg.assistant.update_quiet_s);
         let q = &self.assistant.quiet;
         let calm = |t: Option<Instant>| t.is_none_or(|t| t.elapsed() >= n);
-        self.sentence_over()
-            && calm(q.spoke_at)
-            && calm(q.typed_at)
-            && !self.assistant.busy
-            && self.assistant.stale == 0
-            && !self.tts_playing()
-            && self.pending_confirms.is_empty()
-            && !self.paused()
+        if !self.sentence_over() {
+            Some("the user is mid sentence")
+        } else if !calm(q.spoke_at) {
+            Some("the user just spoke")
+        } else if !calm(q.typed_at) {
+            Some("the user just typed")
+        } else if self.assistant.busy {
+            Some("the assistant is mid turn")
+        } else if self.assistant.stale != 0 {
+            Some("a cut off turn is still ending")
+        } else if self.tts_playing() {
+            Some("talk back is playing")
+        } else if !self.pending_confirms.is_empty() {
+            Some("a confirmation waits for an answer")
+        } else if self.paused() {
+            Some("listening is paused")
+        } else {
+            None
+        }
+    }
+
+    /// The gate for a report that has waited too long (app_followup):
+    /// only what makes a turn impossible or rude still holds it. Talk
+    /// back that never ends, a confirmation nobody answers and the quiet
+    /// seconds after a word do not.
+    pub fn can_report_late(&self) -> bool {
+        self.sentence_over() && !self.assistant.busy && self.assistant.stale == 0 && !self.paused()
     }
 
     /// Say an update now if it is quiet, else at the next quiet moment.
@@ -209,10 +234,9 @@ impl App {
                 }
                 Voice::Reply => {
                     record(self, "update", crate::told::Channel::Panel);
-                    self.assistant.log.push(Entry {
-                        who: Who::Reply,
-                        text: text.clone(),
-                    });
+                    self.assistant
+                        .log
+                        .push(Entry::new(Who::Reply, text.clone()));
                     self.assistant.spoken.push(text.clone());
                     if self.tts_on() && !self.cfg.voice.speaker_muted {
                         if self.will_speak_assistant() {

@@ -178,6 +178,8 @@ pub struct Decision {
     pub text: String,
     /// ms from the trigger to the decision.
     pub after_ms: u64,
+    /// Let go because the words were our own reply coming back.
+    pub echo: bool,
 }
 
 /// What to do right after a trigger.
@@ -241,6 +243,15 @@ impl NoiseFloor {
             0.01
         };
         self.floor_db += (l - self.floor_db) * rate;
+        let dt = now_ms.saturating_sub(self.last_ms) as f32 / 1000.0;
+        self.last_ms = now_ms;
+        self.extra_db = (self.extra_db - dt * EXTRA_DECAY_DB_S).max(0.0);
+    }
+
+    /// Time passing on a frame that must not move the floor (our own reply
+    /// coming back from a browser's speakers is no room noise): only the
+    /// extra margin decays.
+    pub fn hold(&mut self, now_ms: u64) {
         let dt = now_ms.saturating_sub(self.last_ms) as f32 / 1000.0;
         self.last_ms = now_ms;
         self.extra_db = (self.extra_db - dt * EXTRA_DECAY_DB_S).max(0.0);
@@ -369,6 +380,7 @@ impl Decider {
             reason,
             text: p.last_text,
             after_ms: now_ms.saturating_sub(p.since),
+            echo: !stop && p.last == Some(Heard::Echo),
         }
     }
 
@@ -590,6 +602,36 @@ mod tests {
         // Without ducking, the volume never changes.
         let mut d = Decider::new(BargeCfg::new(true, 2, false));
         assert_eq!(d.trigger(0), Start::Decide { duck: 1.0 });
+    }
+
+    #[test]
+    fn echo_held_out_of_the_noise_floor() {
+        // A quiet room, then a reply at -25 dBFS coming back for 5 s.
+        let mut lifted = NoiseFloor::default();
+        let mut held = NoiseFloor::default();
+        let mut t = 0;
+        for _ in 0..100 {
+            t += 30;
+            lifted.push(-70.0, t);
+            held.push(-70.0, t);
+        }
+        held.false_alarm();
+        let extra = held.extra_db;
+        for _ in 0..170 {
+            t += 30;
+            lifted.push(-25.0, t);
+            held.hold(t);
+        }
+        // Learned from, the echo lifts the bar towards itself: the user
+        // talking over it would have to be far louder.
+        assert!(lifted.bar_db() > -40.0, "{}", lifted.bar_db());
+        // Held out, the floor stays the room's and only the extra decays.
+        assert!((held.floor_db - -70.0).abs() < 1.0, "{}", held.floor_db);
+        assert!(
+            held.extra_db < extra && held.extra_db > 0.0,
+            "{}",
+            held.extra_db
+        );
     }
 
     #[test]

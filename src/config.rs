@@ -490,6 +490,12 @@ pub struct BrowserCfg {
     /// Sign in pages and Remote Control links GodTerm opens go to that
     /// default profile too (true, the default); false: the system browser.
     pub login_links: bool,
+    /// Connected BrowserSkill browsers the user said are a profile: the
+    /// extension's "Browser name" label (as `bsk browsers` shows it) to
+    /// the Chrome profile folder. bsk cannot tell profiles apart, so this
+    /// wins over guessing from the label.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub links: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for BrowserCfg {
@@ -497,6 +503,7 @@ impl Default for BrowserCfg {
         BrowserCfg {
             default_profile: String::new(),
             login_links: true,
+            links: Default::default(),
         }
     }
 }

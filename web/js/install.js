@@ -6,13 +6,12 @@ import { h, on, toast, store, li, group, icon } from './util.js';
 import { S } from './state.js';
 import { openSheet, closeSheet } from './sheet.js';
 import { panes } from './term.js';
-import { sendImages } from './images.js';
 import { attachFiles } from './chat.js';
 
 let prompt = null;
 export const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-const ios = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const safari = () => /Safari\//.test(navigator.userAgent) && !/CriOS|FxiOS|EdgiOS|Chrome\//.test(navigator.userAgent);
+export const ios = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+export const safari = () => /Safari\//.test(navigator.userAgent) && !/CriOS|FxiOS|EdgiOS|Chrome\//.test(navigator.userAgent);
 
 export const canInstall = () => !!prompt;
 export async function install() {
@@ -42,7 +41,8 @@ export function initInstall() {
   addEventListener('appinstalled', () => { prompt = null; });
   if (ios() && safari() && !standalone() && !store.get('install-hint', false)) {
     store.set('install-hint', true);
-    setTimeout(() => toast('Tip: Share, then Add to Home Screen, makes GodTerm an app', 'info', { label: 'How', fn: iosSheet }), 4000);
+    // After a minute of use, for 10 s (it has an x and a tap dismisses it).
+    setTimeout(() => toast('Tip: Share, then Add to Home Screen, makes GodTerm an app', 'info', { label: 'How', fn: iosSheet }, 10000), 60000);
   }
   shared();
 }
@@ -70,7 +70,7 @@ async function shared() {
     if (!id) { if (text) { const say = document.getElementById('say'); say.value = text; } return attachFiles(files); }
     panes.show(id);
     const p = panes.focused();
-    if (files.length) await sendImages(files, p);
+    if (files.length) await (await import('./images.js')).sendImages(files, p);
     if (text) p.paste(text);
   };
   const cur = panes.focused()?.id;

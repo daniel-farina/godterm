@@ -7,7 +7,7 @@
 // A token never comes here: only that one exists, its date and last four.
 // Log out, remove, copy and delete a token ask first (a confirm id from
 // GodTerm); the assistant has no way to send these frames.
-import { h, on, toast, pctClass, icon, emit } from './util.js';
+import { h, on, toast, pctClass, icon, emit, words, skeleton, failRow } from './util.js';
 import { send } from './conn.js';
 import { openSheet, closeSheet, sheetKind } from './sheet.js';
 
@@ -85,7 +85,7 @@ function style() {
 }
 
 const put = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
-const title = (t) => h('div.sh-title', {}, h('span', {}, t), h('button.ib', { 'aria-label': 'Close', onclick: closeSheet, html: icon('x') }));
+const title = (t) => h('div.sh-title', {}, h('span', {}, t), h('button.ib', { 'aria-label': 'Close', title: 'Close', onclick: closeSheet, html: icon('x') }));
 const btn = (label, fn, cls = '', extra = {}) => h('button.btn' + cls, { type: 'button', onclick: (e) => { e.preventDefault(); fn(); }, ...extra }, label);
 
 const STATE = {
@@ -102,14 +102,14 @@ let body = null;
 
 export async function accountsSheet() {
   style();
-  const mine = h('div.acc', {}, h('div.mnote', {}, 'Reading the accounts...'));
+  const mine = h('div.acc', {}, skeleton(3));
   // (Opening it again closes the old one first: only that one's close
   // stops watching.)
   openSheet({ kind: 'accounts', tall: true, onClose: () => { if (body === mine) { ask({ op: 'watch', on: false }); body = null; } } },
     title('Accounts'), mine);
   body = mine;
   const r = await ask({ op: 'watch', on: true });
-  if (!r.ok) { put(body, h('div.mnote', {}, r.error || 'It did not load')); return; }
+  if (!r.ok) { put(body, failRow(r.error, accountsSheet, 'The Accounts screen')); return; }
   paint();
 }
 
@@ -134,7 +134,7 @@ function usage(a) {
 }
 
 function card(a) {
-  const [sl, sc] = STATE[a.state] || [a.state, ''];
+  const [sl, sc] = STATE[a.state] || [words(a.state), ''];
   const who = [a.email, a.plan, a.org].filter(Boolean).join(' · ');
   const n = a.account;
   const busy = a.flow && !['done', 'failed'].includes(a.flow.stage);
@@ -146,7 +146,7 @@ function card(a) {
     h('div.sub', {}, [a.harness_label, `${a.tabs} ${a.tabs === 1 ? 'tab' : 'tabs'}`, a.installed ? '' : 'CLI not installed'].filter(Boolean).join(' · ')),
     who ? h('div.sub', {}, who) : null,
     a.state === 'logged_out' ? null : usage(a),
-    a.usage_error && a.state !== 'logged_out' ? h('div.sub', {}, a.usage_error) : null,
+    a.usage_error && a.state !== 'logged_out' ? h('div.sub', {}, words(a.usage_error)) : null,
     a.flow ? flowBox(a) : null,
     a.removed ? h('div.note', {}, 'It goes away when GodTerm restarts.') : [
       h('div.row', {},

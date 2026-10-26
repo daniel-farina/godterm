@@ -7,10 +7,19 @@
 // (on iOS that cancels both the tap and the scroll); the tap's touchend
 // and mousedown are cancelled instead, so the terminal keeps the focus
 // and the on-screen keyboard stays up.
-import { $, h, on, toast, paintIcons, isTouch, store } from './util.js';
+import { $, h, on, emit, toast, paintIcons, isTouch, store } from './util.js';
 import { panes, setInputHook } from './term.js';
 import { openSheet, closeSheet } from './sheet.js';
-import { sendImages, pickImages } from './images.js';
+// Images (prepared and sent by images.js) load on first use.
+const sendImages = (files, p) => import('./images.js').then((m) => m.sendImages(files, p));
+// A picker for photos (the library or the camera): `then` gets the files, else they go to the pane.
+function pickImages(pane, then) {
+  const inp = h('input', { type: 'file', accept: 'image/*', multiple: true, style: 'position:fixed;left:-100px;top:0;width:1px;height:1px;opacity:0' });
+  inp.addEventListener('change', () => { const f = [...inp.files]; if (then) { if (f.length) then(f); } else sendImages(f, pane); inp.remove(); });
+  document.body.append(inp);
+  inp.click();
+  setTimeout(() => inp.isConnected && !inp.files?.length && inp.remove(), 120000);
+}
 
 // ctrl / alt: 0 off, 1 for the next key, 2 locked (double tap).
 const mods = { ctrl: 0, alt: 0 };
@@ -32,11 +41,13 @@ const page = (dir) => () => {
   return '';
 };
 
+// Most used first: Esc, Ctrl, Tab and the arrows show on a 390 px phone
+// without a swipe; the rest in the order of use.
 const KEYS = [
-  [null, 'image', 'Attach an image to this tab', 'image'], ['Esc', () => '\x1b'], ['Ctrl', 'ctrl'], ['Tab', () => '\t'],
-  ['↑', () => arrow('A'), 'Up'], ['↓', () => arrow('B'), 'Down'], ['←', () => arrow('D'), 'Left'], ['→', () => arrow('C'), 'Right'],
+  [null, 'kbhide', 'Hide the keyboard', 'kbdown'], ['Esc', () => '\x1b'], ['Ctrl', 'ctrl'], ['Tab', () => '\t'],
+  ['↑', () => arrow('A'), 'Up', null, 'arr'], ['↓', () => arrow('B'), 'Down', null, 'arr'], ['←', () => arrow('D'), 'Left', null, 'arr'], ['→', () => arrow('C'), 'Right', null, 'arr'],
   ['Enter', () => '\r'], ['^C', () => '\x03', 'Control C'], '|',
-  ['Paste', 'paste'], '|',
+  ['Paste', 'paste'], [null, 'image', 'Attach an image to this tab', 'image'], '|',
   ['PgUp', page(-1), 'Page up'], ['PgDn', page(1), 'Page down'], ['Home', () => '\x1b[H'], ['End', () => '\x1b[F'], ['Alt', 'alt'], ['⇧Tab', () => '\x1b[Z', 'Shift Tab'], '|',
   ['Prompt', 'prompt', 'Write a prompt for this tab'], '|', ['A-', 'fminus', 'Smaller text'], ['A+', 'fplus', 'Larger text'], ['Fit', 'fit', 'Fit the text to the screen'], ['Size', 'take', "Use this screen's size"],
 ];
@@ -83,7 +94,7 @@ function setMod(k, v) {
 const lastTap = { ctrl: 0, alt: 0 };
 function tapMod(k) {
   const now = performance.now();
-  if (mods[k] === 1 && now - lastTap[k] < 350) setMod(k, 2);
+  if (mods[k] === 1 && now - lastTap[k] < 350) { setMod(k, 2); navigator.vibrate?.(12); }
   else setMod(k, mods[k] ? 0 : 1);
   lastTap[k] = now;
 }
@@ -142,7 +153,7 @@ export function promptSheet(mode = 'prompt', files = [], ctrlV = false) {
   const imgs = [...files];
   const thumbs = h('div.att-in');
   const paint = () => thumbs.replaceChildren(...imgs.map((f, i) => h('span.thumb', {}, h('img', { src: URL.createObjectURL(f), alt: 'image ' + (i + 1) }),
-    h('button', { type: 'button', 'aria-label': 'Remove image', onclick: () => { imgs.splice(i, 1); paint(); } }, '×'))));
+    h('button', { type: 'button', 'aria-label': 'Remove image', title: 'Remove image', onclick: () => { imgs.splice(i, 1); paint(); } }, '×'))));
   paint();
   // A prompt not sent yet is kept per tab on this device.
   const tabId = cur()?.id, dkey = 'draft.p.' + tabId;
@@ -189,6 +200,8 @@ export function promptSheet(mode = 'prompt', files = [], ctrlV = false) {
 
 function press(act, b) {
   const p = cur();
+  // Puts the on-screen keyboard away (the key shows only while it is up).
+  if (act === 'kbhide') return document.activeElement?.blur();
   if (act === 'ctrl' || act === 'alt') return tapMod(act);
   if (act === 'paste') return paste();
   if (act === 'image') return pickImage();
@@ -212,13 +225,42 @@ function paintEdges(bar) {
   bar.classList.toggle('more-r', bar.scrollLeft < max - 2);
 }
 
+// A hardware keyboard (an iPad in a keyboard case, a phone with a
+// Bluetooth one) has Esc, Tab, arrows and Ctrl of its own: once one is
+// used, the key bar steps aside and the terminal takes the room
+// (Settings > This browser > Key bar: Automatic, Always or Never). The
+// on-screen keyboard coming up means there is no hardware one after
+// all, so the bar comes back.
+let hw = false;
+export const keybarPref = () => store.get('keybar', 'auto');
+export function applyKeybar() {
+  const pref = keybarPref();
+  const off = pref === 'never' || (pref === 'auto' && hw && !document.body.classList.contains('kb'));
+  if (off === document.body.classList.contains('nokeys')) return;
+  document.body.classList.toggle('nokeys', off);
+  emit('layout');
+}
+function watchHardwareKeys() {
+  addEventListener('keydown', (e) => {
+    if (hw || !isTouch()) return;
+    const k = e.key || '';
+    if (!(k === 'Escape' || k === 'Tab' || k.startsWith('Arrow') || ((e.ctrlKey || e.metaKey) && k.length === 1))) return;
+    hw = true;
+    applyKeybar();
+    if (keybarPref() === 'auto' && !document.body.classList.contains('kb')) toast('Hardware keyboard: the key bar is hidden', 'info', { label: 'Keep it', fn: () => { store.set('keybar', 'always'); applyKeybar(); } });
+  }, true);
+  on('layout', () => { if (hw && document.body.classList.contains('kb')) hw = false; applyKeybar(); });
+  applyKeybar();
+}
+
 export function initKeybar() {
+  watchHardwareKeys();
   const bar = $('#keybar');
   const map = new Map();
   for (const k of KEYS) {
     if (k === '|') { bar.append(h('span.sep', { 'aria-hidden': 'true' })); continue; }
-    const [label, act, aria, ic] = k;
-    const b = h('button', { type: 'button', tabindex: -1, 'aria-label': aria || null, 'data-i': ic || null, class: ic ? 'kic' : null }, label || '');
+    const [label, act, aria, ic, cls] = k;
+    const b = h('button', { type: 'button', tabindex: -1, 'aria-label': aria || null, 'data-i': ic || null, class: [ic && 'kic', cls].filter(Boolean).join(' ') || null }, label || '');
     if (typeof act === 'string') btns[act] = b;
     map.set(b, act);
     bar.append(b);

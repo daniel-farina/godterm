@@ -31,6 +31,9 @@ pub const RESUME_KEEP: std::time::Duration = std::time::Duration::from_secs(15 *
 pub enum Out {
     /// A JSON frame.
     Text(String),
+    /// A tab's `snapshot` (or `resume`) frame: JSON, sent gzipped as
+    /// binary kind 6 when the browser asked for that and it is big.
+    Snapshot(u64, String),
     /// Terminal output of a tab (binary kind 1 once framed).
     Output(u64, Vec<u8>),
     /// Take a new snapshot of the tab and send it.
@@ -195,7 +198,7 @@ impl Outbox {
         }
         q.lagged.remove(&uid);
         q.total += frame.len();
-        q.frames.push_back(Out::Text(frame));
+        q.frames.push_back(Out::Snapshot(uid, frame));
         self.cv.notify_one();
     }
 
@@ -228,7 +231,7 @@ impl Outbox {
                 q.output -= b.len();
                 b.len()
             }
-            Out::Text(s) => s.len(),
+            Out::Text(s) | Out::Snapshot(_, s) => s.len(),
             Out::Audio(b) => b.len(),
             Out::Picture(b) => {
                 q.pictures -= 1;

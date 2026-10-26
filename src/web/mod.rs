@@ -32,6 +32,10 @@ use std::sync::{Arc, Mutex};
 
 /// The protocol version in `hello`.
 pub const PROTO: u32 = 1;
+/// How long a kept-alive connection waits for its next request before
+/// it is closed (a browser keeps a few idle ones open after a page load;
+/// each holds a thread here meanwhile).
+pub const KEEP_IDLE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What a browser asks of the UI thread.
 #[derive(Debug)]
@@ -89,6 +93,9 @@ pub struct Client {
     pub out: Arc<tap::Outbox>,
     /// Sent `hello`: state pushes go to it.
     pub ready: AtomicBool,
+    /// Its `subscribe` said `gz: true`: big snapshots go gzipped
+    /// (ws::KIND_SNAPSHOT_GZ).
+    pub gz: AtomicBool,
     /// Its mic, while it is GodTerm's voice input (binary kind 3 goes here).
     pub mic: Mutex<Option<Arc<crate::voice::audio::WebMic>>>,
     /// What it shows, as its last `view` frame said (device, panes, tabs,
@@ -298,6 +305,7 @@ impl Hub {
             id: self.next.fetch_add(1, Ordering::Relaxed),
             out: tap::Outbox::new(),
             ready: AtomicBool::new(false),
+            gz: AtomicBool::new(false),
             mic: Mutex::new(None),
             view: Mutex::new(serde_json::Value::Null),
             tts: Mutex::new(None),
@@ -351,11 +359,26 @@ impl Hub {
             crate::log::info("web: refused a non-tailnet peer on the tailnet address");
             return;
         }
-        let Some(req) = http::read_head(&mut s) else {
-            let _ = http::text(&mut s, "400 Bad Request", "bad request");
-            return;
-        };
-        let _ = self.route(s, req, peer, via);
+        // One request after another on the same connection (keep-alive)
+        // until the client closes it or asks for a close, the socket
+        // became a WebSocket, or nothing more comes within KEEP_IDLE.
+        let mut first = true;
+        loop {
+            let Some(req) = http::read_head(&mut s) else {
+                if first {
+                    let _ = http::text(&mut s, "400 Bad Request", "bad request");
+                }
+                return;
+            };
+            first = false;
+            let ws = req.path == "/ws";
+            let keep = req.keep_alive && !ws;
+            http::set_keep(keep);
+            if self.route(&mut s, req, peer, via).is_err() || !keep {
+                return;
+            }
+            let _ = s.set_read_timeout(Some(KEEP_IDLE));
+        }
     }
 
     /// The peer is on this machine: loopback, or this Mac's own tailnet
@@ -370,7 +393,7 @@ impl Hub {
 
     fn route(
         self: &Arc<Self>,
-        mut s: TcpStream,
+        s: &mut TcpStream,
         req: http::Request,
         peer: SocketAddr,
         via: Via,
@@ -378,21 +401,15 @@ impl Hub {
         // DNS rebinding: only our own names.
         let host = req.header("host").unwrap_or("").to_string();
         if !self.host_ok(&host) {
-            return http::text(&mut s, "421 Misdirected Request", "unknown host");
+            return http::text(s, "421 Misdirected Request", "unknown host");
         }
         // A photo shared to the installed app goes to its service worker;
         // one that reaches here (no worker yet) just opens the app.
         if req.method == "POST" && req.path == "/share" {
-            return http::respond(
-                &mut s,
-                "303 See Other",
-                &[("Location", "/".into())],
-                &[],
-                false,
-            );
+            return http::respond(s, "303 See Other", &[("Location", "/".into())], &[], false);
         }
         if req.method != "GET" && req.method != "HEAD" {
-            return http::text(&mut s, "405 Method Not Allowed", "GET only");
+            return http::text(s, "405 Method Not Allowed", "GET only");
         }
         // A login link: the token for a cookie, then the same page
         // without the token in the address bar (or history).
@@ -406,7 +423,7 @@ impl Hub {
         };
         if (req.param("t").is_some() || req.path == "/ws") && inside() {
             return http::text(
-                &mut s,
+                s,
                 "403 Forbidden",
                 "not from inside GodTerm: its tabs get the read-only control socket",
             );
@@ -417,7 +434,7 @@ impl Hub {
             if lim.blocked(now) {
                 crate::log::info("web: login refused: too many wrong tokens, waiting");
                 return http::text(
-                    &mut s,
+                    s,
                     "429 Too Many Requests",
                     "too many wrong tokens; wait a minute",
                 );
@@ -426,7 +443,7 @@ impl Hub {
                 lim.fail(now);
                 drop(lim);
                 crate::log::info("web: a login with a wrong token");
-                return http::text(&mut s, "403 Forbidden", "wrong token");
+                return http::text(s, "403 Forbidden", "wrong token");
             }
             drop(lim);
             let q = req.query_without("t");
@@ -437,7 +454,7 @@ impl Hub {
             };
             crate::log::info("web: a browser logged in");
             return http::respond(
-                &mut s,
+                s,
                 "303 See Other",
                 &[
                     ("Location", to),
@@ -453,10 +470,10 @@ impl Hub {
         }
         // What installing the app needs, without a cookie.
         if http::public(&req.path) && !self.authed(&req) {
-            if http::serve_static(&mut s, &req, &self.assets.current(), &[])? {
+            if http::serve_static(s, &req, &self.assets.current(), &[])? {
                 return Ok(());
             }
-            return http::text(&mut s, "404 Not Found", "not found");
+            return http::text(s, "404 Not Found", "not found");
         }
         // No cookie: a tailnet user the owner allows signs in now (the
         // cookie is set on this answer, so the next requests are quick).
@@ -469,7 +486,7 @@ impl Hub {
                 }
                 tailnet::Who::Refused(login) => {
                     crate::log::info(&format!("web: refused tailnet user {login}"));
-                    return http::text(&mut s, "403 Forbidden", &tailnet::refused_text(&login));
+                    return http::text(s, "403 Forbidden", &tailnet::refused_text(&login));
                 }
                 tailnet::Who::Unknown => {
                     // The page itself: a sign in form (a home screen app
@@ -480,7 +497,7 @@ impl Hub {
                             .header("accept")
                             .is_some_and(|a| a.contains("text/html"))
                         && http::serve_page(
-                            &mut s,
+                            s,
                             &req,
                             &self.assets.current(),
                             "signin.html",
@@ -490,7 +507,7 @@ impl Hub {
                         return Ok(());
                     }
                     return http::text(
-                        &mut s,
+                        s,
                         "401 Unauthorized",
                         "Open the link `godterm web-url` prints to sign in.",
                     );
@@ -499,14 +516,16 @@ impl Hub {
         }
         if req.path == "/ws" {
             if !req.wants_upgrade() {
-                return http::text(&mut s, "426 Upgrade Required", "websocket only");
+                return http::text(s, "426 Upgrade Required", "websocket only");
             }
             // Cross site WebSocket hijacking: the page must be ours.
             if !auth::origin_ok(req.header("origin"), &host, req.header("x-forwarded-host")) {
                 crate::log::info("web: a WebSocket from another origin was refused");
-                return http::text(&mut s, "403 Forbidden", "bad origin");
+                return http::text(s, "403 Forbidden", "bad origin");
             }
-            return ws::accept(self, s, &req);
+            // The socket is the WebSocket's now (handle_from keeps its
+            // own handle until the session ends).
+            return ws::accept(self, s.try_clone()?, &req);
         }
         let cookie: Vec<(&str, String)> = if signed_in.is_some() {
             vec![(
@@ -516,10 +535,10 @@ impl Hub {
         } else {
             vec![]
         };
-        if http::serve_static(&mut s, &req, &self.assets.current(), &cookie)? {
+        if http::serve_static(s, &req, &self.assets.current(), &cookie)? {
             return Ok(());
         }
-        http::text(&mut s, "404 Not Found", "not found")
+        http::text(s, "404 Not Found", "not found")
     }
 }
 

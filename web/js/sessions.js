@@ -1,6 +1,6 @@
 // Sessions: every Claude Code and Grok session on the Mac, through the
 // `sessions` control tool, with search, filters, sort and load more.
-import { $, h, store, toast, debounce, idOf, isDesk } from './util.js';
+import { $, h, store, toast, debounce, idOf, isDesk, skeleton, failRow, emptyState, hscroll } from './util.js';
 import { tool } from './conn.js';
 import { S } from './state.js';
 import { openSheet, closeSheet } from './sheet.js';
@@ -28,6 +28,7 @@ function args() {
 
 function chipRow(key, opts) {
   const row = h('div.chips.fchips');
+  hscroll(row);
   for (const [v, l] of opts) {
     row.append(h('button.chip' + ((f[key] || '') === v ? '.on' : ''), { onclick: (e) => {
       f[key] = v;
@@ -45,10 +46,11 @@ function reload() { store.set('sessf', f); limit = PAGE; query(); }
 async function query() {
   const my = ++seq;
   info.textContent = 'Searching...';
+  if (!box.querySelector('.srow')) box.replaceChildren(skeleton(5));
   const r = await tool('sessions', args());
   if (my !== seq) return;
   const v = r.result || r;
-  if (r.ok === false && !v.sessions) { info.textContent = r.error || 'Sessions are not available'; box.replaceChildren(); return; }
+  if (r.ok === false && !v.sessions) { info.textContent = ''; box.replaceChildren(failRow(r.error || 'Sessions are not available', query, 'The Sessions screen')); return; }
   const rows = v.sessions || [];
   info.textContent = `${v.matched ?? rows.length} sessions${v.did_you_mean ? ' · did you mean: ' + [].concat(v.did_you_mean).map((d) => d.title || d).slice(0, 2).join(', ') : ''}${v.indexing ? ' · still indexing' : ''}`;
   // Scripted runs and sessions in temp folders are hidden unless asked for.
@@ -59,7 +61,9 @@ async function query() {
   if (v.indexing) setTimeout(() => my === seq && query(), 1500);
   box.replaceChildren(...rows.map(row));
   if ((v.matched ?? 0) > rows.length) box.append(h('button.li', { style: 'justify-content:center;color:var(--accent)', onclick: () => { limit += PAGE; query(); } }, `Load more (${v.matched - rows.length} left)`));
-  if (!rows.length) box.append(h('div.empty', {}, 'No sessions match'));
+  const filtered = !!(f.text || f.since || f.project || f.source || (f.harness && f.harness !== 'all') || (f.state && f.state !== 'all'));
+  if (!rows.length) box.append(emptyState('No sessions match', filtered ? 'Fewer filters, or another word, may find it.' : 'Sessions appear here once an agent has run in a tab.',
+    filtered ? { label: 'Clear filters', fn: () => { f = { text: '', harness: 'all', source: '', state: 'all', since: '', project: '', sort: f.sort, reverse: f.reverse }; store.set('sessf', f); limit = PAGE; sessionsSheet(); } } : null));
   box.hidden = false;
 }
 
@@ -111,7 +115,7 @@ export function sessionsSheet() {
   tog.querySelector('.ll').after(sum);
   tog.classList.toggle('open', !filters.hidden);
   openSheet({ kind: 'sessions', tall: true },
-    h('div.sh-title', {}, h('span', {}, 'Sessions'), h('button.ib', { 'aria-label': 'Close', onclick: closeSheet, html: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>' })),
+    h('div.sh-title', {}, h('span', {}, 'Sessions'), h('button.ib', { 'aria-label': 'Close', title: 'Close', onclick: closeSheet, html: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>' })),
     q, h('div.list', {}, tog, filters), info, box);
   query();
 }

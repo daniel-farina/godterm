@@ -3,17 +3,19 @@
 // (list_settings, saved with set_setting as the Settings screen does),
 // grouped as the user thinks of them: Voice, Terminal, Assistant,
 // Accounts and usage, Jobs and loops, Web app, General, About.
-import { $, h, on, emit, toast, store, icon, isDesk } from './util.js';
+import { $, h, on, emit, toast, store, icon, isDesk, isTouch, hscroll } from './util.js';
 import { tool, send } from './conn.js';
 import { S } from './state.js';
 import { openSheet, closeSheet, sheetKind } from './sheet.js';
 import { panes, prefFont, fitOn, deskFit } from './term.js';
-import { install, standalone } from './install.js';
+import { keybarPref, applyKeybar } from './keybar.js';
+import { install, standalone, ios, safari } from './install.js';
 import { debugOn, setDebug, report } from './debuglog.js';
 import { pushCard } from './push.js';
 import { run, usageCards, jobRows, loopRows, updateSheet } from './manage.js';
 import { ttsBox, voicePick, setMode, openVoiceSheet } from './voice.js';
 import { gitcfgSection } from './gitcfg.js';
+import { syncSection } from './syncui.js';
 
 const SECTIONS = [
   ['browser', 'This browser'], ['voice', 'Voice'], ['terminal', 'Terminal'], ['assistant', 'Assistant'],
@@ -89,15 +91,20 @@ function browserRows() {
       if (!b) panes.list.forEach((p) => p.giveBack());
       emit('layout');
     }), 'autofit fit size resize columns rows') : null,
+    isTouch() ? row('Key bar', 'Esc, Tab, arrows, Ctrl and Send under the terminal; Automatic hides it once a hardware keyboard is used', select([['auto', 'Automatic'], ['always', 'Always'], ['never', 'Never']], keybarPref(), (v) => { store.set('keybar', v); applyKeybar(); }, 'Key bar'), 'keyboard keys hardware ipad') : null,
     isDesk() ? null : row('Return key', 'In a tab: a new line in the prompt (Send submits), or Enter', select([['newline', 'New line'], ['send', 'Send']], store.get('retkey', 'newline'), (v) => store.set('retkey', v), 'Return key')),
     row('Voice replies here', 'The voice the assistant speaks in, in this browser', h('span'), 'tts kokoro grok say voice'),
     h('div.st-tts', { 'data-q': 'voice replies tts kokoro grok say engine' }, ttsBox()),
+    isTouch() ? null : row('Keyboard shortcuts', 'F6 moves between the areas, Shift+Esc leaves the terminal, ? lists them all', btn('Show', () => import('./keys.js').then((m) => m.helpSheet())), 'keys shortcuts f6 focus'),
     row('Debug log', 'What this page does, sent to the Mac\'s log', check(debugOn(), setDebug)),
     row('Send a debug report', 'The page\'s state now, no screenshot', btn('Send', () => {
       if (!debugOn()) return toast('Turn on Debug log first', 'warn');
-      toast(report() ? 'Debug report sent' : 'Debug report queued: not connected');
+      report().then((ok) => toast(ok ? 'Debug report sent' : 'Debug report queued: not connected'));
     })),
-    standalone() ? null : row('Install as an app', 'On the home screen, full screen, with notifications', btn('Install', () => { closeSheet(); install(); })),
+    // iOS Safari: there is no install prompt, and notifications need the
+    // home screen app, so the two rows say the same thing.
+    standalone() ? null : ios() && safari() ? row('Add to Home Screen', 'Share, then Add to Home Screen: full screen, and notifications work from there', btn('How', () => { closeSheet(); install(); }), 'install app')
+      : row('Install as an app', 'On the home screen, full screen, with notifications', btn('Install', () => { closeSheet(); install(); })),
   ];
 }
 
@@ -142,45 +149,6 @@ function aboutRows() {
   ];
 }
 
-// Settings > Sync (read only): GodTerm Sync on this machine, from
-// sync_status. Only GodTerm's own state repos sync; project repos never.
-const ago = (ms) => {
-  if (!ms) return 'never';
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
-};
-const info = (label, help, val, q = '', cls = '') => row(label, help, h('span.lh' + cls, {}, val || ''), 'sync ' + q);
-function syncRows(r) {
-  const x = r?.result || r || {};
-  if (r?.error || x.error) return [note('Sync status did not load: ' + (r.error || x.error))];
-  if (!x.enabled) return [h('div.list', {}, (x.lines || ['Sync is off on this machine.']).filter(Boolean).map((l) => h('div.li.st.sy-line', { 'data-q': 'sync ' + l.toLowerCase() }, l)))];
-  const last = x.last || {}, ls = x.leases || {};
-  const out = [];
-  out.push(L([
-    info('State repo', x.remote && x.remote !== 'github' ? x.remote : 'private, on GitHub', x.state_repo, 'repo'),
-    info('This machine', x.machine?.id || '', x.machine?.label, 'machine'),
-    info('Last sync', last.ok === false ? 'failed' : last.pushed ? 'pushed' : 'nothing new to push', ago(last.at_ms), 'push pull last'),
-    info('Last good sync', '', ago(last.last_ok_ms), 'push pull'),
-    last.waiting ? info('Changes waiting', 'not on GitHub yet', String(last.waiting), 'waiting offline', '.sy-warn') : null,
-    last.error ? info('Last error', last.error, '', 'error', '.sy-warn') : null,
-    last.token_warning ? info('Tokens not synced', last.token_warning, '', 'token private warning', '.sy-warn') : null,
-    ls.fetched && !ls.online ? info('Offline', 'ownership as last seen', '', 'offline', '.sy-warn') : null,
-  ]));
-  const sub = (t) => h('div.st-sub', {}, t);
-  if (ls.machines?.length) out.push(sub('Machines'), L(ls.machines.map((m) => info(m.label + (m.this ? ' (this one)' : ''), m.id, m.active, 'machine heartbeat ' + m.label, m.live ? '' : '.sy-dim'))));
-  const conv = (c, val, q) => info(c.name || String(c.session).slice(0, 8), String(c.session || '').slice(0, 8), val, 'conversation ' + q + ' ' + (c.name || ''));
-  out.push(sub('Conversations owned here'), (ls.owned_here || []).length
-    ? L(ls.owned_here.map((c) => conv(c, c.asked_by ? `${c.asked_by} asks for it` : '', 'owned here')))
-    : note(ls.fetched ? 'None' : 'Not fetched yet'));
-  if ((ls.owned_elsewhere || []).length) out.push(sub('Owned elsewhere'), L(ls.owned_elsewhere.map((c) => conv(c, `${c.owner}, ${c.live ? c.active : 'offline'}`, 'owned elsewhere ' + c.owner))));
-  if ((ls.requests || []).length) out.push(sub('Take over requests'), L(ls.requests.map((c) => conv(c, c.direction === 'in' ? `${c.by} asks for it` : `asked ${c.to}`, 'request take over'))));
-  if ((ls.paused_jobs || []).length) out.push(sub('Paused jobs'), L(ls.paused_jobs.map((j) => info(j.name, j.why, '', 'job paused'))));
-  const pr = x.projects_not_backed_up || [];
-  if (pr.length) out.push(sub('Projects not backed up'), L(pr.map((p) => info(p.path, (p.warnings || []).join(', '), '', 'project backup warning', '.sy-warn'))));
-  out.push(L([row('Sync now', 'Only GodTerm\'s own state repos; never a project repo', btn('Sync now', () => run('sync_now', {}, 'Syncing now')), 'sync now')]));
-  return out;
-}
-
 const L = (rows) => { rows = rows.flat().filter(Boolean); return rows.length ? h('div.list', {}, rows) : null; };
 const note = (t) => h('div.mnote.st-note', {}, t);
 
@@ -202,7 +170,10 @@ export async function settingsSheet(query = '') {
   body('web').append(h('div.list.st-god'));
   body('general').append(h('div.list.st-god'));
   body('about').append(L(aboutRows()));
-  const syncP = tool('sync_status', {});
+  // Settings > Sync: its own screen (web/js/syncui.js), filtered again
+  // each time it draws.
+  body('sync').append(syncSection());
+  secs.sync.addEventListener('sy-render', () => filter());
   // One section shows at a time (kept per browser); a search looks through
   // all of them and shows every match, by section.
   let cur = store.get('st-sec', 'browser');
@@ -254,8 +225,9 @@ export async function settingsSheet(query = '') {
   q.addEventListener('input', () => { lastQ = q.value; filter(); });
   lastQ = q.value;
   const head = h('div.sh-title', {}, h('span', {}, 'Settings'),
-    h('button.ib', { 'aria-label': 'Close', onclick: closeSheet, html: icon('x') }));
+    h('button.ib', { 'aria-label': 'Close', title: 'Close', onclick: closeSheet, html: icon('x') }));
   sheet = h('div.stg', {}, h('div.st-top', {}, q, nav), h('div.st-main', {}, none, Object.values(secs)));
+  hscroll(nav);
   openSheet({ kind: 'settings', tall: true, wide: true }, head, sheet);
   filter();
   // GodTerm's own settings, by section of its Settings screen.
@@ -277,8 +249,6 @@ export async function settingsSheet(query = '') {
     else g.before(h('div.st-sub', {}, 'GodTerm (all devices)'));
   }
   if (r.error) body('general').append(note('GodTerm\'s settings did not load: ' + r.error));
-  body('sync').append(...syncRows(await syncP).filter(Boolean));
-  if (sheetKind !== 'settings') return;
   filter();
 }
 

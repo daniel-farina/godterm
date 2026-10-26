@@ -2,6 +2,8 @@
 //! shared capture loop and the actions. Everything runs against a fake
 //! `bsk` (a shell script with fixture JSON and a fixture PNG) in temp
 //! folders: no real browser is ever looked at.
+// Most of these tests run a shell script, so on Windows the helpers go unused.
+#![cfg_attr(not(unix), allow(dead_code))]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -89,6 +91,8 @@ pub(crate) fn ctx(d: &Path, bin: PathBuf, uid: u64) -> Ctx {
         enabled_profiles: 2,
         this_enabled: true,
         transcript: None,
+        also: vec![],
+        links: Default::default(),
         shared: false,
         tmp: d.join("pics"),
         sips: None,

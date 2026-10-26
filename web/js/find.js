@@ -6,7 +6,8 @@ import { esc, toast, debounce, idOf, emit } from './util.js';
 import { tool } from './conn.js';
 import { S } from './state.js';
 import { panes } from './term.js';
-import { run } from './manage.js';
+// manage.js (the control tool runner) loads when a found row is used, not with the first screen.
+const run = (...a) => import('./manage.js').then((m) => m.run(...a));
 
 const FIRST = { arch: 5, other: 8 };
 const MORE = 20;
@@ -71,18 +72,28 @@ function otherRow(s, i) {
     `<span class="s">${esc(sub)}</span></span><span class="fgo">Resume</span></div>`;
 }
 
-// The sections' HTML, for the tab list to append (empty without a filter).
+// Both answers are in and neither found anything (the tab list then
+// says so in one line, with the open tabs).
+export const foundNone = () => !!q && !!res.arch && !!res.other && !res.arch.total && !res.other.rows.length && !res.other.err && !res.other.indexing;
+
+// The sections' HTML, for the tab list to append (empty without a
+// filter). A section still loading shows its head with "..."; one that
+// found nothing is left out.
 export function foundHtml() {
   if (!q) return '';
   let html = '';
   const a = res.arch, o = res.other;
-  html += head('Archived', a?.total ?? 0, !a);
-  if (a) html += a.rows.map(archRow).join('') + more('arch', a.total - a.rows.length);
-  html += head('Other sessions', o?.total ?? 0, !o);
-  if (o) {
-    if (o.err) html += `<div class="empty">${esc(o.err)}</div>`;
-    else if (!o.rows.length) html += `<div class="empty">${o.indexing ? 'Still indexing sessions...' : 'No other session matches'}</div>`;
-    else html += o.rows.map(otherRow).join('') + more('other', o.total - o.rows.length);
+  if (!a || a.total) {
+    html += head('Archived', a?.total ?? 0, !a);
+    if (a) html += a.rows.map(archRow).join('') + more('arch', a.total - a.rows.length);
+  }
+  if (!o || o.rows.length || o.err || o.indexing) {
+    html += head('Other sessions', o?.total ?? 0, !o);
+    if (o) {
+      if (o.err) html += `<div class="empty">${esc(o.err)}</div>`;
+      else if (!o.rows.length) html += `<div class="empty">Still indexing sessions...</div>`;
+      else html += o.rows.map(otherRow).join('') + more('other', o.total - o.rows.length);
+    }
   }
   return html;
 }

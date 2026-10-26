@@ -1,17 +1,42 @@
 // GodTerm Web: wires the modules together. The debug log first, so it
 // sees what the others log while they start.
 import './debuglog.js';
-import { $, h, on, emit, toast, paintIcons, isTouch, isDesk, store, uidOf, debounce, tcPaint } from './util.js';
-import { connect, conn, send } from './conn.js';
+import { $, h, on, emit, toast, paintIcons, isTouch, isDesk, DESK, store, uidOf, debounce, tcPaint } from './util.js';
+import { connect, conn, send, tool } from './conn.js';
 import { S, tabById } from './state.js';
 import { panes } from './term.js';
 import { initTabs, setTabActions, tabOrder, renderTabs } from './tabs.js';
 import { initKeybar } from './keybar.js';
 import { initChat, setChat, chatOpen, approvalsSheet } from './chat.js';
-import { initVoice } from './voice.js';
 import { initInstall } from './install.js';
-import './push.js';
-import { initStatusBar } from './statusbar.js';
+// Loaded after the first screen (none of these is needed for the first
+// terminal frame): the keyboard's F6 / ? after the first paint, push
+// notifications after hello, and voice (the largest module, with the
+// mic) at hello when a mode is on (push to talk, open mic or the wake
+// word start by themselves as before), else on the first tap on a mic
+// button or 3 s after hello, whichever comes first. Each catches up
+// with a connection that opened before it.
+const once = (fn) => { let p = null; return () => (p ||= Promise.resolve(fn())); };
+const initKeys = () => { const go = once(() => import('./keys.js').then((m) => m.initKeys())); requestAnimationFrame(() => setTimeout(go, 0)); setTimeout(go, 1500); };
+const initPush = () => { const go = once(() => import('./push.js')); on('hello', go); setTimeout(go, 2500); };
+// The status bar is a desktop's: loaded there, or once a window grows into one.
+const initStatusBar = () => { const go = once(() => import('./statusbar.js').then((m) => m.initStatusBar())); if (isDesk()) go(); else matchMedia(DESK).addEventListener('change', (e) => e.matches && go()); };
+const initVoice = () => {
+  const go = once(() => import('./voice.js').then((m) => m.initVoice()));
+  const want = store.get('voice.pick', 'off') !== 'off';
+  on('hello', () => (want ? go() : setTimeout(go, 3000)));
+  on('open-voice', go);
+  on('msg:voice', go);
+  for (const id of ['#b-ptt', '#b-ptt2', '#b-openmic', '#b-voice']) {
+    const b = $(id);
+    if (!b) continue;
+    // A tap before voice is here: load it, then the tap again for its handler.
+    b.addEventListener('pointerdown', go, { once: true, passive: true });
+    const tap = (e) => { if (b.dataset.live) return; e.stopImmediatePropagation(); go().then(() => { b.dataset.live = 1; b.click(); }); };
+    b.addEventListener('click', tap, { capture: true, once: true });
+  }
+  setTimeout(go, 8000);
+};
 // Management and sessions load on first use, keeping the first page small.
 const manage = () => import('./manage.js');
 const tabActions = (id, at) => manage().then((m) => m.tabActions(id, at));
@@ -56,7 +81,7 @@ function viewport() {
     root.style.setProperty('--vh', hgt + 'px');
     root.style.setProperty('--vtop', top + 'px');
   }
-  const kb = isTouch() && typing() && hgt < tallest[k] - 120;
+  const kb = isTouch() && typing() && (hgt < tallest[k] - 120 || (!!vv && vv.height < innerHeight - 100));
   if (kb !== document.body.classList.contains('kb')) { document.body.classList.toggle('kb', kb); emit('layout'); }
 }
 // While the keyboard slides (about 300 ms) the viewport is followed every
@@ -89,16 +114,27 @@ const pushObs = new ResizeObserver(() => {
 });
 pushObs.observe($('#toasts'));
 pushObs.observe($('#under'));
+// Phones: the floating messages sit above the chat's composer and its
+// attachments, whatever their height (a long draft, two thumbnails).
+const chatObs = new ResizeObserver(() => root.style.setProperty('--chath', ($('#composer').offsetHeight + $('#att').offsetHeight) + 'px'));
+chatObs.observe($('#composer'));
+chatObs.observe($('#att'));
 
 // Drawer (phone) or collapsible side list (desktop).
 const side = $('#side'), scrim = $('#scrim');
+// A squeezed desktop (the terminal would drop under 520 px with the list
+// beside it) keeps the list as an overlay, opened and shut like the drawer.
+const squeezedSide = () => isDesk() && $('#app').classList.contains('sq-side');
 function drawer(open) {
-  if (isDesk()) { $('#app').classList.toggle('noside', !open); store.set('noside', !open); renderTabs(); emit('layout'); return; }
+  if (isDesk()) {
+    if (open && $('#app').classList.contains('noside')) { $('#app').classList.remove('noside'); store.set('noside', false); squeeze(); }
+    if (!squeezedSide()) { $('#app').classList.toggle('noside', !open); store.set('noside', !open); renderTabs(); emit('layout'); return; }
+  }
   side.classList.toggle('open', open);
   scrim.classList.toggle('on', open || sheetOpen());
   if (open) renderTabs();
 }
-$('#b-menu').onclick = () => drawer(isDesk() ? $('#app').classList.contains('noside') : !side.classList.contains('open'));
+$('#b-menu').onclick = () => drawer(isDesk() && !squeezedSide() ? $('#app').classList.contains('noside') : !side.classList.contains('open'));
 if (isDesk() && store.get('noside', false)) $('#app').classList.add('noside');
 // The scrim closes the sheet first, then the drawer.
 scrim.onclick = () => { if (sheetOpen()) closeSheet(); else drawer(false); };
@@ -222,6 +258,60 @@ scrim.onclick = () => { if (sheetOpen()) closeSheet(); else drawer(false); };
   });
   addEventListener('resize', debounce(() => apply(store.get('tpw', null)), 100));
 }
+// A narrow desktop window (an iPad upright, a 1000 px window with the tab
+// panel or the chat open): the terminal keeps about 520 px. In order: the
+// panel and the chat narrow to 300 px (--tpfit, --chfit); if that is not
+// enough the side list folds into an overlay (sq-side); with both open
+// and still no room the one opened last stays, and the one left floats
+// over the terminal (sq-panel, sq-chat) when even 300 px are too wide.
+// The widths the user set stay.
+const MIN_MAIN = 520, MIN_PANEL = 300;
+let squeeze = () => {};
+{
+  const app = $('#app');
+  let last = '', wasPanel = false, wasChat = false;
+  // A width: the one dragged (inline), else the stylesheet's default for this window.
+  const px = (v, d) => parseFloat(app.style.getPropertyValue(v)) || parseFloat(getComputedStyle(app).getPropertyValue(v)) || d;
+  squeeze = () => {
+    const panel = !$('#tabpanel').hidden, chat = chatOpen();
+    if (panel && !wasPanel) last = 'panel';
+    if (chat && !wasChat) last = 'chat';
+    wasPanel = panel; wasChat = chat;
+    const cls = { 'sq-side': false, 'sq-panel': false, 'sq-chat': false };
+    let tpfit = 0, chfit = 0;
+    if (isDesk()) {
+      const W = innerWidth;
+      const sideW = app.classList.contains('noside') ? 0 : px('--sidew', 280);
+      const tp0 = panel ? px('--tpw', 420) : 0, ch0 = chat ? px('--chatw', 380) : 0;
+      // The panel and the chat down to 300 px against the room beside the side list.
+      const shrink = (avail) => {
+        let tp = tp0, ch = ch0, over = tp + ch - (avail - MIN_MAIN);
+        if (over > 0 && tp) { const d = Math.min(over, Math.max(0, tp - MIN_PANEL)); tp -= d; over -= d; }
+        if (over > 0 && ch) { const d = Math.min(over, Math.max(0, ch - MIN_PANEL)); ch -= d; over -= d; }
+        return { tp, ch, over };
+      };
+      let r = shrink(W - sideW);
+      // Still short: the side list folds, and the two get its room back.
+      cls['sq-side'] = sideW > 0 && r.over > 0;
+      if (cls['sq-side']) r = shrink(W);
+      let { tp, ch, over } = r;
+      if (over > 0 && tp && ch) {
+        if (last === 'chat') manage().then((m) => m.setPanel(false)); else setChat(false);
+        return;
+      }
+      if (over > 0) { if (tp) cls['sq-panel'] = true; else cls['sq-chat'] = true; }
+      else { tpfit = tp; chfit = ch; }
+    }
+    if (tpfit) app.style.setProperty('--tpfit', tpfit + 'px'); else app.style.removeProperty('--tpfit');
+    if (chfit) app.style.setProperty('--chfit', chfit + 'px'); else app.style.removeProperty('--chfit');
+    let changed = false;
+    for (const [k, v] of Object.entries(cls)) { if (app.classList.contains(k) !== v) changed = true; app.classList.toggle(k, v); }
+    if (isDesk() && !cls['sq-side'] && side.classList.contains('open')) { side.classList.remove('open'); scrim.classList.toggle('on', sheetOpen()); }
+    if (changed) renderTabs();
+  };
+  on('layout', squeeze);
+  addEventListener('resize', debounce(squeeze, 120));
+}
 // A swipe left or right on the header goes to the next or previous tab
 // (the drawer's order); a pill under the header says which one.
 {
@@ -258,7 +348,7 @@ scrim.onclick = () => { if (sheetOpen()) closeSheet(); else drawer(false); };
 }
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheetOpen()) { closeSheet(); e.preventDefault(); } });
 on('picked', () => {
-  if (!isDesk()) { side.classList.remove('open'); scrim.classList.toggle('on', sheetOpen()); if (chatOpen()) setChat(false); }
+  if (!isDesk() || squeezedSide()) { side.classList.remove('open'); scrim.classList.toggle('on', sheetOpen()); if (!isDesk() && chatOpen()) setChat(false); }
 });
 
 // Header: the focused tab and the connection.
@@ -290,7 +380,11 @@ on('conn', (s) => {
 });
 
 // Buttons.
-$('#b-split').onclick = () => panes.setN(panes.n === 1 ? 2 : panes.n === 2 ? 4 : 1);
+$('#b-split').onclick = () => {
+  const n = panes.want === 1 ? 2 : panes.want === 2 ? 4 : 1;
+  panes.setN(n);
+  if (panes.n < n) toast(`Room for ${panes.n === 1 ? 'one pane' : panes.n + ' panes'} at this size`, 'info');
+};
 $('#b-sessions').onclick = sessionsSheet;
 $('#b-sess2').onclick = () => { drawer(false); sessionsSheet(); };
 $('#b-new').onclick = () => { drawer(false); newTabSheet(); };
@@ -302,7 +396,7 @@ $('#b-tabmenu').onclick = () => { if (isDesk()) return togglePanel(); const p = 
 on('tabsection', (key, r) => { const p = panes.focused(); if (p?.id) manage().then((m) => m.tabSection(p.id, key, r)); });
 // Find: the tab list's filter (the drawer on a phone).
 $('#b-find').onclick = () => {
-  if (isDesk()) { if ($('#app').classList.contains('noside')) drawer(true); } else drawer(true);
+  if (isDesk() && !squeezedSide()) { if ($('#app').classList.contains('noside')) drawer(true); } else if (!side.classList.contains('open')) drawer(true);
   setTimeout(() => { $('#q').focus(); $('#q').select(); }, isDesk() ? 0 : 200);
 };
 on('unread', () => $('#b-chat').classList.add('dot-new'));
@@ -316,9 +410,19 @@ $('#list').addEventListener('touchstart', (e) => {
   if (!row) return;
   lp = setTimeout(() => { lpFired = true; navigator.vibrate?.(20); tabActions(row.dataset.id); }, 520);
 }, { passive: true });
-for (const ev of ['touchmove', 'touchend', 'touchcancel']) $('#list').addEventListener(ev, () => clearTimeout(lp), { passive: true });
+// (Cleared on the window, in the capture phase: the drawer's swipe
+// handler stops the event before it reaches the list, and a swipe that
+// starts on a row must not open that row's options.)
+for (const ev of ['touchmove', 'touchend', 'touchcancel']) addEventListener(ev, () => clearTimeout(lp), { capture: true, passive: true });
 $('#list').addEventListener('click', (e) => { if (lpFired) { e.stopPropagation(); e.preventDefault(); lpFired = false; } }, true);
 on('tabmenu', (id, at) => tabActions(id, at));
+// Open on Mac: the GodTerm app's own window to the front (the web app
+// stays as it is).
+$('#b-mac')?.addEventListener('click', async () => {
+  const r = await tool('open_desktop', {});
+  if (r.ok === false || r.error) toast(r.error || 'Could not open GodTerm on the Mac', 'warn');
+  else toast(r.result?.say || 'GodTerm is at the front on the Mac', 'ok');
+});
 
 // Update available: a newer web build, or GodTerm's own update news.
 // The build this page was served as (its own ?v=), else the first hello's.
@@ -412,19 +516,23 @@ on('msg:ui', (m) => {
   sendView();
 });
 
-// Boot.
+// Boot. The socket first: its handshake (a round trip or two) overlaps
+// the modules' setup below, which all runs before its first event.
+connect();
 initTabs();
 setTabActions(tabActions);
 panes.init();
 initKeybar();
 initChat();
 initVoice();
+initPush();
 initInstall();
 initStatusBar();
+initKeys();
 title();
 if (isDesk() && store.get('tabpanel', false)) manage().then((m) => m.setPanel(true, false));
-connect();
 if (isDesk() && store.get('chat', false)) setChat(true);
+squeeze();
 on('layout', () => store.set('chat', chatOpen()));
 
 if ('serviceWorker' in navigator && window.isSecureContext) {

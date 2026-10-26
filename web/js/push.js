@@ -33,7 +33,7 @@ function ask(op, args = {}, ms = 15000) {
 function why() {
   if (!window.isSecureContext) return 'Needs the https link (tailscale serve): a plain http page cannot get notifications';
   const has = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
-  if (ios() && !standalone()) return 'On iPhone and iPad, add GodTerm to the Home Screen (Share > Add to Home Screen) and open it from there';
+  if (ios() && !standalone()) return 'After adding GodTerm to the Home Screen (above) and opening it from there';
   if (!has) return 'This browser has no web push';
   if (Notification.permission === 'denied') return ios() ? 'Blocked: allow them in Settings > Notifications > GodTerm' : 'Blocked: allow notifications for this site in the browser settings';
   return '';
@@ -182,6 +182,8 @@ function route(hash) {
 }
 route(location.hash);
 addEventListener('hashchange', () => route(location.hash));
+// Loaded after hello (main.js): as if the socket had just opened.
+if (conn.open) sync();
 navigator.serviceWorker?.addEventListener('message', (e) => {
   if (e.data?.gt === 'open') { try { route(new URL(e.data.url, location.href).hash); } catch {} }
 });

@@ -86,14 +86,14 @@ fn grok_brain_turns_tools_and_switching() {
     );
     app.cfg.grok_bin = Some(stub.to_string_lossy().into_owned());
     // A first exchange on Claude, then the switch.
-    app.assistant.log.push(crate::app_assistant::Entry {
-        who: crate::app_assistant::Who::User,
-        text: "remember the fotmesh deploy".into(),
-    });
-    app.assistant.log.push(crate::app_assistant::Entry {
-        who: crate::app_assistant::Who::Reply,
-        text: "Noted, fotmesh deploys at five.".into(),
-    });
+    app.assistant.log.push(crate::app_assistant::Entry::new(
+        crate::app_assistant::Who::User,
+        "remember the fotmesh deploy",
+    ));
+    app.assistant.log.push(crate::app_assistant::Entry::new(
+        crate::app_assistant::Who::Reply,
+        "Noted, fotmesh deploys at five.",
+    ));
     let v = app.control_call("switch_assistant", &json!({"provider": "grok"}));
     let say = v["result"]["say"].as_str().unwrap().to_string();
     assert!(

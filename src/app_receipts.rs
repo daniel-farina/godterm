@@ -66,6 +66,10 @@ pub struct Track {
     pub restored: bool,
     /// The transcript's length when it was typed in (read from there).
     pub from_offset: Option<u64>,
+    /// The tab's model and effort when it was typed in: a slash command
+    /// (`/effort max`, `/model opus`) leaves no transcript record, so a
+    /// change in these says it was applied.
+    pub before: Option<(Option<String>, Option<String>)>,
     /// How it went into the tab (direct, queue, side, background).
     pub mode: crate::app_busy::Mode,
     /// Why that mode, when it is not what was asked (a fallback).
@@ -91,6 +95,7 @@ impl Track {
             proc_started: None,
             restored: false,
             from_offset: None,
+            before: None,
             mode: crate::app_busy::Mode::Direct,
             note: None,
         }
@@ -170,6 +175,35 @@ fn word(r: &Receipt) -> &'static str {
         Receipt::Interrupted(_) => "interrupted",
         Receipt::Unconfirmed => "unconfirmed",
     }
+}
+
+/// Slash commands are applied without a turn: a little after Enter, the
+/// screen or the tab's state says whether it took.
+const SLASH_SETTLE: Duration = Duration::from_secs(2);
+
+/// A CLI slash command (`/effort max`, `/model opus`), not a path or text.
+pub fn is_slash(text: &str) -> bool {
+    let t = text.trim_start();
+    let Some(rest) = t.strip_prefix('/') else {
+        return false;
+    };
+    let name: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
+    !name.is_empty()
+        && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | ':'))
+}
+
+/// The screen shows the command run: its line in the conversation with
+/// claude's answer under it (`> /effort max` then `⎿  Set effort ...`).
+pub fn slash_echoed(screen: &str, text: &str) -> bool {
+    let want = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines.windows(2).any(|w| {
+        let flat = w[0].split_whitespace().collect::<Vec<_>>().join(" ");
+        flat.contains(&want) && w[1].trim_start().starts_with('⎿')
+    })
 }
 
 /// The bottom of a tab's screen (its input box), where unsent text sits.
@@ -262,6 +296,9 @@ impl App {
             };
         };
         let tab = &self.panes[s].tabs[t];
+        if is_slash(&d.text) && d.stage == Stage::Delivered {
+            return self.slash_receipt(d, s, t);
+        }
         // Only Claude's transcript gives queue records; Grok and the other
         // CLIs: delivered or not.
         let grok = self.panes[s]
@@ -371,6 +408,39 @@ impl App {
                 None
             }
         }
+    }
+
+    /// A slash command typed in: done when the screen shows it run or the
+    /// tab's model or effort changed; dropped only when it still sits in
+    /// the input box; otherwise unconfirmed (never a false drop: these
+    /// leave nothing in the transcript).
+    fn slash_receipt(&self, d: &Delivery, s: usize, t: usize) -> Option<Receipt> {
+        let since = d.rc.sent_at?.elapsed();
+        if since < SLASH_SETTLE {
+            return None;
+        }
+        let tab = &self.panes[s].tabs[t];
+        let changed =
+            d.rc.before
+                .as_ref()
+                .is_some_and(|(m, e)| *m != tab.model || *e != tab.effort);
+        let screen = self.tab_screen(s, t);
+        if changed || slash_echoed(&screen, &d.text) {
+            return Some(Receipt::Done);
+        }
+        if !tab.is_running() {
+            return Some(Receipt::Dropped("the tab's CLI is not running".into()));
+        }
+        if since < NOT_SEEN {
+            return None;
+        }
+        Some(
+            if crate::control::shows_prompt(&input_area(&screen), &d.text) {
+                Receipt::Dropped("it sits in the tab's input box, unsent".into())
+            } else {
+                Receipt::Unconfirmed
+            },
+        )
     }
 
     /// Log a change, and tell the user: received and started briefly
@@ -717,14 +787,10 @@ impl App {
             Ok((_, name)) => format!("Resent to {name}: '{words}'."),
             Err(e) => format!("I couldn't resend it: {e}."),
         };
-        self.assistant.log.push(Entry {
-            who: Who::User,
-            text: text.to_string(),
-        });
-        self.assistant.log.push(Entry {
-            who: Who::Reply,
-            text: say.clone(),
-        });
+        self.assistant
+            .log
+            .push(Entry::new(Who::User, text.to_string()));
+        self.assistant.log.push(Entry::new(Who::Reply, say.clone()));
         self.assistant.unsaid = None;
         self.assistant.muted = false;
         self.assistant.spoken.push(say.clone());

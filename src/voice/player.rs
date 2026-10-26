@@ -13,15 +13,135 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 /// talking (a reference for echo gating).
 pub static PLAYED: Mutex<VecDeque<(std::time::Instant, f32)>> = Mutex::new(VecDeque::new());
 
-/// Loudest playback (dBFS) in the last `window` (None when nothing played).
+/// Loudest playback (dBFS) in the last `window` (None when nothing played):
+/// this Mac's speakers, or the browser that is the voice (see WebClock).
 pub fn played_db(window: std::time::Duration) -> Option<f32> {
     let now = std::time::Instant::now();
-    let p = PLAYED.lock().unwrap_or_else(|e| e.into_inner());
-    p.iter()
-        .rev()
-        .take_while(|(t, _)| now.duration_since(*t) <= window)
-        .map(|(_, d)| *d)
-        .reduce(f32::max)
+    let local = {
+        let p = PLAYED.lock().unwrap_or_else(|e| e.into_inner());
+        p.iter()
+            .rev()
+            .take_while(|(t, _)| now.duration_since(*t) <= window)
+            .map(|(_, d)| *d)
+            .reduce(f32::max)
+    };
+    let web = web_played_db(window);
+    match (local, web) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// How long a clip that finds the browser idle takes to start playing
+/// there (the network, then the page schedules it 30 ms ahead).
+pub const WEB_LEAD: std::time::Duration = std::time::Duration::from_millis(80);
+/// One level per this much of a clip.
+const WEB_BLOCK_MS: u64 = 20;
+
+/// The speech a browser plays, as GodTerm can know it: the page plays the
+/// clips back to back in the order they come, the next one at the end of
+/// the one before, or at once when it comes after a gap. So each clip's
+/// levels go on a timeline from its expected start: the echo reference
+/// for that browser's mic (as PLAYED is for this Mac's speakers), so the
+/// echo gate learns how much of the reply comes back, and the expected
+/// end of what it plays (a reply with gaps ends later than its length).
+#[derive(Debug, Default)]
+pub struct WebClock {
+    /// (when it plays, dBFS), in time order.
+    levels: VecDeque<(std::time::Instant, f32)>,
+    end: Option<std::time::Instant>,
+}
+
+impl WebClock {
+    /// A clip handed to the browser at `now`; returns when it ends there.
+    pub fn clip(
+        &mut self,
+        samples: &[f32],
+        rate: u32,
+        now: std::time::Instant,
+    ) -> std::time::Instant {
+        let start = match self.end {
+            Some(e) if e > now => e,
+            _ => now + WEB_LEAD,
+        };
+        if samples.is_empty() || rate == 0 {
+            return self.end.unwrap_or(now);
+        }
+        let block = (rate as u64 * WEB_BLOCK_MS / 1000).max(1) as usize;
+        for (i, c) in samples.chunks(block).enumerate() {
+            let rms = (c.iter().map(|x| x * x).sum::<f32>() / c.len() as f32).sqrt();
+            let db = if rms <= 1e-5 {
+                -100.0
+            } else {
+                20.0 * rms.log10()
+            };
+            let at = start + std::time::Duration::from_millis(i as u64 * WEB_BLOCK_MS);
+            self.levels.push_back((at, db));
+        }
+        let end = start + std::time::Duration::from_secs_f64(samples.len() as f64 / rate as f64);
+        self.end = Some(end);
+        // What played more than a few seconds ago is no reference any more.
+        let old = now
+            .checked_sub(std::time::Duration::from_secs(3))
+            .unwrap_or(now);
+        while self.levels.front().is_some_and(|(t, _)| *t < old) {
+            self.levels.pop_front();
+        }
+        end
+    }
+
+    /// The reply was cut off: the page dropped what it had queued.
+    pub fn stop(&mut self, now: std::time::Instant) {
+        while self.levels.back().is_some_and(|(t, _)| *t > now) {
+            self.levels.pop_back();
+        }
+        self.end = None;
+    }
+
+    /// Loudest level playing in the `window` up to `now`.
+    pub fn played_db(&self, window: std::time::Duration, now: std::time::Instant) -> Option<f32> {
+        self.levels
+            .iter()
+            .rev()
+            .skip_while(|(t, _)| *t > now)
+            .take_while(|(t, _)| now.saturating_duration_since(*t) <= window)
+            .map(|(_, d)| *d)
+            .reduce(f32::max)
+    }
+
+    /// When the browser is expected to finish what it was sent.
+    pub fn end(&self) -> Option<std::time::Instant> {
+        self.end
+    }
+}
+
+static WEB_CLOCK: Mutex<WebClock> = Mutex::new(WebClock {
+    levels: VecDeque::new(),
+    end: None,
+});
+
+fn web_clock() -> std::sync::MutexGuard<'static, WebClock> {
+    WEB_CLOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A clip went to the browser that is the voice.
+pub fn web_clip(samples: &[f32], rate: u32) {
+    web_clock().clip(samples, rate, std::time::Instant::now());
+}
+
+/// The browser was told to stop (or the voice left it).
+pub fn web_stop() {
+    web_clock().stop(std::time::Instant::now());
+}
+
+/// The browser's playback (dBFS) in the last `window`.
+pub fn web_played_db(window: std::time::Duration) -> Option<f32> {
+    web_clock().played_db(window, std::time::Instant::now())
+}
+
+/// When the browser should be done playing what it was sent.
+pub fn web_end() -> Option<std::time::Instant> {
+    web_clock().end()
 }
 
 /// Record one output block's level (also used by tests to simulate playback).
@@ -205,6 +325,93 @@ fn fill<T: Copy>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    fn tone(secs: f32, amp: f32, rate: u32) -> Vec<f32> {
+        (0..(secs * rate as f32) as usize)
+            .map(|i| (i as f32 * 0.1).sin() * amp)
+            .collect()
+    }
+
+    #[test]
+    fn web_clock_plays_clips_back_to_back() {
+        let mut c = WebClock::default();
+        let t0 = Instant::now();
+        // The first clip starts a moment after it is sent.
+        let e1 = c.clip(&tone(1.0, 0.5, 24_000), 24_000, t0);
+        assert_eq!(e1, t0 + WEB_LEAD + Duration::from_secs(1));
+        // One sent while that plays starts at its end, not when it came.
+        let e2 = c.clip(
+            &tone(0.5, 0.5, 24_000),
+            24_000,
+            t0 + Duration::from_millis(100),
+        );
+        assert_eq!(e2, e1 + Duration::from_millis(500));
+        // A clip after a gap starts when it comes: the reply ends later
+        // than its length.
+        let late = e2 + Duration::from_millis(700);
+        let e3 = c.clip(&tone(0.5, 0.5, 24_000), 24_000, late);
+        assert_eq!(e3, late + WEB_LEAD + Duration::from_millis(500));
+        assert_eq!(c.end(), Some(e3));
+    }
+
+    #[test]
+    fn web_clock_level_is_the_reference_while_it_plays() {
+        let mut c = WebClock::default();
+        let t0 = Instant::now();
+        c.clip(&tone(1.0, 0.5, 16_000), 16_000, t0);
+        let w = Duration::from_millis(400);
+        // Nothing plays before its start.
+        assert_eq!(c.played_db(w, t0), None);
+        let mid = c
+            .played_db(w, t0 + Duration::from_millis(500))
+            .expect("a level while it plays");
+        // A sine at 0.5 is about -9 dBFS RMS.
+        assert!((mid - -9.0).abs() < 1.0, "{mid}");
+        // A little after the end it still counts (the room's tail), then
+        // not.
+        assert!(c.played_db(w, t0 + Duration::from_millis(1300)).is_some());
+        assert_eq!(c.played_db(w, t0 + Duration::from_millis(1600)), None);
+    }
+
+    #[test]
+    fn web_clock_stop_drops_what_was_queued() {
+        let mut c = WebClock::default();
+        let t0 = Instant::now();
+        c.clip(&tone(3.0, 0.5, 16_000), 16_000, t0);
+        let cut = t0 + Duration::from_millis(500);
+        c.stop(cut);
+        assert_eq!(c.end(), None);
+        let w = Duration::from_millis(400);
+        assert!(c.played_db(w, cut).is_some());
+        assert_eq!(c.played_db(w, cut + Duration::from_millis(1000)), None);
+        // The next reply starts fresh, a moment after it is sent.
+        let t1 = cut + Duration::from_millis(10);
+        assert_eq!(
+            c.clip(&tone(0.1, 0.5, 16_000), 16_000, t1),
+            t1 + WEB_LEAD + Duration::from_millis(100)
+        );
+    }
+
+    #[test]
+    fn web_clock_keeps_only_recent_levels() {
+        let mut c = WebClock::default();
+        let t0 = Instant::now();
+        for i in 0..20 {
+            c.clip(
+                &tone(1.0, 0.3, 8_000),
+                8_000,
+                t0 + Duration::from_secs(i * 2),
+            );
+        }
+        // 50 levels a second, only the last few seconds kept.
+        assert!(c.levels.len() <= 50 * 5, "{}", c.levels.len());
+        // Empty clips and a zero rate add nothing.
+        let n = c.levels.len();
+        c.clip(&[], 16_000, t0 + Duration::from_secs(41));
+        c.clip(&[0.1; 10], 0, t0 + Duration::from_secs(41));
+        assert_eq!(c.levels.len(), n);
+    }
 
     #[test]
     fn resampling() {

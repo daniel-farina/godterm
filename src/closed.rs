@@ -56,6 +56,9 @@ pub struct ClosedTab {
     /// The tab's Chrome profile folder (its Browser binding).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<String>,
+    /// Its more profiles beside that one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub browser_also: Vec<String>,
 }
 
 /// When to ask before closing one tab (config `confirm_close`).
@@ -123,6 +126,7 @@ impl App {
             tab_group: tab.group.clone(),
             pinned: tab.pinned,
             browser: tab.browser.clone(),
+            browser_also: tab.browser_also.clone(),
         })
     }
 
@@ -426,6 +430,10 @@ impl App {
             .browser
             .clone()
             .filter(|d| crate::tab_browser::valid_profile_dir(d));
+        self.panes[p].tabs[t].browser_also = crate::tab_browser::clean_also(
+            self.panes[p].tabs[t].browser.as_deref(),
+            &c.browser_also,
+        );
         if let Some(g) = &c.tab_group {
             self.panes[p].group_tabs(&[t], g, None);
         }

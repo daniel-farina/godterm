@@ -41,7 +41,9 @@ pub const WEB_SETTINGS: &[&str] = &[
     "voice.wake_follow_up_s",
     "voice.open_mic_sleep_min",
     "voice.barge_in",
+    "voice.barge_margin_db",
     "voice.barge_in_min_words",
+    "voice.barge_in_duck",
     "voice.direct_reply",
     "voice.instant_commands",
     "voice.end_silence_ms",
@@ -95,6 +97,12 @@ fn route_to(out: Arc<Outbox>) {
         WebAudio::Pcm(s, rate) => out.audio(wav(&s, rate)),
         WebAudio::Stop => {
             out.text(json!({"t": "audio_stop"}).to_string());
+        }
+        WebAudio::Duck(v) => {
+            out.text(
+                json!({"t": "audio_duck", "level": (f64::from(v) * 100.0).round() / 100.0})
+                    .to_string(),
+            );
         }
     })));
 }
@@ -311,8 +319,15 @@ impl App {
     /// back to the assistant), `brainstorm` (on or off), `hush` (stop the
     /// reply being spoken, as talking over it does), `away` (the page
     /// went to the background or came back: iOS stops the mic meanwhile)
-    /// and `muted` (the browser's mic mute: silence comes meanwhile).
+    /// `muted` (the browser's mic mute: silence comes meanwhile) and
+    /// `unmute_mac` (lift GodTerm's own mute, Ctrl-a X).
     pub fn web_voice_ctl(&mut self, client: u64, v: &serde_json::Value) {
+        // GodTerm's own mic mute (Ctrl-a X), lifted from a browser that
+        // was refused for it: the browser asks again right after.
+        if v["unmute_mac"].as_bool() == Some(true) && self.voice.muted {
+            crate::log::info(&format!("web: client {client} unmuted GodTerm's mic"));
+            self.toggle_mute();
+        }
         if let Some(m) = v["muted"].as_bool() {
             self.web_mic_muted(client, m);
         }

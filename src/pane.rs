@@ -290,8 +290,12 @@ pub struct Pane {
     /// "close all".
     pub pinned: bool,
     /// The Chrome profile folder this tab's browser is bound to (the
-    /// Browser button; see tab_browser).
+    /// Browser button; see tab_browser). With more than one, this is the
+    /// primary one.
     pub browser: Option<String>,
+    /// More Chrome profiles bound to this tab beside the primary (never
+    /// it, no repeats; empty when there is no primary).
+    pub browser_also: Vec<String>,
     /// When the tab was first opened (kept across restarts).
     pub opened: std::time::SystemTime,
     /// The user's last keystroke or prompt into it.
@@ -388,6 +392,7 @@ impl Pane {
             group: None,
             pinned: false,
             browser: None,
+            browser_also: vec![],
             opened: std::time::SystemTime::now(),
             last_input: Instant::now(),
             finished: false,

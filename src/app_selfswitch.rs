@@ -406,10 +406,9 @@ impl App {
         } else {
             return false;
         };
-        self.assistant.log.push(Entry {
-            who: Who::User,
-            text: text.trim().to_string(),
-        });
+        self.assistant
+            .log
+            .push(Entry::new(Who::User, text.trim().to_string()));
         self.answer_self_switch(answer)
     }
 

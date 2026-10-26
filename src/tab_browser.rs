@@ -164,34 +164,202 @@ pub fn plan_for(s: ExtState) -> Option<OpenPlan> {
     }
 }
 
+/// Connected browsers the user linked to a profile: the extension's
+/// "Browser name" label to the Chrome profile folder (`[browser] links`).
+pub type Links = std::collections::BTreeMap<String, String>;
+
+/// The profile folder a label is linked to (labels compare trimmed and
+/// without case; an empty label is never linked).
+pub fn linked_dir<'a>(links: &'a Links, label: &str) -> Option<&'a str> {
+    let l = label.trim();
+    if l.is_empty() {
+        return None;
+    }
+    links
+        .iter()
+        .find(|(k, _)| k.trim().eq_ignore_ascii_case(l))
+        .map(|(_, v)| v.as_str())
+}
+
+/// Whether a browser's label names this profile (its name, folder,
+/// email or Google name).
+fn label_names(label: &str, p: &ChromeProfile) -> bool {
+    let same = |a: &str, b: &str| !b.trim().is_empty() && a.trim().eq_ignore_ascii_case(b.trim());
+    [&p.name, &p.dir, &p.user_name, &p.gaia_name]
+        .iter()
+        .any(|f| same(label, f))
+}
+
 /// Which connected `bsk` browsers are this profile's. `bsk` does not say
 /// which profile an instance is: the label the user typed in the extension
-/// popup is the only hint, so a label equal to the profile's name, folder
-/// or email counts. A lone connected browser counts when this profile is
-/// the only one with the extension on.
+/// popup is the only hint. A label the user linked to a profile
+/// (`links`) is that profile's and no other's; else a label equal to the
+/// profile's name, folder or email counts. A lone connected browser
+/// counts when this profile is the only one with the extension on.
 pub fn match_browsers(
     all: &[Browser],
     p: &ChromeProfile,
     enabled_profiles: usize,
     this_enabled: bool,
+    links: &Links,
 ) -> (Vec<Browser>, &'static str) {
-    let same = |a: &str, b: &str| !b.trim().is_empty() && a.trim().eq_ignore_ascii_case(b.trim());
-    let by_label: Vec<Browser> = all
+    let linked = |b: &Browser| linked_dir(links, &b.label);
+    let by_link: Vec<Browser> = all
         .iter()
-        .filter(|b| {
-            [&p.name, &p.dir, &p.user_name, &p.gaia_name]
-                .iter()
-                .any(|f| same(&b.label, f))
-        })
+        .filter(|b| linked(b) == Some(p.dir.as_str()))
         .cloned()
         .collect();
+    let by_label: Vec<Browser> = all
+        .iter()
+        .filter(|b| linked(b).is_none() && label_names(&b.label, p))
+        .cloned()
+        .collect();
+    if !by_link.is_empty() {
+        let mut v = by_link;
+        v.extend(by_label);
+        return (v, "linked");
+    }
     if !by_label.is_empty() {
         return (by_label, "label");
     }
-    if all.len() == 1 && enabled_profiles == 1 && this_enabled {
+    if all.len() == 1 && linked(&all[0]).is_none() && enabled_profiles == 1 && this_enabled {
         return (all.to_vec(), "only browser");
     }
     (vec![], "unknown")
+}
+
+/// Each connected browser with the profile it is (None: unmatched) and
+/// how that was decided: "linked" (the user said so), "label", "only
+/// browser", "ambiguous" (the label names more than one profile) or
+/// "unknown".
+pub fn assign_browsers(
+    all: &[Browser],
+    profiles: &[ProfileExt],
+    links: &Links,
+) -> Vec<(Browser, Option<String>, &'static str)> {
+    let enabled: Vec<&ProfileExt> = profiles
+        .iter()
+        .filter(|p| ext_state(p) == ExtState::Enabled)
+        .collect();
+    all.iter()
+        .map(|b| {
+            if let Some(d) = linked_dir(links, &b.label) {
+                return (b.clone(), Some(d.to_string()), "linked");
+            }
+            let named: Vec<&ProfileExt> = profiles
+                .iter()
+                .filter(|p| label_names(&b.label, &p.profile))
+                .collect();
+            match named.len() {
+                1 => (b.clone(), Some(named[0].profile.dir.clone()), "label"),
+                0 if all.len() == 1 && enabled.len() == 1 => (
+                    b.clone(),
+                    Some(enabled[0].profile.dir.clone()),
+                    "only browser",
+                ),
+                0 => (b.clone(), None, "unknown"),
+                _ => (b.clone(), None, "ambiguous"),
+            }
+        })
+        .collect()
+}
+
+// ---------- more than one profile per tab ----------
+
+/// The more profiles of a tab, cleaned: folder names only, no repeats,
+/// never the primary, none without a primary.
+pub fn clean_also(primary: Option<&str>, also: &[String]) -> Vec<String> {
+    let Some(primary) = primary else {
+        return vec![];
+    };
+    let mut out: Vec<String> = vec![];
+    for d in also {
+        if valid_profile_dir(d) && d != primary && !out.contains(d) {
+            out.push(d.clone());
+        }
+    }
+    out
+}
+
+/// A change to a tab's set of profiles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BindOp {
+    /// This profile as the primary one; the old primary is dropped, the
+    /// more profiles stay (what "Use profile" did with one profile).
+    Set(String),
+    /// One more profile (the primary when the tab has none).
+    Add(String),
+    /// Take one out; the next one becomes primary when it was.
+    Remove(String),
+    /// Make a profile the primary one (added if it was not bound); the
+    /// old primary stays as a more profile.
+    Primary(String),
+    /// No browser at all.
+    Clear,
+}
+
+impl BindOp {
+    /// From a tool's op word and profile folder.
+    pub fn parse(op: &str, dir: Option<&str>) -> Result<BindOp, String> {
+        let need = || -> Result<String, String> {
+            let d = dir.map(str::trim).filter(|d| !d.is_empty()).ok_or(format!(
+                "{op} needs profile (a Chrome profile folder, e.g. \"Profile 1\")"
+            ))?;
+            if !valid_profile_dir(d) {
+                return Err(format!("\"{d}\" is not a Chrome profile folder name"));
+            }
+            Ok(d.to_string())
+        };
+        Ok(match op {
+            "set" | "use" => BindOp::Set(need()?),
+            "add" => BindOp::Add(need()?),
+            "remove" => BindOp::Remove(need()?),
+            "primary" => BindOp::Primary(need()?),
+            "clear" => BindOp::Clear,
+            o => return Err(format!("unknown op \"{o}\"")),
+        })
+    }
+}
+
+/// Apply a change to (primary, more). Returns whether anything changed.
+pub fn apply_bind(primary: &mut Option<String>, also: &mut Vec<String>, op: &BindOp) -> bool {
+    let before = (primary.clone(), also.clone());
+    match op {
+        BindOp::Set(d) => *primary = Some(d.clone()),
+        BindOp::Add(d) => {
+            if primary.is_none() {
+                *primary = Some(d.clone());
+            } else {
+                also.push(d.clone());
+            }
+        }
+        BindOp::Remove(d) => {
+            if primary.as_deref() == Some(d.as_str()) {
+                *primary = if also.is_empty() {
+                    None
+                } else {
+                    Some(also.remove(0))
+                };
+            } else {
+                also.retain(|x| x != d);
+            }
+        }
+        BindOp::Primary(d) => {
+            if primary.as_deref() != Some(d.as_str()) {
+                if let Some(old) = primary.take() {
+                    also.insert(0, old);
+                }
+                *primary = Some(d.clone());
+            }
+        }
+        BindOp::Clear => {
+            *primary = None;
+            also.clear();
+        }
+    }
+    *primary = primary.take().filter(|d| valid_profile_dir(d));
+    *also = clean_also(primary.as_deref(), also);
+    before != (primary.clone(), also.clone())
 }
 
 // ---------- what the tab's agent last did in the browser ----------
@@ -630,9 +798,36 @@ impl App {
             .and_then(|s| matches!(s.daemon, browser::Daemon::Running(_)).then_some(s.browsers))
     }
 
+    /// The tab's primary profile folder.
     pub fn tab_browser_dir(&self, uid: u64) -> Option<String> {
         let (s, t) = self.find_tab(uid)?;
         self.panes[s].tabs[t].browser.clone()
+    }
+
+    /// Every profile folder bound to the tab, the primary first.
+    pub fn tab_browser_dirs(&self, uid: u64) -> Vec<String> {
+        let Some((s, t)) = self.find_tab(uid) else {
+            return vec![];
+        };
+        let tab = &self.panes[s].tabs[t];
+        tab.browser
+            .iter()
+            .chain(tab.browser_also.iter())
+            .cloned()
+            .collect()
+    }
+
+    /// A profile (from the last look), or just its folder name.
+    pub fn profile_of(&self, dir: &str) -> ChromeProfile {
+        self.browser_profiles()
+            .into_iter()
+            .find(|p| p.profile.dir == dir)
+            .map(|p| p.profile)
+            .unwrap_or(ChromeProfile {
+                dir: dir.to_string(),
+                name: dir.to_string(),
+                ..Default::default()
+            })
     }
 
     /// The tab's profile (from the last look), or just its folder name.
@@ -679,6 +874,18 @@ impl App {
             "profile_dir": p.dir, "profile": p.name, "email": p.user_name,
             "state": self.tab_browser_state(tab.uid).word(),
         });
+        if !tab.browser_also.is_empty() {
+            let profiles = self.browser_profiles();
+            v["also"] = json!(tab
+                .browser_also
+                .iter()
+                .map(|d| {
+                    let q = self.profile_of(d);
+                    json!({"profile_dir": d, "profile": q.name,
+                        "state": button_state(Some(d), &profiles).word()})
+                })
+                .collect::<Vec<_>>());
+        }
         if let Some(a) = self.tab_browser_activity(tab.uid) {
             v["last_action"] = json!(activity_words(&a, chrono::Utc::now()));
         }
@@ -728,18 +935,78 @@ impl App {
 
     // ----- binding -----
 
-    /// Bind (or clear) the tab's profile. Returns whether it changed.
+    /// Bind the tab's primary profile (its more profiles stay), or clear
+    /// them all. Returns whether it changed.
     pub fn bind_tab_browser(&mut self, uid: u64, dir: Option<String>) -> bool {
-        let dir = dir.and_then(|d| clean(&d));
+        let op = match dir {
+            Some(d) => match clean(&d) {
+                Some(d) => BindOp::Set(d),
+                None => return false,
+            },
+            None => BindOp::Clear,
+        };
+        self.bind_tab_browsers(uid, &op)
+    }
+
+    /// Change the tab's set of profiles. Returns whether it changed.
+    pub fn bind_tab_browsers(&mut self, uid: u64, op: &BindOp) -> bool {
         let Some((s, t)) = self.find_tab(uid) else {
             return false;
         };
-        if self.panes[s].tabs[t].browser == dir {
+        let tab = &mut self.panes[s].tabs[t];
+        let (mut p, mut a) = (tab.browser.clone(), tab.browser_also.clone());
+        if !apply_bind(&mut p, &mut a, op) {
             return false;
         }
-        self.panes[s].tabs[t].browser = dir;
+        tab.browser = p;
+        tab.browser_also = a;
+        if tab.browser.is_none() {
+            self.browser.pending.retain(|(u, _)| *u != uid);
+        }
         self.state_dirty = true;
         true
+    }
+
+    /// Link a connected browser's label to a profile (None: unlink), in
+    /// `[browser] links`. Returns whether it changed.
+    pub fn link_browser_label(&mut self, label: &str, dir: Option<&str>) -> Result<bool, String> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err("this browser has no name in its extension popup to link; set its Browser name there first".into());
+        }
+        if label.chars().count() > 120 || label.chars().any(char::is_control) {
+            return Err("that browser name is too long or has control characters".into());
+        }
+        let dir = match dir.map(str::trim).filter(|d| !d.is_empty()) {
+            Some(d) => {
+                Some(clean(d).ok_or(format!("\"{d}\" is not a Chrome profile folder name"))?)
+            }
+            None => None,
+        };
+        let mut links = self.cfg.browser.links.clone();
+        links.retain(|k, _| !k.trim().eq_ignore_ascii_case(label));
+        if let Some(d) = &dir {
+            links.insert(label.to_string(), d.clone());
+        }
+        if links == self.cfg.browser.links {
+            return Ok(false);
+        }
+        let item = (!links.is_empty()).then(|| {
+            let mut t = toml_edit::InlineTable::new();
+            for (k, v) in &links {
+                t.insert(k, v.as_str().into());
+            }
+            toml_edit::Item::Value(toml_edit::Value::InlineTable(t))
+        });
+        crate::settings::write(
+            &crate::config::Config::path(),
+            &crate::settings::Key::Global("browser.links"),
+            item,
+        )
+        .map_err(|e| format!("could not write config.toml: {e:#}"))?;
+        self.cfg.browser.links = links;
+        self.config_mtime = crate::app::config_mtime();
+        Ok(true)
     }
 
     /// Write `[browser] default_profile` (empty clears it).
@@ -997,6 +1264,7 @@ impl App {
                         set(self, (d.sel + 1).min(n.saturating_sub(1)))
                     }
                     KeyCode::Enter => self.browser_choose(d.sel),
+                    KeyCode::Char('a') => self.browser_toggle_also(d.sel),
                     KeyCode::Char('c') => self.browser_clear(),
                     KeyCode::Char('r') => self.browser_quick(true),
                     KeyCode::Char('o') => self.open_tab_chrome(d.uid),
@@ -1044,6 +1312,39 @@ impl App {
                     ..d
                 });
             }
+        }
+    }
+
+    /// The user adds profile row `i` to the tab's set (the primary when it
+    /// has none), or takes it out when it is in.
+    pub fn browser_toggle_also(&mut self, i: usize) {
+        let Modal::Browser(d) = self.modal.clone() else {
+            return;
+        };
+        let Some(p) = self.browser_profiles().get(i).cloned() else {
+            return;
+        };
+        let dir = p.profile.dir.clone();
+        let who = p.profile.display();
+        let had = self.tab_browser_dirs(d.uid).contains(&dir);
+        let op = if had {
+            BindOp::Remove(dir)
+        } else {
+            BindOp::Add(dir)
+        };
+        self.modal = Modal::Browser(BrowserDlg {
+            sel: i,
+            ..d.clone()
+        });
+        if self.bind_tab_browsers(d.uid, &op) {
+            let say = if had {
+                format!("This tab no longer uses {who}.")
+            } else {
+                format!("This tab also uses {who}.")
+            };
+            self.browser.note = Some(say.clone());
+            self.flash(say);
+            self.browser_quick(true);
         }
     }
 
@@ -1134,7 +1435,7 @@ impl App {
         }
         let profiles = self.browser_profiles();
         let mut lines = vec![line(
-            "Chrome profile for this tab. Links open there too.",
+            "Chrome profile for this tab (a: also use another). Links open in the first.",
             Tone::Dim,
         )];
         if profiles.is_empty() {
@@ -1144,14 +1445,22 @@ impl App {
             ));
         }
         let bound = self.tab_browser_dir(d.uid);
+        let dirs = self.tab_browser_dirs(d.uid);
+        let many = dirs.len() > 1;
         for (i, p) in profiles.iter().enumerate() {
             let this = bound.as_deref() == Some(p.profile.dir.as_str());
+            let also = !this && dirs.contains(&p.profile.dir);
             let text = format!(
                 "{} {:<24} {}{}",
                 if i == d.sel { "›" } else { " " },
                 crate::sessions::snippet(&p.profile.display(), 24),
                 p.word(),
-                if this { "  (this tab)" } else { "" }
+                match (this, also, many) {
+                    (true, _, true) => "  (this tab, primary)",
+                    (true, _, false) => "  (this tab)",
+                    (_, true, _) => "  (this tab too)",
+                    _ => "",
+                }
             );
             lines.push(DlgLine {
                 text,
@@ -1176,6 +1485,19 @@ impl App {
         };
         lines.push(line("", Tone::Dim));
         lines.push(line(msg, tone));
+        if many {
+            let more: Vec<String> = dirs[1..]
+                .iter()
+                .map(|d| self.profile_name(d).unwrap_or_else(|| d.clone()))
+                .collect();
+            lines.push(line(
+                format!(
+                    "Also: {}. Its agent uses the primary one unless asked for another.",
+                    more.join(", ")
+                ),
+                Tone::Normal,
+            ));
+        }
         if st == BtnState::Ready {
             let conn = match self.browser_connected() {
                 Some(b) if !b.is_empty() => format!("bsk sees {} connected.", crate::control::plural(b.len(), "browser")),
@@ -1206,11 +1528,26 @@ impl App {
         if let Some(n) = &self.browser.note {
             lines.push(line(n.clone(), Tone::Normal));
         }
-        let mut buttons = vec![(
-            "Use profile".into(),
-            UiAction::ModalOk,
-            "Choose the selected profile for this tab (Enter)".into(),
-        )];
+        let sel_in = profiles
+            .get(d.sel)
+            .is_some_and(|p| dirs.contains(&p.profile.dir));
+        let mut buttons = vec![
+            (
+                "Use profile".into(),
+                UiAction::ModalOk,
+                "Choose the selected profile for this tab (Enter)".into(),
+            ),
+            (
+                if sel_in { "Remove" } else { "Also use" }.into(),
+                UiAction::BrowserAlso,
+                if sel_in {
+                    "Take the selected profile off this tab (a)"
+                } else {
+                    "Add the selected profile to this tab's browsers (a)"
+                }
+                .into(),
+            ),
+        ];
         if bound.is_some() {
             buttons.push((
                 "Open Chrome".into(),
@@ -1234,17 +1571,20 @@ impl App {
     // ----- the tab's own tools -----
 
     /// `list_browsers` and `browser_status` for the agent of tab `uid`:
-    /// the tab's bound profile and nothing of any other tab's.
+    /// the tab's bound profiles (the primary first) and nothing of any
+    /// other tab's.
     pub(crate) fn browser_tool_for(&mut self, uid: u64, tool: &str) -> Result<Value, String> {
         let base = self.browser_tool(tool)?;
-        let Some(dir) = self.tab_browser_dir(uid) else {
+        let dirs = self.tab_browser_dirs(uid);
+        if dirs.is_empty() {
             let mut v = base;
             if v["result"].is_object() {
                 v["result"]["bound_profile"] = Value::Null;
-                v["result"]["say"] = json!("No browser is set for this tab. Ask the user to click Browser on this tab's bottom bar (or Ctrl-a i) to choose a Chrome profile; do not pick one yourself.");
+                v["result"]["bound_profiles"] = json!([]);
+                v["result"]["say"] = json!("No browser is set for this tab. Ask the user to choose one: Browser on this tab's bottom bar (or Ctrl-a i), or the Browser section of this tab in the web app. Do not pick one yourself.");
             }
             return Ok(v);
-        };
+        }
         let Some(snap) = self.browser.snapshot() else {
             return Ok(base);
         };
@@ -1254,13 +1594,6 @@ impl App {
         } else {
             profiles
         };
-        let mine = profiles.iter().find(|p| p.profile.dir == dir);
-        let profile = mine.map(|p| p.profile.clone()).unwrap_or(ChromeProfile {
-            dir: dir.clone(),
-            name: dir.clone(),
-            ..Default::default()
-        });
-        let state = button_state(Some(&dir), &profiles);
         let enabled = profiles
             .iter()
             .filter(|p| ext_state(p) == ExtState::Enabled)
@@ -1268,43 +1601,365 @@ impl App {
         let all = self
             .browser_connected()
             .unwrap_or_else(|| snap.browsers.clone());
-        let (matched, how) = match_browsers(&all, &profile, enabled, state == BtnState::Ready);
-        let bound = json!({
-            "profile_dir": profile.dir, "name": profile.name, "email": profile.user_name,
-            "extension": mine.map(ProfileExt::word).unwrap_or("not found"),
-            "state": state.word(),
-        });
-        let say = match (state, matched.is_empty()) {
-            (BtnState::Ready, false) => format!(
-                "Use only this browser: `bsk session start --browser {}`.",
-                matched[0].instance_id
-            ),
-            (BtnState::Ready, true) if all.is_empty() => "The extension is on in this tab's profile but bsk sees no connected browser. Ask the user to turn on the local connection in the extension popup.".to_string(),
-            (BtnState::Ready, true) => format!(
-                "bsk cannot tell which connected browser is this tab's profile. Ask the user to set the extension's Browser name to \"{}\" and call again. Do not use another browser.",
-                profile.name
-            ),
-            _ => "This tab's profile is not ready: the extension is missing or off there. Ask the user to finish in the Browser dialog of this tab. Do not use another browser.".to_string(),
+        let links = self.cfg.browser.links.clone();
+        struct One<'a> {
+            profile: ChromeProfile,
+            ext: Option<&'a ProfileExt>,
+            state: BtnState,
+            matched: Vec<Browser>,
+            how: &'static str,
+        }
+        let ones: Vec<One> = dirs
+            .iter()
+            .map(|dir| {
+                let ext = profiles.iter().find(|p| &p.profile.dir == dir);
+                let profile = ext.map(|p| p.profile.clone()).unwrap_or(ChromeProfile {
+                    dir: dir.clone(),
+                    name: dir.clone(),
+                    ..Default::default()
+                });
+                let state = button_state(Some(dir), &profiles);
+                let (matched, how) =
+                    match_browsers(&all, &profile, enabled, state == BtnState::Ready, &links);
+                One {
+                    profile,
+                    ext,
+                    state,
+                    matched,
+                    how,
+                }
+            })
+            .collect();
+        let entry = |o: &One, primary: bool| {
+            json!({
+                "profile_dir": o.profile.dir, "name": o.profile.name, "email": o.profile.user_name,
+                "extension": o.ext.map(ProfileExt::word).unwrap_or("not found"),
+                "state": o.state.word(),
+                "primary": primary,
+                "browsers": o.matched.iter().map(|b| b.instance_id.clone()).collect::<Vec<_>>(),
+                "match": o.how,
+            })
         };
+        let bound_profiles: Vec<Value> = ones
+            .iter()
+            .enumerate()
+            .map(|(i, o)| entry(o, i == 0))
+            .collect();
+        // Every matched browser once, with whose it is.
+        let mut browsers: Vec<Value> = vec![];
+        let mut seen: Vec<String> = vec![];
+        for (i, o) in ones.iter().enumerate() {
+            for b in &o.matched {
+                if seen.contains(&b.instance_id) {
+                    continue;
+                }
+                seen.push(b.instance_id.clone());
+                let mut v = b.to_json();
+                v["profile_dir"] = json!(o.profile.dir);
+                v["profile"] = json!(o.profile.name);
+                v["primary"] = json!(i == 0);
+                browsers.push(v);
+            }
+        }
+        let say = if ones.len() == 1 {
+            one_say(
+                ones[0].state,
+                &ones[0].matched,
+                all.is_empty(),
+                &ones[0].profile.name,
+            )
+        } else {
+            let mut use_: Vec<String> = vec![];
+            let mut problems: Vec<String> = vec![];
+            for (i, o) in ones.iter().enumerate() {
+                let who = if i == 0 {
+                    format!("{} (primary)", o.profile.name)
+                } else {
+                    o.profile.name.clone()
+                };
+                match (o.state, o.matched.first()) {
+                    (BtnState::Ready, Some(b)) => {
+                        use_.push(format!("{who}: `bsk session start --browser {}`", b.instance_id))
+                    }
+                    (BtnState::Ready, None) if all.is_empty() => problems.push(format!(
+                        "{who} is not connected (the user turns on the local connection in its extension popup)"
+                    )),
+                    (BtnState::Ready, None) => problems.push(format!(
+                        "bsk cannot tell which connected browser is {who}: ask the user to link it in this tab's Browser section, or to set the extension's Browser name to \"{}\"",
+                        o.profile.name
+                    )),
+                    _ => problems.push(format!(
+                        "{who} is not ready (the extension is missing or off there; the user finishes in this tab's Browser dialog)"
+                    )),
+                }
+            }
+            let mut say = format!(
+                "This tab has {} browsers (Chrome profiles); use only these and no other. ",
+                ones.len()
+            );
+            if !use_.is_empty() {
+                say += &format!("{}. ", use_.join("; "));
+            }
+            say += "Use the primary one unless the request is clearly about another one's account or site; when it is unclear which, ask the user.";
+            if !problems.is_empty() {
+                say += &format!(" Not usable now: {}.", problems.join("; "));
+            }
+            say
+        };
+        let first = &ones[0];
+        let bound = bound_profiles[0].clone();
         let mut result = if tool == "list_browsers" {
             json!({
                 "daemon": snap.daemon.word(),
                 "bound_profile": bound,
-                "browsers": matched.iter().map(Browser::to_json).collect::<Vec<_>>(),
-                "count": matched.len(),
-                "match": how,
+                "bound_profiles": bound_profiles,
+                "browsers": browsers,
+                "count": browsers.len(),
+                "match": first.how,
                 "checked_secs_ago": snap.age_secs(),
             })
         } else {
             let mut v = snap.to_json();
-            v["chrome_profiles"] = json!(mine.map(|p| vec![p.to_json()]).unwrap_or_default());
-            v["browsers"] = json!(matched.iter().map(Browser::to_json).collect::<Vec<_>>());
+            v["chrome_profiles"] = json!(ones
+                .iter()
+                .filter_map(|o| o.ext.map(ProfileExt::to_json))
+                .collect::<Vec<_>>());
+            v["browsers"] = json!(browsers);
             v["bound_profile"] = bound;
-            v["match"] = json!(how);
+            v["bound_profiles"] = json!(bound_profiles);
+            v["match"] = json!(first.how);
             v
         };
         result["say"] = json!(say);
         result["extension_id"] = json!(EXTENSION_ID);
         Ok(json!({"ok": true, "result": result}))
+    }
+
+    // ----- the web app's Browser section (the user's own buttons) -----
+
+    /// `tab_browser`: what the web's Browser section shows for a tab, and
+    /// its buttons (set, add, remove, primary, clear, open). Only the
+    /// user in the web app: an agent never picks its own browser.
+    /// `open_desktop`, the web app's "Open on Mac" button: the GodTerm
+    /// app's own window to the front. The user's press only.
+    pub(crate) fn open_desktop_tool(&mut self) -> Result<Value, String> {
+        if !self.web_caller {
+            return Err("open_desktop is the user's own button in the web app".into());
+        }
+        if !cfg!(target_os = "macos") {
+            return Err("only on a Mac".into());
+        }
+        let r = std::process::Command::new("open")
+            .args(["-a", "GodTerm"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        match r {
+            Ok(st) if st.success() => Ok(json!({"ok": true, "say": "GodTerm is at the front on the Mac."})),
+            Ok(_) => Err("the GodTerm app was not found in Applications (this GodTerm runs from a terminal?)".into()),
+            Err(e) => Err(format!("open failed: {e}")),
+        }
+    }
+
+    pub(crate) fn tab_browser_tool(&mut self, args: &Value) -> Result<Value, String> {
+        if !self.web_caller {
+            return Err("tab_browser is the user's own buttons in the web app's Browser section; an agent never picks a browser: ask the user to choose one there".into());
+        }
+        let (s, t) = self.one_tab(args)?;
+        let uid = self.panes[s].tabs[t].uid;
+        let op = args["op"].as_str().unwrap_or("view").trim().to_lowercase();
+        let dir = args["profile"].as_str();
+        let tab = self.panes[s].tabs[t].name();
+        let say = match op.as_str() {
+            "view" => return Ok(json!({"ok": true, "result": self.tab_browser_view(uid)})),
+            "open" => {
+                let dir = match dir.map(str::trim).filter(|d| !d.is_empty()) {
+                    Some(d) => clean(d).ok_or("not a Chrome profile folder name")?,
+                    None => self
+                        .tab_browser_dir(uid)
+                        .ok_or("this tab has no browser yet: choose a Chrome profile first")?,
+                };
+                if !self.tab_browser_dirs(uid).contains(&dir) {
+                    return Err("that profile is not one of this tab's browsers".into());
+                }
+                let who = self.profile_name(&dir).unwrap_or_else(|| dir.clone());
+                if !open_chrome("chrome://newtab", Some(&dir)) {
+                    return Err("could not open Chrome".into());
+                }
+                format!("Opened Chrome profile {who} for {tab}")
+            }
+            _ => {
+                let op = BindOp::parse(&op, dir)?;
+                let changed = self.bind_tab_browsers(uid, &op);
+                // The first or primary choice is the default for links, as
+                // the dialog's "Use profile" makes it.
+                if let BindOp::Set(d) | BindOp::Primary(d) = &op {
+                    self.set_default_profile(d);
+                }
+                if changed {
+                    self.browser_quick(true);
+                    self.browser_refresh(false);
+                }
+                let name = |d: &str| self.profile_name(d).unwrap_or_else(|| d.to_string());
+                match (&op, changed) {
+                    (_, false) => "Nothing changed".to_string(),
+                    (BindOp::Set(d), _) => format!("{tab} uses {}", name(d)),
+                    (BindOp::Add(d), _) => format!("{tab} also uses {}", name(d)),
+                    (BindOp::Remove(d), _) => format!("{tab} no longer uses {}", name(d)),
+                    (BindOp::Primary(d), _) => {
+                        format!("{} is now {tab}'s primary browser", name(d))
+                    }
+                    (BindOp::Clear, _) => format!("{tab} has no browser now"),
+                }
+            }
+        };
+        Ok(json!({"ok": true, "result": {"say": say, "view": self.tab_browser_view(uid)}}))
+    }
+
+    /// `link_browser`: the user says a connected browser (by its label) is
+    /// a Chrome profile, or unlinks it (no profile). Only the user in the
+    /// web app.
+    pub(crate) fn link_browser_tool(&mut self, args: &Value) -> Result<Value, String> {
+        if !self.web_caller {
+            return Err("link_browser is the user's own button in the web app's Browser section; ask the user which profile a browser is".into());
+        }
+        let label = args["label"].as_str().unwrap_or("");
+        let dir = args["profile"].as_str();
+        let changed = self.link_browser_label(label, dir)?;
+        let label = label.trim();
+        let say = match (dir.filter(|d| !d.trim().is_empty()), changed) {
+            (_, false) => "Nothing changed".to_string(),
+            (Some(d), _) => format!(
+                "\"{label}\" is {}",
+                self.profile_name(d.trim()).unwrap_or_else(|| d.to_string())
+            ),
+            (None, _) => format!("\"{label}\" is not linked to a profile now"),
+        };
+        let mut r = json!({"say": say, "links": self.cfg.browser.links});
+        if let Ok((s, t)) = self.one_tab(args) {
+            r["view"] = self.tab_browser_view(self.panes[s].tabs[t].uid);
+        }
+        Ok(json!({"ok": true, "result": r}))
+    }
+
+    /// Everything the web's Browser section shows for a tab: its bound
+    /// profiles (the primary first), every Chrome profile with whether it
+    /// is this tab's, every connected browser with the profile it is (or
+    /// none), the links, and BrowserSkill's status.
+    pub fn tab_browser_view(&mut self, uid: u64) -> Value {
+        let snap = self.browser.snapshot();
+        if snap
+            .as_ref()
+            .is_none_or(|s| Duration::from_secs(s.age_secs()) > Duration::from_secs(60))
+        {
+            self.browser_refresh(snap.is_none());
+        }
+        // The quick look (files, then `bsk browsers` once a profile has
+        // the extension on) keeps the section fresh while the web polls
+        // it; rate limited.
+        let first = self.browser.quick_last_result().is_none();
+        self.browser_quick(first);
+        let mut profiles = self.browser_profiles();
+        if profiles.is_empty() {
+            if let Some(s) = &snap {
+                profiles = s.profiles.clone();
+            }
+        }
+        let dirs = self.tab_browser_dirs(uid);
+        let links = self.cfg.browser.links.clone();
+        let all = self
+            .browser_connected()
+            .or_else(|| snap.as_ref().map(|s| s.browsers.clone()))
+            .unwrap_or_default();
+        let assigned = assign_browsers(&all, &profiles, &links);
+        let name_of = |d: &str| {
+            profiles
+                .iter()
+                .find(|p| p.profile.dir == d)
+                .map(|p| p.profile.name.clone())
+                .unwrap_or_else(|| d.to_string())
+        };
+        let enabled = profiles
+            .iter()
+            .filter(|p| ext_state(p) == ExtState::Enabled)
+            .count();
+        let bound: Vec<Value> = dirs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let ext = profiles.iter().find(|p| &p.profile.dir == d);
+                let prof = ext.map(|p| p.profile.clone()).unwrap_or(ChromeProfile {
+                    dir: d.clone(),
+                    name: d.clone(),
+                    ..Default::default()
+                });
+                let state = button_state(Some(d), &profiles);
+                let (m, how) =
+                    match_browsers(&all, &prof, enabled, state == BtnState::Ready, &links);
+                json!({
+                    "profile_dir": d, "name": prof.name, "email": prof.user_name,
+                    "extension": ext.map(ProfileExt::word).unwrap_or("not found"),
+                    "state": state.word(), "primary": i == 0,
+                    "browsers": m.iter().map(|b| b.instance_id.clone()).collect::<Vec<_>>(),
+                    "match": how,
+                })
+            })
+            .collect();
+        let profiles_json: Vec<Value> = profiles
+            .iter()
+            .map(|p| {
+                let mut v = p.to_json();
+                v["state"] = json!(match ext_state(p) {
+                    ExtState::Enabled => "on",
+                    ExtState::Disabled => "off",
+                    ExtState::Missing => "missing",
+                });
+                v["bound"] = json!(dirs.contains(&p.profile.dir));
+                v["primary"] = json!(dirs.first() == Some(&p.profile.dir));
+                v
+            })
+            .collect();
+        let browsers: Vec<Value> = assigned
+            .iter()
+            .map(|(b, d, how)| {
+                let mut v = b.to_json();
+                v["profile_dir"] = json!(d);
+                v["profile"] = json!(d.as_deref().map(name_of));
+                v["match"] = json!(how);
+                v["this_tab"] = json!(d.as_ref().is_some_and(|d| dirs.contains(d)));
+                v
+            })
+            .collect();
+        let unmatched = assigned.iter().filter(|x| x.1.is_none()).count();
+        let mut v = snap
+            .as_ref()
+            .map(|s| s.to_json())
+            .unwrap_or(json!({"state": "checking"}));
+        v["tab"] = json!(crate::control::tab_id(uid));
+        v["bound"] = json!(bound);
+        v["chrome_profiles"] = json!(profiles_json);
+        v["browsers"] = json!(browsers);
+        v["unmatched"] = json!(unmatched);
+        v["links"] = json!(links);
+        if let Some(s) = &snap {
+            v["checked_secs_ago"] = json!(s.age_secs());
+        }
+        v
+    }
+}
+
+/// What a tab with one profile is told.
+fn one_say(state: BtnState, matched: &[Browser], none_connected: bool, name: &str) -> String {
+    match (state, matched.first()) {
+        (BtnState::Ready, Some(b)) => format!(
+            "Use only this browser: `bsk session start --browser {}`.",
+            b.instance_id
+        ),
+        (BtnState::Ready, None) if none_connected => "The extension is on in this tab's profile but bsk sees no connected browser. Ask the user to turn on the local connection in the extension popup.".to_string(),
+        (BtnState::Ready, None) => format!(
+            "bsk cannot tell which connected browser is this tab's profile. Ask the user to link it in this tab's Browser section (\"This is {name}\" on the connected browser), or to set the extension's Browser name to \"{name}\", and call again. Do not use another browser."
+        ),
+        _ => "This tab's profile is not ready: the extension is missing or off there. Ask the user to finish in the Browser dialog of this tab. Do not use another browser.".to_string(),
     }
 }

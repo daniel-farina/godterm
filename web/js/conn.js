@@ -3,8 +3,55 @@
 // backoff; subscribers re-run their setup on every open.
 import { emit } from './util.js';
 
-export const KIND = { OUTPUT: 1, AUDIO: 2, AUDIO_IN: 3 };
+export const KIND = { OUTPUT: 1, AUDIO: 2, AUDIO_IN: 3, SNAPSHOT_GZ: 6 };
 const enc = new TextEncoder();
+// A big snapshot comes gzipped (binary kind 6) when the subscribe said
+// `gz: true`: a 3000 line history is a tenth of the bytes over a slow
+// link. Inflating is async, so frames that arrive meanwhile wait their
+// turn (output after a snapshot must stay after it).
+let gz = typeof DecompressionStream === 'function';
+export const gzOk = () => gz;
+let hold = false, held = [], gen = 0;
+async function inflate(uid, bytes) {
+  const g = ++gen;
+  hold = true;
+  let m = null;
+  try {
+    const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+    m = JSON.parse(text);
+  } catch (e) { console.error('snapshot could not be unpacked', e); gz = false; }
+  if (g !== gen) return;
+  hold = false;
+  if (m) emit('msg:' + m.t, m);
+  else emit('msg:error', { tab: uid, error: 'snapshot could not be unpacked: pick the tab again' });
+  const q = held;
+  held = [];
+  for (let i = 0; i < q.length; i++) {
+    if (hold) { held = q.slice(i).concat(held); break; }
+    dispatch(q[i]);
+  }
+}
+function dispatch(e) {
+  if (typeof e.data === 'string') {
+    let m;
+    try { m = JSON.parse(e.data); } catch { return; }
+    if ((m.t === 'result' || m.t === 'error') && pending.has(m.id)) {
+      const p = pending.get(m.id);
+      pending.delete(m.id);
+      clearTimeout(p.timer);
+      // GodTerm wraps the control reply: {t, id, result: {ok, result | error | needs_confirmation}}.
+      const r = m.t === 'error' ? { ok: false, error: m.error } : m.result && typeof m.result === 'object' && 'ok' in m.result ? { id: m.id, ...m.result } : m;
+      p.resolve(r);
+    }
+    emit('msg:' + m.t, m);
+  } else {
+    const b = new Uint8Array(e.data);
+    if (b.length < 5) return;
+    const uid = ((b[1] << 24) | (b[2] << 16) | (b[3] << 8) | b[4]) >>> 0;
+    if (b[0] === KIND.SNAPSHOT_GZ) { inflate(uid, b.subarray(5)); return; }
+    emit('bin:' + b[0], uid, b.subarray(5));
+  }
+}
 let ws = null, tries = 0, timer = 0, toolSeq = 0, everOpen = false, lastHeard = 0;
 const pending = new Map();
 export const conn = { open: false, connects: 0, drop: () => replace() };
@@ -39,30 +86,16 @@ export function connect() {
   s.onmessage = (e) => {
     lastHeard = Date.now();
     if (probing) { probing = false; clearTimeout(probeT); if (queue.length) flushQueue(); }
-    if (typeof e.data === 'string') {
-      let m;
-      try { m = JSON.parse(e.data); } catch { return; }
-      if ((m.t === 'result' || m.t === 'error') && pending.has(m.id)) {
-        const p = pending.get(m.id);
-        pending.delete(m.id);
-        clearTimeout(p.timer);
-        // GodTerm wraps the control reply: {t, id, result: {ok, result | error | needs_confirmation}}.
-        const r = m.t === 'error' ? { ok: false, error: m.error } : m.result && typeof m.result === 'object' && 'ok' in m.result ? { id: m.id, ...m.result } : m;
-        p.resolve(r);
-      }
-      emit('msg:' + m.t, m);
-    } else {
-      const b = new Uint8Array(e.data);
-      if (b.length < 5) return;
-      const uid = ((b[1] << 24) | (b[2] << 16) | (b[3] << 8) | b[4]) >>> 0;
-      emit('bin:' + b[0], uid, b.subarray(5));
-    }
+    if (hold) held.push(e);
+    else dispatch(e);
   };
   s.onclose = (e) => {
     if (ws !== s) return;
     ws = null;
     conn.open = false;
     probing = false;
+    // Frames held for a snapshot still inflating were this socket's.
+    hold = false; held = []; gen++;
     clearTimeout(probeT);
     for (const [, p] of pending) p.resolve({ ok: false, error: 'connection lost' });
     pending.clear();

@@ -44,9 +44,15 @@ pub struct TabState {
     /// Its row said "finished" (a turn ended unseen) at this save.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub finished: bool,
-    /// The Chrome profile folder bound to this tab's browser button.
+    /// The Chrome profile folder bound to this tab's browser button (the
+    /// primary one when there are more).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<String>,
+    /// More Chrome profiles bound to the tab beside `browser`. Older
+    /// state has none, and an older GodTerm reading this keeps the
+    /// primary only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub browser_also: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -279,6 +285,7 @@ mod tests {
                     last_prompt: Some("fix the build".into()),
                     finished: true,
                     browser: Some("Profile 1".into()),
+                    browser_also: vec!["Profile 3".into()],
                 }],
                 sidebar_collapsed: true,
                 tab_pos: Some(crate::slot::TabPos::Right),
@@ -311,6 +318,7 @@ mod tests {
                 tab_group: None,
                 pinned: false,
                 browser: Some("Profile 2".into()),
+                browser_also: vec![],
                 label: "x".into(),
             }],
             sessions_view: Some(SessionsView {

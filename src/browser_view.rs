@@ -287,6 +287,10 @@ pub struct Ctx {
     pub this_enabled: bool,
     /// The agent's transcript, for the session it used.
     pub transcript: Option<PathBuf>,
+    /// The tab's more profiles, each with whether its extension is on.
+    pub also: Vec<(ChromeProfile, bool)>,
+    /// Labels the user linked to profiles (`[browser] links`).
+    pub links: crate::tab_browser::Links,
     /// Another tab is bound to the same profile.
     pub shared: bool,
     /// Where pictures are written for a moment.
@@ -333,7 +337,18 @@ fn bsk_error(out: &str) -> Option<String> {
 fn instances(ctx: &Ctx) -> Result<Vec<Browser>, String> {
     let p = ctx.profile.as_ref().ok_or("no browser set")?;
     let all = browser::parse_browsers(&bsk(ctx, &["browsers", "--json"], CALL_TIMEOUT)?);
-    Ok(crate::tab_browser::match_browsers(&all, p, ctx.enabled_profiles, ctx.this_enabled).0)
+    let m = |p: &ChromeProfile, on: bool| {
+        crate::tab_browser::match_browsers(&all, p, ctx.enabled_profiles, on, &ctx.links).0
+    };
+    let mut out = m(p, ctx.this_enabled);
+    for (q, on) in &ctx.also {
+        for b in m(q, *on) {
+            if !out.iter().any(|x| x.instance_id == b.instance_id) {
+                out.push(b);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The tab's session, or a `bview` reply saying why there is none.
@@ -450,8 +465,9 @@ fn watched(client: u64, uid: u64) -> Option<Arc<Stream>> {
     })
 }
 
-/// A capture loop runs for `session` (tests).
+/// A capture loop runs for `session` (tests; the tests that use it are Unix only).
 #[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn streaming(session: &str) -> bool {
     streams()
         .lock()
@@ -1065,15 +1081,35 @@ impl crate::app::App {
                 })
         });
         let found = self.find_tab(uid);
-        let shared = dir.as_ref().is_some_and(|d| {
-            self.panes
-                .iter()
-                .flat_map(|p| p.tabs.iter())
-                .any(|t| t.uid != uid && t.browser.as_ref() == Some(d))
+        let dirs = self.tab_browser_dirs(uid);
+        let also: Vec<(ChromeProfile, bool)> = dirs
+            .iter()
+            .skip(1)
+            .map(|d| {
+                let q = profiles
+                    .iter()
+                    .find(|p| &p.profile.dir == d)
+                    .map(|p| p.profile.clone())
+                    .unwrap_or(ChromeProfile {
+                        dir: d.clone(),
+                        name: d.clone(),
+                        ..Default::default()
+                    });
+                (q, button_state(Some(d), &profiles) == BtnState::Ready)
+            })
+            .collect();
+        let shared = self.panes.iter().flat_map(|p| p.tabs.iter()).any(|t| {
+            t.uid != uid
+                && t.browser
+                    .iter()
+                    .chain(t.browser_also.iter())
+                    .any(|d| dirs.contains(d))
         });
         Ctx {
             uid,
             bin,
+            also,
+            links: self.cfg.browser.links.clone(),
             enabled_profiles: profiles
                 .iter()
                 .filter(|p| ext_state(p) == ExtState::Enabled)

@@ -607,3 +607,121 @@ fn request_with_image_keeps_receipts() {
     r.mode("ready");
     r.until(10, "done", |r| r.state(id) == "done");
 }
+
+/// Which typed texts are slash commands, and claude's screen showing one
+/// run (its line with the answer under it).
+#[test]
+fn slash_commands_are_told_from_text_and_screen() {
+    use crate::app_receipts::{is_slash, slash_echoed};
+    for t in [
+        "/effort max",
+        "/model opus",
+        "  /compact",
+        "/mcp__godterm:list",
+    ] {
+        assert!(is_slash(t), "{t}");
+    }
+    for t in [
+        "/Users/alice/notes.md is wrong",
+        "fix /etc/hosts",
+        "",
+        "/",
+        "/ effort",
+        "/Effort max",
+    ] {
+        assert!(!is_slash(t), "{t}");
+    }
+    let run = "● Done.\n\n> /effort max\n  ⎿  Set effort level to max\n\n╭────╮\n│ >  │\n╰────╯\n";
+    assert!(slash_echoed(run, "/effort max"));
+    // Only in the input box, nothing under it: not run.
+    let unsent =
+        "● Done.\n\n╭──────────────╮\n│ > /effort max │\n╰──────────────╯\n  ? for shortcuts\n";
+    assert!(!slash_echoed(unsent, "/effort max"));
+}
+
+/// A slash command leaves no transcript record: the tab's effort changing
+/// makes it done, not dropped.
+#[test]
+fn slash_command_applied_is_done() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut r) = rig("slash-done", "ready") else {
+        return;
+    };
+    r.app.panes[0].tabs[0].effort = Some("high".into());
+    let id = r.app.deliver_request(r.uid, "/effort max");
+    r.until(20, "the paste", |r| r.submitted().contains("/effort max"));
+    r.until(10, "taken", |r| {
+        r.app
+            .deliveries
+            .iter()
+            .any(|d| d.id == id && d.stage == crate::control::Stage::Delivered)
+    });
+    // The screen read sees the new effort.
+    r.app.panes[0].tabs[0].effort = Some("max".into());
+    {
+        let d = r.app.deliveries.iter_mut().find(|d| d.id == id).unwrap();
+        d.rc.sent_at = Some(Instant::now() - Duration::from_secs(3));
+    }
+    r.until(10, "done", |r| r.state(id) == "done");
+    assert!(!r.said().contains("dropped"), "{}", r.said());
+}
+
+/// A slash command that left the input box but shows nothing: unconfirmed
+/// after the wait, never dropped.
+#[test]
+fn slash_command_without_trace_is_unconfirmed_not_dropped() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut r) = rig("slash-quiet", "ready") else {
+        return;
+    };
+    let id = r.app.deliver_request(r.uid, "/compact");
+    r.until(20, "the paste", |r| r.submitted().contains("/compact"));
+    r.until(10, "taken", |r| {
+        r.app
+            .deliveries
+            .iter()
+            .any(|d| d.id == id && d.stage == crate::control::Stage::Delivered)
+    });
+    {
+        let d = r.app.deliveries.iter_mut().find(|d| d.id == id).unwrap();
+        d.rc.sent_at = Some(Instant::now() - crate::app_receipts::NOT_SEEN);
+    }
+    r.until(10, "unconfirmed", |r| r.state(id) == "unconfirmed");
+    assert!(!r.said().contains("was dropped"), "{}", r.said());
+}
+
+#[test]
+fn slash_commands_are_told_apart_from_paths_and_text() {
+    use crate::app_receipts::is_slash;
+    for s in [
+        "/effort max",
+        "/model opus",
+        "  /compact",
+        "/mcp",
+        "/review-pr 12",
+        "/agents:list",
+    ] {
+        assert!(is_slash(s), "{s}");
+    }
+    for s in [
+        "/Users/alice/x",
+        "/tmp/a b",
+        "hello /effort",
+        "/",
+        "/ effort",
+        "/Effort",
+    ] {
+        assert!(!is_slash(s), "{s}");
+    }
+}
+
+#[test]
+fn a_slash_command_counts_as_run_when_its_line_has_an_answer_under_it() {
+    use crate::app_receipts::slash_echoed;
+    let screen = "some output\n\n> /effort  max\n  ⎿  Set effort level to max\n\n> \n";
+    assert!(slash_echoed(screen, "/effort max"));
+    // Typed but not answered (still in the box, or no ⎿ line under it).
+    assert!(!slash_echoed("> /effort max\n", "/effort max"));
+    assert!(!slash_echoed("> /effort max\nnext line\n", "/effort max"));
+    assert!(!slash_echoed(screen, "/model opus"));
+}

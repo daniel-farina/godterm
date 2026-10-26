@@ -62,6 +62,7 @@ mod app_updates;
 mod app_voice;
 mod app_voices;
 mod app_wake;
+mod app_workstatus;
 mod archive;
 #[cfg(test)]
 mod archive_tests;
@@ -261,6 +262,8 @@ mod syscheck;
 mod sysprompt;
 mod tab_browser;
 #[cfg(test)]
+mod tab_browser_multi_tests;
+#[cfg(test)]
 mod tab_browser_tests;
 mod tab_groups;
 mod tab_history;
@@ -315,6 +318,8 @@ mod vt_guard;
 mod wake_tests;
 mod web;
 mod window;
+#[cfg(test)]
+mod workstatus_tests;
 
 use anyhow::Result;
 use crossterm::event::{

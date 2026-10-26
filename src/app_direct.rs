@@ -351,10 +351,10 @@ impl App {
             confirm: None,
         });
         self.jump_to(s, t);
-        self.assistant.log.push(Entry {
-            who: Who::Note,
-            text: format!("Direct mode with {name}; say 'back to the assistant'"),
-        });
+        self.assistant.log.push(Entry::new(
+            Who::Note,
+            format!("Direct mode with {name}; say 'back to the assistant'"),
+        ));
         self.voice.action = Some(format!("direct: {name}"));
         Ok(format!(
             "You're now talking to {name} directly. Say 'back to the assistant' to return."
@@ -458,10 +458,10 @@ impl App {
             Some(prev) => format!("{prev}\n{note}"),
             None => note,
         });
-        self.assistant.log.push(Entry {
-            who: Who::Note,
-            text: format!("Back to the assistant (direct mode with {} ended)", d.name),
-        });
+        self.assistant.log.push(Entry::new(
+            Who::Note,
+            format!("Back to the assistant (direct mode with {} ended)", d.name),
+        ));
         self.voice.action = Some("back to the assistant".into());
         if say {
             self.direct_say("Back to the assistant.");
@@ -488,10 +488,7 @@ impl App {
 
     /// A dim line in the panel for a direct exchange.
     pub(crate) fn direct_line(&mut self, text: String) {
-        self.assistant.log.push(Entry {
-            who: Who::Preamble,
-            text,
-        });
+        self.assistant.log.push(Entry::new(Who::Preamble, text));
         let n = self.assistant.log.len();
         if n > 200 {
             self.assistant.log.drain(..n - 200);

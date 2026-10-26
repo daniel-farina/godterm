@@ -1072,10 +1072,10 @@ impl App {
         crate::log::info("brainstorm: suggested");
         self.brainstorm.suggested = Some(Instant::now());
         self.brainstorm.recent.clear();
-        self.assistant.log.push(Entry {
-            who: Who::Note,
-            text: format!("{SUGGEST} (Ctrl-a B; \"don't suggest that again\" turns this off)"),
-        });
+        self.assistant.log.push(Entry::new(
+            Who::Note,
+            format!("{SUGGEST} (Ctrl-a B; \"don't suggest that again\" turns this off)"),
+        ));
         self.bs_say(SUGGEST);
     }
 

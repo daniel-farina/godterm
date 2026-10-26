@@ -3,9 +3,10 @@
 // terminal UI's model bar and pane header show them. Each item opens its
 // section of the tab's options (in the docked panel when it is open).
 // Phones keep the key bar instead (the bar is hidden there by CSS).
-import { $, h, on, emit, icon, pctClass, isDesk, tcOf, tcStyle } from './util.js';
+import { $, h, on, emit, icon, pctClass, isDesk, tcOf, tcStyle, words } from './util.js';
 import { S, tabById, acctOf } from './state.js';
 import { panes } from './term.js';
+import { openMenu, closeSheet } from './sheet.js';
 
 const BROWSER = {
   ready: ['browser ready', 'ok', 'BrowserSkill is ready: this tab\'s agent can drive its Chrome profile'],
@@ -25,7 +26,7 @@ function usage(t) {
   const left = a.effective_left_pct ?? a.five_hour_left_pct;
   const buckets = (a.buckets?.length ? a.buckets : [{ bucket: '5 hour', left_pct: a.five_hour_left_pct }, { bucket: 'week', left_pct: a.week_left_pct }])
     .filter((b) => b.left_pct != null).map((b) => `${b.bucket} ${b.left_pct}% left`);
-  const tip = [label, ...buckets, a.logged_in === false && 'logged out', a.usage_error].filter(Boolean).join(' · ');
+  const tip = [label, ...buckets, a.logged_in === false && 'logged out', a.usage_error && !(a.logged_in === false && /logged/i.test(a.usage_error)) && words(a.usage_error)].filter(Boolean).join(' · ');
   const cls = a.logged_in === false ? 'warn' : pctClass(left) === 'out' ? 'bad' : pctClass(left) === 'lo' ? 'warn' : '';
   return item('usage', cls, tip, h('span.sb-v', {}, label),
     left != null ? h('span.sb-meter', { html: `<i class="${pctClass(left)}" style="width:${Math.max(0, Math.min(100, left))}%"></i>` }) : null,
@@ -85,6 +86,40 @@ function color(t) {
   return b;
 }
 
+// A narrow bar (a split pane's width, a small window) drops whole items
+// in this order rather than cutting every one to an ellipsis: the color,
+// loops, browser, git, model, then the account; the state stays. What
+// went sits behind a "..." item that opens them as a menu.
+const DROP = ['color', 'loops', 'browser', 'git', 'model', 'usage'];
+function fit(bar, items, st) {
+  const W = bar.clientWidth;
+  if (!W) return;
+  bar.classList.add('measuring');
+  const w = new Map(items.map((i) => [i, i.offsetWidth]));
+  const sw = st.offsetWidth;
+  bar.classList.remove('measuring');
+  const GAP = 1, MORE = 36;
+  let total = 8 + 12 + sw + items.reduce((a, i) => a + w.get(i) + GAP, 0);
+  const dropped = [];
+  for (const k of DROP) {
+    if (total <= W) break;
+    const it = items.find((i) => i.dataset.k === k);
+    if (!it) continue;
+    if (!dropped.length) total += MORE;
+    total -= w.get(it) + GAP;
+    dropped.push(it);
+    it.remove();
+  }
+  if (!dropped.length) return;
+  const more = item('more', '', 'More: ' + dropped.map((d) => d.querySelector('.sb-v')?.textContent || d.dataset.k).join(' · '), ic('more'));
+  more.onclick = (e) => {
+    e.stopPropagation();
+    const r = more.getBoundingClientRect();
+    openMenu({ x: r.left, y: r.top - 6, up: true }, h('div.sb-more', { onclick: (ev) => { const b = ev.target.closest('.sb-i'); if (!b) return; closeSheet(); emit('tabsection', b.dataset.k, r); } }, h('div.gl', {}, 'This tab'), dropped));
+  };
+  bar.insertBefore(more, bar.querySelector('.sb-gap'));
+}
+
 let sig = '';
 function paint() {
   const bar = $('#sbar');
@@ -94,10 +129,16 @@ function paint() {
   if (!t) { sig = ''; return; }
   const a = acctOf(t.account);
   const jobs = (S.jobs?.jobs || []).filter((j) => j.tab === t.name).length;
-  const s = JSON.stringify([t, a?.effective_left_pct, a?.five_hour_left_pct, a?.week_left_pct, a?.buckets, a?.logged_in, jobs]);
+  const s = JSON.stringify([t, a?.effective_left_pct, a?.five_hour_left_pct, a?.week_left_pct, a?.buckets, a?.logged_in, jobs, bar.clientWidth]);
   if (s === sig) return;
   sig = s;
-  bar.replaceChildren(...[color(t), usage(t), model(t), browser(t), loops(t), git(t), h('span.sb-gap'), state(t)].filter(Boolean));
+  const items = [color(t), usage(t), model(t), browser(t), loops(t), git(t)].filter(Boolean);
+  const st = state(t);
+  // The keyboard's place in the bar (F6, Tab) survives a repaint.
+  const had = bar.contains(document.activeElement) ? document.activeElement.closest('.sb-i')?.dataset.k : null;
+  bar.replaceChildren(...items, h('span.sb-gap'), st);
+  fit(bar, items, st);
+  if (had) (bar.querySelector(`.sb-i[data-k="${had}"]`) || bar.querySelector('.sb-i'))?.focus({ preventScroll: true });
 }
 
 export function initStatusBar() {
@@ -111,5 +152,9 @@ export function initStatusBar() {
   on('focus', paint);
   on('layout', () => { sig = ''; paint(); });
   addEventListener('resize', () => { sig = ''; paint(); });
+  // The bar's own width changed (a split, the panel): fit again, in the
+  // next frame so the observer never runs into its own change.
+  let rf = 0;
+  new ResizeObserver(() => { cancelAnimationFrame(rf); rf = requestAnimationFrame(() => { sig = ''; paint(); }); }).observe(bar);
   paint();
 }

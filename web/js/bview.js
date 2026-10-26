@@ -4,7 +4,7 @@
 // scrolling, back/forward/reload, a URL to open and typing sent back.
 // GodTerm never starts a browser session for it on its own: it attaches
 // to the session the agent has, or the user presses Start.
-import { h, on, toast, icon, isDesk } from './util.js';
+import { h, on, toast, icon, isDesk, failRow } from './util.js';
 import { send, conn } from './conn.js';
 
 export const KIND_PICTURE = 5;
@@ -104,7 +104,7 @@ function style() {
 .bv-dlg-box .bv{flex:1;min-height:0}
 .bv-dlg-box .bv-screen{flex:1;min-height:0}
 .bv-dlg-box .bv-screen img{width:auto;max-width:100%;max-height:calc(92vh - 190px);margin:auto}
-@media (max-width:899px),(max-height:559px){
+@media (max-width:759px),(max-height:559px){
   .bv-dlg{place-items:stretch;background:var(--panel)}
   .bv-dlg-box{width:100%;max-height:none;height:var(--vh,100dvh);border:0;border-radius:0;padding:calc(8px + var(--sat)) max(10px,var(--sar)) calc(8px + var(--sab)) max(10px,var(--sal))}
   .bv-dlg-box .bv-screen{display:block;overflow:auto;touch-action:none}
@@ -179,7 +179,7 @@ class View {
     if (this.onState) this.onState(r);
     if (r.ok === false && !r.state) {
       this.setDot('err');
-      this.state.textContent = r.unsupported ? 'The live view needs a GodTerm restart.' : r.error || 'It did not work.';
+      this.state.replaceChildren(failRow(r.unsupported ? 'unknown frame type bview' : r.error || 'It did not work.', () => openFor(this.uid), 'The live view'));
       return;
     }
     if (r.state === 'live') {

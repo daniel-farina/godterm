@@ -654,6 +654,7 @@ fn pbcopy(token: &str) -> Result<(), String> {
 pub static TEST_CLIP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
+#[cfg_attr(not(unix), allow(unused_imports))]
 pub use tests::FAKE as TEST_TOKEN;
 
 #[cfg(test)]

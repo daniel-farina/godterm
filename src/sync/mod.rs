@@ -36,7 +36,11 @@ pub mod worker;
 #[cfg(test)]
 mod lease_tests;
 #[cfg(test)]
+mod setup_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod ui_tests;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -50,6 +54,10 @@ use std::sync::{Arc, Mutex};
 pub struct SyncCfg {
     /// The background worker runs (set by `godterm sync init` / `clone`).
     pub enabled: bool,
+    /// Sync is on but the background sync waits (Settings > Sync > Pause,
+    /// the assistant's sync_pause). A sync the user asks for still runs;
+    /// conversation leases keep working.
+    pub paused: bool,
     /// GitHub owner of the state and conversation repos.
     pub owner: String,
     /// The gh account that reads and writes them.
@@ -95,6 +103,7 @@ impl Default for SyncCfg {
     fn default() -> Self {
         SyncCfg {
             enabled: false,
+            paused: false,
             owner: String::new(),
             account: String::new(),
             state_repo: "godterm-state".into(),

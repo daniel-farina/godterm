@@ -8,7 +8,7 @@ import time
 
 LOCK = threading.RLock()
 # gh accounts "logged in" on this fake machine.
-GH = [{"name": "alice", "logged_in": True, "active": True}, {"name": "bob-work", "logged_in": True, "active": False}]
+GH = [{"name": "dev-user", "logged_in": True, "active": True}, {"name": "dev-work", "logged_in": True, "active": False}]
 OWNERS = {}  # [git.owners]: owner -> account
 PLANS = {}
 LOGIN = {"state": None}
@@ -42,7 +42,7 @@ def view(tab):
         owner = "acme-org"
         v.update(branch="main", remote="origin github.com/%s/%s" % (owner, name), state="2 ahead", fetched="fetched 4 min ago", ahead=2)
         ch = files(5)
-        v["changes"] = {"files": ch, "untracked": ["notes/todo.md", "web/dev/mock_git.py", ".env.local"], "staged_n": 2, "unstaged_n": 3,
+        v["changes"] = {"files": ch, "untracked": ["notes/todo.md", "web/dev/mock_git.py", ".env.local"] + ["build/out-%d.log" % i for i in range(9)], "staged_n": 2, "unstaged_n": 3,
                         "added": sum(f["added"] for f in ch), "removed": sum(f["removed"] for f in ch)}
         v["commits"] = commits(12, 2)
         v["branches"] = [{"name": "main", "upstream": "origin/main", "current": True, "when": "2 hours ago"},

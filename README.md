@@ -1251,8 +1251,8 @@ the palette.
 - It sees a fresh snapshot each turn (accounts and usage left, every tab
   with its id, folder and state, what waiting tabs ask for, queued
   prompts, the tab it used last) and acts through a few general tools:
-  get_state, read_tab, list_dir and read_file (local and free: "what's
-  in that folder" spends no quota), open_tab (a new tab in a folder
+  get_state, work_status, read_tab, list_dir and read_file (local and
+  free: "what's in that folder" spends no quota), open_tab (a new tab in a folder
   named after the task, with a prompt), send_prompt, answer_prompt,
   close_tabs, stop_loops, show (focus, views, zoom, layout), press_key,
   rename_tab, move_tab, copy_session, set_mode (memory saver, privacy,
@@ -1278,6 +1278,27 @@ the palette.
   batched send_prompt. It does not answer "I can't" for something a tab
   could do. `list_dir` takes a tab list or "all" and a `match` such as
   `*.html`, and returns every listing in one reply.
+  Status questions ("what's going on", "give me an update on what's
+  being worked on", "what else", "how about X") start with
+  `work_status`: one cheap call that reads every tab's transcript, its
+  subagents' transcripts and its screen directly, and returns the tabs
+  grouped needs you, working, finished (the last 30 minutes) and idle,
+  each with what it is doing now (the last line its agent wrote and the
+  tool it is in), what it needs from you (an approval, a question, a
+  usage limit), its background work (subagents with names and ages,
+  shells), minutes since its last activity, and its jobs and loops. A
+  tab at its prompt whose Agent tool subagents still run (their
+  transcripts mid tool call, or claude's "Waiting for N background
+  agents" rows on screen) is working through those agents, never idle,
+  in the tab list, the web app and the assistant's answers alike. The
+  assistant speaks the digest in that order, one sentence per tab, the
+  top items first by voice ("say more for the rest"); "what else"
+  continues the list (`since: "last"` marks what changed), and "how
+  about X" is that tab's entry plus its last exchanges. It reads rather
+  than asks: a tab is sent a question only when you ask it to ask, and
+  an answer that comes back is told at the next quiet moment or, after
+  90 seconds, as soon as a turn is possible at all; a tab that never
+  answers is said plainly after the wait limit.
   Every tool takes flexible targets: a tab id, "current", "last" (the
   tab it used last, so "there" and "that session" work), a name, a
   list, "all" or "waiting", and an account by number, label or "best".

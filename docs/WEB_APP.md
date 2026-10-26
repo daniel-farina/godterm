@@ -56,6 +56,12 @@ tabs, PTYs and assistant as the terminal UI, at the same moment.
   media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src
   'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`
   (no inline scripts, no CDNs; workers and worklets from 'self').
+  Connections are kept alive: one serves request after request until
+  the browser closes it, asks for a close (or speaks HTTP/1.0), it
+  becomes the WebSocket, or it is quiet for 10 s (`KEEP_IDLE`), so a
+  page load's 25 files cost one handshake per connection, not per
+  file. A request head is peeked for its end and taken exactly (a
+  WebSocket's first frame after it is never swallowed).
 - Hot reload (src/web/assets.rs, src/web/pack.rs): the files can come
   from a folder on disk instead, so a front-end change needs no rebuild
   and no restart. Which folder: `[web] assets_dir = "/path/to/web"` (`~`
@@ -174,8 +180,8 @@ tabs, PTYs and assistant as the terminal UI, at the same moment.
 
 One WebSocket at `/ws` (protocol version 1). Text frames are JSON
 `{"t": "<type>", ...}`; binary frames carry terminal bytes (and audio,
-the mic and browser view pictures): 1 byte kind, 4 bytes tab uid (big
-endian), then the payload. Tabs are named by their numeric `uid` (the
+the mic, browser view pictures and gzipped snapshots): 1 byte kind, 4
+bytes tab uid (big endian), then the payload. Tabs are named by their numeric `uid` (the
 `t12` ids of get_state are accepted where a tab is named in JSON too).
 
 ### Settings > GitHub accounts and repos (`git` frames, `cfg_*`)
@@ -219,14 +225,46 @@ Browser to server: `{t: "git", id, tab, op}` with `op` one of
 Server to browser: `{t: "git", id, tab, ok, ...}` as above. The sheet's
 confirm button is the user's yes; no control tool sends these frames.
 
+Ask this tab's agent (the box on top of the screen): one tap sends the
+tab's own agent a git task with the `send_prompt` tool (`mode: queue`,
+so the tab's own session does it after its current work, never a forked
+background session on the same tree; `expect_reply: false`, the user
+reads the answer in the tab). The actions: Commit and sync (the main
+button: commit all meaningful changes with good messages, then pull with
+a rebase or merge, then push, and report), Commit only, Sync with remote
+(pull and push, no new commits), Review changes and Clean up untracked
+(both change nothing), and an "Ask about git..." box for a free question.
+Each prompt starts with `[Git panel]`, then the task, then the facts the
+panel has (repo folder, branch with ahead and behind, remote, the GitHub
+binding and its source, the gh account that pushes, or "do not push, ask
+me" when none is set, and the change counts), then the rules: never force
+push, never rewrite published history, stop and ask on a conflict, no
+secrets or junk, respect .gitignore, ask before large or untracked binary
+files. An action that cannot apply is disabled with why (not a git repo,
+nothing to commit, no remote yet). When the tab is working the box says
+the request is queued; after a send it shows the delivery receipt
+(`say`, then the receipt state and any mode note) inline and as a toast.
+
+Manual git actions: every direct button (Commit..., Push, Pull, Sync,
+Fetch, Branches..., Define repo or Change binding..., Add .gitignore
+rules..., Untrack secret files..., Make it a git repo) sits in one
+collapsed disclosure under the agent box, with the note that these run
+git directly without the agent (each still shows its checked plan to
+confirm). Open or closed is kept per browser (`gt.git.manual`); a folder
+that is not a git repo yet shows it open (init and define live there).
+All of them, Fetch and Branches too, are in it so the rule stays simple:
+the buttons outside talk to the agent, the ones inside run git.
+
 Layout (web/js/git.js): on a desktop the sheet is a large dialog in the
 middle of the window (min(1100px, 92vw) by 85vh): the folder and status
 chips on top (branch, remote, ahead and behind, last fetch, the GitHub
-binding, warnings), the actions as a compact row of buttons (git ones,
-then the repo ones), and the changes (staged, unstaged and untracked
-lists) beside the commits. In the docked tab panel it is one compact
-column (the git actions in a three column grid). Phones keep the bottom
-sheet with the actions as full width rows. Its sub screens (commit,
+binding, warnings), the agent box (its buttons in one row), the Manual
+git actions disclosure (git buttons, then the repo ones), and the changes
+(staged, unstaged and untracked lists) beside the commits. An untracked
+list of more than 8 files starts collapsed. In the docked tab panel it is
+one compact column (Commit and sync full width, the other agent actions
+in two columns, the git actions in a three column grid). Phones keep the
+bottom sheet with the manual actions as full width rows. Its sub screens (commit,
 define, branches, a plan to confirm) stay at most 760 px wide.
 
 When no gh account is set for the repo's owner ("Which gh account
@@ -242,6 +280,64 @@ lists the new account to pick (it is not picked for you). A GodTerm
 without the login op answers "unknown git op"; the screen then shows
 the gh command to run in a terminal tab instead.
 
+### A tab's Browser section (`tab_browser`, `link_browser`)
+
+The Browser section (web/js/manage.js, browserSheet) is where the user
+chooses a tab's browsers from the web, as the terminal UI's Browser
+dialog does:
+
+- This tab: its Chrome profiles, the primary one first, each with its
+  extension state and the connected browser that is it. Open Chrome (a
+  new tab in that profile), Make primary and Remove (with more than one),
+  and Clear (all of them).
+- Chrome profiles: every profile with its extension; Use for this tab
+  (that profile as the primary one, and the default profile for links,
+  as the dialog's Use profile) and, once the tab has one, Also use.
+- Not matched to a profile: connected BrowserSkill browsers whose
+  extension "Browser name" names no profile (or more than one). Each has
+  a This is... picker: the user says which profile it is.
+- Connected browsers: the others, with the profile each is and why
+  (you said so, by its name, the only one connected); a linked one has
+  Unlink. The live view sits under This tab; BrowserSkill's status and
+  doctor problems come last.
+
+A tab can have several profiles (personal plus work): the tab keeps
+`browser` (the primary) and `browser_also` (the rest) in state.json, so
+a state file from before still loads, and a tab with one profile writes
+nothing new. Its agent's `list_browsers` and `browser_status` answer
+`bound_profiles` (each with `primary`, its matched `browsers` and
+`match`), `bound_profile` (the primary, as before) and `browsers` (each
+with `profile_dir` and `primary`); `say` tells it to use only those, the
+primary unless the request is about another, and to ask the user when
+unclear. In the terminal UI the dialog's `a` (Also use / Remove) adds or
+takes out the selected profile.
+
+The links ("This is ...") are saved in config.toml as `[browser] links
+= { "<Browser name>" = "<profile folder>" }`. A linked label is that
+profile's and no other's; else a label equal to a profile's name,
+folder or email; else a lone connected browser when one profile has
+the extension on. The tab's tools, the live view and the assistant's
+`list_browsers` (each browser's `profile_dir` and `match`) all use them.
+
+Both tools are the user's own buttons: they answer only calls from the
+web app (`_client` "web", which only the web socket sets), never the
+assistant, a socket client or a tab's agent (not in its tools at all),
+so an agent never picks its own browser.
+
+- `tab_browser` `{tab, op, profile?}`: `op` `view` (the default; read
+  only), `set`, `add`, `remove`, `primary`, `clear` or `open` (a bound
+  profile, default the primary). Answers `{say, view}`; `view` is `{tab,
+  bound: [{profile_dir, name, email, extension, state, primary, browsers,
+  match}], chrome_profiles: [{..., state on|off|missing, bound, primary}],
+  browsers: [{instance_id, label, ..., profile_dir, profile, match,
+  this_tab}], unmatched, links, bsk, daemon, doctor, checked_secs_ago}`.
+- `link_browser` `{label, profile?, tab?}`: link the label to the
+  profile folder (no profile: unlink). With `tab` it answers that tab's
+  `view` too.
+
+An older GodTerm has no `tab_browser`: the section then shows its old
+read only cards and says choosing browsers needs a restart.
+
 ### The live browser view (`bview` frames, binary kind 5)
 
 A tab's Browser section shows the page its agent drives, live, when the
@@ -254,8 +350,8 @@ the section's usual cards stay below either way.
 Browser to server: `{t: "bview", id?, tab, op}` with `op` one of
 - `open`: attach this browser's view of the tab. GodTerm finds the tab's
   session itself (the page never names one): sessions on the tab's own
-  browser only (the bsk instance matched to its Chrome profile, as the
-  Browser dialog matches it); of those, one the user started from this
+  browsers only (the bsk instances matched to its Chrome profiles, as the
+  Browser dialog matches them, links included); of those, one the user started from this
   view, else the one the agent's transcript names (`--session <id>` in a
   bsk call, or the `session_id` a `session start` printed), else the only
   one there, unless another tab is bound to the same profile. It never
@@ -380,7 +476,8 @@ output before any screen sees it and is stored only in the keychain
     active, attention, red`) as `#rrggbb`.
   - `state`: as in `state` below. `messages`: the assistant chat so far
     (each as an `assistant` frame without `t`). `live`: the reply being
-    streamed, or null. `update`: as the `update` frame.
+    streamed, or null, and `live_at` when it started. `update`: as the
+    `update` frame.
 - `state` `{state}`: the whole state again whenever it changed, at most
   every 100 ms (pushed from the UI loop, nothing polls). `state` holds:
   - `tabs`: get_state's tab objects (`id` "t12", `name`, `account`,
@@ -434,6 +531,13 @@ output before any screen sees it and is stored only in the keychain
   `sid` names the tab's output stream and `pos` where in it the snapshot
   ends: a browser adds the length of every output frame for the tab to
   `pos` to know where its copy ends (for a resume).
+  When the browser's `subscribe` said `gz: true` (the page does when it
+  has `DecompressionStream`), a snapshot or resume frame of 16 KB or
+  more comes instead as binary kind 6: tab uid, then the same JSON
+  text gzipped (a 3000 line history is about a tenth of its size). The
+  page inflates it and holds the frames that arrive meanwhile, so
+  output after a snapshot stays after it; smaller frames, and browsers
+  that did not ask, get the text frame.
 - `resized` `{tab, rows, cols, sid, pos}`: the tab's PTY was resized (by
   any browser or the terminal UI), in order with its output: resize the
   terminal and go on writing output (no snapshot; the app redraws). The
@@ -445,12 +549,14 @@ output before any screen sees it and is stored only in the keychain
   browser missed), with no snapshot. The browser keeps its terminal as it
   is. When its copy does not end at `pos` after all, it unsubscribes and
   subscribes again without `resume` for a snapshot.
-- `assistant` `{id, role, text, done}`: one chat message; role is `user`,
-  `assistant`, `tool`, `note` or `preamble` (text written before a tool
-  call). Finished messages have numeric ids, in order, and `done: true`.
-  The reply being streamed comes as `id: "live"`, `done: false`, its full
-  text so far each time; it ends with an empty `live` (`done: true`) and
-  arrives as a numbered `assistant` message.
+- `assistant` `{id, role, text, done, at}`: one chat message; role is
+  `user`, `assistant`, `tool`, `note` or `preamble` (text written before
+  a tool call). Finished messages have numeric ids, in order, and
+  `done: true`. `at` is when it was written (unix ms; a conversation
+  resumed from its log keeps the log's times). The reply being streamed
+  comes as `id: "live"`, `done: false`, its full text so far each time
+  (`at`: when it started); it ends with an empty `live` (`done: true`)
+  and arrives as a numbered `assistant` message.
 - `assistant_reset` `{messages}`: the chat changed in a way that is not an
   append (a new conversation, a removed note): replace it all.
 - `approval` (an approvals entry with `t`): once when it first appears,
@@ -480,7 +586,12 @@ output before any screen sees it and is stored only in the keychain
   milliseconds decoded so far: the page's proof that sound arrives.
 - `voice` `{set, ok, value | error}`: the answer to a `voice {set}`.
 - `audio_stop` `{}`: the reply was cut off (a barge-in, a new reply):
-  drop the clips queued.
+  silent at once, and every clip queued or still on its way is dropped
+  (none plays after the stop).
+- `audio_duck` `{level}`: the reply's volume (0 to 1) while GodTerm
+  decides whether speech over it is a barge-in (0.4 for at most about a
+  second, then 1 again), as it ducks the Mac's speakers; with Duck while
+  deciding off it never comes.
 - `ui` `{action, ...}`: the assistant changes this browser's view (its
   web_* tools, below): `layout` `{panes: 1|2|4, tabs: [uid...]}` (a
   phone keeps one pane and shows the first), `show` `{tab, pane?}`,
@@ -490,9 +601,10 @@ output before any screen sees it and is stored only in the keychain
 
 ### Browser to server
 
-- `subscribe` `{tabs: [uid...], resume?: {"<uid>": {sid, pos}}}` /
-  `unsubscribe` `{tabs: [uid...]}`. Subscribing again re-sends a
-  snapshot. `resume` (after a lost connection: a phone back from another
+- `subscribe` `{tabs: [uid...], resume?: {"<uid>": {sid, pos}}, gz?:
+  true}` / `unsubscribe` `{tabs: [uid...]}`. Subscribing again re-sends
+  a snapshot. `gz: true` says this browser inflates gzipped snapshots
+  (binary kind 6, above); once said it holds for the connection. `resume` (after a lost connection: a phone back from another
   app) says where the browser's copy of a tab ends: when the stream is
   unbroken (no resize, new process or rebuilt screen since) and the tab
   still holds the bytes after `pos` (the last 256 KB of output, kept for
@@ -557,8 +669,8 @@ output before any screen sees it and is stored only in the keychain
   mode. A second browser that turns voice on takes it over. Every mode
   works as from the Mac's mic: wake word (with the follow up window and
   the chime), open mic (with its auto sleep), barge-in (talking over a
-  reply stops it; GodTerm decides on the browser's audio, which the
-  browser already echo cancels), instant commands, direct mode and
+  reply stops it and what was said is the next request; GodTerm decides
+  on the browser's audio, below), instant commands, direct mode and
   brainstorm.
 - `voice` `{direct: uid | false}`: talk to that tab directly (as Ctrl-a K
   does), or back to the assistant. `{brainstorm: true | false}`: brainstorm
@@ -571,10 +683,16 @@ output before any screen sees it and is stored only in the keychain
   toward its auto sleep, and the count starts again at the unmute.
   GodTerm's own mute (`voice.muted`) is not touched. Another browser's
   word is ignored; a new voice session starts unmuted.
+  `{playing: true | false}`: the voice browser started or stopped playing
+  speech (sent at the first clip, at a stop, and 250 ms after the last
+  clip ended). While it plays, GodTerm's engine treats that mic as
+  hearing the reply, also when the page plays later than GodTerm
+  expects (clips held for a tap on iOS, a slow network).
 - `voice` `{set: {key, value}}`: change one of the voice settings the web
   app's voice sheet shows (talk back, engine and voice, speed, volume,
-  wake words and sensitivity, follow up window, open mic sleep, barge-in,
-  direct replies, instant commands, end of speech, recognizer, language,
+  wake words and sensitivity, follow up window, open mic sleep, barge-in
+  with its margin (sensitivity), words and duck while deciding, direct
+  replies, instant commands, end of speech, recognizer, language,
   speaker lock): saved at once, as in the Settings screen. Other keys are
   refused.
 - `voice` `{rec: type}`, binary kind 4 and `{rec_end: true}`: the mic as a
@@ -626,11 +744,43 @@ output before any screen sees it and is stored only in the keychain
   push to talk: 260 frames, 5200 ms of audio, level -30 dBFS ...`, with a
   note when nothing or only zeros came).
 
+Barge-in from a browser works as from the Mac's mic, on the PCM GodTerm
+gets (kind 3, or a decoded recording): while a reply plays, speech over
+it that is loud enough for about a quarter second ducks the reply
+(`audio_duck`), the overlapping audio goes to the fast recognizer, and a
+command ("stop", "wait", ...) or Barge-in words real words stop it
+(`audio_stop`); what was said is captured from its start as the next
+request (in wake word mode too, with no wake word). Noise, coughs and
+the reply's own words coming back let it go on. The page opens the mic
+with echo cancellation, noise suppression and gain control (it logs what
+the browser granted: `mic opened: echo cancellation on, ...`). GodTerm
+knows what it sent and plays it on a clock as the page does (each clip at
+the end of the one before, or at once after a gap): that is the echo
+reference for the browser's mic, so the gate learns how much of the reply
+comes back (high from a laptop's speakers the browser fails to cancel,
+very low with headphones), the reply's echo does not lift the noise bar,
+and words heard as the reply's own raise the expected echo at once. A
+muted mic sends silence, so it never barges in. In push to talk a press
+of Talk while a reply plays stops it (the page drops its clips at once).
+Barge-in margin (`voice.barge_margin_db`) is the sensitivity: dB over
+the threshold speech needs when there is no reference.
+
 GodTerm answers `voice` frames that change something with `voice`
 `{ok: true, on, mode}`, `{ok: true, on: false, moved: true}` (another
 browser took it) or `{ok: false, code, error}` (refused, e.g. `muted`).
 The state's `voice` also has `status` (off, starting, idle, listening,
 transcribing) and `error` (why the engine stopped, or null).
+
+One wording for the mic everywhere (voice.js `micWords(mode, state,
+muted)`): a mode is "Voice off", "Push to talk", "Open mic" or "Wake
+word", and a state follows a middle dot in lower case: "· muted",
+"· listening", "· hearing you", "· heard you", "· thinking",
+"· speaking", "· paused", "· no audio", "· starting the mic",
+"· muted · speaking". The header's pill (its long form on a desktop; on
+a phone a short word: Off, PTT, Open, Wake, Muted), the chat head's
+mode button, the open mic strip, the floating bar (the state on a line
+of its own, capitalised), the Talk button's state words, the mic menu
+and the voice sheet's mode buttons all take their words from it.
 
 The mic has one control: the mic in the header. A tap opens the mic
 menu: Off, Push to talk, Open mic, Wake word ("Hey God", or the wake word
@@ -740,8 +890,76 @@ the icons):
   archived tabs) and, at the right end, the tab's own options. On a
   phone it scrolls sideways if it must; at 360 px it fits. While the
   phone keyboard is up only row 1 shows, and a phone on its side puts
-  the two rows side by side.
+  the two rows side by side. Below 380 px the Update pill in row 1 keeps
+  its icon only, so the tab's name keeps its room.
 - The open mic / wake word strip sits under row 2 while one is on.
+
+### Layout and breakpoints
+
+- One breakpoint, `(min-width:760px) and (min-height:560px)` (`DESK` in
+  web/js/util.js; the same query in app.css and bview.js). At or above
+  it: the desktop layout (the side list, pane headers, the docked tab
+  panel, the status bar, centred dialogs, split panes). Below it: the
+  phone layout (the drawer, bottom sheets, the key bar). An iPad gets
+  the desktop layout upright (820 px) and on its side, so turning it
+  does not swap the interface; a phone on its side (844 x 390) stays a
+  phone (under 560 px of height). Touch sizes (`.touch`) apply in both.
+- The columns: `#app` is a grid of the side list (`--sidew`, 280 px,
+  dragged from 200 px to half the window), the terminals, and the chat
+  (`--chatw`, 380 px); the tab panel (`--tpw`, 420 px, 300 to half) sits
+  inside the terminals' column. A narrow window squeezes them so the
+  terminal keeps about 520 px (main.js `squeeze`, run on every layout and
+  resize), in this order: the panel and the chat narrow to 300 px
+  (`--tpfit`, `--chfit`); if that is not enough the side list folds into
+  an overlay that the Tabs button (and Find) opens over the terminal
+  (`sq-side`; a pick or the scrim shuts it), and the two get its room
+  back (at 1440 with both open: 280 + 300 + 340 + 520); with both open
+  and still no room for both, the one opened last stays; and the one
+  left floats over the terminal's right edge when even 300 px do not fit
+  (`sq-panel`, `sq-chat`). The widths the user set (`gt.sidew`,
+  `gt.tpw`) and a hidden list (`gt.noside`) are never rewritten: the
+  squeeze is classes and caps only, gone when the window grows.
+- Split panes: Layout asks for 1, 2 or 4 (`gt.npanes`) and the window
+  has the last word (`panes.roomFor`): two panes side by side need
+  2 x 360 px of width, else they stack given 2 x 220 px of height
+  (`data-dir=col`); four need both (a 2 x 2 grid); a split with no room
+  falls back to 2, then 1 (a toast says so). Checked again whenever the
+  terminals' area resizes.
+- A desktop pane scales the text down to fit the tab no further than
+  9 px; a tab still larger scrolls in its pane (`.pane-body.pan`). An
+  empty pane shows its name only (no zoom, size or options buttons).
+- The status bar drops whole items when it is narrow instead of cutting
+  every one short: the color swatch first, then loops, browser, git,
+  model, the account; the state stays. What went sits behind a "..."
+  item that opens them as a menu above the bar ("This tab", as wide as
+  its rows, 44 px rows on touch). The pane header does
+  the same with its details (account, model, git, then the folder), and
+  on a pane too narrow even then the zoom buttons and the size go; the
+  dots open the tab's options with everything in them.
+- Sheets on a desktop are dialogs in the middle of the window (no grip,
+  a short fade, 16 px corners, the panel shadow, at most 85% of the
+  height), sized by their kind (`data-kind`, from openSheet's `kind`):
+  440 px for a question or a small form (confirm, acct-edit, install,
+  share, update), 560 px by default (a prompt box, New tab, Approvals,
+  Voice), 800 px for Sessions, Manage, Accounts and a tab's jobs, 920 px
+  for Settings (`wide`: its section links in a column, the settings at
+  most 760 px wide) and 1100 px for Git (`big`). A `tall` dialog that
+  holds only a failure row (Accounts before GodTerm answered) is as tall
+  as that row. Escape and a click on the scrim close them. While a dialog
+  or the folded tab list is open the toasts sit under its scrim (as on a
+  phone), never over the dialog's controls. Phones keep the bottom sheet
+  and its pull down.
+- A phone on its side (under 500 px of height, 600 px or wider) has the
+  header's two rows side by side as one 48 px bar, a 36 px key bar, no
+  floating zoom (the key bar's A-, A+ and a pinch instead), a drawer of
+  60% of the width and sheets and toasts up to 720 px.
+- Wide windows (1800 px and up: a 2560 display): the chrome goes one
+  notch up rather than stretching. The side list is 320 px by default,
+  the panel 480, the chat 440 (a dragged width still wins), the type
+  scale tokens one step larger (`--fs-*`), the pane header 38 px, the
+  status bar 30 px, the list rows and chips a size up, the 800 px
+  dialogs 960 and Settings 1000. The terminal font is the user's (A- /
+  A+), untouched; the terminal takes the rest.
 
 ### On a desktop: the tab panel and the status bar
 
@@ -793,6 +1011,127 @@ app (port, tailnet sign in), General and About (version, build, update).
 This browser's settings stay on the device; GodTerm's are saved with
 `set_setting`, the tap being the user's own request (`user_says`), with
 the same second yes for risky ones as everywhere.
+
+### Settings > Sync (web/js/syncui.js)
+
+GodTerm Sync (docs/SYNC.md) from the browser, through control tools:
+
+- **Off:** what sync keeps and what it never does (no project repo is
+  committed to, pushed or created; no login or keychain item is
+  copied), then **Enable sync on this machine**: an owner field and a
+  gh account picker (the names `git` cfg_view lists), **Preview (dry
+  run)** (`sync_plan {owner, account}`: the state and conversation
+  repos, the account, sizes, what is left out and warnings such as
+  .env files and a missing gh login) and **Enable** (`sync_init`, on
+  only once a plan says it can). Its question shows in a dialog that
+  names the repo with a PRIVATE badge and the account; Yes sends the
+  token with `user_says: "yes"` (the user's own answer), No drops it.
+  **Join from another machine:** a state repo field (prefilled
+  `<first gh account>/godterm-state`), the account and this machine's
+  name; Check (`sync_plan {repo}`) says whether it exists and is
+  private, Join (`sync_clone`) asks the same way. Both run in the
+  background: the screen shows the running setup and looks again every
+  2 s until it ends (with the accounts to log in again after a join).
+- **On:** cards (status: on, paused or failing; last sync; next sync;
+  this machine; conversations here and elsewhere with a link to the
+  leases below), **Sync now**, **Pause / Resume** (`sync_pause`),
+  **View plan**, warnings, the repos with their visibility (private,
+  checking, or a warning), machines, conversations owned here (Show
+  tab, Hand over: `release_session`) and elsewhere (Show tab, Take
+  over: `take_over`, each asked in the same dialog), take over
+  requests, paused jobs, projects not backed up, and a link to the
+  token sync switch in Accounts.
+- Every row carries `data-q`; the search filters again after each draw.
+- A GodTerm older than the page answers "unknown tool": the screen says
+  to restart GodTerm.
+- The dev mock answers the same tools (web/dev/mock_sync.py);
+  `/dev/sync-on`, `/dev/sync-off` and `/dev/sync-fail` set its state.
+
+### The assistant panel (web/js/chat.js, md.js)
+
+The chat beside the terminals on a desktop (380 px, 300 px squeezed),
+the whole screen under the header on a phone. What it shows and does:
+
+- Turns: yours as a bubble at the right (`.msg.user`, at most 85% wide,
+  typed line breaks kept); the assistant's as plain text across the
+  panel (`.msg.assistant`, no bubble: the panel's width is the measure);
+  GodTerm's own lines (`tool`, `note`, `preamble` roles, `.msg.system`)
+  small and dim with a rule at the left, a run of them reading as one
+  block. Messages with `hidden` (GodTerm's own turns) are not shown.
+- Receipts in words: a tool chip says what it did with the tab's name
+  ("Prompt to hyper", "Read hyper", "Pressed enter in hyper", "Showed
+  hyper here", else the tool's words), in clay with the status's first
+  word when the call failed, "x2" when the same call repeats; a tap
+  opens the call's JSON under it. Notes have their tab ids replaced by
+  names ("Prompt to t4574: delivered" reads "Sent to hyper", "queued"
+  reads "Queued for hyper (it is busy)").
+- Markdown (md.js, input escaped first): headings (# to ######, as h2 to
+  h4), nested bullet and numbered lists, task lists, pipe tables (in a
+  scrolling box, alignment from the rule row), quotes, rules, fenced code
+  (``` or ~~~) in a block with the language as a label and Copy, inline
+  code, bold, italic, strikethrough, images (http(s) or a data: image),
+  links (http(s) only, `target=_blank rel="noopener noreferrer"`), bare
+  URLs linked with trailing punctuation left out. Long words and URLs
+  break (`overflow-wrap:anywhere`); code scrolls sideways in its block.
+- Streaming: GodTerm sends the reply so far as `live` each time (or a
+  `delta`); the panel paints it at most once a frame (one markdown pass
+  over that message only, never the log), with a caret at its end. When
+  the empty `live` ends it, the element waits up to 1.5 s for the
+  numbered message and becomes it (no blink). Three dots show from a
+  question typed here until its reply starts, and while
+  `state.assistant.busy` says a turn runs with no live text yet.
+- Scroll: pinned to the end while it was at the end; a change of the
+  log's height (the composer grows, the keyboard, a resize) keeps it
+  there. Scrolled up, a pill above the composer (`#jump`) goes back
+  down; it says "New message" / "N new messages" for replies that came
+  meanwhile (an accent border).
+- Under each turn, in the space before the next (on hover or focus on a
+  desktop, a long press on a touch screen, always under the last reply):
+  the time it was written (the frame's `at`; from an older server that
+  sends none, the moment it arrived here, and none for the log at
+  connect), Copy, Retry on the last question asked here
+  (sends it again), and "Open <tab>" when the text names a tab (its id
+  or name): the tab is shown in the pane (the chat stays open on a
+  desktop, closes on a phone).
+- A day divider ("Today", "Yesterday", "Sun, Oct 18", with the year
+  for another year) on a hairline before each day's first message, from
+  the messages' `at`; none without times.
+- Nothing said yet: "Ask about your tabs" with three example prompts a
+  tap sends (the third names a running tab).
+- An `error` frame about the chat (no `id`, no `tab`) is a line in the
+  log with Retry for the last question.
+- The composer: the box grows to about six lines (168 px, or 40% of
+  the height); Enter sends on a desktop and Shift+Enter makes a new line
+  (as the Prompt box), a phone's return key makes a new line and Send
+  sends; images pasted, dropped (a dashed "Drop images here" zone over
+  the panel while they hover) or picked become chips with an x (at most
+  6; images.js prepares them). Send is disabled while there is nothing
+  to send or no connection; without a connection the box says "Not
+  connected" (dashed) and a draft typed stays (`gt.draft.say`). Under
+  340 px of panel width (the squeezed 300 px) the placeholder is "Ask",
+  and a placeholder never wraps, so the empty box stays one row.
+- Voice: the chat's mic (`#b-ptt2`) is hold to talk in push to talk and
+  opens the mic menu otherwise; the head's mode button (`#b-openmic`)
+  says what the header's mic pill says (`micWords`, below) and opens the
+  same menu. Under 340 px of panel width the head's voice note is
+  dropped (a container query on `#chat`).
+- Accessibility: `#msgs` is `role=log`; a finished reply is read out
+  once through a visually hidden live region (`#chat-sr`, the first 600
+  characters), never while it streams (`aria-hidden` until done); the
+  error line is `role=alert`; F6 lands on the box when the panel is
+  open; the actions, chips, Copy and the pill are buttons. On touch the
+  action buttons and a code block's Copy are 44 px to hit (the rows
+  keep their height; the buttons reach above and below them).
+- Performance: no full re-render per token (above); the page keeps at
+  most 500 messages (the oldest leave the DOM, with a day divider left
+  with nothing under it; the server's log is 200 entries and all of it
+  comes with `hello`, so there is no older page to fetch).
+- The dev mock's assistant (web/dev/mock.py): any text streams a reply;
+  "/md" answers with every markdown shape; "tell" or "ask" (and a tab's
+  name) is a turn with a preamble, a `send_prompt` chip and the
+  delivery note; "fail" two failed chips; "/event" one of GodTerm's own
+  turns (its note and chip hidden); "/slow" thinks for four seconds;
+  "/err" sends an `error` frame; "/many" 600 replies at once.
 
 ### The tab list
 
@@ -846,7 +1185,33 @@ The side list on a desktop, the drawer on a phone (web/js/tabs.js):
   resumes only the output it missed.
 - A new approval's banner floats above the key bar with No and Yes; it
   stays until answered (here or elsewhere) or dismissed. Other messages
-  float there too, so the terminal does not refit for them.
+  float there too, so the terminal does not refit for them. While a
+  sheet or the drawer is open the messages sit under it (and its scrim),
+  never over its buttons; no banner is made while the Approvals sheet
+  (which lists the approval) is open. A message with an action has an
+  x as well, and asking for the same message again does not make it
+  stay longer. The Safari "Add to Home Screen" tip comes after a minute
+  of use, for 10 s.
+- A screen whose load failed (Sessions, Accounts, Git, the Browser live
+  view) shows the error in a row with Retry; a GodTerm older than the
+  page ("unknown frame" or tool) adds that it may need a restart or a
+  newer version. A sheet's title stays put while its body scrolls.
+- The key bar's order is by use: Esc, Ctrl, Tab, the arrows, Enter, ^C,
+  Paste, the image, PgUp, PgDn, Home, End, Alt, Shift Tab, Prompt, A-,
+  A+, Fit, Size. On a 390 px phone Esc, Ctrl, Tab and the four arrows
+  show beside Send without a swipe (the arrows are 40 px wide there).
+- Push to talk on a phone: the Talk button and the header pill show
+  listening, sending and thinking; the floating bar is for a reply
+  waiting, speaking (its Stop), no audio and failures. In the tab
+  filter, nothing found anywhere is one line; a section (archived,
+  other sessions) that found nothing is left out. In Safari on iOS the
+  Install row reads Add to Home Screen (How) and the Notifications row
+  points at it.
+- The floating text size control (A-, the size, A+, Fit or Reset) shows
+  when the size changes (a pinch, A- / A+ on the key bar) and fades
+  after 4 s; faded, taps go through it to the terminal. An iPad in the
+  desktop layout has the pane header's A- / A+ instead and no floating
+  control.
 - In a tab, the phone keyboard's Return makes a new line in the prompt
   (Settings > This browser > Return key: New line, the default on phones,
   or Send): ESC CR for Claude Code and agents without a known new line
@@ -872,6 +1237,30 @@ The side list on a desktop, the drawer on a phone (web/js/tabs.js):
 - The composers' return key makes a new line (Send sends); drafts are
   kept on the device until sent (`gt.draft.say`, `gt.draft.p.<tab>`).
 - Below 560 px of height (a phone on its side) the phone layout stays.
+  With the keyboard up there (about 190 px left) the header and the
+  chat's head go; the key bar stays. While the on-screen keyboard is up
+  the key bar's first key puts it away (xterm's input loses the focus),
+  which also brings the header back on a phone on its side.
+- Touch sizes: on a touch screen every control a finger lands on is at
+  least 44 px (buttons, chips, rows, the Settings section strip, the
+  Update pill, toast buttons, the Git screen's buttons, the attachment
+  x's hit area); the smaller sizes are for a mouse. An iPad (upright or
+  on its side) gets the desktop layout with the same rule: the pane header, its
+  buttons, the status bar, the tab panel's rows and buttons and the
+  popovers grow to a finger's size.
+- A sheet (the tab's options, Settings, Sessions, a prompt box...)
+  closes with a pull down: on its grip, its title or any part that does
+  not scroll, or on its list once that sits at its top. It follows the
+  finger; past a third of its height (180 px at most) or on a flick down
+  it closes, else it settles back. A sideways swipe (the Settings
+  section strip), a slider or a text field keeps its own gesture.
+- A hardware keyboard (an iPad in a keyboard case, a phone with a
+  Bluetooth one) has Esc, Tab, arrows and Ctrl of its own: the first
+  Esc, Tab, arrow or Ctrl/Cmd combination pressed hides the key bar and
+  the terminal takes the room (a toast offers Keep it). The on-screen
+  keyboard coming up brings it back (there is no hardware one, then).
+  Settings > This browser > Key bar: Automatic (this), Always or Never
+  (`gt.keybar`).
 - Fit text to this screen (Settings > This browser, `gt.fitscreen`; on by
   default on phones): while the phone shows a tab and was touched or
   typed on in the last 5 minutes, it takes the tab's size (`resize` with
@@ -988,6 +1377,145 @@ at the header's color, and follows the system live under Match system.
 The sign in page (through `signin.js`) and the offline page (inline: it
 is served without the policy) read the same choice.
 
+### Design tokens and keyboard
+
+The look is a handful of CSS custom properties at the top of
+`web/app.css`, one set per theme (`:root` is Dark, `:root[data-theme=light]`
+Light); components use the tokens, never literal colors.
+
+- Surfaces: `--bg` (the page and inputs), `--panel` (bars, the tab list,
+  sheets), `--panel2` (hover, a selected row, cards in a panel), `--line`
+  (hairlines), `--term` (the terminal, dark in both themes).
+- Text: `--text`, `--dim` (every secondary line: row subtitles, hints,
+  group labels, notes). `--dim` is 5.4:1 on `--panel` and 4.9:1 on
+  `--panel2` in Dark (#9d9a92), 5.2:1 and 4.8:1 in Light (#625e56): AA
+  for the 11 to 13 px text it carries. Nothing stacks `opacity` on
+  `--dim` (that is how the status bar's faint items fell under AA).
+- States: `--ok`, `--warn`, `--busy`, `--err`, `--info`, each at least
+  4.5:1 as text on `--panel` and `--panel2` in both themes, and
+  `--accent-ink` on each at least 4.5:1 (the listening button is `--warn`
+  with ink on it). `--accent` (#c9a46a Dark, #745b2c Light) is the one
+  highlight: primary buttons (with `--accent-ink`), the focus ring, a
+  selected chip's border, links. The strips that scroll sideways (the
+  status chips, the key bar, Settings' section chips) fade out at the
+  edge they continue past (`more-l` / `more-r` from `hscroll`). The tab swatches `--sw-*` are UI color
+  only (stripes, dots, 3:1 or better), never text.
+- Scale: `--fs-xs` 11, `--fs-sm` 12, `--fs-md` 13, `--fs-base` 15,
+  `--fs-lg` 17 (12.5 and 13.5 are the half steps the compact desktop rows
+  use; one step up from 1800 px of width); radii `--r-sm` 8, `--r-md` 10
+  (toasts), `--r-lg` 12 (popovers), `--r-xl` 16, `--r-dlg` 16 (every
+  dialog: the sheet, the sync questions, the GitHub save); spacing
+  `--sp-1..4` 4, 8, 12, 16. Section labels (`.gl`, `.sec`, `.acct`, `.keys
+  .gk`) are all `--fs-xs` uppercase with .6 px tracking. Icons follow the
+  control: 20 px in a 44 px button, 18 in 36, 16 in 30, 13 in the status
+  bar.
+- Buttons: one `.btn.pri` per view (the thing to do next), `.btn` for the
+  rest, `.btn.bad` (an outline in `--err`) for destructive ones. A
+  disabled primary is an outline in `--dim`, not a filled block, and its
+  `title` says why (every disabled control has one: `li()` takes `off`).
+  Hover is `--panel2` (buttons, rows) or a `--dim` border (chips,
+  outlined buttons); pressed is `--line`.
+- States of a list: `skeleton(n)` (grey bars in the rows' shape) while
+  it loads, `failRow(error, retry, what)` when the request failed (the
+  reason and Retry; "unknown frame type" or "unknown tool" becomes "needs
+  a newer GodTerm"), `emptyState(text, hint, action)` when it is empty
+  (one line, a hint, one thing to do). Raw values go through `words()`
+  (`not_logged_in` -> "not logged in"), `cronWords()` (`0 8 * * 1-5` ->
+  "weekdays at 08:00", the cron kept in `title`) and `stateWords()` (a
+  tab's state as what its agent is doing: "waiting for an approval").
+  All in web/js/util.js. Toasts: short, past tense ("Saved", "Code
+  copied"); on a desktop they sit at the bottom right above the status
+  bar (left of the assistant when it is open), wrapping, never over the
+  pane header. On a phone they float above the key bar, and with push to
+  talk on above the Talk button (`body.ptt`), so a held Talk keeps
+  "Release to send" and its level in view.
+
+Keyboard (web/js/keys.js, web/js/sheet.js). The terminal takes every key
+while it has the focus, Tab included, so the page gives three ways out:
+
+- `F6` moves the focus to the next area (the tab list, the pane shown,
+  the status bar, the tab panel, the assistant's composer, the toolbar;
+  areas not on screen are skipped), `Shift+F6` to the one before,
+  Ctrl+` the same as F6. These never reach the terminal.
+- `Shift+Esc` in the terminal moves the focus to its pane header (the
+  first button). A plain Esc, and Esc twice, still go to the tab: Claude
+  Code and vim use them.
+- `?` opens the shortcuts sheet (not while typing); Settings > This
+  browser > Keyboard shortcuts opens it too. `Esc` closes the sheet or
+  menu that is open.
+- In the tab list `Up`/`Down`, `Home`/`End` walk the rows, `Enter` or
+  `Space` shows the tab, `Shift+F10` opens the row's options. The list's
+  edge handle takes `Left`/`Right`.
+- A sheet is modal: on open the focus moves into it (its container, so
+  no phone keyboard pops up; Tab reaches its first control), Tab wraps
+  inside it, and on close the focus goes back to the control that opened
+  it, when the focus was still inside the sheet. A popover menu does the
+  same, and `Up`/`Down` walk its rows; opened from the keyboard it starts
+  on its first row.
+- Focus ring: `:focus-visible` draws `2px solid var(--ring)` (the accent)
+  outside the control, inside it on rows, chips, status bar items and
+  pane header buttons that sit in a clipped strip; text fields show it as
+  their accent border. The terminal gets an inset ring only while
+  `body.kbd` is set (the keyboard moved the focus last: Tab, F6, arrows;
+  a pointer press clears it), so a click never draws it.
+### Performance
+
+Measured with scripts/e2e/web_perf.mjs (Playwright: a cold load, a
+warm reload through the service worker, keys, a stream, a 5 MB flood,
+a reconnect, a 10 minute soak) against a fake-CLI GodTerm on loopback,
+Chromium headless and WebKit, a 1440x900 desktop and a 430x932 phone;
+"Fast 3G" is Chrome's emulation (562 ms latency, 1.6 Mbit/s) with a 4x
+CPU slowdown, standing in for a phone over the tailnet. Budgets (the
+numbers to keep; the 2026-10 run in brackets):
+
+- Before the first terminal frame: 27 requests, under 190 KB gzip
+  [189 KB: 99 KB xterm and its addons, 87 KB app modules and CSS];
+  the app's own part (index.html, app.css and the modules fetched
+  before the first `.xterm` element) under 100 KB gzip [2026-10-26:
+  99 KB on a desktop, 96 KB on a phone: no room left for a new first
+  screen module; the next one goes after the first frame]. No module loads behind another
+  (every first screen module is in the modulepreload list); what the
+  first frame does not need comes after it: keys.js (F6, ?) after the
+  first paint, push.js after hello, the status bar on a desktop only,
+  the debug log's hooks (debughooks.js) 1.2 s after load, images.js on
+  the first image, voice.js at hello when a mic mode is on (push to
+  talk, open mic and the wake word start by themselves as before), else
+  on the first tap on a mic button or 3 s after hello; manage, settings
+  and the sheets on use. The whole app is 730 KB unpacked.
+- First terminal frame (cold, loopback, Chromium): under 450 ms
+  [240 to 420 ms; WebKit 230 to 440]; warm reload through the service
+  worker: under 250 ms [115 to 150 ms; WebKit 175 to 190]. Fast 3G:
+  cold under 5.5 s [5.0 s], warm under 1 s [0.8 s].
+- Main thread JavaScript to the first frame: under 100 ms on a desktop
+  [40 to 80 ms]. Headless Chromium shows one 130 to 220 ms long task
+  per load: it is SwiftShader drawing xterm's first WebGL frame (none
+  with the DOM renderer), not script, and a GPU does it.
+- Keys: keydown to the byte on the socket under 1 ms [0.1 to 0.3 ms
+  median, 1 ms on a slow phone].
+- A pane streaming (a line every 100 ms): 60 fps, no long tasks. A
+  5 MB flood through one pane: about 7 s, 45 fps, long tasks under
+  120 ms (xterm's parser), memory back after it.
+- A window resize: two layouts of under 1 ms each; the tab's new size
+  goes out once, 250 ms after the last change (by design).
+- A dropped socket (sleep): live again by a resume (no snapshot) in
+  under 200 ms on loopback [100 to 160 ms; a loopback open pays about
+  100 ms of lsof for the from-inside check], one round trip more on
+  a slow link [620 ms on Fast 3G].
+- 10 minutes with four panes streaming: JS heap under 12 MB and flat
+  [5.5 to 8.7 MB, 8.0 after a GC: the scrollback filling]; DOM nodes and
+  listeners constant.
+- Snapshots: under 16 KB as text; above that gzipped (a 3000 line
+  history of 135 KB is about 10 KB on the wire).
+
+What keeps it so (see the commits of 2026-10): the socket opens
+before the modules set up; voice.js loads at hello (a mode on) or after
+the first screen (voice off); find.js loads manage.js on use; a pane makes its terminal (and WebGL context) when
+first shown, not four at boot; HTTP keep-alive and peeked request
+heads on the server; gzipped snapshots. scripts/e2e/web_perf.mjs against a demo or
+fake instance (docs/TESTING.md) is the way to check a change against
+these numbers; the browser's DevTools Performance view on the live app
+shows where the time goes.
+
 ### Debug log
 
 To see what happens in a browser (a phone above all), the page reports
@@ -1013,6 +1541,12 @@ lines, across a rollover).
   clipboard contents, audio, tokens or cookies. It starts with the user
   agent, screen size, dpr and display mode. Other modules call
   `dlog(cat, text)` (`import { dlog } from './debuglog.js'`).
+  debuglog.js itself is the small core (the queue, the socket's lines,
+  errors and rejections from the first moment); the console copy, the
+  page, viewport, theme and input hooks and the report are
+  `js/debughooks.js`, loaded 1.2 s after the page's load event while the
+  log is on (and when it is turned on), so the first screen pays nothing
+  for them. Console lines before that moment are not copied.
 - While the socket is down lines wait, up to 500 lines or 64 KB (the
   oldest go first, with a "N lines dropped" note).
 - On by default; Settings > This browser > Debug log turns it off on that

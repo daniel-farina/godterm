@@ -7,7 +7,8 @@ shell, a fake assistant, approvals, jobs, loops and ~200 fake sessions.
     python3 web/dev/mock.py [--port 7890]
 
 Dev endpoints: /dev/bump (new web build -> "Update available"),
-/dev/update (GodTerm app update news), /dev/approval (a new approval).
+/dev/update (GodTerm app update news), /dev/approval (a new approval),
+/dev/sync-on, /dev/sync-off, /dev/sync-fail (Settings > Sync's state).
 """
 import argparse
 import base64
@@ -26,6 +27,7 @@ import urllib.parse
 import wave
 
 import mock_git
+import mock_sync
 
 WEB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -249,6 +251,13 @@ def new_tab(account, name, folder, **kw):
 
 
 def seed():
+    now = int(time.time() * 1000)
+    CHAT.extend([
+        {"id": "h1", "role": "user", "text": "what did docs pass do last week?", "at": now - 8 * 86400000},
+        {"id": "h2", "role": "assistant", "text": "It rewrote the web app docs and committed twice.", "at": now - 8 * 86400000 + 9000},
+        {"id": "h3", "role": "user", "text": "is anything waiting for me?", "at": now - 86400000},
+        {"id": "h4", "role": "assistant", "text": "api refactor waits for an approval: `rm -rf build/`.", "at": now - 86400000 + 6000},
+    ])
     new_tab(1, "web app", "~/godterm", cols=120, rows=36, pinned=True)
     new_tab(1, "trading room", "~/trading", cols=100, rows=30, state="working").work_left = 30
     new_tab(1, "docs pass", "~/godterm/docs", cols=80, rows=24)
@@ -267,6 +276,8 @@ CLOSED = [{"index": 0, "tab": "old experiment", "account": 1, "cwd": "~/exp", "l
 APPROVALS = {}
 MODES = {"memory_saver": False, "privacy": False, "voice": "push"}
 CHAT = []
+BUSY = [False]
+SEQ = [0]
 STATE_DIRTY = [False]
 
 
@@ -284,7 +295,7 @@ def state():
         "loops": LOOPS, "closed": CLOSED, "modes": modes_line(), "pending_confirmations": [],
         "voice": {"mode": MODES["voice"], "sample_rate": 24000},
         "approvals": [public(a) for a in APPROVALS.values()],
-        "assistant": {"on": True, "busy": False, "provider": "claude"},
+        "assistant": {"on": True, "busy": BUSY[0], "provider": "claude"},
         "archived": archived_state(),
     }
 
@@ -388,22 +399,116 @@ def public(a):
     return {k: v for k, v in a.items() if k != "tab_ref"}
 
 
+KITCHEN = """# What the tabs are doing
+
+## Alpha
+| Tab | State | Window left |
+|:----|:-----:|------------:|
+| web app | ready | 55% |
+| trading room | working | 55% |
+| api refactor | **approval** | 18% |
+
+### Next steps
+1. Approve `rm -rf build/` in api refactor, or say no
+2. Let trading room finish (about 30 s)
+   - it reads `src/book.rs`
+   - then it writes the report
+- [x] docs pass is done
+- [ ] landing page has not started
+
+> api refactor asked: *Bash(rm -rf build/ && cargo build --release)*
+
+```rust
+fn main() {
+    println!("a long line that goes on and on to show the horizontal scroll in a fenced block, with no wrap");
+}
+```
+
+A long URL: https://example.com/a/very/long/path/that/should/wrap/or/break/nicely/without/widening/the/panel?x=1&y=2 and a long word Pneumonoultramicroscopicsilicovolcanoconiosisvery_long_identifier_name_here_too.
+
+---
+
+See [the web app docs](https://github.com/varium/godterm) for more."""
+
+
+def chat_msg(role, text, **kw):
+    SEQ[0] += 1
+    m = {"id": "m%d" % SEQ[0], "role": role, "text": text, "at": int(time.time() * 1000), **kw}
+    CHAT.append(m)
+    broadcast({"t": "assistant", "done": True, **m})
+    return m
+
+
 def stream_reply(cl, text):
-    rid = "m%d" % int(time.time() * 1000)
-    words = ("Here is what I see across your tabs:\n\n"
-             "- **trading room** is working (reading files)\n"
-             "- **api refactor** waits for an approval: `rm -rf build/`\n"
-             "- Bravo has **18%%** of its 5 hour window left\n\n"
-             "You said: _%s_\n\n```sh\ngodterm web-url\n```\nAnything else?" % text).split(" ")
+    """The fake assistant: streams a reply as GodTerm does (the whole text
+    so far each time, an empty live at the end, then the numbered
+    message). `/md` answers with every markdown shape; "tell"/"ask" and a
+    tab's name acts like a turn with a tool call (a preamble, the chip,
+    the delivery note); `/event` is one of GodTerm's own turns (its note
+    and chip hidden, its reply shown); `/err` fails; `/slow` thinks for
+    four seconds first."""
+    low = text.lower()
+    BUSY[0] = True
+    dirty()
+    time.sleep(4 if low.startswith("/slow") else 0.7)
+    if low.startswith("/many"):
+        for i in range(600):
+            chat_msg("assistant", "Reply %d of 600: a short line to fill the log." % (i + 1))
+        BUSY[0] = False
+        dirty()
+        return
+    if low.startswith("/err"):
+        broadcast({"t": "error", "error": "the assistant is not running: no account is logged in"})
+        BUSY[0] = False
+        dirty()
+        return
+    t = next((x for x in TABS if x.name in low), TABS[1])
+    if low.startswith("/event"):
+        chat_msg("note", "(events: t%d finished)" % t.uid, hidden=True)
+        chat_msg("tool", json.dumps({"tool": "read_tab", "args": {"tab": "t%d" % t.uid, "lines": 40}, "status": "ok"}), hidden=True)
+        body = "**%s** finished: the tests pass (42 of 42) and it committed `fix: order book depth`. Nothing waits for you there." % t.name
+    elif low.startswith("/md"):
+        body = KITCHEN
+    elif "tell" in low or "ask" in low:
+        chat_msg("preamble", "Sending that to %s." % t.name)
+        time.sleep(0.4)
+        chat_msg("tool", json.dumps({"tool": "send_prompt", "args": {"tab": "t%d" % t.uid, "text": text, "expect_reply": True}, "status": "ok"}))
+        chat_msg("note", "Prompt to t%d: delivered" % t.uid)
+        time.sleep(0.5)
+        body = "Asked %s. I'll tell you when it answers; it may take a minute while it checks." % t.name
+    elif "fail" in low:
+        chat_msg("tool", json.dumps({"tool": "press_key", "args": {"tab": "t%d" % t.uid, "key": "enter"}, "status": "error: the tab is not running"}))
+        chat_msg("tool", json.dumps({"tool": "press_key", "args": {"tab": "t%d" % t.uid, "key": "enter"}, "status": "error: the tab is not running"}))
+        body = "%s is not running, so the key did not go through. Reopen it?" % t.name
+    else:
+        body = ("Here is what I see across your tabs:\n\n"
+                "- **trading room** is working (reading files)\n"
+                "- **api refactor** waits for an approval: `rm -rf build/`\n"
+                "- Bravo has **18%%** of its 5 hour window left\n\n"
+                "You said: _%s_\n\n```sh\ngodterm web-url\n```\nAnything else?" % text)
+    words = body.split(" ")
     acc = ""
     for i, w in enumerate(words):
         acc += ("" if i == 0 else " ") + w
         broadcast({"t": "assistant", "id": "live", "role": "assistant", "text": acc, "done": False})
-        time.sleep(0.03)
+        time.sleep(0.01 if low.startswith("/md") else 0.03)
     # Like GodTerm: the live reply ends empty and the final text is a log entry.
     broadcast({"t": "assistant", "id": "live", "role": "assistant", "text": "", "done": True})
-    broadcast({"t": "assistant", "id": rid, "role": "assistant", "text": acc, "done": True})
-    CHAT.append({"id": rid, "role": "assistant", "text": acc})
+    chat_msg("assistant", acc)
+    BUSY[0] = False
+    dirty()
+
+
+def clip(level, secs=0.2):
+    """A 24 kHz PCM16 clip at a constant level: its first and last
+    samples are not zero (a click without a fade)."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(struct.pack("<h", level) * int(24000 * secs))
+    return buf.getvalue()
 
 
 def beep():
@@ -498,6 +603,7 @@ def sessions_tool(a):
 # ---- tools ---------------------------------------------------------------
 
 CONFIRM = {}
+LAST_PROMPT = {}
 
 
 def needs(name, args, question):
@@ -512,6 +618,9 @@ def tool(name, a):
         if name2 is None:
             return {"ok": False, "error": "that confirmation expired"}
         a = {**a, "_confirmed": True}
+    r = mock_sync.tool(name, a, needs, TABS)
+    if r is not None:
+        return r
     t = find(a.get("tab"))
     if name == "sessions":
         return {"ok": True, "result": sessions_tool(a)}
@@ -551,6 +660,20 @@ def tool(name, a):
                             "folder": getattr(t, "folder", ""), "session": None, "last_active": "just now", "archived": "just now", "by": "user"})
         dirty()
         return {"ok": True, "result": {"say": "Archived 1 tab.", "archived": 1}}
+    if name == "send_prompt" and t:
+        # A receipt like GodTerm's: typed in when idle, queued behind a busy tab.
+        busy = t.state in ("working", "approval")
+        mode = a.get("mode") or "auto"
+        text = a.get("text") or ""
+        t.out(c("\r\n{d}[prompt via send_prompt, mode %s]{0} %s\r\n" % (mode, text.splitlines()[0][:120] if text else "")))
+        LAST_PROMPT["t%d" % t.uid] = {"text": text, "mode": mode, "expect_reply": a.get("expect_reply")}
+        if not busy:
+            t.work_left = 4
+            t.set_state("working")
+        d = {"id": RNG.randrange(10**6), "tab": "t%d" % t.uid, "status": "queued" if busy else "delivered",
+             "state": "received" if busy else "started", "mode": "queue" if busy or mode == "queue" else "direct"}
+        say = ("%s is busy: queued behind its current work." if busy else "Sent to %s.") % t.name
+        return {"ok": True, "result": {"say": say, "prompt": d, "deliveries": [d], "state": t.state, "failed": [], "will_report": False}}
     if name == "rename_tab" and t:
         t.name = a.get("name") or t.name
         dirty()
@@ -655,8 +778,9 @@ def handle_text(cl, m):
             broadcast({"t": "resized", "tab": tab.uid, "cols": tab.cols, "rows": tab.rows})
     elif t == "say":
         uid_ = "u%d" % int(time.time() * 1000)
-        broadcast({"t": "assistant", "id": uid_, "role": "user", "text": m.get("text", ""), "done": True})
-        CHAT.append({"id": uid_, "role": "user", "text": m.get("text", "")})
+        um = {"id": uid_, "role": "user", "text": m.get("text", ""), "at": int(time.time() * 1000)}
+        broadcast({"t": "assistant", "done": True, **um})
+        CHAT.append(um)
         threading.Thread(target=stream_reply, args=(cl, m.get("text", "")), daemon=True).start()
     elif t == "answer":
         ap = APPROVALS.pop(m.get("id"), None)
@@ -763,9 +887,24 @@ class H(http.server.BaseHTTPRequestHandler):
         if u.path == "/dev/update":
             broadcast({"t": "update", "available": True, "version": "0.42.0", "current": "0.41.3", "state": "downloaded", "notes": "Faster startup and a new sessions view.", "page": None, "update_with": "Update and restart"})
             return self.reply(200, b"ok")
+        if u.path == "/dev/last_prompt":
+            # What send_prompt last got, per tab (for tests).
+            return self.reply(200, json.dumps(LAST_PROMPT).encode(), "application/json")
+        if u.path in ("/dev/sync-on", "/dev/sync-off", "/dev/sync-fail"):
+            mock_sync.set_on(u.path != "/dev/sync-off")
+            mock_sync.ST["fail"] = u.path == "/dev/sync-fail"
+            return self.reply(200, b"ok")
         if u.path == "/dev/approval":
             with LOCK:
                 ask_approval(RNG.choice(TABS))
+            return self.reply(200, b"ok")
+        if u.path == "/dev/clip":
+            # Two speech clips to every client, as a reply's would come:
+            # one with non-zero edges (the page fades them), one at full
+            # scale (the page scales it under clipping).
+            for cl in list(CLIENTS):
+                cl.bin(2, 0, clip(20000))
+                cl.bin(2, 0, clip(32767))
             return self.reply(200, b"ok")
         path = u.path.lstrip("/") or "index.html"
         full = os.path.realpath(os.path.join(WEB, path))

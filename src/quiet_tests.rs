@@ -433,6 +433,54 @@ fn answers_wait_for_quiet_and_carry_held_updates() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// An answer the gate holds (talk back that never ends, here) is told
+/// anyway after REPORT_FORCE, and the log says why it waited; a fresh
+/// one still waits.
+#[test]
+fn a_held_answer_is_told_after_the_deadline() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("forced");
+    let rec = with_brain(&mut app, &home);
+    let (uid, path) = tab(&mut app, &home, "7777aaaa-0000-4000-8000-000000000016");
+    let q = "What are your background agents doing?";
+    app.register_follow_up(uid, q);
+    app.assistant.follow_ups[0].seen_working = true;
+    write(
+        &path,
+        &[
+            json!({"type": "user", "message": {"role": "user", "content": q}, "timestamp": stamp(1)}),
+            json!({"type": "assistant", "message": {"id": "a", "content": [{"type": "text", "text": "Two agents run the regression groups; one finished the mobile batch."}]}, "timestamp": stamp(2)}),
+        ],
+    );
+    app.assistant.quiet.fake_tts = true;
+    app.follow_ups_tick();
+    assert!(
+        matches!(app.assistant.follow_ups[0].state, FuState::Answered { .. }),
+        "found, but talk back plays: held"
+    );
+    assert!(!app.assistant.busy);
+    assert!(
+        app.assistant.report_held_logged.is_some(),
+        "the hold is logged"
+    );
+    // Two minutes later talk back still "plays": told anyway.
+    if let FuState::Answered { at, .. } = &mut app.assistant.follow_ups[0].state {
+        *at -= chrono::Duration::seconds(crate::app_followup::REPORT_FORCE.as_secs() as i64 + 30);
+    }
+    app.follow_ups_tick();
+    assert!(app.assistant.busy, "the report turn started");
+    assert!(matches!(
+        app.assistant.follow_ups[0].state,
+        FuState::Reported { .. }
+    ));
+    std::thread::sleep(Duration::from_millis(300));
+    let sent = std::fs::read_to_string(&rec).unwrap_or_default();
+    assert!(sent.contains("regression groups"), "{sent}");
+    app.assistant.quiet.fake_tts = false;
+    app.assistant.brain = None;
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// An urgent update (moving now because the limit is hit) skips the quiet
 /// wait but never cuts into the user's sentence.
 #[test]

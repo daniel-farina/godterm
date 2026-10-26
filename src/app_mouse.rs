@@ -1691,6 +1691,12 @@ impl App {
                 self.browser_choose(i);
             }
             UiAction::BrowserClear => self.browser_clear(),
+            UiAction::BrowserAlso => {
+                if let Modal::Browser(d) = &self.modal {
+                    let sel = d.sel;
+                    self.browser_toggle_also(sel);
+                }
+            }
             UiAction::GitRow(i) => self.git_click_row(i),
             UiAction::GitOpen(s, t) => self.open_git(s, t),
             UiAction::GitCfgOpen => self.open_gitcfg(),

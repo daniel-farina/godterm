@@ -24,6 +24,23 @@ pub const KIND_MIC: u8 = 3;
 /// The browser's mic as a recording (MediaRecorder pieces, the type named
 /// by the `voice {rec}` frame before them), decoded here with ffmpeg.
 pub const KIND_MIC_REC: u8 = 4;
+/// A tab's snapshot frame, gzipped (the JSON text as it would have been
+/// sent): for browsers whose `subscribe` said `gz: true`, when the frame
+/// is at least GZ_MIN bytes. A 3000 line history is about a tenth of its
+/// size this way over a slow link.
+pub const KIND_SNAPSHOT_GZ: u8 = 6;
+pub const GZ_MIN: usize = 16 << 10;
+
+/// `bytes` gzipped (level 6: a 500 KB snapshot in a few ms).
+pub fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut z = flate2::write::GzEncoder::new(
+        Vec::with_capacity(bytes.len() / 4),
+        flate2::Compression::default(),
+    );
+    let _ = z.write_all(bytes);
+    z.finish().unwrap_or_default()
+}
 
 /// Images in one `say`, and the size of each.
 const MAX_IMAGES: usize = 6;
@@ -161,6 +178,13 @@ fn write_loop<S: Read + Write>(mut ws: WebSocket<S>, c: &Client) {
         };
         let msg = match f {
             Out::Text(s) => Message::text(s),
+            Out::Snapshot(uid, s) => {
+                if s.len() >= GZ_MIN && c.gz.load(std::sync::atomic::Ordering::Relaxed) {
+                    Message::binary(frame(KIND_SNAPSHOT_GZ, uid, &gzip(s.as_bytes())))
+                } else {
+                    Message::text(s)
+                }
+            }
             Out::Output(uid, b) => Message::binary(frame(KIND_OUTPUT, uid, &b)),
             Out::Audio(b) => Message::binary(frame(KIND_AUDIO, 0, &b)),
             Out::Picture(b) => Message::binary(b),
@@ -442,6 +466,9 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
     let t = v["t"].as_str().unwrap_or("");
     match t {
         "subscribe" => {
+            if v["gz"].as_bool() == Some(true) {
+                c.gz.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             for uid in uids(&v["tabs"]) {
                 match tap::get(uid) {
                     Some(tap) => {
@@ -617,6 +644,13 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
             if let Some(t) = v.get("web_tts") {
                 web_tts(c, t);
             }
+            // The page plays speech (or stopped): only the voice browser
+            // has a mic here, so another one's word changes nothing.
+            if let Some(p) = v["playing"].as_bool() {
+                if let Some(m) = c.mic.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    m.set_playing(p);
+                }
+            }
             // Direct mode, brainstorm, stop speaking, a mode change: the
             // UI thread's (see voice.rs, web_voice_ctl).
             if [
@@ -625,6 +659,7 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
                 "hush",
                 "away",
                 "muted",
+                "unmute_mac",
                 "set",
                 "web_tts_list",
             ]

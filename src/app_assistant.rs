@@ -26,6 +26,30 @@ pub enum Who {
 pub struct Entry {
     pub who: Who,
     pub text: String,
+    /// When it was written (unix ms): the web chat's times and day
+    /// dividers; a conversation resumed from its log keeps the log's.
+    pub at: i64,
+}
+
+/// Now as unix milliseconds.
+pub fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+impl Entry {
+    /// An entry written now.
+    pub fn new(who: Who, text: impl Into<String>) -> Entry {
+        Entry::at(who, text, now_ms())
+    }
+
+    /// An entry written at `at` (unix ms).
+    pub fn at(who: Who, text: impl Into<String>, at: i64) -> Entry {
+        Entry {
+            who,
+            text: text.into(),
+            at,
+        }
+    }
 }
 
 /// The chat area as last drawn: its text, its scrollbar column (the last
@@ -225,6 +249,11 @@ pub struct AssistantState {
     pub crash_checked: bool,
     /// Start the brain now (after a crash), not on the first request.
     pub eager_start: bool,
+    /// What the previous work_status call saw (since: "last").
+    pub work_seen: crate::app_workstatus::WorkSeen,
+    /// When a tab answer held by the quiet gate was last explained in
+    /// the log (app_followup).
+    pub report_held_logged: Option<Instant>,
     /// Questions sent to tabs whose answers are reported back.
     pub follow_ups: Vec<crate::app_followup::FollowUp>,
     pub follow_seq: u64,
@@ -337,10 +366,7 @@ impl App {
         if let Some(c) = &self.assistant.conv {
             c.write("note", serde_json::json!({"text": text}));
         }
-        self.assistant.log.push(Entry {
-            who: Who::Note,
-            text,
-        });
+        self.assistant.log.push(Entry::new(Who::Note, text));
         self.trim_log();
     }
 
@@ -564,7 +590,30 @@ impl App {
                     // At its prompt, but subagents or shells may still run:
                     // then it is busy (never idle), though it takes prompts.
                     Activity::Ready => match self.tab_background_work(si, ti) {
-                        Some(w) => format!("BUSY in background ({w}), not idle"),
+                        Some(w) => {
+                            // Named: "3 subagents (general-purpose (36 min), ...)".
+                            let a = self.tab_activity(si, ti);
+                            let w = match a.subagents_line() {
+                                Some(l) => {
+                                    let mut parts = vec![l];
+                                    if a.background_shells > 0 {
+                                        parts.push(crate::control::plural(
+                                            a.background_shells,
+                                            "shell",
+                                        ));
+                                    }
+                                    if a.background_tasks > 0 {
+                                        parts.push(crate::control::plural(
+                                            a.background_tasks,
+                                            "task",
+                                        ));
+                                    }
+                                    parts.join(", ")
+                                }
+                                None => w,
+                            };
+                            format!("WORKING in background ({w}), not idle")
+                        }
                         None => "ready".into(),
                     },
                     Activity::Starting => "starting".into(),
@@ -870,6 +919,15 @@ impl App {
         self.start_turn(msg, None, Some(note));
     }
 
+    /// The browser a user turn came from: typed in it, or spoken into it
+    /// (a browser holds the voice). Its view is the one layout words mean.
+    pub(crate) fn turn_web_client(&mut self, spoken: bool) -> Option<u64> {
+        self.assistant
+            .pending_web
+            .take()
+            .or_else(|| spoken.then(|| self.web_voice_client()).flatten())
+    }
+
     pub(crate) fn start_turn(&mut self, text: &str, heard: Option<&str>, system: Option<&str>) {
         self.assistant.cap_retried = false;
         self.assistant.last_turn = Some((
@@ -880,7 +938,7 @@ impl App {
         self.assistant.unsaid = None;
         self.assistant.system_turn = system.is_some();
         self.assistant.web_client = if system.is_none() {
-            self.assistant.pending_web.take()
+            self.turn_web_client(heard.is_some())
         } else {
             None
         };
@@ -894,14 +952,8 @@ impl App {
             self.assistant.chat_off.set(0);
         }
         self.assistant.log.push(match system {
-            Some(note) => Entry {
-                who: Who::Note,
-                text: note.to_string(),
-            },
-            None => Entry {
-                who: Who::User,
-                text: text.to_string(),
-            },
+            Some(note) => Entry::new(Who::Note, note.to_string()),
+            None => Entry::new(Who::User, text.to_string()),
         });
         let images = if system.is_none() {
             std::mem::take(&mut self.assistant.next_images)
@@ -909,10 +961,9 @@ impl App {
             vec![]
         };
         for a in &images {
-            self.assistant.log.push(Entry {
-                who: Who::Note,
-                text: format!("\u{1F4CE} {}", a.label()),
-            });
+            self.assistant
+                .log
+                .push(Entry::new(Who::Note, format!("\u{1F4CE} {}", a.label())));
         }
         // A turn of our own is never the user's yes.
         self.assistant.last_user = if system.is_some() {
@@ -1158,10 +1209,10 @@ impl App {
                 .to_string()
         };
         // Shown as a readable chip; the raw arguments on a click.
-        self.assistant.log.push(Entry {
-            who: Who::Tool,
-            text: serde_json::json!({"tool": tool, "args": args, "status": status}).to_string(),
-        });
+        self.assistant.log.push(Entry::new(
+            Who::Tool,
+            serde_json::json!({"tool": tool, "args": args, "status": status}).to_string(),
+        ));
         self.trim_log();
         if let Some(c) = &self.assistant.conv {
             let r = v.to_string();
@@ -1200,10 +1251,7 @@ impl App {
         let b = std::mem::take(&mut self.assistant.block).trim().to_string();
         if tool_next {
             if !b.is_empty() {
-                self.assistant.log.push(Entry {
-                    who: Who::Preamble,
-                    text: b,
-                });
+                self.assistant.log.push(Entry::new(Who::Preamble, b));
             }
         } else if !b.is_empty() {
             self.assistant.held.push(b);
@@ -1221,10 +1269,9 @@ impl App {
         // what is shown keeps the reply's markdown.
         let r = crate::md::reply(reply, max);
         if !r.narration.is_empty() {
-            self.assistant.log.push(Entry {
-                who: Who::Preamble,
-                text: r.narration.join(" "),
-            });
+            self.assistant
+                .log
+                .push(Entry::new(Who::Preamble, r.narration.join(" ")));
         }
         // No closing offer: the spoken part ends where it ends. The rest
         // stays shown, and "more" still says it.
@@ -1296,10 +1343,9 @@ impl App {
             return false;
         }
         self.assistant.unsaid = None;
-        self.assistant.log.push(Entry {
-            who: Who::User,
-            text: text.to_string(),
-        });
+        self.assistant
+            .log
+            .push(Entry::new(Who::User, text.to_string()));
         crate::log::info(&format!("assistant: said the rest ({} chars)", rest.len()));
         self.assistant.muted = false;
         self.say_part(&rest);
@@ -1338,10 +1384,9 @@ impl App {
             }
             self.assistant.stale += 1;
             self.assistant.last_event = Some(Instant::now());
-            self.assistant.log.push(Entry {
-                who: Who::Note,
-                text: "(cut off; listening)".into(),
-            });
+            self.assistant
+                .log
+                .push(Entry::new(Who::Note, "(cut off; listening)"));
         }
         self.assistant.cut_off = Some(Instant::now());
     }
@@ -1412,10 +1457,7 @@ impl App {
                 }
                 // Text held before this tool was narration.
                 for h in std::mem::take(&mut self.assistant.held) {
-                    self.assistant.log.push(Entry {
-                        who: Who::Preamble,
-                        text: h,
-                    });
+                    self.assistant.log.push(Entry::new(Who::Preamble, h));
                 }
                 self.assistant.tools_this_turn += 1;
                 self.assistant
@@ -1526,10 +1568,10 @@ impl App {
                         "assistant: {}",
                         crate::sessions::snippet(&crate::md::speech(&reply), 80)
                     ));
-                    self.assistant.log.push(Entry {
-                        who: if error { Who::Note } else { Who::Reply },
-                        text: reply.clone(),
-                    });
+                    self.assistant.log.push(Entry::new(
+                        if error { Who::Note } else { Who::Reply },
+                        reply.clone(),
+                    ));
                 }
                 self.assistant.busy = false;
                 self.assistant.system_turn = false;
@@ -1614,12 +1656,10 @@ impl App {
         self.assistant.brain = None;
         self.assistant.fresh_session = true;
         self.assistant.busy = false;
-        self.assistant.log.push(Entry {
-            who: Who::Preamble,
-            text: format!(
-                "(that reply was too long for the {cur} token limit; trying again with {new})"
-            ),
-        });
+        self.assistant.log.push(Entry::new(
+            Who::Preamble,
+            format!("(that reply was too long for the {cur} token limit; trying again with {new})"),
+        ));
         let n = self.assistant.log.len();
         self.start_turn(&text, heard.as_deref(), system.as_deref());
         // The request is shown once.

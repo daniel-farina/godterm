@@ -746,6 +746,154 @@ fn queued_text(v: &Value) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// Where a conversation is right now, from the tail of its transcript:
+/// the last text its assistant wrote, the tool it is in when its turn is
+/// not over, and when it was last written.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TailStatus {
+    /// The last text the assistant wrote (shortened by the caller).
+    pub last_text: Option<String>,
+    /// The last prompt (the user's, not a tool result).
+    pub last_user: Option<String>,
+    /// The tool the turn is in, when its last message is a tool call or
+    /// a tool result ("Bash").
+    pub tool: Option<String>,
+    /// A short argument of that tool (the command, the file).
+    pub tool_arg: Option<String>,
+    /// The turn is over: its last message is text with no tool call.
+    pub finished: bool,
+    /// Timestamp (RFC 3339) of the last message.
+    pub last_at: Option<String>,
+}
+
+/// The tail of a transcript (main chain), see `TailStatus`. Reads the
+/// last 256 KB only.
+pub fn tail_status(path: &Path) -> Option<TailStatus> {
+    use std::io::{Seek, SeekFrom};
+    let mut f = fs::File::open(path).ok()?;
+    const TAIL: u64 = 256 * 1024;
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let skip_partial = len > TAIL;
+    if skip_partial {
+        f.seek(SeekFrom::Start(len - TAIL)).ok()?;
+    }
+    let mut st = TailStatus::default();
+    let mut text_id = String::new();
+    for (i, line) in lossy_lines(BufReader::new(f)).enumerate() {
+        if i == 0 && skip_partial {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if v.get("isSidechain")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || v.get("isMeta").and_then(Value::as_bool).unwrap_or(false)
+        {
+            continue;
+        }
+        let at = v
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        match v.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                let content = &v["message"]["content"];
+                let result = content
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|b| b["type"] == "tool_result"));
+                let text = match content {
+                    Value::String(s) => Some(s.clone()),
+                    Value::Array(a) => {
+                        let t: Vec<&str> = a
+                            .iter()
+                            .filter(|b| b["type"] == "text")
+                            .filter_map(|b| b["text"].as_str())
+                            .collect();
+                        (!t.is_empty()).then(|| t.join("\n"))
+                    }
+                    _ => None,
+                };
+                if let Some(t) = text.filter(|t| !is_noise_prompt(t)) {
+                    st.last_user = Some(t);
+                    st.finished = false;
+                    st.tool = None;
+                    st.tool_arg = None;
+                } else if result {
+                    // The model is answering the result: the tool is over,
+                    // the turn is not.
+                    st.finished = false;
+                }
+                if at.is_some() {
+                    st.last_at = at;
+                }
+            }
+            Some("assistant") => {
+                let msg = &v["message"];
+                let id = msg["id"].as_str().unwrap_or("").to_string();
+                let blocks = msg["content"].as_array();
+                let call = blocks.and_then(|a| a.iter().rev().find(|b| b["type"] == "tool_use"));
+                if let Some(c) = call {
+                    st.tool = c["name"].as_str().map(str::to_string);
+                    st.tool_arg = tool_brief(&c["input"]);
+                    st.finished = false;
+                } else {
+                    st.finished = true;
+                    st.tool = None;
+                    st.tool_arg = None;
+                }
+                let texts: Vec<&str> = blocks
+                    .map(|a| {
+                        a.iter()
+                            .filter(|b| b["type"] == "text")
+                            .filter_map(|b| b["text"].as_str())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !texts.is_empty() {
+                    let t = texts.join("\n\n");
+                    match &mut st.last_text {
+                        Some(r) if id == text_id && !id.is_empty() => {
+                            r.push_str("\n\n");
+                            r.push_str(&t);
+                        }
+                        _ => st.last_text = Some(t),
+                    }
+                    text_id = id;
+                }
+                if at.is_some() {
+                    st.last_at = at;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(st)
+}
+
+/// The one argument of a tool call worth saying: the command, the file,
+/// the pattern, the prompt's start.
+pub fn tool_brief(input: &Value) -> Option<String> {
+    for k in [
+        "command",
+        "file_path",
+        "path",
+        "pattern",
+        "query",
+        "description",
+        "prompt",
+        "url",
+    ] {
+        if let Some(s) = input.get(k).and_then(Value::as_str) {
+            if !s.trim().is_empty() {
+                return Some(snippet(s, 80));
+            }
+        }
+    }
+    None
+}
+
 /// Text of the last prompt typed into a transcript (main chain, not tool
 /// results or meta lines).
 pub fn last_user_text(path: &Path) -> Option<String> {
@@ -811,6 +959,25 @@ pub fn first_sentences(text: &str, max: usize) -> String {
         out = text.chars().take(max).collect();
     }
     out.trim().to_string()
+}
+
+/// A duration in seconds as a person says it: "45 s", "36 min",
+/// "2 h 5 min", "3 d".
+pub fn rel_secs(s: u64) -> String {
+    if s < 60 {
+        format!("{s} s")
+    } else if s < 3600 {
+        format!("{} min", s / 60)
+    } else if s < 86400 {
+        let m = (s % 3600) / 60;
+        if m == 0 {
+            format!("{} h", s / 3600)
+        } else {
+            format!("{} h {m} min", s / 3600)
+        }
+    } else {
+        format!("{} d", s / 86400)
+    }
 }
 
 pub fn fmt_tokens(n: u64) -> String {

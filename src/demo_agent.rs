@@ -1953,7 +1953,7 @@ fn brain(args: &[String]) -> Result<()> {
         let reply = if text.contains("(Events from GodTerm, not from the user.") {
             event_turn(&text)
         } else if let Some(r) = text
-            .contains("web: this request was typed in the web app")
+            .contains("web: this request came from the web app")
             .then(|| web_turn(&asked))
             .flatten()
         {
@@ -2265,13 +2265,49 @@ pub fn brain_turn(asked: &str) -> String {
             None => "I can't read the usage right now.".into(),
         };
     }
+    // A status question: work_status first, never memory; the digest in
+    // its order (needs you, working, finished), the top items by voice,
+    // "what else" continuing the same list.
+    if has(&["what else", "and the rest", "say more", "go on"]) {
+        let st = call_tool("work_status", json!({"since": "last"}));
+        let st = st.get("result").cloned().unwrap_or(st);
+        let said = SAID.swap(0, Ordering::SeqCst) as usize;
+        let (lines, rest) = crate::app::App::work_digest(&st, said, 3);
+        SAID.store((said + lines.len()) as u64, Ordering::SeqCst);
+        return spoken_digest(&st, lines, rest, said);
+    }
+    if has(&["how about", "latest with", "what about"]) {
+        let name = q
+            .split_once("how about ")
+            .or_else(|| q.split_once("latest with "))
+            .or_else(|| q.split_once("what about "))
+            .map(|(_, n)| n.trim().trim_end_matches(['?', '.', '!']).to_string())
+            .unwrap_or_default();
+        let st = call_tool("work_status", json!({"tab": name}));
+        let st = st.get("result").cloned().unwrap_or(st);
+        let _ = call_tool("recent_turns", json!({"tab": name, "n": 2}));
+        let (lines, _) = crate::app::App::work_digest(&st, 0, 1);
+        return match lines.first() {
+            Some(l) => l.clone(),
+            None => format!("{name} is idle."),
+        };
+    }
     if has(&[
         "working on",
         "what's going on",
         "whats going on",
         "status",
+        "being worked",
+        "update on",
         "everyone",
     ]) {
+        let st = call_tool("work_status", json!({}));
+        let st = st.get("result").cloned().unwrap_or(st);
+        let (lines, rest) = crate::app::App::work_digest(&st, 0, 3);
+        SAID.store(lines.len() as u64, Ordering::SeqCst);
+        return spoken_digest(&st, lines, rest, 0);
+    }
+    if has(&["everyone", "all the tabs"]) {
         let st = call_tool("get_state", json!({}));
         let tabs = st["result"]["tabs"]
             .as_array()
@@ -2341,6 +2377,40 @@ pub fn brain_turn(asked: &str) -> String {
         return "Here are the approvals waiting for you.".into();
     }
     "Done.".into()
+}
+
+/// How many digest sentences the last status answer said.
+static SAID: AtomicU64 = AtomicU64::new(0);
+
+/// The spoken form of a status digest: the sentences, the idle count,
+/// and "say more for the rest" when there is more.
+fn spoken_digest(st: &Value, lines: Vec<String>, rest: usize, skipped: usize) -> String {
+    let idle = st["idle"].as_array().map(Vec::len).unwrap_or(0);
+    let mut out = if lines.is_empty() {
+        if skipped > 0 {
+            "That's all of them.".to_string()
+        } else {
+            "Nothing is being worked on right now.".to_string()
+        }
+    } else {
+        lines.join(" ")
+    };
+    if rest > 0 {
+        out.push_str(&format!(
+            " {} more; say more for the rest.",
+            number_word(rest)
+        ));
+    } else if idle > 0 && skipped == 0 {
+        out.push_str(&format!(
+            " {} idle.",
+            if idle == 1 {
+                "One other tab is".to_string()
+            } else {
+                format!("{} others are", number_word(idle))
+            }
+        ));
+    }
+    out
 }
 
 fn capitalize(s: &str) -> String {
@@ -2517,6 +2587,42 @@ mod tests {
         assert_eq!(
             event_turn(t),
             "Frontend wants your approval: Bash(npm test)."
+        );
+    }
+
+    /// The status flow: the digest in order, the top three by voice with
+    /// "say more", then "what else" continuing the same list.
+    #[test]
+    fn a_status_answer_is_a_digest_with_a_rest() {
+        let st = json!({
+            "needs_you": [{"name": "hyper", "needs": "approval: Bash(git push)"}],
+            "working": [
+                {"name": "godterm", "working_through": "3 subagents (general-purpose (36 min))"},
+                {"name": "plant-growth", "in_tool": "Bash: ffmpeg"},
+                {"name": "trading-room", "last_line": "Backtesting the new signal."},
+            ],
+            "finished": [{"name": "scout", "minutes_since_activity": 4, "last_line": "Done: cleaned the cache."}],
+            "idle": [{"name": "a"}, {"name": "b"}],
+        });
+        let (lines, rest) = crate::app::App::work_digest(&st, 0, 3);
+        let said = spoken_digest(&st, lines, rest, 0);
+        assert_eq!(
+            said,
+            "hyper needs you: approval: Bash(git push). godterm is working through 3 subagents (general-purpose (36 min)). plant growth is working, in Bash: ffmpeg. Two more; say more for the rest."
+        );
+        let (lines, rest) = crate::app::App::work_digest(&st, 3, 3);
+        let more = spoken_digest(&st, lines, rest, 3);
+        assert_eq!(
+            more,
+            "trading room is working: Backtesting the new signal. scout finished 4 minutes ago: Done: cleaned the cache."
+        );
+        let (lines, rest) = crate::app::App::work_digest(&st, 5, 3);
+        assert_eq!(spoken_digest(&st, lines, rest, 5), "That's all of them.");
+        let none = json!({"needs_you": [], "working": [], "finished": [], "idle": [{"name": "a"}]});
+        let (lines, rest) = crate::app::App::work_digest(&none, 0, 3);
+        assert_eq!(
+            spoken_digest(&none, lines, rest, 0),
+            "Nothing is being worked on right now. One other tab is idle."
         );
     }
 

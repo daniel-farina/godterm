@@ -145,13 +145,19 @@ fn test_hub(
     (hub, tok, h, rx)
 }
 
+/// One request, read to the close (the head gets `Connection: close`,
+/// else the server would wait KEEP_IDLE for the next one).
 fn get(port: u16, head: &str) -> String {
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    s.write_all(head.as_bytes()).unwrap();
+    s.write_all(closing(head).as_bytes()).unwrap();
     let mut out = vec![];
     let _ = s.read_to_end(&mut out);
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn closing(head: &str) -> String {
+    head.replacen("\r\n\r\n", "\r\nConnection: close\r\n\r\n", 1)
 }
 
 fn status(resp: &str) -> &str {
@@ -320,7 +326,7 @@ fn a_slow_client_is_resynced_not_waited_for() {
     // The snapshot lets output flow again.
     out.snapshot(7, "{}".into());
     out.output(7, b"z");
-    assert_eq!(out.pop(Duration::ZERO), Some(Out::Text("{}".into())));
+    assert_eq!(out.pop(Duration::ZERO), Some(Out::Snapshot(7, "{}".into())));
     assert_eq!(out.pop(Duration::ZERO), Some(Out::Output(7, b"z".to_vec())));
 }
 
@@ -431,7 +437,7 @@ fn replay(frames: &[Out], uid: u64) -> Option<vt100::Parser> {
     let mut t: Option<vt100::Parser> = None;
     for f in frames {
         match f {
-            Out::Text(s) => {
+            Out::Text(s) | Out::Snapshot(_, s) => {
                 let v: serde_json::Value = serde_json::from_str(s).unwrap();
                 if v["t"] == "snapshot" && v["tab"] == uid {
                     let mut p = vt100::Parser::new(
@@ -493,7 +499,10 @@ fn a_snapshot_then_output_has_no_gap_and_no_repeat() {
     assert_eq!(shown.screen().contents(), p.screen_text());
     // Every line in order exactly once: the snapshot's screen, then the
     // output after it.
-    let snaps = frames.iter().filter(|f| matches!(f, Out::Text(_))).count();
+    let snaps = frames
+        .iter()
+        .filter(|f| matches!(f, Out::Snapshot(..)))
+        .count();
     assert_eq!(snaps, 1);
     let first = replay(&frames[..1], uid).unwrap();
     let mut all = first.screen().contents();
@@ -535,7 +544,7 @@ fn a_resize_sends_its_size_and_a_respawn_a_new_snapshot() {
         );
         after.push(f);
     }
-    let Some(Out::Text(r)) = after.first() else {
+    let Some(Out::Text(r) | Out::Snapshot(_, r)) = after.first() else {
         panic!("no resized frame: {after:?}")
     };
     let v: serde_json::Value = serde_json::from_str(r).unwrap();
@@ -650,7 +659,7 @@ fn stream_pos(frames: &[Out], uid: u64) -> Option<tap::Resume> {
     let mut r: Option<tap::Resume> = None;
     for f in frames {
         match f {
-            Out::Text(s) => {
+            Out::Text(s) | Out::Snapshot(_, s) => {
                 let v: serde_json::Value = serde_json::from_str(s).unwrap();
                 if (v["t"] == "snapshot" || v["t"] == "resume" || v["t"] == "resized")
                     && v["tab"] == uid
@@ -710,13 +719,13 @@ fn a_browser_that_comes_back_gets_only_what_it_missed() {
     assert!(tap::get(uid).unwrap().subscribe_from(8, &out2, &at));
     let mut more = vec![];
     drain(&out2, 8, &mut more);
-    let Some(Out::Text(first)) = more.first() else {
+    let Some(Out::Text(first) | Out::Snapshot(_, first)) = more.first() else {
         panic!("no resume frame")
     };
     assert!(first.contains("\"resume\""), "{first}");
     assert!(!more
         .iter()
-        .any(|f| matches!(f, Out::Text(s) if s.contains("snapshot"))));
+        .any(|f| matches!(f, Out::Text(s) | Out::Snapshot(_, s) if s.contains("snapshot"))));
     // Its old frames plus the new ones draw the tab as it is.
     let mut all = frames;
     all.extend(more);
@@ -1006,6 +1015,68 @@ fn a_browser_mic_keeps_only_fresh_audio_from_before_a_capture() {
     assert_eq!(mic.take_stats().frames, 0, "counts start again");
 }
 
+/// The page says when it plays speech (`voice {playing}`): the engine's
+/// capture of that browser's mic sees it (it gates and barges in on it).
+#[test]
+fn a_browser_mic_knows_when_its_page_plays() {
+    use crate::voice::audio::{Capture, WebMic};
+    let mic = WebMic::new();
+    let cap = Capture::web(&mic);
+    assert!(!cap.web_playing());
+    mic.set_playing(true);
+    assert!(cap.web_playing());
+    mic.set_playing(false);
+    assert!(!cap.web_playing());
+}
+
+/// Speech to the voice browser: clips go on its playback clock (the echo
+/// reference for its mic), a duck while a barge-in is decided goes as
+/// `audio_duck` once per change, and a stop as `audio_stop` clears what
+/// the clock expected to play.
+#[test]
+fn the_voice_browser_gets_ducks_and_stops() {
+    use crate::voice::{player, tts};
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = crate::confirm_click_tests::test_app("web-voice-duck");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let hub = Hub::new(0, "x".repeat(64), vec![], None, tx);
+    let a = hub.add();
+    app.web = Some(super::app_web::WebSide::new(Arc::clone(&hub)));
+    let got = |c: &Arc<Client>| -> Vec<String> {
+        let mut out = vec![];
+        while let Some(f) = c.out.pop(Duration::from_millis(20)) {
+            if let Out::Text(t) | Out::Snapshot(_, t) = f {
+                out.push(t);
+            }
+        }
+        out
+    };
+    app.web_voice(a.id, Some(true), "open", None);
+    assert_eq!(app.web_voice_client(), Some(a.id));
+    let _ = got(&a);
+    assert!(tts::web_chime(), "the browser takes the audio");
+    assert!(player::web_end().is_some(), "a clip goes on its clock");
+    tts::web_duck(0.4);
+    tts::web_duck(0.4);
+    tts::web_duck(1.0);
+    let ducks: Vec<String> = got(&a)
+        .into_iter()
+        .filter(|t| t.contains("audio_duck"))
+        .collect();
+    assert_eq!(ducks.len(), 2, "{ducks:?}");
+    assert!(ducks[0].contains(r#""level":0.4"#), "{ducks:?}");
+    assert!(ducks[1].contains(r#""level":1.0"#), "{ducks:?}");
+    let (v, _ctl) = crate::voice::Voice::fake(true);
+    v.stop_speaking();
+    assert!(got(&a).iter().any(|t| t.contains("audio_stop")));
+    assert_eq!(player::web_end(), None, "nothing more expected to play");
+    app.web_voice_off("test");
+    // No browser: nothing is sent, nothing is ducked there.
+    tts::web_duck(0.4);
+    assert!(!got(&a).iter().any(|t| t.contains("audio_duck")));
+    let _ = std::fs::remove_dir_all(home);
+}
+
 #[test]
 fn a_browser_mic_counts_silence_and_level() {
     use crate::voice::audio::WebMic;
@@ -1156,10 +1227,7 @@ fn websocket_voice_and_images_reach_the_app() {
 #[test]
 fn the_chat_leaves_out_what_godterm_own_turns_carry() {
     use crate::app_assistant::{Entry, Who};
-    let e = |who, t: &str| Entry {
-        who,
-        text: t.into(),
-    };
+    let e = |who, t: &str| Entry::new(who, t);
     let log = [
         e(Who::User, "what is waiting?"),
         e(
@@ -1188,6 +1256,19 @@ fn the_chat_leaves_out_what_godterm_own_turns_carry() {
         shown,
         [true, true, true, false, false, false, false, true, true, true, true]
     );
+}
+
+#[test]
+fn chat_messages_carry_when_they_were_written() {
+    use crate::app_assistant::{now_ms, Entry, Who};
+    let before = now_ms();
+    let e = Entry::new(Who::Reply, "hi");
+    assert!(e.at >= before && e.at <= now_ms(), "stamped now: {}", e.at);
+    let m = super::app_web::message(3, &Entry::at(Who::User, "x", 1_700_000_000_000), false);
+    assert_eq!(m["at"], 1_700_000_000_000i64);
+    assert_eq!(m["id"], 3);
+    assert_eq!(m["role"], "user");
+    assert!(m.get("hidden").is_none());
 }
 
 #[test]
@@ -1261,10 +1342,10 @@ fn a_web_turn_carries_its_view_and_web_layout_reaches_that_browser_only() {
     *a.view.lock().unwrap() = serde_json::json!({"device": "desktop", "panes": 4, "tabs": [null, null, null, null], "focused": 0});
     app.web = Some(super::app_web::WebSide::new(Arc::clone(&hub)));
     // Not a web turn: no web line.
-    assert!(!app.state_preamble().contains("typed in the web app"));
+    assert!(!app.state_preamble().contains("came from the web app"));
     app.assistant.web_client = Some(a.id);
     let p = app.state_preamble();
-    assert!(p.contains("typed in the web app"), "{p}");
+    assert!(p.contains("came from the web app"), "{p}");
     assert!(p.contains("desktop, 4 panes: 1 empty"), "{p}");
     assert!(p.contains("web_layout"), "{p}");
     // web_layout goes to the browser the request came from.
@@ -1277,7 +1358,7 @@ fn a_web_turn_carries_its_view_and_web_layout_reaches_that_browser_only() {
     let got = |c: &Arc<Client>| -> Vec<String> {
         let mut out = vec![];
         while let Some(f) = c.out.pop(Duration::from_millis(20)) {
-            if let Out::Text(t) = f {
+            if let Out::Text(t) | Out::Snapshot(_, t) = f {
                 out.push(t);
             }
         }
@@ -1548,7 +1629,7 @@ fn from_peer(hub: &Arc<Hub>, peer: &str, head: &str) -> String {
     let h = Arc::clone(hub);
     let t = std::thread::spawn(move || h.handle_from(srv, peer, Via::Tailnet));
     c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    let _ = c.write_all(head.as_bytes());
+    let _ = c.write_all(closing(head).as_bytes());
     let mut out = vec![];
     let _ = c.read_to_end(&mut out);
     t.join().unwrap();
@@ -1687,7 +1768,7 @@ fn a_press_makes_a_browser_the_voice_and_a_refusal_says_why() {
     let got = |c: &Arc<Client>| -> Vec<String> {
         let mut out = vec![];
         while let Some(f) = c.out.pop(Duration::from_millis(20)) {
-            if let Out::Text(t) = f {
+            if let Out::Text(t) | Out::Snapshot(_, t) = f {
                 out.push(t);
             }
         }
@@ -1811,7 +1892,7 @@ fn a_browser_chooses_its_own_talk_back_voice() {
     let got = |c: &Arc<Client>, wait: Duration| -> Vec<serde_json::Value> {
         let mut out = vec![];
         while let Some(f) = c.out.pop(wait) {
-            if let Out::Text(t) = f {
+            if let Out::Text(t) | Out::Snapshot(_, t) = f {
                 out.push(serde_json::from_str(&t).unwrap());
             }
         }
@@ -2216,5 +2297,247 @@ fn bview_frames_and_pictures_round_trip() {
     }
     assert!(!crate::browser_view::streaming("s-ws"));
     let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&h);
+}
+
+#[test]
+fn a_browser_refused_for_the_mac_mute_can_lift_it() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = crate::confirm_click_tests::test_app("web-unmute-mac");
+    app.voice.muted = true;
+    app.web_voice_ctl(1, &serde_json::json!({"unmute_mac": true}));
+    assert!(!app.voice.muted, "unmute_mac lifts GodTerm's own mute");
+    // Not muted: nothing changes (no toggle into a mute).
+    app.web_voice_ctl(1, &serde_json::json!({"unmute_mac": true}));
+    assert!(!app.voice.muted);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_request_spoken_into_a_browser_is_that_browsers() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = crate::confirm_click_tests::test_app("web-spoken-turn");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let hub = Hub::new(0, "x".repeat(64), vec![], None, tx);
+    let a = hub.add();
+    app.web = Some(super::app_web::WebSide::new(Arc::clone(&hub)));
+    // The Mac's own mic: not a web turn.
+    assert_eq!(app.turn_web_client(true), None);
+    app.web_voice(a.id, Some(true), "open", None);
+    assert_eq!(
+        app.turn_web_client(true),
+        Some(a.id),
+        "spoken into browser a"
+    );
+    // Typed on the Mac while a browser holds the voice: the Mac's.
+    assert_eq!(app.turn_web_client(false), None);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// One response from `s`, by its Content-Length (the connection stays open).
+fn read_response(s: &mut std::net::TcpStream) -> String {
+    let mut head = Vec::new();
+    let mut b = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        s.read_exact(&mut b).unwrap();
+        head.push(b[0]);
+    }
+    let text = String::from_utf8_lossy(&head).into_owned();
+    let len: usize = text
+        .lines()
+        .find_map(|l| l.strip_prefix("Content-Length: "))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    let mut body = vec![0u8; len];
+    s.read_exact(&mut body).unwrap();
+    text + &String::from_utf8_lossy(&body)
+}
+
+#[test]
+fn http_keeps_a_connection_for_the_next_request() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (hub, tok, h, _rx) = test_hub("keep");
+    let p = hub.port;
+    let host = format!("127.0.0.1:{p}");
+    let cookie = format!("{}={}", auth::COOKIE, auth::cookie_value(&tok));
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", p)).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    // Three requests on one connection, the heads sent in one write and
+    // the last two together with no pause: each gets its own answer, in
+    // order, and the server says the connection stays open.
+    s.write_all(
+        format!("GET /app.css HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n\r\n").as_bytes(),
+    )
+    .unwrap();
+    let r1 = read_response(&mut s);
+    assert_eq!(status(&r1), "200", "{r1}");
+    assert!(r1.contains("Connection: keep-alive"), "{r1}");
+    s.write_all(format!("GET /js/main.js HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n\r\nGET /nothing-here HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n\r\n").as_bytes()).unwrap();
+    let r2 = read_response(&mut s);
+    assert_eq!(status(&r2), "200", "{r2}");
+    assert!(
+        r2.contains("text/javascript") || r2.contains("application/javascript"),
+        "{r2}"
+    );
+    let r3 = read_response(&mut s);
+    assert_eq!(status(&r3), "404", "{r3}");
+    assert!(r3.contains("Connection: keep-alive"), "{r3}");
+    // `Connection: close` ends it after the answer; so does HTTP/1.0.
+    s.write_all(format!("GET /app.css HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+    let r4 = read_response(&mut s);
+    assert!(r4.contains("Connection: close"), "{r4}");
+    let mut rest = Vec::new();
+    s.read_to_end(&mut rest).unwrap();
+    assert!(rest.is_empty());
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", p)).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(
+        format!("GET /app.css HTTP/1.0\r\nHost: {host}\r\nCookie: {cookie}\r\n\r\n").as_bytes(),
+    )
+    .unwrap();
+    let r5 = read_response(&mut s);
+    assert!(r5.contains("Connection: close"), "{r5}");
+    let mut rest = Vec::new();
+    s.read_to_end(&mut rest).unwrap();
+    assert!(rest.is_empty());
+    hub.stop();
+    let _ = std::fs::remove_dir_all(&h);
+}
+
+#[test]
+fn http_read_head_takes_the_head_only() {
+    // The head is taken exactly, in whatever pieces it arrives, and what
+    // follows it stays in the socket (a WebSocket's first frame).
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut c = std::net::TcpStream::connect(l.local_addr().unwrap()).unwrap();
+    let (mut srv, _) = l.accept().unwrap();
+    srv.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    c.write_all(b"GET /a?x=1 HTTP/1.1\r\nHost: h\r").unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    c.write_all(b"\n\r\nAFTER").unwrap();
+    let req = http::read_head(&mut srv).unwrap();
+    assert_eq!(
+        (req.method.as_str(), req.path.as_str(), req.query.as_str()),
+        ("GET", "/a", "x=1")
+    );
+    assert!(req.keep_alive);
+    let mut after = [0u8; 5];
+    srv.read_exact(&mut after).unwrap();
+    assert_eq!(&after, b"AFTER");
+    // Two heads in one write: the second is still there for the next read.
+    c.write_all(b"GET /b HTTP/1.1\r\nConnection: close\r\n\r\nGET /c HTTP/1.0\r\n\r\n")
+        .unwrap();
+    let b = http::read_head(&mut srv).unwrap();
+    assert_eq!(b.path, "/b");
+    assert!(!b.keep_alive);
+    let c2 = http::read_head(&mut srv).unwrap();
+    assert_eq!(c2.path, "/c");
+    assert!(!c2.keep_alive, "HTTP/1.0 closes unless asked to keep");
+    // A closed socket: None, no answer.
+    drop(c);
+    assert!(http::read_head(&mut srv).is_none());
+}
+
+#[test]
+fn websocket_sends_a_big_snapshot_gzipped_when_asked() {
+    use tungstenite::Message;
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (hub, tok, h, rx) = test_hub("wsgz");
+    let cookie = format!("{}={}", auth::COOKIE, auth::cookie_value(&tok));
+    // A shell with 2500 lines of colored history, then a prompt.
+    let (p, _prx) = shell_tab(
+        "i=0; while [ $i -lt 2500 ]; do printf '\\033[32mline %05d\\033[0m the quick brown fox jumps over the lazy dog\\n' $i; i=$((i+1)); done; echo READY; cat",
+        24,
+        80,
+    );
+    let uid = p.uid;
+    let mut ws = ws_client(hub.port, &cookie);
+    match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+        AppEvent::Web(ToApp::Hello(_)) => {}
+        _ => panic!("not a hello"),
+    }
+    // Plain first (no gz in the subscribe): a text frame. Subscribed
+    // again until the history is all there.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let plain = loop {
+        ws.send(Message::text(json_str(
+            &serde_json::json!({"t": "subscribe", "tabs": [uid]}),
+        )))
+        .unwrap();
+        let snap = loop {
+            if let Message::Text(t) = ws.read().unwrap() {
+                let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+                if v["t"] == "snapshot" {
+                    break t.to_string();
+                }
+            }
+        };
+        ws.send(Message::text(json_str(
+            &serde_json::json!({"t": "unsubscribe", "tabs": [uid]}),
+        )))
+        .unwrap();
+        if snap.contains("READY") || Instant::now() > deadline {
+            break snap;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(
+        plain.len() > ws::GZ_MIN,
+        "a big snapshot: {} bytes",
+        plain.len()
+    );
+    // With gz: binary kind 6, the same JSON once inflated.
+    ws.send(Message::text(json_str(
+        &serde_json::json!({"t": "subscribe", "tabs": [uid], "gz": true}),
+    )))
+    .unwrap();
+    let packed = loop {
+        if let Message::Binary(b) = ws.read().unwrap() {
+            let (k, u, d) = ws::unframe(&b).unwrap();
+            if k == ws::KIND_SNAPSHOT_GZ {
+                assert_eq!(u, uid);
+                break d.to_vec();
+            }
+        }
+    };
+    assert!(
+        packed.len() < plain.len() / 4,
+        "gzipped {} of {}",
+        packed.len(),
+        plain.len()
+    );
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&packed[..]), &mut text)
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["t"], "snapshot");
+    assert_eq!(v["tab"], uid);
+    assert!(v["data"].as_str().unwrap().contains("line 02499"));
+    eprintln!(
+        "web: snapshot {} bytes, gzipped {}",
+        plain.len(),
+        packed.len()
+    );
+    // A small frame stays text even with gz on: the resume frame.
+    let sid = v["sid"].as_str().unwrap().to_string();
+    let pos = v["pos"].as_u64().unwrap();
+    ws.send(Message::text(json_str(
+        &serde_json::json!({"t": "unsubscribe", "tabs": [uid]}),
+    )))
+    .unwrap();
+    ws.send(Message::text(json_str(
+        &serde_json::json!({"t": "subscribe", "tabs": [uid], "gz": true, "resume": {uid.to_string(): {"sid": sid, "pos": pos}}}),
+    )))
+    .unwrap();
+    loop {
+        if let Message::Text(t) = ws.read().unwrap() {
+            let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+            if v["t"] == "resume" {
+                break;
+            }
+        }
+    }
+    drop(ws);
+    drop(p);
     let _ = std::fs::remove_dir_all(&h);
 }

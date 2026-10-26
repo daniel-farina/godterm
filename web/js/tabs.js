@@ -3,7 +3,7 @@
 import { $, h, esc, on, emit, store, icon, isDesk, pctClass, debounce, hscroll, tcOf, tcStyle } from './util.js';
 import { S } from './state.js';
 import { panes } from './term.js';
-import { findText, foundHtml, foundClick, onFound } from './find.js';
+import { findText, foundHtml, foundClick, onFound, foundNone } from './find.js';
 
 const CHIPS = [
   ['all', 'All'], ['busy', 'Working'], ['wait', 'Needs you'], ['ready', 'Ready'], ['pinned', 'Pinned'],
@@ -85,7 +85,8 @@ function sub(t) {
 let lastHtml = '', dirty = true;
 // The list is drawn only while it can be seen (the drawer open, or the
 // desktop side list): state comes up to ten times a second.
-const seen = () => isDesk() ? !$('#app').classList.contains('noside') : $('#side').classList.contains('open');
+// (A squeezed desktop's list is an overlay too: drawn while it is open.)
+const seen = () => isDesk() && !$('#app').classList.contains('sq-side') ? !$('#app').classList.contains('noside') : $('#side').classList.contains('open');
 function render() {
   if (!seen()) { dirty = true; return; }
   dirty = false;
@@ -108,12 +109,17 @@ function render() {
     for (const t of g.tabs) {
       html += `<div class="row${shown.has(t.id) ? ' on' : ''}${tcOf(t) ? ' tc" style="' + tcStyle(t) : ''}" role="listitem" tabindex="0" aria-current="${shown.has(t.id)}" data-id="${esc(t.id)}" draggable="${isDesk()}">` +
         `<span class="dot ${esc(t.state)}"></span><span class="tx"><span class="n">${esc(t.name)}${t.pinned ? ' <span class="pin">pinned</span>' : ''}${t.git_warn ? ` <span class="gitw" style="color:var(--warn)" title="Git: ${esc(t.git_warn)}">⚠</span>` : ''}</span>` +
-        `<span class="s">${esc(sub(t))}</span></span><button class="ib" data-act="1" aria-label="Tab actions">${icon('dots')}</button></div>`;
+        `<span class="s">${esc(sub(t))}</span></span><button class="ib" data-act="1" aria-label="Tab actions" title="Tab actions">${icon('dots')}</button></div>`;
     }
   }
-  if (q && !open.length) html += '<div class="empty fnone">No open tab matches</div>';
-  if (!html) html = `<div class="empty">${S.tabs.length ? 'No tab matches' : S.version ? 'No tabs yet: New tab opens one' : 'Connecting to GodTerm...'}</div>`;
-  html += foundHtml();
+  // Nothing anywhere: one line. Else the open tabs' line, then the
+  // archived and other sessions found.
+  if (q && !open.length && foundNone()) html = `<div class="empty">Nothing matches "${esc(q)}": no open tab, archived tab or other session</div>`;
+  else {
+    if (q && !open.length) html += '<div class="empty fnone">No open tab matches</div>';
+    if (!html) html = `<div class="empty">${S.tabs.length ? 'No tab matches' : S.version ? 'No tabs yet: New tab opens one' : 'Connecting to GodTerm...'}</div>`;
+    html += foundHtml();
+  }
   if (html === lastHtml) return;
   lastHtml = html;
   list.innerHTML = html;
@@ -153,6 +159,19 @@ export function initTabs() {
   list.addEventListener('keydown', (e) => {
     const row = e.target.closest('.row');
     if (row && e.target === row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); row.click(); }
+    // The arrows walk the rows (Home and End: the first and the last),
+    // Shift+F10 opens the row's options as a right click does.
+    if (!row || e.altKey || e.metaKey || e.ctrlKey) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End') {
+      const rows = [...list.querySelectorAll('.row')];
+      const i = rows.indexOf(row);
+      const to = e.key === 'Home' ? rows[0] : e.key === 'End' ? rows[rows.length - 1] : rows[i + (e.key === 'ArrowDown' ? 1 : -1)];
+      if (to) { e.preventDefault(); to.focus(); to.scrollIntoView({ block: 'nearest' }); }
+    } else if (e.key === 'F10' && e.shiftKey) {
+      e.preventDefault();
+      const r = row.getBoundingClientRect();
+      tabActions(row.dataset.id, { x: r.left + 40, y: r.bottom });
+    }
   });
   list.addEventListener('contextmenu', (e) => {
     const row = e.target.closest('.row:not(.frow)');

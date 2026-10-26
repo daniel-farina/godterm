@@ -302,6 +302,7 @@ impl App {
             tab_group: r.group.clone(),
             pinned: false,
             browser: None,
+            browser_also: vec![],
         };
         let msg = self.reopen_closed_tab(c)?;
         self.flash(msg.clone());

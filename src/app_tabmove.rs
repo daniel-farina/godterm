@@ -416,6 +416,7 @@ impl App {
         let label = src.name();
         // The browser binding goes with the conversation.
         let browser = src.browser.clone();
+        let browser_also = src.browser_also.clone();
         let kind = match self.copy_transcript(slot, tab, target) {
             Ok(Some(id)) => LaunchKind::Resume(id),
             Err(e) => {
@@ -450,6 +451,7 @@ impl App {
             _ => None,
         };
         self.panes[p].tabs[ti].browser = browser;
+        self.panes[p].tabs[ti].browser_also = browser_also;
         self.launch_tab(p, ti, kind);
         self.panes[p].active = ti;
         self.focus = p;

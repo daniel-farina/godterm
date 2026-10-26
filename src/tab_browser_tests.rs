@@ -27,7 +27,7 @@ use crate::tab_browser::{
 
 const ID: &str = browser::EXTENSION_ID;
 
-fn pe(dir: &str, name: &str, installed: bool, enabled: Option<bool>) -> ProfileExt {
+pub(crate) fn pe(dir: &str, name: &str, installed: bool, enabled: Option<bool>) -> ProfileExt {
     ProfileExt {
         profile: ChromeProfile {
             dir: dir.into(),
@@ -136,7 +136,7 @@ fn what_to_open_depends_on_the_extension() {
     assert_eq!(OpenPlan::Extensions.url(), "chrome://extensions");
 }
 
-fn bsk(id: &str, label: &str) -> Browser {
+pub(crate) fn bsk(id: &str, label: &str) -> Browser {
     Browser {
         instance_id: id.into(),
         label: label.into(),
@@ -147,24 +147,25 @@ fn bsk(id: &str, label: &str) -> Browser {
 
 #[test]
 fn a_profiles_browser_is_found_by_the_label_or_as_the_only_one() {
+    const L: tb::Links = tb::Links::new();
     let work = pe("Profile 1", "Work", true, Some(true)).profile;
     let all = vec![bsk("aaa", "Me"), bsk("bbb", " work ")];
-    let (m, how) = match_browsers(&all, &work, 2, true);
+    let (m, how) = match_browsers(&all, &work, 2, true, &L);
     assert_eq!(
         (m.len(), m[0].instance_id.as_str(), how),
         (1, "bbb", "label")
     );
     // The label may be the folder or the email too.
     let all = vec![bsk("ccc", "profile 1"), bsk("ddd", "work@x.com")];
-    let (m, _) = match_browsers(&all, &work, 2, true);
+    let (m, _) = match_browsers(&all, &work, 2, true, &L);
     assert_eq!(m.len(), 2);
     // A lone browser counts only when this is the one profile with it on.
     let one = vec![bsk("eee", "")];
-    assert_eq!(match_browsers(&one, &work, 1, true).1, "only browser");
-    assert!(match_browsers(&one, &work, 2, true).0.is_empty());
-    assert!(match_browsers(&one, &work, 1, false).0.is_empty());
+    assert_eq!(match_browsers(&one, &work, 1, true, &L).1, "only browser");
+    assert!(match_browsers(&one, &work, 2, true, &L).0.is_empty());
+    assert!(match_browsers(&one, &work, 1, false, &L).0.is_empty());
     // Nothing guessed from other labels.
-    let (m, how) = match_browsers(&[bsk("fff", "Me"), bsk("ggg", "Other")], &work, 2, true);
+    let (m, how) = match_browsers(&[bsk("fff", "Me"), bsk("ggg", "Other")], &work, 2, true, &L);
     assert!(m.is_empty());
     assert_eq!(how, "unknown");
 }
@@ -253,7 +254,7 @@ fn chrome(home: &Path) -> PathBuf {
     root
 }
 
-fn set_pref(root: &Path, dir: &str, state: Option<u64>) {
+pub(crate) fn set_pref(root: &Path, dir: &str, state: Option<u64>) {
     let v = match state {
         Some(s) => json!({"extensions": {"settings": {ID: {"state": s}}}}),
         None => json!({}),
@@ -273,7 +274,7 @@ fn env(root: &Path) -> Env {
 
 /// An app with that Chrome folder looked at, and one running tab on pane
 /// 0 (its index).
-fn setup(tag: &str) -> (App, PathBuf, usize) {
+pub(crate) fn setup(tag: &str) -> (App, PathBuf, usize) {
     let (mut app, home) = test_app(&format!("tabbrowser-{tag}"));
     let root = chrome(&home);
     app.browser.env = Some(env(&root));
@@ -289,14 +290,14 @@ fn setup(tag: &str) -> (App, PathBuf, usize) {
 }
 
 /// The quick look, taken now (the test's own, not the background one).
-fn refresh(app: &mut App) {
+pub(crate) fn refresh(app: &mut App) {
     settle(app);
     let e = app.browser.env.clone().unwrap();
     app.browser.set_quick(tb::quick(&e, false));
 }
 
 /// Wait for background looks to end.
-fn settle(app: &App) {
+pub(crate) fn settle(app: &App) {
     let t0 = std::time::Instant::now();
     while (app.browser.quick_busy.load(Ordering::SeqCst) || app.browser_busy())
         && t0.elapsed() < Duration::from_secs(5)
@@ -305,18 +306,18 @@ fn settle(app: &App) {
     }
 }
 
-fn uid_of(app: &App, t: usize) -> u64 {
+pub(crate) fn uid_of(app: &App, t: usize) -> u64 {
     app.panes[0].tabs[t].uid
 }
 
-fn launched() -> Vec<tb::Cmd> {
+pub(crate) fn launched() -> Vec<tb::Cmd> {
     tb::LAUNCHED
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
 }
 
-fn key(app: &mut App, c: KeyCode) {
+pub(crate) fn key(app: &mut App, c: KeyCode) {
     app.on_browser_key(KeyEvent::new(c, KeyModifiers::NONE));
 }
 
@@ -382,7 +383,7 @@ fn a_moved_tab_keeps_its_binding_and_the_others_do_not_get_it() {
 
 // ---- the tab's own tools ----
 
-fn snapshot(app: &App, browsers: Vec<Browser>) -> Snapshot {
+pub(crate) fn snapshot(app: &App, browsers: Vec<Browser>) -> Snapshot {
     Snapshot {
         at: std::time::SystemTime::now(),
         bsk_path: None,
@@ -396,7 +397,7 @@ fn snapshot(app: &App, browsers: Vec<Browser>) -> Snapshot {
     }
 }
 
-fn tab_call(app: &mut App, uid: u64, tool: &str) -> Value {
+pub(crate) fn tab_call(app: &mut App, uid: u64, tool: &str) -> Value {
     app.control_call(tool, &json!({"_client": format!("tab:{uid}")}))
 }
 

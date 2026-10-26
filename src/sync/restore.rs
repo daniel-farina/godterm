@@ -54,21 +54,20 @@ pub fn reload(ctx: &Ctx) -> Result<Ctx> {
     let mut c = Ctx::new(ctx.home.clone(), ctx.app_home.clone(), cfg);
     c.exe = ctx.exe.clone();
     c.now_ms = ctx.now_ms;
+    // Still inside the running app: its stores keep going through it.
+    c.link = ctx.link.clone();
     c.never.extend(ctx.never.iter().cloned());
     c.never.sort();
     c.never.dedup();
     Ok(c)
 }
 
-/// The first machine: create the state repo (private, after a yes) and
-/// push the first collection.
-pub fn init(ctx: &Ctx, sc: SyncCfg, yes: &dyn Fn(&str) -> bool) -> Result<Report> {
-    let mut sc = sc;
-    sc.enabled = true;
-    // No owner or account set: the one given, else the first gh login.
+/// No owner or account set: the one given, else the first gh login
+/// (`gh`, as `gh auth status` lists them).
+pub fn resolve_owner(sc: &mut SyncCfg, gh: &[String]) {
     if sc.account.trim().is_empty() {
         sc.account = if sc.owner.trim().is_empty() {
-            git::gh_accounts().into_iter().next().unwrap_or_default()
+            gh.first().cloned().unwrap_or_default()
         } else {
             sc.owner.clone()
         };
@@ -76,6 +75,15 @@ pub fn init(ctx: &Ctx, sc: SyncCfg, yes: &dyn Fn(&str) -> bool) -> Result<Report
     if sc.owner.trim().is_empty() {
         sc.owner = sc.account.clone();
     }
+}
+
+/// The first machine: create the state repo (private, after a yes) and
+/// push the first collection.
+pub fn init(ctx: &Ctx, sc: SyncCfg, yes: &dyn Fn(&str) -> bool) -> Result<Report> {
+    let mut sc = sc;
+    sc.enabled = true;
+    sc.paused = false;
+    resolve_owner(&mut sc, &git::gh_accounts());
     let mut c = ctx.clone();
     c.cfg.sync = sc.clone();
     let r = c.remote();
@@ -103,11 +111,11 @@ pub fn init(ctx: &Ctx, sc: SyncCfg, yes: &dyn Fn(&str) -> bool) -> Result<Report
             sc.state_repo
         );
     }
-    let p = super::plan::plan(&c);
-    println!("{}", p.text());
     if r.is_github() {
+        let p = super::plan::plan(&c);
         let q = format!(
-            "Create the PRIVATE repo {}/{} on GitHub (account {}), and from now on private monthly repos {}/{}-YYYY-MM for conversations? They hold your config, .env files and conversations as is.",
+            "{}\nCreate the PRIVATE repo {}/{} on GitHub (account {}), and from now on private monthly repos {}/{}-YYYY-MM for conversations? They hold your config, .env files and conversations as is.",
+            p.text(),
             sc.owner, sc.state_repo, sc.account, sc.owner, sc.convos_prefix
         );
         if !yes(&q) {
@@ -172,6 +180,13 @@ pub fn clone(ctx: &Ctx, full: &str, o: &CloneOpts) -> Result<Cloned> {
             "gh has no github.com login for {} (run: gh auth login --hostname github.com)",
             sc.account
         );
+    }
+    // A state repo that reads as anything but private is never used: it
+    // holds .env files and conversations as is.
+    if let Some(v) = c.remote().visibility(owner, name) {
+        if v != "PRIVATE" {
+            bail!("{owner}/{name} is {v}, not private: GodTerm only syncs with a private repo (make it private on GitHub first)");
+        }
     }
     let wc = state_repo::open_wc(&c)?;
     save_sync_cfg(&ctx.app_home, &sc)?;

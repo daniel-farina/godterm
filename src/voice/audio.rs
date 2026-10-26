@@ -334,6 +334,11 @@ pub enum Source {
 pub struct WebMic {
     q: std::sync::Mutex<WebQueue>,
     cv: std::sync::Condvar,
+    /// The browser says it is playing speech (`voice {playing}`): the
+    /// engine treats its mic as hearing our reply (the echo gate and
+    /// barge-in), also when the browser plays it later than GodTerm
+    /// thinks (clips held until a tap on iOS, a slow network).
+    playing: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Default)]
@@ -461,6 +466,15 @@ impl WebMic {
             q.second.dropped += over as u64;
         }
         self.cv.notify_one();
+    }
+
+    /// The browser started or stopped playing speech.
+    pub fn set_playing(&self, on: bool) {
+        self.playing.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn playing(&self) -> bool {
+        self.playing.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The counts since the last call (and starts new ones).
@@ -604,6 +618,11 @@ impl Capture {
         }
     }
 
+    /// The browser whose mic this is plays speech now.
+    pub fn web_playing(&self) -> bool {
+        self.web.as_ref().is_some_and(|w| w.playing())
+    }
+
     /// Browser audio that came and is not read yet (0 for other sources).
     pub fn queued(&self) -> usize {
         self.web.as_ref().map_or(0, |w| w.queued())
@@ -705,6 +724,13 @@ pub struct EchoGate {
     /// Never below this (dBFS): the rolling noise floor plus false alarm
     /// margin from barge::NoiseFloor, so a vacuum or fan stops firing.
     pub noise_bar_db: f32,
+    /// The strongest echo path (mic level minus playback) among the loud
+    /// frames since the last trigger, and the one that last triggered:
+    /// loud frames are never learned from (they may be the user), so an
+    /// echo stronger than expected (a browser's speakers its canceller
+    /// misses) is learned once the words heard prove it was our own.
+    loud_c: Option<f32>,
+    trigger_c: Option<f32>,
 }
 
 /// dB over the expected echo that counts as the user.
@@ -724,6 +750,8 @@ impl EchoGate {
             coupling_db: -12.0,
             aec: false,
             noise_bar_db: -100.0,
+            loud_c: None,
+            trigger_c: None,
         }
     }
 
@@ -735,6 +763,14 @@ impl EchoGate {
             self.coupling_db = if on { -25.0 } else { -12.0 };
         }
         self.aec = on;
+    }
+
+    /// The last trigger was our own words coming back (barge::Heard::Echo):
+    /// the echo path is at least as strong as it was then.
+    pub fn echo_heard(&mut self) {
+        if let Some(c) = self.trigger_c.take() {
+            self.coupling_db = self.coupling_db.max(c);
+        }
     }
 
     /// One frame (FRAME_MS long) at `level_db`, with the endpointer's
@@ -749,6 +785,7 @@ impl EchoGate {
     ) -> Gate {
         if !speaking {
             self.recent.clear();
+            self.loud_c = None;
             return Gate::Feed;
         }
         let (ref_margin, margin) = if self.aec {
@@ -768,8 +805,15 @@ impl EchoGate {
         while self.recent.len() > (300 / FRAME_MS) as usize {
             self.recent.pop_front();
         }
+        if loud {
+            if let Some(p) = played_db.filter(|p| *p > -60.0) {
+                let c = (level_db - p).clamp(-50.0, 6.0);
+                self.loud_c = Some(self.loud_c.map_or(c, |m| m.max(c)));
+            }
+        }
         if loud && self.recent.iter().filter(|l| **l).count() as u32 * FRAME_MS >= self.need_ms {
             self.recent.clear();
+            self.trigger_c = self.loud_c.take();
             return Gate::BargeIn;
         }
         if !loud {
@@ -786,6 +830,28 @@ impl EchoGate {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_echo_heard_as_our_own_words_is_learned() {
+        // A browser whose canceller misses most of the reply: the echo is
+        // 10 dB under what plays, far over what the gate expects (25).
+        let mut g = EchoGate::new(true, 15.0);
+        g.set_aec(true);
+        let trig = (0..20).position(|_| g.push(-30.0, -45.0, true, Some(-20.0)) == Gate::BargeIn);
+        assert!(trig.is_some(), "the strong echo triggers at first");
+        // The words heard were the reply's: that echo path is learned.
+        g.echo_heard();
+        assert!((g.coupling_db - -10.0).abs() < 0.01, "{}", g.coupling_db);
+        assert!(
+            (0..40).all(|_| g.push(-30.0, -45.0, true, Some(-20.0)) == Gate::Mute),
+            "the same echo no longer triggers"
+        );
+        // Only once per trigger.
+        g.echo_heard();
+        assert!((g.coupling_db - -10.0).abs() < 1.0, "{}", g.coupling_db);
+        // The user over it, 10 dB louder than the echo, still cuts in.
+        assert!((0..20).any(|_| g.push(-20.0, -45.0, true, Some(-20.0)) == Gate::BargeIn));
+    }
 
     #[test]
     fn mic_input_per_platform() {

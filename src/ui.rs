@@ -10627,7 +10627,8 @@ mod tests {
         assert!(
             argv.contains("make exactly one send_prompt")
                 && argv.contains("recent_turns")
-                && argv.contains("comes from the conversation, not the code"),
+                && argv.contains("Reading beats asking")
+                && argv.contains("work_status"),
             "the prompt carries both rules"
         );
         // The brain's turn: one send_prompt, nothing else.
@@ -11507,10 +11508,10 @@ mod tests {
         app.assistant.show = true;
         app.assistant.focused = true;
         app.assistant.log = vec![
-            Entry { who: Who::User, text: "ask hyper if slack works now".into() },
-            Entry { who: Who::Tool, text: serde_json::json!({"tool": "send_prompt", "args": {"tab": tid, "text": q, "expect_reply": true}, "status": "ok"}).to_string() },
-            Entry { who: Who::Note, text: format!("Prompt to {tid}: delivered") },
-            Entry { who: Who::Reply, text: "Asked hyper. I'll tell you when it answers. It may take a minute while it checks the tools.".into() },
+            Entry::new(Who::User, "ask hyper if slack works now"),
+            Entry::new(Who::Tool, serde_json::json!({"tool": "send_prompt", "args": {"tab": tid, "text": q, "expect_reply": true}, "status": "ok"}).to_string()),
+            Entry::new(Who::Note, format!("Prompt to {tid}: delivered")),
+            Entry::new(Who::Reply, "Asked hyper. I'll tell you when it answers. It may take a minute while it checks the tools."),
         ];
         app.register_follow_up(uid, q);
         for width in [60u16, 90, 140] {

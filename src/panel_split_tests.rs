@@ -35,10 +35,10 @@ fn panel(tag: &str, loops: usize, lines: usize) -> (App, std::path::PathBuf) {
         app.loops.push(r);
     }
     for k in 0..lines {
-        app.assistant.log.push(Entry {
-            who: if k % 2 == 0 { Who::User } else { Who::Reply },
-            text: format!("message number {k}"),
-        });
+        app.assistant.log.push(Entry::new(
+            if k % 2 == 0 { Who::User } else { Who::Reply },
+            format!("message number {k}"),
+        ));
     }
     (app, home)
 }
@@ -311,10 +311,9 @@ fn a_scrolled_chat_keeps_its_lines_as_new_ones_arrive() {
         .unwrap()
         .top(app.assistant.chat_off.get());
     for k in 0..4 {
-        app.assistant.log.push(Entry {
-            who: Who::Reply,
-            text: format!("late {k}"),
-        });
+        app.assistant
+            .log
+            .push(Entry::new(Who::Reply, format!("late {k}")));
     }
     draw(&mut app, &mut t);
     let g2 = app.assistant.chat_geo.get().unwrap();
@@ -327,10 +326,7 @@ fn a_scrolled_chat_keeps_its_lines_as_new_ones_arrive() {
     // At the newest line it keeps following.
     app.assistant.chat_off.set(0);
     draw(&mut app, &mut t);
-    app.assistant.log.push(Entry {
-        who: Who::Reply,
-        text: "newest".into(),
-    });
+    app.assistant.log.push(Entry::new(Who::Reply, "newest"));
     draw(&mut app, &mut t);
     assert_eq!(app.assistant.chat_off.get(), 0);
     let _ = std::fs::remove_dir_all(&home);

@@ -9,8 +9,14 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-/// A subagent transcript written this recently is a running subagent.
+/// A subagent transcript written this recently is a running subagent,
+/// whatever its last line says (a message may still be streaming in).
 pub const SUBAGENT_FRESH: Duration = Duration::from_secs(30);
+/// A subagent transcript that stops mid tool call and is not written for
+/// this long was abandoned (its claude died or was interrupted): not
+/// running any more. Long tool calls (a build, a test run, a render)
+/// write nothing for many minutes, so this is generous.
+pub const SUBAGENT_STALE: Duration = Duration::from_secs(2 * 3600);
 /// A transcript written this recently means the agent is working.
 pub const WRITE_FRESH: Duration = Duration::from_secs(10);
 
@@ -104,22 +110,290 @@ fn kind_of(cmd: &str) -> &'static str {
     }
 }
 
-/// How many subagents ran in the last SUBAGENT_FRESH, from their
-/// transcripts under `<session>/subagents/`.
-pub fn running_subagents(transcript: &Path, now: SystemTime) -> usize {
+/// One subagent of a session (an Agent tool call of Claude Code), from
+/// its transcript under `<session>/subagents/agent-<id>.jsonl`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Subagent {
+    /// The file stem ("agent-a1b2c3").
+    pub id: String,
+    /// Its type or name when the transcript says (general-purpose,
+    /// Explore...), else None.
+    pub name: Option<String>,
+    /// What it was asked, shortened (its first prompt).
+    pub task: Option<String>,
+    /// Seconds since it started (its first line, else the file's birth).
+    pub age_s: u64,
+    /// Seconds since its transcript was last written.
+    pub idle_s: u64,
+    /// Still going: its last message is a tool call or a tool result
+    /// (or it was written in the last SUBAGENT_FRESH), and it has not
+    /// been silent for SUBAGENT_STALE.
+    pub running: bool,
+    /// The tool it is in, when it waits on one ("Bash", "Read").
+    pub tool: Option<String>,
+}
+
+impl Subagent {
+    /// "general-purpose (36 min)" for a list.
+    pub fn label(&self) -> String {
+        let name = self.name.as_deref().unwrap_or("agent");
+        format!("{name} ({})", crate::sessions::rel_secs(self.age_s))
+    }
+}
+
+/// The subagents of a session, from their transcripts under
+/// `<session>/subagents/` (every file, running or done, sorted by start).
+/// Reads only each file's head and tail, so it is cheap for every tab
+/// every turn.
+pub fn subagents(transcript: &Path, now: SystemTime) -> Vec<Subagent> {
     let dir = transcript.with_extension("").join("subagents");
-    std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
-                .filter(|e| {
-                    e.metadata()
-                        .and_then(|m| m.modified())
-                        .is_ok_and(|t| now.duration_since(t).unwrap_or_default() < SUBAGENT_FRESH)
-                })
-                .count()
-        })
-        .unwrap_or(0)
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut out: Vec<Subagent> = rd
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+        .filter_map(|e| subagent_of(&e.path(), now))
+        .collect();
+    out.sort_by(|a, b| b.age_s.cmp(&a.age_s).then_with(|| a.id.cmp(&b.id)));
+    out
+}
+
+/// The running ones only.
+pub fn running_subagents_of(transcript: &Path, now: SystemTime) -> Vec<Subagent> {
+    subagents(transcript, now)
+        .into_iter()
+        .filter(|s| s.running)
+        .collect()
+}
+
+/// How many subagents of a session still run.
+pub fn running_subagents(transcript: &Path, now: SystemTime) -> usize {
+    running_subagents_of(transcript, now).len()
+}
+
+/// The head and the tail of a file, as text (the whole file when small).
+fn head_and_tail(path: &Path, n: u64) -> Option<(String, String)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut head = vec![0u8; len.min(n) as usize];
+    f.read_exact(&mut head).ok()?;
+    let head = String::from_utf8_lossy(&head).into_owned();
+    if len <= n {
+        return Some((head.clone(), head));
+    }
+    f.seek(SeekFrom::Start(len - n)).ok()?;
+    let mut tail = vec![0u8; n as usize];
+    f.read_exact(&mut tail).ok()?;
+    let tail = String::from_utf8_lossy(&tail).into_owned();
+    // The first line of the tail is cut; drop it.
+    let tail = tail
+        .split_once('\n')
+        .map(|x| x.1.to_string())
+        .unwrap_or_default();
+    Some((head, tail))
+}
+
+/// A string field named one of `keys`, anywhere in the top level of `v`
+/// or in its message.
+fn str_field(v: &Value, keys: &[&str]) -> Option<String> {
+    for k in keys {
+        if let Some(s) = v.get(*k).and_then(Value::as_str) {
+            if !s.trim().is_empty() {
+                return Some(s.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn user_text(v: &Value) -> Option<String> {
+    match &v["message"]["content"] {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(a) => {
+            let t: Vec<&str> = a
+                .iter()
+                .filter(|b| b["type"] == "text")
+                .filter_map(|b| b["text"].as_str())
+                .collect();
+            (!t.is_empty()).then(|| t.join("\n"))
+        }
+        _ => None,
+    }
+    .filter(|t| !t.trim().is_empty())
+}
+
+/// One subagent transcript: what it is, how old, and whether it still
+/// runs (see `Subagent`).
+pub fn subagent_of(path: &Path, now: SystemTime) -> Option<Subagent> {
+    const PART: u64 = 48 * 1024;
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    let idle = now.duration_since(modified).unwrap_or_default();
+    let (head, tail) = head_and_tail(path, PART)?;
+    let mut s = Subagent {
+        id: path
+            .file_stem()
+            .map(|x| x.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        idle_s: idle.as_secs(),
+        ..Default::default()
+    };
+    // The head: its name and task, and when it started.
+    let mut started: Option<SystemTime> = None;
+    for line in head.lines().take(12) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if s.name.is_none() {
+            s.name = str_field(
+                &v,
+                &[
+                    "agentType",
+                    "subagentType",
+                    "subagent_type",
+                    "agentName",
+                    "agent_type",
+                ],
+            );
+        }
+        if started.is_none() {
+            started = v
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .map(SystemTime::from);
+        }
+        if s.task.is_none() && v.get("type").and_then(Value::as_str) == Some("user") {
+            if let Some(t) = user_text(&v) {
+                s.task = Some(crate::sessions::snippet(&t, 120));
+            }
+        }
+    }
+    let started = started.or_else(|| meta.created().ok()).unwrap_or(modified);
+    s.age_s = now.duration_since(started).unwrap_or_default().as_secs();
+    // The tail: the last message decides whether it is still going.
+    let mut last: Option<(&'static str, bool, Option<String>)> = None;
+    for line in tail.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        match v.get("type").and_then(Value::as_str) {
+            Some("assistant") => {
+                let blocks = v["message"]["content"].as_array();
+                let tool = blocks.and_then(|a| {
+                    a.iter()
+                        .rev()
+                        .find(|b| b["type"] == "tool_use")
+                        .and_then(|b| b["name"].as_str())
+                        .map(str::to_string)
+                });
+                last = Some(("assistant", tool.is_some(), tool));
+            }
+            Some("user") => {
+                let result = v["message"]["content"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|b| b["type"] == "tool_result"));
+                last = Some(("user", result, None));
+            }
+            _ => {}
+        }
+    }
+    let unfinished = match last {
+        // Mid tool call, or the model is answering a tool result.
+        Some(("assistant", calls, _)) => calls,
+        Some(("user", _, _)) => true,
+        // Nothing parsable: only a fresh write says it runs.
+        None => false,
+        Some(_) => false,
+    };
+    s.tool = last.and_then(|l| l.2);
+    s.running = idle < SUBAGENT_FRESH || (unfinished && idle < SUBAGENT_STALE);
+    Some(s)
+}
+
+/// What a Claude Code screen says about background agents: the "Waiting
+/// for N background agents to finish" line and the agent rows under it
+/// ("○ general-purpose 36m 26s": a hollow circle is one still running).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ScreenAgents {
+    /// N of "Waiting for N background agents".
+    pub waiting: usize,
+    /// (name, age in seconds) of each running row.
+    pub rows: Vec<(String, u64)>,
+}
+
+impl ScreenAgents {
+    pub fn count(&self) -> usize {
+        self.waiting.max(self.rows.len())
+    }
+}
+
+/// "36m 26s", "1h 2m", "45s" in seconds.
+pub fn parse_age(words: &[&str]) -> Option<u64> {
+    let mut total = 0u64;
+    let mut any = false;
+    for w in words {
+        let (num, unit) = w.split_at(w.find(|c: char| !c.is_ascii_digit())?);
+        let n: u64 = num.parse().ok()?;
+        total += match unit {
+            "s" => n,
+            "m" => n * 60,
+            "h" => n * 3600,
+            "d" => n * 86400,
+            _ => return None,
+        };
+        any = true;
+    }
+    any.then_some(total)
+}
+
+/// The agents a screen shows (its last lines, where the running turn or
+/// the turn just over draws them).
+pub fn screen_agents(screen: &str) -> ScreenAgents {
+    let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail = &lines[lines.len().saturating_sub(24)..];
+    let mut out = ScreenAgents::default();
+    for l in tail {
+        let low = l.to_lowercase();
+        if low.contains("waiting for") && low.contains("background agent") {
+            let words: Vec<&str> = low.split_whitespace().collect();
+            if let Some(i) = words.iter().position(|w| *w == "for") {
+                if let Some(n) = words.get(i + 1).and_then(|w| w.parse::<usize>().ok()) {
+                    out.waiting = out.waiting.max(n);
+                }
+            }
+            continue;
+        }
+        // "  ⎿  ○ general-purpose 36m 26s" (a done row is ✔ or ●).
+        let Some(rest) = l.split_once('○').map(|x| x.1) else {
+            continue;
+        };
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        if words.len() < 2 {
+            continue;
+        }
+        // The age is the trailing run of "36m 26s" words.
+        let mut k = words.len();
+        while k > 1 && parse_age(&words[k - 1..k]).is_some() {
+            k -= 1;
+        }
+        if k == words.len() {
+            continue;
+        }
+        let Some(age) = parse_age(&words[k..]) else {
+            continue;
+        };
+        let name = words[..k].join(" ");
+        if name
+            .chars()
+            .all(|c| c.is_alphanumeric() || "-_ .".contains(c))
+        {
+            out.rows.push((name, age));
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -127,6 +401,8 @@ pub struct Activity {
     /// working, waiting_approval, background (...), idle_with_loops, idle.
     pub state: String,
     pub subagents_running: usize,
+    /// The running subagents, with names and ages when known.
+    pub subagents: Vec<Subagent>,
     pub background_shells: usize,
     pub background_tasks: usize,
     pub children: Vec<(u32, String)>,
@@ -144,9 +420,27 @@ impl Activity {
         self.subagents_running + self.background_shells + self.background_tasks
     }
 
+    /// "3 subagents (general-purpose 36 min, Explore 2 min)".
+    pub fn subagents_line(&self) -> Option<String> {
+        if self.subagents_running == 0 {
+            return None;
+        }
+        let n = crate::control::plural(self.subagents_running, "subagent");
+        let names: Vec<String> = self.subagents.iter().take(6).map(Subagent::label).collect();
+        Some(if names.is_empty() {
+            n
+        } else {
+            format!("{n} ({})", names.join(", "))
+        })
+    }
+
     pub fn json(&self) -> Value {
         json!({
-            "state": self.state, "subagents_running": self.subagents_running, "background_shells": self.background_shells,
+            "state": self.state, "subagents_running": self.subagents_running,
+            "subagents": self.subagents.iter().map(|a| json!({
+                "name": a.name, "task": a.task, "age_s": a.age_s, "idle_s": a.idle_s, "tool": a.tool,
+            })).collect::<Vec<_>>(),
+            "background_shells": self.background_shells,
             "background_tasks": self.background_tasks, "children": self.children.iter().map(|(p, c)| json!({"pid": p, "cmd": crate::sessions::snippet(c, 80)})).collect::<Vec<_>>(),
             "last_write_s": self.last_write_s, "loops": self.loops,
         })
@@ -171,6 +465,7 @@ pub fn classify(
     let fresh = last_write_s.is_some_and(|s| s < WRITE_FRESH.as_secs());
     let mut a = Activity {
         subagents_running,
+        subagents: vec![],
         background_shells: shells,
         background_tasks: tasks,
         children: work,
@@ -213,20 +508,22 @@ pub fn of_live(l: &crate::takeover::Live, table: &[Proc], loops: usize) -> Activ
         .map(|m| now.duration_since(m).unwrap_or_default().as_secs());
     let subs = transcript
         .as_deref()
-        .map(|t| running_subagents(t, now))
-        .unwrap_or(0);
+        .map(|t| running_subagents_of(t, now))
+        .unwrap_or_default();
     let children = descendants(table, l.pid)
         .into_iter()
         .map(|p| (p.pid, p.cmd.clone()))
         .collect();
-    classify(
+    let mut a = classify(
         l.status == "busy",
         false,
         last_write_s,
-        subs,
+        subs.len(),
         children,
         loops,
-    )
+    );
+    a.subagents = subs;
+    a
 }
 
 /// The process table, at most two seconds old (snapshots ask every turn).
@@ -257,10 +554,42 @@ impl crate::app::App {
             .as_deref()
             .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
             .map(|m| now.duration_since(m).unwrap_or_default().as_secs());
-        let subs = transcript
+        let mut subs = transcript
             .as_deref()
-            .map(|p| running_subagents(p, now))
-            .unwrap_or(0);
+            .map(|p| running_subagents_of(p, now))
+            .unwrap_or_default();
+        // The screen is the other witness: claude's "Waiting for N
+        // background agents" and its agent rows. An Agent tool subagent
+        // in a long tool call writes nothing for minutes, and a tab
+        // started elsewhere may have no transcript here; the rows still
+        // show it. The larger count wins, the rows fill in names and
+        // ages the transcripts did not give.
+        if tab.is_running() && matches!(tab.activity, crate::pane::Activity::Ready) {
+            let seen = screen_agents(&tab.screen_text());
+            if seen.count() > subs.len() {
+                let from_rows: Vec<Subagent> = seen
+                    .rows
+                    .iter()
+                    .map(|(name, age)| Subagent {
+                        id: format!("screen:{name}"),
+                        name: Some(name.clone()),
+                        age_s: *age,
+                        running: true,
+                        ..Default::default()
+                    })
+                    .collect();
+                if from_rows.len() >= subs.len() {
+                    subs = from_rows;
+                }
+                while subs.len() < seen.count() {
+                    subs.push(Subagent {
+                        id: format!("screen:{}", subs.len()),
+                        running: true,
+                        ..Default::default()
+                    });
+                }
+            }
+        }
         let children = match tab.pid() {
             Some(pid) => descendants(&process_table_cached(), pid)
                 .into_iter()
@@ -270,14 +599,16 @@ impl crate::app::App {
         };
         let busy = tab.activity == crate::pane::Activity::Working;
         let asking = tab.activity == crate::pane::Activity::Permission;
-        classify(
+        let mut a = classify(
             busy,
             asking,
             last_write_s,
-            subs,
+            subs.len(),
             children,
             self.loops_in(tab.uid),
-        )
+        );
+        a.subagents = subs;
+        a
     }
 
     /// What still runs under a tab whose screen is at its prompt:
@@ -369,6 +700,118 @@ mod tests {
             classify(false, false, Some(300), 0, vec![], 1).state,
             "idle_with_loops"
         );
+    }
+
+    fn set_mtime(p: &Path, ago: Duration) {
+        std::fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(SystemTime::now() - ago)
+            .unwrap();
+    }
+
+    /// A subagent whose transcript ends in a tool call or a tool result
+    /// runs, however long ago it was written (up to SUBAGENT_STALE); one
+    /// whose last message is plain text is done; a fresh write always
+    /// counts; one silent for hours mid call was abandoned.
+    #[test]
+    fn subagents_run_until_their_last_message_is_text() {
+        let d = std::env::temp_dir().join(format!("godterm-subs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let t = d.join("abc.jsonl");
+        let sub = d.join("abc/subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(&t, "").unwrap();
+        let started = (chrono::Utc::now() - chrono::Duration::minutes(36)).to_rfc3339();
+        let prompt = |task: &str| {
+            format!(
+                r#"{{"type":"user","isSidechain":true,"agentType":"general-purpose","timestamp":"{started}","message":{{"role":"user","content":"{task}"}}}}"#
+            )
+        };
+        let call = r#"{"type":"assistant","isSidechain":true,"message":{"id":"m1","content":[{"type":"text","text":"Running the tests."},{"type":"tool_use","id":"x1","name":"Bash","input":{"command":"cargo test"}}]}}"#;
+        let result = r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x1","content":"ok"}]}}"#;
+        let done = r#"{"type":"assistant","isSidechain":true,"message":{"id":"m2","content":[{"type":"text","text":"All green."}]}}"#;
+        // In a tool call for 20 minutes: a long test run, still going.
+        std::fs::write(
+            sub.join("agent-mid-call.jsonl"),
+            format!("{}\n{call}\n", prompt("Run the suite")),
+        )
+        .unwrap();
+        set_mtime(&sub.join("agent-mid-call.jsonl"), Duration::from_secs(1200));
+        // Thinking after a tool result, 5 minutes ago: going.
+        std::fs::write(
+            sub.join("agent-thinking.jsonl"),
+            format!("{}\n{call}\n{result}\n", prompt("Check the logs")),
+        )
+        .unwrap();
+        set_mtime(&sub.join("agent-thinking.jsonl"), Duration::from_secs(300));
+        // Reported 10 minutes ago: done.
+        std::fs::write(
+            sub.join("agent-done.jsonl"),
+            format!("{}\n{call}\n{result}\n{done}\n", prompt("Review it")),
+        )
+        .unwrap();
+        set_mtime(&sub.join("agent-done.jsonl"), Duration::from_secs(600));
+        // Mid call but silent for three hours: abandoned.
+        std::fs::write(
+            sub.join("agent-lost.jsonl"),
+            format!("{}\n{call}\n", prompt("Lost one")),
+        )
+        .unwrap();
+        set_mtime(&sub.join("agent-lost.jsonl"), Duration::from_secs(3 * 3600));
+        // Done, but written a moment ago: still streaming, counts.
+        std::fs::write(
+            sub.join("agent-fresh.jsonl"),
+            format!("{}\n{call}\n{result}\n{done}\n", prompt("Fresh one")),
+        )
+        .unwrap();
+        let now = SystemTime::now();
+        let all = subagents(&t, now);
+        assert_eq!(all.len(), 5);
+        let running = running_subagents_of(&t, now);
+        let mut ids: Vec<&str> = running.iter().map(|s| s.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["agent-fresh", "agent-mid-call", "agent-thinking"]);
+        let mid = running.iter().find(|s| s.id == "agent-mid-call").unwrap();
+        assert_eq!(mid.name.as_deref(), Some("general-purpose"));
+        assert_eq!(mid.task.as_deref(), Some("Run the suite"));
+        assert_eq!(mid.tool.as_deref(), Some("Bash"));
+        assert!((35 * 60..=38 * 60).contains(&mid.age_s), "{}", mid.age_s);
+        assert!(mid.idle_s >= 1190);
+        assert_eq!(mid.label(), "general-purpose (36 min)");
+        assert_eq!(running_subagents(&t, now), 3);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The screen's "Waiting for N background agents" line and its agent
+    /// rows, wherever they sit above the prompt box.
+    #[test]
+    fn the_screen_shows_background_agents_with_ages() {
+        let screen = "⏺ Agent(Review the diff)\n  ⎿  Done (12 tool uses · 41.2k tokens · 3m 10s)\n\n⏺ Waiting for 3 background agents to finish\n  ⎿  ○ general-purpose 36m 26s\n     ○ general-purpose 36m 26s\n     ○ Explore 2m 5s\n     ✔ general-purpose 12m 1s\n\n───────────────────\n❯ \n───────────────────\n  ? for shortcuts\n";
+        let a = screen_agents(screen);
+        assert_eq!(a.waiting, 3);
+        assert_eq!(
+            a.rows,
+            vec![
+                ("general-purpose".to_string(), 36 * 60 + 26),
+                ("general-purpose".to_string(), 36 * 60 + 26),
+                ("Explore".to_string(), 125),
+            ]
+        );
+        assert_eq!(a.count(), 3);
+        assert!(crate::app_continue::background_busy(screen));
+        // A footer count alone still counts; a plain prompt does not.
+        assert_eq!(screen_agents("❯ \n  2 background tasks\n").count(), 0);
+        assert!(crate::app_continue::background_busy(
+            "❯ \n  2 background tasks\n"
+        ));
+        assert!(!crate::app_continue::background_busy(
+            "⏺ Done.\n\n❯ \n  ? for shortcuts\n"
+        ));
+        assert_eq!(parse_age(&["1h", "2m"]), Some(3720));
+        assert_eq!(parse_age(&["45s"]), Some(45));
+        assert_eq!(parse_age(&["now"]), None);
     }
 
     #[test]

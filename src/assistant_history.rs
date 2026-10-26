@@ -313,20 +313,28 @@ impl App {
                 Some("reply") => Who::Reply,
                 _ => continue,
             };
-            self.assistant.log.push(Entry {
+            // The log's own time (RFC 3339) is the entry's; a line without
+            // one gets now.
+            let at = e["at"]
+                .as_str()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|d| d.timestamp_millis())
+                .unwrap_or_else(crate::app_assistant::now_ms);
+            self.assistant.log.push(Entry::at(
                 who,
-                text: e["text"].as_str().unwrap_or("").to_string(),
-            });
+                e["text"].as_str().unwrap_or("").to_string(),
+                at,
+            ));
         }
         let started = summarize(&c.path).map(|s| s.started).unwrap_or_default();
         self.assistant.conv = Some(c);
         self.assistant.history = None;
         self.assistant.show = true;
         self.assistant.focused = true;
-        self.assistant.log.push(Entry {
-            who: Who::Note,
-            text: format!("Continuing the conversation from {started}."),
-        });
+        self.assistant.log.push(Entry::new(
+            Who::Note,
+            format!("Continuing the conversation from {started}."),
+        ));
         true
     }
 

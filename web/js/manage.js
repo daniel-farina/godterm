@@ -1,7 +1,7 @@
 // Management through `tool` frames: tab options, new tab, usage, jobs,
 // loops, modes. A tool that answers needs_confirmation gets its question
 // shown with a Yes; the yes calls it again with only confirm_token.
-import { $, h, on, emit, toast, store, pctClass, idOf, icon, isDesk, li, group, SWATCHES } from './util.js';
+import { $, h, on, emit, toast, store, pctClass, idOf, icon, isDesk, li, group, SWATCHES, words, cronWords, failRow } from './util.js';
 import { tool } from './conn.js';
 import { S, tabById } from './state.js';
 import { openSheet, openMenu, closeSheet, sheetKind } from './sheet.js';
@@ -40,7 +40,7 @@ function confirmSheet(name, c) {
 }
 
 const field = (label, el) => h('label.field', {}, label, el);
-const title = (t, extra) => h('div.sh-title', {}, h('span', {}, t), extra, h('button.ib', { 'aria-label': 'Close', onclick: closeSheet, html: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>' }));
+const title = (t, extra) => h('div.sh-title', {}, h('span', {}, t), extra, h('button.ib', { 'aria-label': 'Close', title: 'Close', onclick: closeSheet, html: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>' }));
 
 function acctSelect(cur, filter) {
   const s = h('select');
@@ -74,7 +74,7 @@ function leave() {
   else closeSheet();
 }
 function sub(t, name, ...kids) {
-  show(h('div.subhead', {}, h('button.ib.sm', { 'aria-label': 'Back', onclick: () => go('root', t), html: icon('back') }), h('span', {}, name)), ...kids);
+  show(h('div.subhead', {}, h('button.ib.sm', { 'aria-label': 'Back', title: 'Back', onclick: () => go('root', t), html: icon('back') }), h('span', {}, name)), ...kids);
 }
 
 // The sections of a tab's options, by name (the status bar opens them).
@@ -348,7 +348,8 @@ function usageSheet(t) {
   const h0 = harnessOf(t.account);
   const others = S.accounts.filter((a) => a.account !== t.account && (a.harness || 'claude') === h0).map((a) => {
     const left = a.effective_left_pct ?? a.five_hour_left_pct;
-    return li('move', a.label, { fn: () => go('move', t), hint: left != null ? left + '% left' : '', off: a.available === false || a.logged_in === false ? 'not available' : '', chev: true });
+    const hint = a.logged_in === false ? 'logged out' : a.available === false ? 'not available' : left != null ? left + '% left' : '';
+    return li('move', a.label, { fn: () => go('move', t), hint, off: a.available === false || a.logged_in === false ? 'not available' : '', chev: true });
   });
   sub(t, 'Usage', h('div.list', {}, usageCards((a) => a.account === t.account)),
     ...group('Other ' + h0 + ' accounts', others),
@@ -364,28 +365,167 @@ const ago = (ms) => {
   return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago';
 };
 
-// BrowserSkill for this tab: its Chrome profile, the browsers bsk sees,
-// the profiles and their extension, and what the doctor found.
+// BrowserSkill for this tab: its Chrome profiles (the primary first) with
+// Open, Make primary, Remove and Clear; every Chrome profile with Use for
+// this tab and Also use; the connected browsers with the profile each is,
+// unmatched ones first, and This is <profile> to link one; then bsk's own
+// status. Every button is the user's own (tab_browser, link_browser):
+// agents never pick a browser.
 async function browserSheet(t) {
   const body = h('div', {}, h('div.mnote', {}, 'Checking BrowserSkill...'));
+  // The live view of the page the agent drives (bview.js): only while
+  // the agent has a session there, or one the user starts on purpose.
+  const live = h('div', {});
+  const rest = h('div', {});
+  sub(t, 'Browser', body, live, rest);
+  const r = await tool('tab_browser', { tab: t.id, op: 'view' });
+  if (r.ok === false && /unknown tool|not available|no such tool/i.test(r.error || '')) return browserSheetOld(t, body, live);
+  if (r.ok === false) { body.replaceChildren(failRow(r.error || 'BrowserSkill did not answer', () => browserSheet(t), 'The Browser section')); return; }
+  let liveOn = false;
+  const paint = (v) => {
+    const bound = v.bound || [];
+    if (bound.length && !liveOn) {
+      liveOn = true;
+      live.replaceChildren(h('div.gl', {}, 'Live view'), h('div.mnote', {}, 'Looking for the agent\'s browser session...'));
+      import('./bview.js').then((m) => live.replaceChildren(h('div.gl', {}, 'Live view'), m.liveSlot(t))).catch(() => live.replaceChildren(h('div.mnote', {}, 'The live view did not load.')));
+    } else if (!bound.length && liveOn) { liveOn = false; live.replaceChildren(); }
+    const [top, more] = browserBody(t, v, paint);
+    body.replaceChildren(...top);
+    rest.replaceChildren(...more);
+  };
+  paint(r.result || r);
+  // Kept fresh while open (a first look may still be running, browsers
+  // connect and go): every few seconds, not while a picker is open.
+  const again = async () => {
+    if (!body.isConnected) return;
+    if (!body.parentNode?.contains(document.activeElement) || document.activeElement?.tagName !== 'SELECT') {
+      const n = await tool('tab_browser', { tab: t.id, op: 'view' });
+      if (!body.isConnected) return;
+      if (n.ok !== false) paint(n.result || n);
+    }
+    setTimeout(again, 4000);
+  };
+  setTimeout(again, 2500);
+}
+
+const EXT = { ready: 'ready', needs_enable: 'approval', needs_install: 'approval', none: 'approval' };
+const EXT_WORD = { ready: 'ready', needs_enable: 'extension off', needs_install: 'extension missing' };
+const HOW = { linked: 'you said so', label: 'by its name', 'only browser': 'the only one connected' };
+
+function browserBody(t, v, paint) {
+  const act = (op, profile, done) => async () => {
+    const r = await tool('tab_browser', { tab: t.id, op, profile });
+    if (r.ok === false) { toast(r.error || 'It did not work', 'error'); return; }
+    toast(r.result?.say || done, 'ok');
+    if (r.result?.view) paint(r.result.view);
+  };
+  const link = (label, profile) => async () => {
+    const r = await tool('link_browser', { tab: t.id, label, profile });
+    if (r.ok === false) { toast(r.error || 'It did not work', 'error'); return; }
+    toast(r.result?.say || 'Linked', 'ok');
+    if (r.result?.view) paint(r.result.view);
+  };
+  const btn = (label, fn, cls = '') => h('button.btn.sm' + cls, { onclick: fn }, label);
+  const bound = v.bound || [];
+  const profiles = v.chrome_profiles || [];
+  const browsers = v.browsers || [];
+  const pname = (dir) => profiles.find((p) => p.profile_dir === dir)?.name || dir;
+  const labelOf = (id) => browsers.find((b) => b.instance_id === id)?.label || id;
+  const many = bound.length > 1;
+
+  // This tab: its profiles, the primary first.
+  const mine = bound.length ? bound.map((b, i) => {
+    const conn = (b.browsers || []).map(labelOf);
+    const line = [b.email, EXT_WORD[b.state] || b.state,
+      conn.length ? 'connected as ' + conn.join(', ') : b.state === 'ready' ? 'not matched to a connected browser' : ''].filter(Boolean).join(' · ');
+    return h('div.lrow', {},
+      h('div.ct', {}, h('span.dot.' + (b.state === 'ready' && conn.length ? 'ready' : 'approval')), h('b', {}, b.name || b.profile_dir), h('span.cs', {}, many ? (i === 0 ? 'primary' : 'also') : '')),
+      h('div.cs', {}, line),
+      h('div.acts', {},
+        btn('Open Chrome', act('open', b.profile_dir, 'Opened')),
+        i > 0 ? btn('Make primary', act('primary', b.profile_dir, 'Primary')) : null,
+        many ? btn('Remove', act('remove', b.profile_dir, 'Removed')) : null,
+        i === 0 ? btn(many ? 'Clear all' : 'Clear', act('clear', null, 'Cleared'), '.bad') : null));
+  }) : [card('No browser set', '', 'Choose a Chrome profile below. Agents in this tab use only the browsers you choose here.', 'approval')];
+  const note = bound.length ? h('div.mnote', {}, many
+    ? 'Agents in this tab use only these browsers: the primary one unless the task is about another, and they ask you when unclear.'
+    : 'Agents in this tab use only this browser.') : null;
+
+  // Every Chrome profile.
+  const profRows = profiles.map((p) => {
+    const st = p.state === 'on' ? 'ready' : 'approval';
+    const tag = p.primary ? (many ? 'this tab · primary' : 'this tab') : p.bound ? 'this tab' : '';
+    return h('div.lrow', {},
+      h('div.ct', {}, h('span.dot.' + st), h('b', {}, p.name || p.profile_dir), tag ? h('span.cs', {}, tag) : null),
+      h('div.cs', {}, [p.email, 'extension ' + (p.extension || 'not found')].filter(Boolean).join(' · ')),
+      p.bound ? null : h('div.acts', {},
+        btn('Use for this tab', act('set', p.profile_dir, 'Chosen')),
+        bound.length ? btn('Also use', act('add', p.profile_dir, 'Added')) : null));
+  });
+
+  // Connected browsers, unmatched first.
+  const pick = (b) => {
+    const s = h('select.inl', { 'aria-label': 'Which Chrome profile is this browser', onchange: () => s.value && link(b.label, s.value)() },
+      h('option', { value: '' }, b.profile_dir ? 'This is another…' : 'This is…'),
+      ...profiles.filter((p) => p.profile_dir !== b.profile_dir).map((p) => h('option', { value: p.profile_dir }, 'This is ' + (p.name || p.profile_dir))));
+    return s;
+  };
+  const browserRow = (b) => {
+    const known = !!b.profile_dir;
+    const dot = b.unresponsive ? 'error' : !known ? 'approval' : b.version_skew ? 'approval' : 'ready';
+    const right = known ? pname(b.profile_dir) + (b.this_tab ? ' · this tab' : '') : 'unmatched';
+    const why = known ? 'Chrome profile ' + pname(b.profile_dir) + ' (' + (HOW[b.match] || b.match) + ')'
+      : b.match === 'ambiguous' ? 'Its name fits more than one profile: say which it is.' : 'bsk cannot tell which Chrome profile this is: say which it is.';
+    return h('div.lrow', {},
+      h('div.ct', {}, h('span.dot.' + dot), h('b', {}, b.label || b.browser || b.instance_id), h('span.cs', {}, right)),
+      h('div.cs', {}, [why, [b.browser, b.browser_version].filter(Boolean).join(' '), b.sessions != null && b.sessions + ' sessions',
+        b.connected_at_ms && 'connected ' + ago(b.connected_at_ms), b.version_skew && 'version mismatch', b.unresponsive && 'not responding'].filter(Boolean).join(' · ')),
+      b.label ? h('div.acts', {}, pick(b), b.match === 'linked' ? btn('Unlink', link(b.label, null)) : null)
+        : h('div.cs', {}, 'Give it a Browser name in the extension popup to link it.'));
+  };
+  const unmatched = browsers.filter((b) => !b.profile_dir);
+  const matched = browsers.filter((b) => b.profile_dir);
+
+  const d = v.daemon || {};
+  const up = d.state === 'running';
+  const doc = v.doctor?.problems || [];
+  return [[h('div.gl', {}, 'This tab'), h('div.list', {}, mine), note].filter(Boolean), [
+    ...group('Chrome profiles', profRows),
+    profiles.length ? null : h('div.mnote', {}, 'No Chrome profiles found. Is Chrome installed and used once?'),
+    ...group('Not matched to a profile', unmatched.map(browserRow)),
+    unmatched.length ? h('div.mnote', {}, 'The extension\'s Browser name is free text, so GodTerm cannot always tell which profile a browser is. Pick This is… to tell it.') : null,
+    ...group('Connected browsers', matched.map(browserRow)),
+    browsers.length ? null : h('div.mnote', {}, 'No browser is connected. Turn on the local connection in the extension popup.'),
+    v.bsk ? group('BrowserSkill', [
+      card(v.bsk.installed ? 'bsk ' + (v.bsk.version || '') : 'bsk not installed', up ? 'running' : d.state || '',
+        up ? [d.sessions != null && d.sessions + ' sessions', d.uptime_secs != null && 'up ' + Math.round(d.uptime_secs / 60) + ' min'].filter(Boolean).join(' · ') : d.why || '',
+        v.bsk.installed && up ? 'ready' : 'error'),
+    ]) : h('div.mnote', {}, 'Looking at BrowserSkill now...'),
+    ...group('Problems', doc.map((p) => card(p.check, p.status, p.detail, /fail|err/i.test(p.status) ? 'error' : 'approval'))),
+    v.checked_secs_ago != null ? h('div.mnote', {}, 'Checked ' + v.checked_secs_ago + ' s ago' + (v.doctor?.summary ? ' · ' + v.doctor.summary : '')) : null,
+  ].flat().filter(Boolean)];
+}
+
+// The section as a GodTerm from before tab_browser shows it (read only,
+// until a restart): its Chrome profile, the browsers bsk sees, the
+// profiles and their extension, and what the doctor found.
+async function browserSheetOld(t, body, live) {
   const b = t.browser;
+  if (b) import('./bview.js').then((m) => live.replaceChildren(h('div.gl', {}, 'Live view'), m.liveSlot(t))).catch(() => {});
   const mine = b ? card(typeof b === 'string' ? b : b.label || b.profile || 'Chrome profile', typeof b === 'string' ? '' : b.state,
     'Agents in this tab use only this browser.', /ready/i.test(b.state || b) ? 'ready' : 'approval')
     : card('No browser set', '', 'Choose a Chrome profile for this tab in the desktop app: Browser on the tab\'s bottom bar, or Ctrl-a i.', 'approval');
-  // The live view of the page the agent drives (bview.js): only while
-  // the agent has a session there, or one the user starts on purpose.
-  const live = b ? h('div', {}, h('div.mnote', {}, 'Looking for the agent\'s browser session...')) : null;
-  sub(t, 'Browser', h('div.gl', {}, 'This tab'), h('div.list', {}, mine), live && h('div.gl', {}, 'Live view'), live, body);
-  if (live) import('./bview.js').then((m) => live.replaceChildren(m.liveSlot(t))).catch(() => live.replaceChildren(h('div.mnote', {}, 'The live view did not load.')));
   const r = await tool('browser_status', {});
   const v = r.result || r;
-  if (r.ok === false || !v.bsk) { body.replaceChildren(h('div.mnote', {}, v.say || r.error || 'BrowserSkill did not answer.')); return; }
+  if (r.ok === false || !v.bsk) { body.replaceChildren(failRow(v.say || r.error || 'BrowserSkill did not answer', () => browserSheetOld(t, body, live), 'The Browser section')); return; }
   const d = v.daemon || {};
   const up = d.state === 'running';
   const doc = v.doctor?.problems || [];
   const profiles = v.chrome_profiles || [];
   const bound = typeof b === 'object' ? b.profile : '';
   body.replaceChildren(...[
+    h('div.gl', {}, 'This tab'), h('div.list', {}, mine),
+    h('div.mnote', {}, 'Choosing browsers here needs a GodTerm restart.'),
     ...group('BrowserSkill', [
       card(v.bsk.installed ? 'bsk ' + (v.bsk.version || '') : 'bsk not installed', up ? 'running' : d.state || '',
         up ? [d.sessions != null && d.sessions + ' sessions', d.uptime_secs != null && 'up ' + Math.round(d.uptime_secs / 60) + ' min'].filter(Boolean).join(' · ') : d.why || '',
@@ -408,7 +548,7 @@ export function jobRows(tabName) {
   const jobs = (S.jobs?.jobs || []).filter((j) => !tabName || j.tab === tabName);
   return jobs.map((j) => {
     const paused = /pause/i.test(j.status || '');
-    return h('div.lrow', {}, h('div.ct', {}, h('b', {}, j.name), h('span.cs', {}, j.schedule || '')),
+    return h('div.lrow', {}, h('div.ct', {}, h('b', {}, j.name), h('span.cs', { title: j.schedule || '' }, cronWords(j.schedule) || j.schedule || '')),
       h('div.cs', {}, [j.status, j.tab && 'tab ' + j.tab, j.next && 'next ' + j.next, j.last && 'last ' + j.last].filter(Boolean).join(' · ')),
       h('div.acts', {}, h('button.btn.sm', { onclick: () => run('run_job_now', { job: j.id }, 'Started') }, 'Run now'),
         h('button.btn.sm', { onclick: () => run('update_job', { job: j.id, action: paused ? 'resume' : 'pause' }, paused ? 'Resumed' : 'Paused') }, paused ? 'Resume' : 'Pause'),
@@ -484,7 +624,8 @@ export function usageCards(only) {
     return h('div.lrow', {}, h('div.ct', {}, h('b', {}, a.label), h('span.cs', {}, [a.harness, `${a.tabs ?? 0} ${(a.tabs ?? 0) === 1 ? 'tab' : 'tabs'}`, a.assistant_runs_here && 'assistant', a.logged_in === false && 'logged out'].filter(Boolean).join(' · '))),
       buckets.map((b) => h('div.bar', {}, h('span.bn', {}, b.bucket), h('span.bt', { html: `<i class="${pctClass(b.left_pct)}" style="width:${Math.max(0, Math.min(100, b.left_pct ?? 0))}%"></i>` }),
         h('span.bv', {}, `${b.left_pct ?? '?'}%${b.resets_at ? ' · ' + b.resets_at.replace(/^\w+ /, '') : ''}`))),
-      a.usage_error ? h('div.cs', {}, a.usage_error) : null,
+      // (A logged out account's "not_logged_in" says what the header says.)
+      a.usage_error && !(a.logged_in === false && /logged/i.test(a.usage_error)) ? h('div.cs', {}, words(a.usage_error)) : null,
       a.next_reset_that_unblocks ? h('div.cs', {}, 'Unblocks ' + a.next_reset_that_unblocks) : null);
   });
 }

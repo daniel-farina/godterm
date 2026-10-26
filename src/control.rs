@@ -87,6 +87,16 @@ pub const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "work_status",
+        description: "Everything being worked on, in one cheap call (no quota): every tab grouped needs_you, working, finished (the last 30 minutes) and idle, each with what it is doing now (last_line and the tool it is in, from its transcript; screen_line for a CLI without one), what it needs from the user (needs), its background work (working_through: subagents with names and ages; background_shells), minutes_since_activity, and its jobs and loops. A tab at its prompt with subagents running is working, never idle. The first call for any status question (\"what's going on\", \"what's being worked on\", \"status\", \"what else\", \"how about X\"); never answer those from memory. since \"last\" marks what changed since your previous call (changed, was); since 10 marks the tabs active in the last 10 minutes; tab narrows it to one tab or a list.",
+        schema: || {
+            props(
+                json!({"since": {"type": ["string", "integer"], "description": "\"last\" (since the previous call) or minutes"}, "tab": tab_prop()}),
+                &[],
+            )
+        },
+    },
+    Tool {
         name: "update_info",
         description: "Is there a GodTerm update, and what's new: the current and latest version, whether it is downloaded, how this install updates, and every newer version's release notes (newest first). For \"is there an update?\" and \"what's new?\": summarize the notes in a sentence or two.",
         schema: || props(json!({}), &[]),
@@ -401,13 +411,28 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "list_browsers",
-        description: "The browsers connected to BrowserSkill (bsk), the local tool that lets agents drive the user's own Chrome: each with instance_id, label, browser and extension version, open sessions, version_skew and unresponsive flags. The label is free text the user typed in the extension popup, NOT the Chrome profile name, and no profile mapping can be detected: ask the user which browser when unclear. The instance_id goes to `bsk session start --browser <id>`. Read only and passive (it never starts the daemon or touches a browser); a first call may answer state checking: call again in a few seconds.",
+        description: "The browsers connected to BrowserSkill (bsk), the local tool that lets agents drive the user's own Chrome: each with instance_id, label, browser and extension version, open sessions, version_skew and unresponsive flags. The label is free text the user typed in the extension popup, NOT the Chrome profile name; profile_dir says which Chrome profile a browser is when the user linked it or its label names one (match: linked, label, only browser), else it is null: ask the user which browser when unclear. The instance_id goes to `bsk session start --browser <id>`. Read only and passive (it never starts the daemon or touches a browser); a first call may answer state checking: call again in a few seconds.",
         schema: || props(json!({}), &[]),
     },
     Tool {
         name: "browser_status",
         description: "BrowserSkill (bsk) status, read only: whether bsk is installed and its version, the daemon (running or not, pid, port, uptime), `bsk doctor` summary and problems, connected browsers, which Chrome profiles have the BrowserSkill extension (installed, enabled), whether the skill is installed per harness and per GodTerm account. Passive and rate limited: it reports the last look (checked_secs_ago) and never starts, stops or updates the daemon. To install the skill into accounts use install_browser_skill.",
         schema: || props(json!({}), &[]),
+    },
+    Tool {
+        name: "tab_browser",
+        description: "The web app's Browser section of a tab: the user's own buttons (op view, set, add, remove, primary, clear, open; profile: a Chrome profile folder). Only the user's own press in the web app, refused for anyone else: never call it to choose a tab's browser; ask the user to choose in the tab's Browser section or dialog.",
+        schema: || props(json!({"tab": {"type": "string"}, "op": {"type": "string", "enum": ["view", "set", "add", "remove", "primary", "clear", "open"]}, "profile": {"type": "string"}}), &["tab"]),
+    },
+    Tool {
+        name: "open_desktop",
+        description: "The web app's \"Open on Mac\" button: brings the GodTerm app's own window to the front on the Mac (open -a GodTerm). Only the user's own press in the web app; refused for anyone else.",
+        schema: || props(json!({}), &[]),
+    },
+    Tool {
+        name: "link_browser",
+        description: "The web app's \"This is <profile>\" button on a connected browser: links a BrowserSkill browser's label to a Chrome profile folder (no profile: unlinks it), saved in [browser] links. Only the user's own press in the web app, refused for anyone else; ask the user which profile a browser is instead.",
+        schema: || props(json!({"label": {"type": "string"}, "profile": {"type": "string"}, "tab": {"type": "string"}}), &["label"]),
     },
     Tool {
         name: "install_browser_skill",
@@ -464,12 +489,12 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "web_layout",
-        description: "The web app (a browser) only: set its panes (1, 2 or 4; a phone shows 1) and which tab each shows, in order (tab ids; fewer tabs leave the rest as they are). For a request typed in the web app, layout words (\"split 4 ways\", \"side by side\", \"one per account\") mean this, not the terminal UI's layout, unless the user names the terminal, the Mac or the GodTerm window. client: a browser id, or \"all\"; default the one the request came from.",
+        description: "The web app (a browser) only: set its panes (1, 2 or 4; a phone shows 1) and which tab each shows, in order (tab ids; fewer tabs leave the rest as they are). For a request from the web app (typed or spoken there), layout words (\"split 4 ways\", \"side by side\", \"one per account\") mean this, not the terminal UI's layout, unless the user names the terminal, the Mac or the GodTerm window. client: a browser id, or \"all\"; default the one the request came from.",
         schema: || props(json!({"panes": {"type": "integer", "enum": [1, 2, 4]}, "tabs": {"type": "array", "items": {"type": "string"}}, "client": {"type": ["integer", "string"]}}), &[]),
     },
     Tool {
         name: "web_show",
-        description: "The web app only: show a tab in one of the browser's panes (pane 1 based; default its focused pane). \"open X\" or \"show X\" typed in the web app means this.",
+        description: "The web app only: show a tab in one of the browser's panes (pane 1 based; default its focused pane). \"open X\" or \"show X\" typed or spoken in the web app means this.",
         schema: || props(json!({"tab": tab_prop(), "pane": {"type": "integer"}, "client": {"type": ["integer", "string"]}}), &["tab"]),
     },
     Tool {
@@ -683,8 +708,28 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "sync_status",
-        description: "GodTerm Sync on this machine: whether it is on, the state repo, when it last synced, changes waiting, conversations synced and pushed, machines, conversation repos and their size, held or forked sessions, paused jobs from other machines, .env warnings, and projects that are NOT backed up (no git repo, no GitHub remote, unpushed commits, uncommitted changes). Sync never commits to or pushes a project repo: for those, tell the user what is missing and that they decide in the Git section. Read only.",
+        description: "GodTerm Sync on this machine: whether it is on or paused, the state repo and owner, the last sync (ok or its error, changes waiting) and when the next runs, the repos (state and monthly conversation repos) with size and visibility (PRIVATE expected), machines, conversations owned here or elsewhere and take over requests (leases), paused jobs from other machines, warnings (.env not ignored, secrets in transcripts, tokens not synced), projects that are NOT backed up (no git repo, no GitHub remote, unpushed commits, uncommitted changes), token sync, and op: an enable (init) or join (clone) running in the background or its outcome. Sync never commits to or pushes a project repo: for those, tell the user what is missing and that they decide in the Git section. Read only.",
         schema: || props(json!({}), &[]),
+    },
+    Tool {
+        name: "sync_plan",
+        description: "GodTerm Sync dry run (read only, writes nothing): what would be backed up (config, stores, account files, .env files, conversations with sizes, what is left out), the owner, gh account, state repo and monthly conversation repos it would use, and checks with warnings (no gh login, the repo is there already or is not private, .env files, sessions mentioning the vault left out). Always call it first when the user wants sync on (\"enable sync\", \"back up GodTerm to GitHub\") and tell them the say line and warnings. owner and account: only when the user names them (default: the first gh login). repo (OWNER/NAME): instead checks a state repo to join from this machine. Takes a few seconds.",
+        schema: || props(json!({"owner": {"type": "string"}, "account": {"type": "string", "description": "gh account that reads and writes the repos (default: the owner)"}, "repo": {"type": "string", "description": "OWNER/NAME of a state repo to join (a join check)"}}), &[]),
+    },
+    Tool {
+        name: "sync_init",
+        description: "Turn GodTerm Sync on with this as the first machine: create the PRIVATE state repo OWNER/godterm-state on GitHub (never public: there is no option for it) and push the first backup, in the background. Needs a sync_plan from the last 10 minutes that says it can (same owner and account). Always asks the user once (needs_confirmation with the repo, account and what goes in): ask that exact question, stop, and only after their clear yes in a later message call again with only confirm_token. Refused when sync is on already or the repo exists (join it with sync_clone). Project repos are never touched. sync_status shows the progress (op).",
+        schema: || props(json!({"owner": {"type": "string"}, "account": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &[]),
+    },
+    Tool {
+        name: "sync_clone",
+        description: "Join GodTerm Sync from this machine: restore from the private state repo another machine made (repo OWNER/NAME, usually OWNER/godterm-state): config, accounts without logins (the user logs in again), jobs (paused), archive, .env files, recent conversations, and clones of the projects it lists (never committed to or pushed). Runs in the background. account: the gh account (default the owner). label: this machine's name. Refused when sync is on already or the repo is not private. Always asks the user once (needs_confirmation): ask, stop, and only after a clear yes in a later message call again with only confirm_token. A sync_plan with repo checks it first.",
+        schema: || props(json!({"repo": {"type": "string"}, "account": {"type": "string"}, "label": {"type": "string"}, "confirm_token": token_prop(), "reissue_token": reissue_prop()}), &["repo"]),
+    },
+    Tool {
+        name: "sync_pause",
+        description: "Pause (pause true, the default) or resume (pause false) GodTerm Sync's background sync on this machine. While paused nothing is pushed or pulled on its own; sync_now still runs one sync, and conversation ownership (leases) keeps working. No confirmation: it only changes [sync] paused in this machine's config.",
+        schema: || props(json!({"pause": {"type": "boolean"}}), &[]),
     },
     Tool {
         name: "take_over",
@@ -703,7 +748,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "sync_now",
-        description: "Sync GodTerm's own state now (config, accounts without logins, jobs, archive, .env files and conversations to the private state repo). Only GodTerm's state repos are touched, never a project repo. Needs sync on (godterm sync init or clone, which the user runs).",
+        description: "Sync GodTerm's own state now (config, accounts without logins, jobs, archive, .env files and conversations to the private state repo), also while paused (once). Only GodTerm's state repos are touched, never a project repo. Needs sync on (sync_init or sync_clone, with the user's yes).",
         schema: || props(json!({}), &[]),
     },
     Tool {
@@ -1345,6 +1390,7 @@ impl App {
                             d.text.len()
                         ));
                         let text = d.text.clone();
+                        d.rc.before = Some((tab.model.clone(), tab.effort.clone()));
                         // Its records come after this (claude only appends).
                         d.rc.from_offset = self
                             .transcript_path(s, t)
@@ -2514,6 +2560,9 @@ impl App {
         if let Some(r) = self.lease_plan_for(tool, args) {
             return r;
         }
+        if let Some(r) = self.sync_plan_for(tool, args) {
+            return r;
+        }
         if tool == "rename_session" {
             return self.rename_plan_for(args);
         }
@@ -2889,6 +2938,9 @@ impl App {
             return r;
         }
         if let Some(r) = self.lease_run_plan(tool, plan) {
+            return r;
+        }
+        if let Some(r) = self.sync_run_plan(tool, plan) {
             return r;
         }
         if tool == "rename_session" {
@@ -3673,6 +3725,9 @@ impl App {
         if let Some(r) = self.prompt_tool(tool, args) {
             return r;
         }
+        if let Some(r) = self.work_status_tool(tool, args) {
+            return r;
+        }
         if let Some(r) = self.tabgroup_tool(tool, args) {
             return r;
         }
@@ -4181,6 +4236,9 @@ impl App {
             "list_archived" => return self.list_archived_json(args),
             "list_jobs" => return self.list_jobs_json(args),
             "list_browsers" | "browser_status" => return self.browser_tool(tool),
+            "tab_browser" => return self.tab_browser_tool(args),
+            "open_desktop" => return self.open_desktop_tool(),
+            "link_browser" => return self.link_browser_tool(args),
             "run_job_now" => return self.run_job_now_tool(args),
             "create_job" | "update_job" | "delete_job" | "adopt_loop" => {
                 return self.planned(tool, args);
@@ -5049,10 +5107,10 @@ impl App {
             "speak" => {
                 let text = s("text").ok_or("text is required")?;
                 if !self.reply_spoken() {
-                    self.assistant.log.push(crate::app_assistant::Entry {
-                        who: crate::app_assistant::Who::Reply,
-                        text: text.clone(),
-                    });
+                    self.assistant.log.push(crate::app_assistant::Entry::new(
+                        crate::app_assistant::Who::Reply,
+                        text.clone(),
+                    ));
                     return Ok(ok(json!(
                         "shown as text, not said: the speaker is muted or the message was typed"
                     )));
@@ -6123,6 +6181,7 @@ pub const READ_ONLY: &[&str] = &[
     "search_projects",
     "git_status",
     "sync_status",
+    "sync_plan",
     "git_log",
     "git_diff",
     "git_branches",
@@ -6139,7 +6198,7 @@ pub const READ_ONLY: &[&str] = &[
 /// How long a tool's reply may take: turning Remote Control on waits for
 /// its outcome (two attempts of up to 20 s each).
 pub fn reply_wait(tool: &str) -> Duration {
-    if tool == "enable_remote_control" {
+    if tool == "enable_remote_control" || tool == "sync_plan" {
         Duration::from_secs(60)
     } else {
         Duration::from_secs(20)

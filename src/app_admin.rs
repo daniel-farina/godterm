@@ -158,10 +158,9 @@ impl App {
         crate::log::info(&format!("admin: progress: {text}"));
         self.admin.said.push(text.to_string());
         self.told_record("progress", text, crate::told::Channel::Panel, false);
-        self.assistant.log.push(Entry {
-            who: Who::Note,
-            text: format!("▸ {text}"),
-        });
+        self.assistant
+            .log
+            .push(Entry::new(Who::Note, format!("▸ {text}")));
         // Spoken at the next quiet moment (held while paused).
         self.say_update(crate::app_quiet::Voice::Progress, text);
     }
@@ -181,10 +180,9 @@ impl App {
             self.admin.history.remove(0);
         }
         self.told_record("admin", text, crate::told::Channel::Panel, false);
-        self.assistant.log.push(Entry {
-            who: Who::Note,
-            text: format!("Admin: {text}"),
-        });
+        self.assistant
+            .log
+            .push(Entry::new(Who::Note, format!("Admin: {text}")));
         let p = crate::config::app_home()
             .join("assistant")
             .join("admin.jsonl");

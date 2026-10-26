@@ -174,6 +174,7 @@ impl App {
             model,
             loops: c.loops.clone(),
             browser: c.browser.clone(),
+            browser_also: c.browser_also.clone(),
             last_activity: self.tab_last_activity(s, t),
             archived_at: self.archive_now(),
             by: by.to_string(),

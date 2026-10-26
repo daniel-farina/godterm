@@ -94,8 +94,13 @@ fn now_s() -> u64 {
 }
 
 /// Background tasks claude shows as still running ("2 background
-/// tasks", "1 shell"), in the footer.
+/// tasks", "1 shell") in the footer, or the "Waiting for N background
+/// agents to finish" line with its running agent rows above the prompt
+/// box (activity::screen_agents).
 pub fn background_busy(screen: &str) -> bool {
+    if crate::activity::screen_agents(screen).count() > 0 {
+        return true;
+    }
     let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
     let tail = &lines[lines.len().saturating_sub(4)..];
     tail.iter().any(|l| {

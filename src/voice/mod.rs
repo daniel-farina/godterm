@@ -766,7 +766,7 @@ impl Engine {
                         barged = true;
                         barge.cancel();
                         barge_pcm.clear();
-                        player::set_duck(1.0);
+                        duck(1.0);
                         if cap.is_none() {
                             // The model was unloaded when the mic failed.
                             if apple.is_none() {
@@ -991,6 +991,8 @@ impl Engine {
                 continue;
             }
             got_audio = true;
+            // A browser's mic: it says when it plays our speech.
+            let web_playing = c.web_playing();
             audio::apply_gain(&mut frame, self.cfg.gain_db);
             if let Some(d) = denoiser.as_mut() {
                 d.process(&mut frame);
@@ -1031,15 +1033,27 @@ impl Engine {
             }
             // Do not hear ourselves: the mic is muted while we talk back,
             // unless someone talks over us (barge-in, when enabled).
-            let talking = self.speaking.load(Ordering::SeqCst);
+            // (A browser plays the reply in its own time: also while it
+            // says it does.)
+            let talking = self.speaking.load(Ordering::SeqCst) || web_playing;
             if !talking {
                 barged = false;
             }
             // The loudest thing we played in the last 400 ms: our own echo
             // can only be about that loud (times the learned coupling).
+            // A browser's playback counts too (player::WebClock).
             let played = player::played_db(Duration::from_millis(400));
             let now_ms = t_base.elapsed().as_millis() as u64;
-            barge.noise.push(l, now_ms);
+            // Our reply coming back from a browser's speakers (where no
+            // echo canceller of ours runs) is not room noise: it must not
+            // lift the barge-in bar over the user talking over it.
+            let web_echo = talking
+                && player::web_played_db(Duration::from_millis(400)).is_some_and(|p| p > -60.0);
+            if web_echo {
+                barge.noise.hold(now_ms);
+            } else {
+                barge.noise.push(l, now_ms);
+            }
             gate.noise_bar_db = barge.noise.bar_db();
             let gated = talking && !barged && !barge.pending();
             match gate.push(l, audio::db(ep.threshold()), gated, played) {
@@ -1079,8 +1093,8 @@ impl Engine {
                                 ep.reset();
                                 continue;
                             }
-                            barge::Start::Decide { duck } => {
-                                player::set_duck(duck);
+                            barge::Start::Decide { duck: d } => {
+                                duck(d);
                                 barge_seq += 1;
                                 barge_pcm = muted.drain(..).flatten().collect();
                                 barge_req = None;
@@ -1124,7 +1138,7 @@ impl Engine {
                 }
                 let Some(d) = decided else { continue };
                 crate::log::info(&barge::Decider::log_line(&d));
-                player::set_duck(1.0);
+                duck(1.0);
                 if d.stop {
                     self.barge_stop(&gate);
                     barged = true;
@@ -1136,6 +1150,9 @@ impl Engine {
                         let _ = ep.push(f);
                     }
                 } else {
+                    if d.echo {
+                        gate.echo_heard();
+                    }
                     ep.reset();
                 }
                 barge_pcm.clear();
@@ -1449,6 +1466,13 @@ impl Engine {
             Err(e) => self.send(VoiceEvent::Info(format!("transcription failed: {e}"))),
         }
     }
+}
+
+/// The reply's volume while a barge-in is decided: this Mac's speakers
+/// and the browser that is the voice.
+fn duck(v: f32) {
+    player::set_duck(v);
+    tts::web_duck(v);
 }
 
 /// One fast transcription of the audio over our reply (barge-in check),

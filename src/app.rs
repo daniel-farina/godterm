@@ -528,6 +528,8 @@ pub struct App {
     pub takeovers: Vec<crate::takeover::TakeOver>,
     /// Conversation ownership across machines (GodTerm Sync, Phase 3).
     pub lease: crate::app_lease::LeaseApp,
+    /// Sync setup and status for the tools (Settings > Sync, the assistant).
+    pub sync_ui: crate::app_sync::SyncUi,
     /// Sessions running in other terminals (for the Sessions view), and when looked.
     pub sess_live: std::collections::HashMap<String, crate::takeover::Live>,
     pub sess_live_at: Option<Instant>,
@@ -844,6 +846,7 @@ impl App {
             opened_paths: vec![],
             takeovers: vec![],
             lease: Default::default(),
+            sync_ui: Default::default(),
             sess_live: Default::default(),
             sess_live_at: None,
             session_index: Default::default(),
@@ -1145,6 +1148,8 @@ impl App {
                 tab.group = t.group.clone();
                 tab.pinned = t.pinned;
                 tab.browser = t.browser.clone();
+                tab.browser_also =
+                    crate::tab_browser::clean_also(t.browser.as_deref(), &t.browser_also);
                 tab.finished = t.finished;
                 if let Some(o) = t.opened {
                     tab.opened = std::time::UNIX_EPOCH + std::time::Duration::from_secs(o);
@@ -1262,6 +1267,7 @@ impl App {
                             group: t.group.clone(),
                             pinned: t.pinned,
                             browser: t.browser.clone(),
+                            browser_also: t.browser_also.clone(),
                             finished: t.finished,
                             opened: t
                                 .opened

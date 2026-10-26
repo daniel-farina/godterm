@@ -19,8 +19,8 @@
 // Debugging: ?voicedebug=1 (remembered, ?voicedebug=0 turns it off) logs
 // the mic once a second to the console and GodTerm's log, and GodTerm logs
 // what it gets; &voicetest=5 holds push to talk for 5 s after connecting.
-import { $, h, on, store, toast } from './util.js';
-import { send, sendBin, KIND, tool } from './conn.js';
+import { $, h, on, store, toast, skeleton, failRow } from './util.js';
+import { send, sendBin, KIND, tool, conn } from './conn.js';
 import { S } from './state.js';
 import { dlog as clog } from './debuglog.js';
 import { openSheet, openMenu, closeSheet, menuOpen, sheetKind } from './sheet.js';
@@ -130,6 +130,7 @@ function unlock() {
   if (held.length) { const h2 = held; held = []; for (const b of h2) enqueue(b); }
 }
 
+let unmuteAt = 0;
 function fail(code, text) {
   err = { code, text };
   dlog('error ' + code + ': ' + text);
@@ -169,14 +170,24 @@ function micError(e) {
   return ['mic', 'The mic did not start: ' + (e?.message || n || e)];
 }
 
+// Echo cancellation keeps the reply's own voice out of the mic, so only
+// the user talking over it can cut it off (GodTerm decides the barge-in on
+// this audio); noise suppression and gain control keep the level steady.
 async function getMic() {
   const want = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  let s;
   try {
-    return await navigator.mediaDevices.getUserMedia({ audio: want });
+    s = await navigator.mediaDevices.getUserMedia({ audio: want });
   } catch (e) {
     if (e?.name !== 'OverconstrainedError' && e?.name !== 'TypeError') throw e;
-    return navigator.mediaDevices.getUserMedia({ audio: true });
+    s = await navigator.mediaDevices.getUserMedia({ audio: true });
   }
+  try {
+    const g = s.getAudioTracks()[0]?.getSettings?.() || {};
+    const f = (k) => (g[k] === undefined ? '?' : g[k] ? 'on' : 'off');
+    dlog(`mic opened: echo cancellation ${f('echoCancellation')}, noise suppression ${f('noiseSuppression')}, gain control ${f('autoGainControl')}`);
+  } catch {}
+  return s;
 }
 
 const dbOf = (ss, n) => Math.max(-90, 20 * Math.log10(Math.sqrt(ss / Math.max(1, n)) / 32768 + 1e-9));
@@ -399,7 +410,7 @@ async function start(m) {
   if (!audioCtx()) { mode = ''; phase = ''; fail('noaudio', 'This browser has no Web Audio.'); return false; }
   unlock();
   // Talking over a reply cuts it off (GodTerm stops it too).
-  if (m === 'push' && (playing.size || held.length)) hush();
+  if (m === 'push' && (playing.size || held.length || S.voice?.speaking)) hush();
   try {
     const t0 = performance.now();
     // Still open from the last press (kept while voice is on: iOS asks for
@@ -596,6 +607,8 @@ function shown() {
   if (held.length) return 'locked';
   if (mode === 'push') return phase === 'listening' && noAudio() ? 'noaudio' : phase === 'listening' && !st.any ? 'starting' : phase;
   if (mode === 'test') return 'test';
+  // The mic off: nothing to say (an error still shows).
+  if (pick === 'off' && !err) return '';
   const busy = serverOn && (v.status === 'transcribing' || S.assistant?.busy);
   if (handsFree()) {
     if (phase === 'starting' || phase === 'asking') return phase;
@@ -647,6 +660,8 @@ const CSS = `
 .vs .vs-live .m i{display:block;height:100%;background:var(--ok);transform-origin:left;transform:scaleX(0);transition:transform 60ms linear}
 .vs select,.vs input[type=text],.vs input[type=number]{min-height:34px;max-width:46%;border:1px solid var(--line);border-radius:8px;background:none;color:inherit;font:inherit;padding:0 8px}
 .vs .btn{min-height:36px}
+.touch .vs .btn,.touch .vs .seg button,.touch .vs .row{min-height:44px}
+.touch .vs select,.touch .vs input[type=text],.touch .vs input[type=number]{min-height:44px}
 `;
 
 let bar = null;
@@ -659,8 +674,8 @@ function ensureBar() {
     h('span.vb-main', {}, h('span.vb-text'), h('span.vb-sub')),
     h('span.vb-lv', {}, h('span.vb-meter', {}, h('i')), h('span.vb-db')),
     h('button.vb-act', { type: 'button', hidden: true }),
-    h('button.vb-set', { type: 'button', 'aria-label': 'Voice settings', html: SET_ICON }),
-    h('button.vb-x', { type: 'button', 'aria-label': 'Dismiss', html: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>' }));
+    h('button.vb-set', { type: 'button', 'aria-label': 'Voice settings', title: 'Voice settings', html: SET_ICON }),
+    h('button.vb-x', { type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss', html: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>' }));
   bar.querySelector('.vb-x').addEventListener('click', () => {
     if (err) { err = null; hint = ''; paint(); return; }
     hint = '';
@@ -702,27 +717,47 @@ function meter() {
   }
 }
 
-const TEXT = {
-  starting: 'Starting the mic...',
-  asking: 'Allow the microphone in the prompt',
-  listening: 'Listening',
-  hearing: 'Hearing you',
-  heard: 'Heard you',
-  sending: 'Sending',
-  thinking: 'Thinking',
-  speaking: 'Speaking',
-  waiting: 'Waiting for the wake word',
-  locked: 'A reply is waiting',
-  paused: 'Mic paused',
-  test: 'Mic test',
-  noaudio: 'No audio from the mic',
-  muted: 'Mic muted',
+// One wording for the mic everywhere (the header's pill, the chat head,
+// the Talk button, the strip, the floating bar, the mic menu, the voice
+// sheet): a mode is "Voice off", "Push to talk", "Open mic" or "Wake
+// word"; a state follows a middle dot in lower case ("· muted",
+// "· listening", "· speaking"). `micWords(mode, state, muted)` gives
+// {mode, state, text ("Open mic · muted"), short (the phone pill's word),
+// State (the state capitalised, for a line of its own)}.
+const MODE = { off: 'Voice off', push: 'Push to talk', open: 'Open mic', wake: 'Wake word' };
+const STATE = {
+  starting: 'starting the mic',
+  asking: 'allow the mic',
+  listening: 'listening',
+  hearing: 'hearing you',
+  heard: 'heard you',
+  sending: 'sending',
+  thinking: 'thinking',
+  speaking: 'speaking',
+  waiting: 'waiting for the wake word',
+  locked: 'a reply is waiting',
+  paused: 'paused',
+  test: 'mic test',
+  noaudio: 'no audio',
+  muted: 'muted',
+  error: 'not listening',
 };
+const SHORT = { off: 'Off', push: 'PTT', open: 'Open', wake: 'Wake' };
+const upFirst = (w) => (w ? w[0].toUpperCase() + w.slice(1) : '');
+const modeName = (m) => MODE[m] || '';
+export function micWords(m = pick, s = shown(), mu = micMuted) {
+  const mode = MODE[m] || '';
+  const on = m && m !== 'off';
+  let state = !on ? '' : mu ? (s === 'speaking' ? 'muted \u00b7 speaking' : 'muted') : STATE[s] || '';
+  if (s === 'error') state = STATE.error;
+  return { mode, state, text: state ? `${mode} \u00b7 ${state}` : mode, short: on && mu ? 'Muted' : SHORT[m] || '', State: upFirst(state) };
+}
+// A state on a line of its own (the floating bar): the same words, capitalised.
+const TEXT = new Proxy({}, { get: (_, k) => (STATE[k] ? upFirst(STATE[k]) : undefined) });
 
 const wakeWord = () => S.voice?.wake_word || 'hey god';
 // "hey god" -> "Hey God", for labels.
 const wakeLabel = () => wakeWord().replace(/\b\w/g, (c) => c.toUpperCase());
-const modeName = (m) => ({ push: 'Push to talk', open: 'Open mic', wake: 'Wake word', off: 'Voice off' }[m] || '');
 
 // The mic icon for each mode (the header's mic shows the one picked).
 const MIC = '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>';
@@ -738,7 +773,6 @@ const SPK = '<path d="M4 9.5v5h3.5L12 18V6L7.5 9.5H4z"/>';
 const spkIcon = () => svg(SPK + (spkMuted || spkVol === 0 ? '<path d="M16 9.5l5 5M21 9.5l-5 5"/>' : spkVol < 0.5 ? '<path d="M15.5 9.5a3.5 3.5 0 0 1 0 5"/>' : '<path d="M15.5 9.5a3.5 3.5 0 0 1 0 5M18 7a7 7 0 0 1 0 10"/>'));
 const spkWord = () => (spkMuted ? 'muted' : Math.round(spkVol * 100) + '%');
 // The header's mic says the mode in a word (the whole name on a desktop).
-const SHORT = { off: 'Off', push: 'PTT', open: 'Open', wake: 'Wake' };
 const svg = (inner) => `<svg viewBox="0 0 24 24" aria-hidden="true">${inner}</svg>`;
 const CHECK = svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>');
 
@@ -750,19 +784,20 @@ function paintHeader(state) {
     if (!el) continue;
     // Muted: the slashed mic in clay, the mode's word kept.
     const mu = micMuted && pick !== 'off';
-    if (el.dataset.mode !== pick || headPick !== pick + mu) {
+    const w = micWords(pick, state, micMuted);
+    if (el.dataset.mode !== pick || headPick !== pick + mu + w.text) {
       el.dataset.mode = pick;
-      el.innerHTML = svg(mu ? MIC_OFF : ICON[pick]) + (id === '#b-ptt' ? `<span class="ml-s">${mu ? 'Muted' : SHORT[pick]}</span><span class="ml-l">${modeName(pick)}${mu ? ' · muted' : ''}</span>` : '');
+      el.innerHTML = svg(mu ? MIC_OFF : ICON[pick]) + (id === '#b-ptt' ? `<span class="ml-s">${w.short}</span><span class="ml-l">${w.text}</span>` : '');
     }
     el.classList.toggle('muted', mu);
     const talking = mode === 'push' && (state === 'listening' || state === 'noaudio');
     el.classList.toggle('talking', talking);
     if (state && state !== 'paused') el.dataset.voice = state; else delete el.dataset.voice;
-    const what = pick === 'push' && id === '#b-ptt2' ? (mu ? 'The mic is muted' : mode === 'push' ? 'Listening: release to send' : 'Hold to talk') : `Voice: ${pick === 'off' ? 'off' : modeName(pick) + (mu ? ', mic muted' : '')}. Tap to change`;
+    const what = pick === 'push' && id === '#b-ptt2' ? (mu ? w.text + '. M unmutes' : mode === 'push' ? 'Listening: release to send' : 'Hold to talk') : `${w.text}. Tap to change`;
     el.setAttribute('aria-label', what);
     el.title = what;
   }
-  headPick = pick + (micMuted && pick !== 'off');
+  headPick = pick + (micMuted && pick !== 'off') + micWords(pick, state, micMuted).text;
 }
 
 // The strip under the header while open mic or wake word is picked: the
@@ -777,14 +812,20 @@ function ensureStrip() {
     h('button.ms-act', { type: 'button', hidden: true }),
     h('button.ms-mute', { type: 'button', 'aria-pressed': 'false', html: svg(MIC_OFF) }),
     h('button.ms-spk', { type: 'button', 'aria-pressed': 'false' }, h('span.ms-spi'), h('span.ms-spv')),
-    h('button.ms-chg', { type: 'button', 'aria-label': 'Change the mic mode', html: svg('<path d="M6 9l6 6 6-6"/>') }));
+    h('button.ms-chg', { type: 'button', 'aria-label': 'Change the mic mode', title: 'Change the mic mode', html: svg('<path d="M6 9l6 6 6-6"/>') }));
   strip.addEventListener('click', (e) => {
     if (e.target.closest('.ms-mute')) { e.stopPropagation(); setMicMuted(!micMuted); return; }
     if (e.target.closest('.ms-spk')) { e.stopPropagation(); setSpeaker({ muted: !spkMuted }); return; }
     const a = e.target.closest('.ms-act');
     if (a) {
       e.stopPropagation();
-      if (a.dataset.act === 'stop') { hush(); send({ t: 'voice', hush: true }); } else if (a.dataset.act === 'start') { const m = resumeMode || pick; lost = ''; resumeMode = ''; err = null; start(m); }
+      if (a.dataset.act === 'unmute') {
+        // Lift GodTerm's own mute, then open the mic again. An older
+        // GodTerm ignores the request and refuses again: say how instead.
+        send({ t: 'voice', unmute_mac: true });
+        const m = resumeMode || pick; lost = ''; resumeMode = ''; err = null; unmuteAt = Date.now();
+        setTimeout(() => start(m), 400);
+      } else if (a.dataset.act === 'stop') { hush(); send({ t: 'voice', hush: true }); } else if (a.dataset.act === 'start') { const m = resumeMode || pick; lost = ''; resumeMode = ''; err = null; start(m); }
       paint();
       return;
     }
@@ -813,21 +854,21 @@ function paintStrip(s) {
   const flags = S.mode_flags || {};
   const extra = [flags.direct ? 'to ' + flags.direct : '', flags.brainstorm ? 'brainstorm' : ''].filter(Boolean).join(' · ');
   let state = s, what = '', sub = extra, act = '';
-  if (err) { state = 'error'; what = 'not listening'; sub = err.text; act = 'start'; }
+  if (err) { state = 'error'; what = 'not listening'; sub = err.text; act = err.code === 'mac-muted' ? 'unmute' : 'start'; }
   else if (!handsFree()) { state = 'paused'; what = lost === 'tap' ? 'paused' : 'not started'; sub = lost === 'tap' ? 'The phone stopped the mic in the background' : 'Tap Start to open the mic'; act = 'start'; }
   else if (s === 'paused') { what = 'paused'; sub = away ? 'Back when you return to GodTerm' : 'The phone stopped the mic (a call, the screen lock, another app)'; }
   else if (s === 'noaudio') what = 'no audio';
-  else if (micMuted) { state = 'muted'; what = s === 'speaking' ? 'muted · speaking' : 'muted'; sub = 'Nothing is sent; replies still play'; if (s === 'speaking') act = 'stop'; }
+  else if (micMuted) { state = 'muted'; what = micWords(m, s, true).state; sub = 'Nothing is sent; replies still play'; if (s === 'speaking') act = 'stop'; }
   else if (s === 'waiting') what = `say "${wakeLabel()}"`;
-  else if (s === 'listening') what = mode === 'wake' ? 'listening for your request' : 'listening';
-  else if (s === 'heard') { what = 'heard you'; if (heardText) sub = '"' + heardText + '"'; }
-  else if (s === 'speaking') { what = 'speaking'; act = 'stop'; }
-  else what = (TEXT[s] || s || 'listening').toLowerCase();
+  else if (s === 'listening') what = mode === 'wake' ? 'listening for your request' : STATE.listening;
+  else if (s === 'heard') { what = STATE.heard; if (heardText) sub = '"' + heardText + '"'; }
+  else if (s === 'speaking') { what = STATE.speaking; act = 'stop'; }
+  else what = STATE[s] || s || STATE.listening;
   el.dataset.state = state || 'idle';
   el.dataset.mode = m;
   const ic = el.querySelector('.ms-ic');
   if (ic.dataset.m !== m) { ic.dataset.m = m; ic.innerHTML = svg(ICON[m] || MIC); }
-  el.querySelector('.ms-t').textContent = `${modeName(m)} · ${what}`;
+  el.querySelector('.ms-t').textContent = `${modeName(m)} \u00b7 ${what}`;
   el.querySelector('.ms-sub').textContent = sub;
   el.querySelector('.ms-lv').hidden = !mode || micMuted;
   el.dataset.muted = String(micMuted);
@@ -849,7 +890,7 @@ function paintStrip(s) {
   const a = el.querySelector('.ms-act');
   a.hidden = !act;
   a.dataset.act = act;
-  a.textContent = { stop: 'Stop', start: err ? 'Retry' : lost === 'tap' ? 'Resume' : 'Start' }[act] || '';
+  a.textContent = { stop: 'Stop', unmute: 'Unmute', start: err ? 'Retry' : lost === 'tap' ? 'Resume' : 'Start' }[act] || '';
 }
 
 // Push to talk: a big Talk button stays on screen (hold it while you
@@ -873,7 +914,7 @@ function paintTalk(s) {
   if (!on) return;
   const st2 = err ? 'error' : mode === 'push' ? s || 'listening' : s === 'sending' || s === 'thinking' || s === 'speaking' ? s : 'idle';
   t.dataset.state = st2;
-  const label = { idle: 'Talk', starting: 'Starting', asking: 'Allow the mic', listening: 'Release to send', noaudio: 'No audio', sending: 'Sending', thinking: 'Talk', speaking: 'Talk', error: 'Talk' }[st2] || 'Talk';
+  const label = { idle: 'Talk', starting: upFirst(STATE.starting), asking: upFirst(STATE.asking), listening: 'Release to send', noaudio: upFirst(STATE.noaudio), sending: upFirst(STATE.sending), thinking: 'Talk', speaking: 'Talk', error: 'Talk' }[st2] || 'Talk';
   const l = t.querySelector('.tk-l');
   if (l.textContent !== label) l.textContent = label;
   t.querySelector('.tk-lv').hidden = mode !== 'push';
@@ -906,7 +947,7 @@ function openMicMenu(anchor) {
   h('span.mm-t', {}, 'Mute mic', h('small', {}, pick === 'off' ? 'The mic is off' : micMuted ? 'Nothing is sent; replies still play (M)' : 'Keep listening to replies (M)')),
   h('span.mm-sw', { 'aria-hidden': 'true' }, h('i')));
   openMenu(at, h('div.mm', { role: 'none' },
-    item('off', 'Off', 'The mic stays closed'),
+    item('off', MODE.off, 'The mic stays closed'),
     item('push', 'Push to talk', 'Hold Talk while you talk'),
     item('open', 'Open mic', 'Always listening for commands'),
     item('wake', 'Wake word', `Say "${wakeLabel()}", then your request`),
@@ -928,14 +969,15 @@ function paint() {
   const om = $('#b-openmic');
   if (om) {
     om.setAttribute('aria-pressed', String(handsFree()));
-    om.textContent = pick === 'off' ? 'Voice off' : modeName(pick);
+    // The same words as the header's mic pill.
+    om.textContent = micWords(pick, state, micMuted).text;
   }
   paintStrip(s);
   paintTalk(s);
   const here = serverOn && S.voice?.web === S.client;
   const engineErr = here && S.voice?.status === 'off' && S.voice?.error;
   const note = $('#voice-note');
-  if (note) note.textContent = err ? 'voice failed' : !secure() ? 'mic needs HTTPS' : TEXT[s]?.toLowerCase() || (serverOn ? 'voice here' : '');
+  if (note) note.textContent = err ? 'voice failed' : !secure() ? 'mic needs HTTPS' : serverOn && !s ? 'voice here' : '';
   const b = ensureBar();
   let text = '', sub = '', act = '';
   const flags = S.mode_flags || {};
@@ -943,19 +985,23 @@ function paint() {
   if (err) text = err.text;
   else if (engineErr) text = 'GodTerm\'s voice engine stopped: ' + S.voice.error;
   else if (s === 'paused') {
-    text = 'Mic paused';
+    text = TEXT.paused;
     sub = lost === 'tap' ? 'The phone stopped the mic in the background. Tap Resume.' : away ? 'GodTerm is in the background; the mic comes back when you return' : 'The phone stopped the mic (a call, the screen lock, another app)';
     if (lost === 'tap') act = 'resume';
   } else if (s === 'listening') text = 'Listening: release to send';
-  else if (s === 'noaudio') { text = 'No audio from the mic'; sub = 'Nothing reaches GodTerm: release and hold again'; }
-  else if (s === 'locked') { text = 'A reply is waiting'; act = 'play'; }
-  else if (s === 'speaking') { text = 'Speaking'; act = 'stop'; sub = extra; }
-  else if (s) { text = TEXT[s]; sub = extra; }
+  else if (s === 'noaudio') { text = TEXT.noaudio; sub = 'Nothing reaches GodTerm: release and hold again'; }
+  else if (s === 'locked') { text = TEXT.locked; act = 'play'; }
+  else if (s === 'speaking') { text = TEXT.speaking; act = 'stop'; sub = extra; }
+  else if (s) { text = TEXT[s] || upFirst(s); sub = extra; }
   else if (hint) text = hint;
   // Open mic and wake word say it all in the strip; the floating bar is
   // for push to talk, a reply waiting, and failures.
   const inStrip = (pick === 'open' || pick === 'wake') && !engineErr && s !== 'locked';
-  b.hidden = !text || inStrip || sheetKind === 'voice';
+  // Push to talk on a phone: the Talk button (and the header pill) show
+  // listening, sending and thinking; the bar is for a reply waiting,
+  // speaking (its Stop), no audio and failures.
+  const inTalk = pick === 'push' && !err && !engineErr && talk && !talk.hidden && ['listening', 'sending', 'thinking', 'starting'].includes(s);
+  b.hidden = !text || inStrip || inTalk || sheetKind === 'voice';
   b.dataset.state = err || engineErr ? 'error' : s || 'idle';
   delete b.dataset.hf;
   b.querySelector('.vb-text').textContent = text;
@@ -1032,7 +1078,7 @@ export function setMode(m) {
   hint = '';
   if (m === 'off' || m === 'push') {
     if (mode) stop();
-    if (m === 'off' && serverOn) voiceOff();
+    if (m === 'off') { phase = ''; thinkingUntil = 0; if (serverOn) voiceOff(); }
     paint();
     return;
   }
@@ -1063,7 +1109,22 @@ export function setMicMuted(on) {
 }
 
 // The agent's voice here: volume (0..1) and mute, applied to the gain.
-const spkGain = () => (spkMuted ? 0 : spkVol);
+// While GodTerm decides whether speech over the reply is a barge-in, it
+// ducks the reply (`audio_duck {level}`), as it does on the Mac's speakers.
+let duck = 1;
+const spkGain = () => (spkMuted ? 0 : spkVol * duck);
+function applyGain() {
+  if (!outGain || !ctx) return;
+  try { outGain.gain.setTargetAtTime(spkGain(), ctx.currentTime, 0.015); } catch { outGain.gain.value = spkGain(); }
+}
+function onDuck(m) {
+  const l = Number(m?.level);
+  const v = Number.isFinite(l) ? Math.max(0, Math.min(1, l)) : 1;
+  if (v === duck) return;
+  duck = v;
+  if (playing.size) dlog(v < 1 ? `reply ducked to ${Math.round(v * 100)}% (is it a barge-in?)` : 'reply back to full volume');
+  applyGain();
+}
 export function setSpeaker({ volume, muted } = {}) {
   if (volume != null && Number.isFinite(+volume)) {
     spkVol = Math.max(0, Math.min(1, +volume));
@@ -1072,9 +1133,7 @@ export function setSpeaker({ volume, muted } = {}) {
     if (spkMuted && spkVol > 0 && muted == null) { spkMuted = false; store.set('voice.spkmute', false); }
   }
   if (muted != null) { spkMuted = !!muted; store.set('voice.spkmute', spkMuted); }
-  if (outGain && ctx) {
-    try { outGain.gain.setTargetAtTime(spkGain(), ctx.currentTime, 0.015); } catch { outGain.gain.value = spkGain(); }
-  }
+  applyGain();
   for (const r of document.querySelectorAll('.vol-row')) paintVol(r);
   paint();
 }
@@ -1103,10 +1162,14 @@ function paintVol(row) {
 
 // Speech from GodTerm: WAV clips (PCM16 mono), played back to back in the
 // order they came, with no gap. One log line per reply.
-let chain = Promise.resolve();
+// `gen` goes up on every stop: a clip still on its way through the chain
+// (waiting for the context or a decode) when the reply is cut off is
+// dropped, never played after the stop.
+let chain = Promise.resolve(), gen = 0;
 const reply = { clips: 0, secs: 0, late: 0, t0: 0, quietT: 0 };
 function enqueue(bytes) {
-  chain = chain.then(() => play(bytes)).catch((e) => dlog('play failed: ' + (e?.message || e)));
+  const g = gen;
+  chain = chain.then(() => (g === gen ? play(bytes, g) : null)).catch((e) => dlog('play failed: ' + (e?.message || e)));
 }
 
 // A WAV clip read directly (no decodeAudioData: in order and at once).
@@ -1131,11 +1194,30 @@ function wavBuffer(c, bytes) {
   return null;
 }
 
-async function play(bytes) {
+// No clicks between clips, no crackle at the top: a 4 ms fade at each
+// edge of a clip (its first and last samples are rarely zero, and the
+// browser plays clips one after the other), and a clip that reaches full
+// scale is scaled under it instead of clipping.
+let hotClips = 0;
+function smooth(buf) {
+  const ch = buf.getChannelData(0), n = ch.length;
+  let peak = 0;
+  for (let i = 0; i < n; i++) { const a = ch[i] < 0 ? -ch[i] : ch[i]; if (a > peak) peak = a; }
+  if (peak > 0.97) {
+    const k = 0.94 / peak;
+    for (let i = 0; i < n; i++) ch[i] *= k;
+    if (++hotClips <= 3) dlog(`clip peak ${peak.toFixed(2)}: scaled by ${k.toFixed(2)} to avoid clipping`);
+  }
+  const f = Math.min(n >> 1, Math.round(buf.sampleRate * 0.004));
+  for (let i = 0; i < f; i++) { const w = i / f; ch[i] *= w; ch[n - 1 - i] *= w; }
+}
+
+async function play(bytes, g = gen) {
   const c = audioCtx();
   if (!c) return;
   if (c.state !== 'running') {
     await wait(c.resume().catch(() => {}), 300);
+    if (g !== gen) return;
     if (c.state !== 'running') {
       // Locked (iOS without a recent tap): wait for a tap on Play.
       held.push(bytes);
@@ -1162,7 +1244,8 @@ async function play(bytes) {
       for (let i = 0; i < n; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
     }
   }
-  if (!buf.duration) return;
+  if (!buf.duration || g !== gen) return;
+  smooth(buf);
   const s = c.createBufferSource();
   s.buffer = buf;
   s.connect(outGain || c.destination);
@@ -1175,32 +1258,56 @@ async function play(bytes) {
   s.start(playAt);
   playAt += buf.duration;
   playing.add(s);
+  sendPlaying(true);
   if (!reply.clips) reply.t0 = performance.now();
   reply.clips++;
   reply.secs += buf.duration;
   clearTimeout(reply.quietT);
   s.onended = () => {
     playing.delete(s);
-    if (!playing.size) reply.quietT = setTimeout(replyDone, 700);
+    if (!playing.size) {
+      reply.quietT = setTimeout(replyDone, 700);
+      // (A clip a moment late in the same reply is no end.)
+      clearTimeout(playOffT);
+      playOffT = setTimeout(() => { if (!playing.size) sendPlaying(false); }, 250);
+    }
     paint();
   };
   paint();
   if (serverOn === 'push' && !mode) voiceOffSoon();
 }
 
+// GodTerm is told when this page plays speech (`voice {playing}`): it
+// treats the mic as hearing the reply while it plays here, also when that
+// is later than it thinks (clips held for a tap on iOS, a slow network),
+// so talking over it is a barge-in and the reply's echo is not a request.
+let playSent = false, playOffT = 0;
+function sendPlaying(on) {
+  clearTimeout(playOffT);
+  if (on === playSent) return;
+  if (on && !serverOn) return;
+  playSent = on;
+  send({ t: 'voice', playing: on });
+}
+
 function replyDone() {
+  if (!playing.size && duck !== 1) { duck = 1; applyGain(); }
   if (playing.size || !reply.clips) return;
   dlog(`reply played: ${reply.clips} clips, ${reply.secs.toFixed(1)} s${reply.late > 1 ? `, ${reply.late - 1} late (a gap)` : ''}`);
   Object.assign(reply, { clips: 0, secs: 0, late: 0 });
 }
 
-// The reply was cut off: drop what is queued.
+// The reply was cut off (a barge-in, Stop, a press of Talk): silent at
+// once, and nothing queued or still on its way plays after.
 function hush() {
+  gen++;
   for (const s of playing) { try { s.onended = null; s.stop(); } catch {} }
   if (playing.size) dlog(`reply stopped after ${reply.clips} clips`);
   playing.clear();
   held = [];
   playAt = 0;
+  if (duck !== 1) { duck = 1; applyGain(); }
+  sendPlaying(false);
   Object.assign(reply, { clips: 0, secs: 0, late: 0 });
   paint();
 }
@@ -1226,7 +1333,10 @@ function onVoice(m) {
     release();
     phase = '';
     serverOn = '';
-    fail('server', 'GodTerm refused voice: ' + (m.error || 'no reason given'));
+    // GodTerm's own mic mute (Ctrl-a X on the Mac): offer to lift it here.
+    if (m.code === 'muted' && Date.now() - unmuteAt < 5000) fail('mac-muted', 'Still muted: press Ctrl-a X on the Mac (unmuting from here needs a GodTerm restart)');
+    else if (m.code === 'muted') fail('mac-muted', 'GodTerm\'s mic is muted on the Mac');
+    else fail('server', 'GodTerm refused voice: ' + (m.error || 'no reason given'));
     if (was) dlog('refused while ' + was);
     return;
   }
@@ -1248,8 +1358,8 @@ function onVoice(m) {
 
 // Settings that make sense from a phone (the rest are the Mac's devices).
 const KEYS = ['voice.tts', 'voice.tts_engine', 'voice.kokoro_voice', 'voice.grok.voice', 'voice.tts_voice', 'voice.tts_speed', 'voice.tts_volume',
-  'voice.wake_words', 'voice.wake_sensitivity', 'voice.wake_follow_up_s', 'voice.open_mic_sleep_min', 'voice.barge_in', 'voice.barge_in_min_words',
-  'voice.direct_reply', 'voice.instant_commands', 'voice.end_silence_ms', 'voice.engine', 'voice.language', 'voice.speaker_lock'];
+  'voice.wake_words', 'voice.wake_sensitivity', 'voice.wake_follow_up_s', 'voice.open_mic_sleep_min', 'voice.barge_in', 'voice.barge_margin_db',
+  'voice.barge_in_min_words', 'voice.barge_in_duck', 'voice.direct_reply', 'voice.instant_commands', 'voice.end_silence_ms', 'voice.engine', 'voice.language', 'voice.speaker_lock'];
 let settings = null;
 
 function curTab() {
@@ -1282,10 +1392,10 @@ function paintSheet() {
   if (root.dataset.sig === sig) { liveInfo(); meter(); return; }
   root.dataset.sig = sig;
   root.querySelector('.seg-mode').replaceChildren(
-    segBtn('Off', pick === 'off', () => setMode('off')),
-    segBtn('Push to talk', pick === 'push', () => setMode('push')),
-    segBtn('Open mic', pick === 'open', () => setMode('open')),
-    segBtn('Wake word', pick === 'wake', () => setMode('wake')));
+    segBtn(MODE.off, pick === 'off', () => setMode('off')),
+    segBtn(MODE.push, pick === 'push', () => setMode('push')),
+    segBtn(MODE.open, pick === 'open', () => setMode('open')),
+    segBtn(MODE.wake, pick === 'wake', () => setMode('wake')));
   root.querySelector('.mode-note').textContent = {
     off: 'The mic stays closed. Pick a mode here or from the mic in the header.',
     push: 'Hold the Talk button while you talk.',
@@ -1373,7 +1483,13 @@ function paintTts() {
 }
 function paintTtsBox(box) {
   const L = ttsList?.web_tts_list;
-  if (!L) { box.replaceChildren(h('p.note', {}, 'Loading the voices...')); return; }
+  if (!L) {
+    // Grey bars while GodTerm lists the voices; after 6 s, say so with Retry.
+    if (!box.waited) { box.waited = setTimeout(() => { if (!ttsList && box.isConnected) box.replaceChildren(failRow('GodTerm did not list the voices', () => { send({ t: 'voice', web_tts_list: true }); box.waited = 0; paintTtsBox(box); }, 'The voice list')); }, 6000); }
+    box.replaceChildren(skeleton(1, '.sm'));
+    return;
+  }
+  clearTimeout(box.waited); box.waited = 0;
   const def = ttsList.default || TTS_DEFAULT;
   const cur = ttsChoice() || def;
   const engines = h('select.tts-e', { 'aria-label': 'Engine', onchange: (e) => {
@@ -1470,11 +1586,12 @@ export function initVoice() {
   });
   on('bin:' + KIND.AUDIO, (_uid, b) => enqueue(b));
   on('msg:audio_stop', hush);
+  on('msg:audio_duck', onDuck);
   on('msg:voice', onVoice);
   on('msg:voice_level', onRecLevel);
   on('open-voice', openVoiceSheet);
   on('sheet', () => paint());
-  on('conn', (s) => {
+  const onConn = (s) => {
     if (s === 'live') sendTts();
     if (s === 'live' && debug) {
       send({ t: 'voice', debug: true });
@@ -1496,7 +1613,11 @@ export function initVoice() {
       hush();
     }
     paint();
-  });
+  };
+  on('conn', onConn);
+  // Loaded after the socket opened (main.js loads voice after the first
+  // screen): as if it had just opened.
+  if (conn.open) onConn('live');
   // GodTerm says whose voice it is (another browser may have taken it).
   on('state', () => {
     const v = S.voice || {};

@@ -1169,6 +1169,15 @@ impl App {
 }
 
 impl App {
+    /// The tab here ("t12") that holds a conversation, if one does.
+    fn lease_tab_of(&self, sid: &str) -> Option<String> {
+        self.panes.iter().flat_map(|p| p.tabs.iter()).find_map(|t| {
+            let same = t.session_id.as_deref() == Some(sid)
+                || t.lease.as_ref().is_some_and(|l| l.sid() == sid);
+            same.then(|| format!("t{}", t.uid))
+        })
+    }
+
     /// The ownership part of sync_status (the web's Settings > Sync).
     pub fn lease_status_json(&self) -> Value {
         let Some(b) = &self.lease.board else {
@@ -1190,7 +1199,7 @@ impl App {
                             json!({"session": sid, "name": name, "by": by, "direction": "in"}),
                         );
                     }
-                    here.push(json!({"session": sid, "name": name, "asked_by": asked}));
+                    here.push(json!({"session": sid, "name": name, "asked_by": asked, "tab": self.lease_tab_of(sid)}));
                 }
                 Status::Live {
                     label,
@@ -1204,11 +1213,11 @@ impl App {
                         );
                     }
                     elsewhere.push(json!({"session": sid, "name": name, "owner": label,
-                        "active": active_words(beat_ms, now), "live": true}));
+                        "active": active_words(beat_ms, now), "live": true, "tab": self.lease_tab_of(sid)}));
                 }
                 Status::Stale { label, beat_ms, .. } => {
                     elsewhere.push(json!({"session": sid, "name": name, "owner": label,
-                        "active": active_words(beat_ms, now), "live": false}));
+                        "active": active_words(beat_ms, now), "live": false, "tab": self.lease_tab_of(sid)}));
                 }
                 _ => {}
             }

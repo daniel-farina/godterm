@@ -230,7 +230,7 @@ fn exe_of(pid: u32) -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(String::from_utf8(buf).ok()?))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn exe_of(pid: u32) -> Option<std::path::PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/exe")).ok()
 }

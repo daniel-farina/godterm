@@ -469,10 +469,7 @@ impl App {
                 )
             };
             self.told_record("remote control", &msg, crate::told::Channel::Panel, false);
-            self.assistant.log.push(Entry {
-                who: Who::Note,
-                text: msg.clone(),
-            });
+            self.assistant.log.push(Entry::new(Who::Note, msg.clone()));
             self.flash(msg);
         }
         self.assistant.remote_pending = None;
@@ -497,10 +494,10 @@ impl App {
             "assistant: via Remote Control: {}",
             text.chars().take(200).collect::<String>()
         ));
-        self.assistant.log.push(Entry {
-            who: Who::User,
-            text: format!("{text} · via Remote Control"),
-        });
+        self.assistant.log.push(Entry::new(
+            Who::User,
+            format!("{text} · via Remote Control"),
+        ));
         self.assistant.last_user = text.to_string();
         self.assistant.turn_remote = true;
         self.assistant.turn_reads = 0;

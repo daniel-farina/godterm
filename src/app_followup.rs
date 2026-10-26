@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::app_assistant::{Entry, Who};
+use crate::control::plural;
 use crate::pane::Activity;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +72,14 @@ pub struct FollowUp {
 
 /// Finished entries stay in the snapshot this long.
 const KEEP_DONE: Duration = Duration::from_secs(3600);
+/// An answer the quiet gate has held this long is told anyway, as soon
+/// as a turn is possible (the user is not mid sentence, the assistant is
+/// free): a report that waits for perfect quiet can wait forever when a
+/// gate never clears (talk back that never reports its end, a stale
+/// confirmation), and silence is the one thing the user must not get.
+pub const REPORT_FORCE: Duration = Duration::from_secs(90);
+/// How often a held report is explained in the log.
+const HELD_LOG_EVERY: Duration = Duration::from_secs(30);
 /// A tab still working past the wait limit is waited for up to this long.
 pub const HARD_CAP: Duration = Duration::from_secs(2 * 3600);
 /// Turns of a transcript searched for the question.
@@ -335,14 +344,10 @@ impl App {
             [one] => format!("Okay, I won't wait for {one}'s answer."),
             _ => "Okay, I won't wait for those answers.".to_string(),
         };
-        self.assistant.log.push(Entry {
-            who: Who::User,
-            text: text.to_string(),
-        });
-        self.assistant.log.push(Entry {
-            who: Who::Reply,
-            text: say.clone(),
-        });
+        self.assistant
+            .log
+            .push(Entry::new(Who::User, text.to_string()));
+        self.assistant.log.push(Entry::new(Who::Reply, say.clone()));
         self.assistant.unsaid = None;
         self.assistant.muted = false;
         self.assistant.spoken.push(say.clone());
@@ -533,14 +538,49 @@ impl App {
             }
             return;
         }
-        if !self.can_report()
-            || self
-                .assistant
-                .report_retry
-                .is_some_and(|t| Instant::now() < t)
+        if self
+            .assistant
+            .report_retry
+            .is_some_and(|t| Instant::now() < t)
         {
             return;
         }
+        if !self.can_report() {
+            // Held: say why now and then, and past REPORT_FORCE tell it
+            // as soon as a turn is possible at all.
+            let held = answered
+                .iter()
+                .filter_map(|&i| match &self.assistant.follow_ups[i].state {
+                    FuState::Answered { at, .. } => Some(*at),
+                    _ => None,
+                })
+                .min()
+                .map(|at| (chrono::Local::now() - at).to_std().unwrap_or_default())
+                .unwrap_or_default();
+            let why = self.not_quiet_because().unwrap_or("not quiet");
+            let forced = held >= REPORT_FORCE && self.can_report_late();
+            if !forced {
+                if self
+                    .assistant
+                    .report_held_logged
+                    .is_none_or(|t| t.elapsed() >= HELD_LOG_EVERY)
+                {
+                    self.assistant.report_held_logged = Some(Instant::now());
+                    crate::log::info(&format!(
+                        "follow-up: {} held {} s: {why}",
+                        plural(answered.len(), "answer"),
+                        held.as_secs()
+                    ));
+                }
+                return;
+            }
+            crate::log::info(&format!(
+                "follow-up: {} held {} s ({why}); telling it now",
+                plural(answered.len(), "answer"),
+                held.as_secs()
+            ));
+        }
+        self.assistant.report_held_logged = None;
         // Questions one tab turn answered are told together.
         let mut groups: Vec<(u64, String, String, Vec<String>)> = vec![];
         for &i in &answered {

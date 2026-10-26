@@ -103,13 +103,23 @@ fn run_loop(
         if stop.load(Ordering::Relaxed) {
             return;
         }
-        // Pokes that piled up while syncing count once.
-        while rx.try_recv().is_ok() {}
+        // Pokes that piled up while syncing count once (as the user's ask
+        // when one of them was).
+        let mut why = why;
+        while let Ok(w) = rx.try_recv() {
+            if w == "quit" {
+                return;
+            }
+            if w == "asked" {
+                why = w;
+            }
+        }
         let Ok(ctx) = make() else {
             next_periodic = Instant::now() + Duration::from_secs(60);
             continue;
         };
-        if !ctx.sync().enabled {
+        // Paused: only a sync the user asked for runs.
+        if !ctx.sync().enabled || (ctx.sync().paused && why != "asked") {
             next_periodic = Instant::now() + Duration::from_secs(60);
             continue;
         }
@@ -224,7 +234,7 @@ fn watch_loop(
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_secs(2));
         let Ok(ctx) = make() else { continue };
-        if !ctx.sync().enabled {
+        if !ctx.sync().enabled || ctx.sync().paused {
             continue;
         }
         if roots_at.elapsed() > Duration::from_secs(60) {

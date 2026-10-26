@@ -153,6 +153,9 @@ pub enum UiAction {
     BrowserRow(usize),
     /// The Browser dialog's "No browser".
     BrowserClear,
+    /// The Browser dialog's "Also use" / "Remove": the selected profile in
+    /// or out of the tab's set.
+    BrowserAlso,
     /// The Git section: a key press (its buttons).
     GitKey(char),
     /// The Git section: row `.0` (an action or a branch).

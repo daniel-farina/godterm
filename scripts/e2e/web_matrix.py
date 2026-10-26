@@ -21,6 +21,8 @@ never 7878 / 7880):
   unauth  the real CLIs with HOME in a temp root (signed out, nothing of
           yours readable): screens, modes, scrolling, reconnect. Tabs that
           show a login screen get no keys at all.
+  mock    web/dev/mock.py alone (no GodTerm): fake tabs and speech clips
+          on demand (/dev/clip), for the clip group.
   real    scripts/sandbox/host (the real logged in CLIs, sandbox-exec,
           nothing logs in or out, no bypass flags) on a separate GodTerm:
           only keys that cannot start anything, plus one tiny turn per
@@ -116,6 +118,21 @@ class Instance:
     # -- starting -------------------------------------------------------
     def start(self):
         getattr(self, "start_" + self.kind)()
+        if self.kind == "mock":
+            end = time.time() + 20
+            while time.time() < end:
+                try:
+                    with socket.create_connection(("127.0.0.1", self.port), timeout=1):
+                        break
+                except OSError:
+                    time.sleep(0.3)
+            else:
+                raise SystemExit("mock: web/dev/mock.py did not come up in 20 s")
+            self.token, self.cookie = "", ""
+            self.url = f"http://127.0.0.1:{self.port}/"
+            self.pid = self.proc.pid
+            print(f"[{self.kind}] up on port {self.port} (pid {self.pid})", flush=True)
+            return
         end = time.time() + 40
         while not os.path.exists(self.token_path) and time.time() < end:
             time.sleep(0.3)
@@ -260,6 +277,15 @@ class Instance:
             argv = ["/usr/bin/sandbox-exec", "-f", prof] + argv
         self.tm.start(self.session, argv, env, cwd=root)
 
+    def start_mock(self):
+        """web/dev/mock.py (no GodTerm): the dev server with fake tabs, a
+        fake assistant and speech clips on demand (/dev/clip)."""
+        root = os.path.realpath(tempfile.mkdtemp(prefix="godterm-webqa-mock-", dir="/private/tmp"))
+        self.roots.append(root)
+        self.mock_log = open(os.path.join(root, "mock.log"), "w")
+        self.proc = subprocess.Popen([sys.executable, os.path.join(REPO, "web", "dev", "mock.py"), "--port", str(self.port)],
+                                     stdout=self.mock_log, stderr=subprocess.STDOUT, cwd=root)
+
     def start_real(self):
         keys = self.a.real.split(",")
         extra = f"\n[web]\nenabled = true\nport = {self.port}\ntailnet_ip = false\ntailnet_sign_in = false\n"
@@ -368,12 +394,20 @@ class Instance:
         return {"rss_mb": int(out[0]) / 1024, "cpu": float(out[1]), "time": out[2] if len(out) > 2 else ""}
 
     def stop(self):
-        try:
-            self.tm.keys(self.session, "C-a", "Q", pause=0.5)
-            time.sleep(2)
-        except Exception:  # noqa: BLE001
-            pass
-        self.tm.kill(self.session)
+        if self.kind == "mock":
+            self.proc.terminate()
+            try:
+                self.proc.wait(5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.mock_log.close()
+        else:
+            try:
+                self.tm.keys(self.session, "C-a", "Q", pause=0.5)
+                time.sleep(2)
+            except Exception:  # noqa: BLE001
+                pass
+            self.tm.kill(self.session)
         if not self.a.keep:
             for r in self.roots + self.extra_root_dirs:
                 shutil.rmtree(r, ignore_errors=True)
@@ -483,6 +517,11 @@ def ws_stress(inst, results, info):
         pass
     tabs = w.last_state["tabs"]
     uids = [t["uid"] for t in tabs]
+    # The stand-in CLI streams on request (a line every 100 ms).
+    if inst.kind == "fake":
+        for t in tabs:
+            w.send_input(t["uid"], b"stream 20\r")
+            time.sleep(0.2)
     # Every idle demo tab gets a task, and approvals are answered while
     # it runs, so they all stream at once.
     if inst.kind == "demo":
@@ -725,10 +764,10 @@ def report(results, out_dir, title):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--instance", default="demo", help="demo,demofull,fake,unauth,real")
+    ap.add_argument("--instance", default="demo", help="demo,demofull,fake,mock,unauth,real")
     ap.add_argument("--engines", default="webkit,chromium")
     ap.add_argument("--devices", default="phone,desktop")
-    ap.add_argument("--groups", default="tabs,live,typing,scroll,resize,reconnect,image,approval,options,chat,voice,stress")
+    ap.add_argument("--groups", default="tabs,live,typing,scroll,resize,reconnect,image,approval,options,chat,voice,stress,layout,keyboard,keybar,sheet,retry,shared,clip")
     ap.add_argument("--real", default="account1,demo8,codex,cursor,agy,opencode", help="real instance: sandbox slot keys")
     ap.add_argument("--no-turns", action="store_true", help="real instance: no model turns at all")
     ap.add_argument("--soak", type=float, default=0, help="minutes of soak on the first instance")
@@ -767,13 +806,18 @@ def main():
                     except KeyboardInterrupt:
                         return
                 print(f"[{kind}] tabs: " + ", ".join(f"t{u} {i['harness']} {i['state']}{'' if i['typing'] else ' (no keys)'}" for u, i in info.items()), flush=True)
-                g = groups if kind in ("demo", "fake") else [x for x in groups if x not in ("chat", "voice", "stress")]
+                g = groups if kind in ("demo", "fake") else [x for x in groups if x not in ("chat", "voice", "stress", "shared", "retry")]
                 if kind == "demofull":
                     # The full demo world (16 Claude and Grok tabs): their
                     # approvals, which the one-tab-per-harness world rarely shows.
                     g = [x for x in groups if x in ("tabs", "approval")]
                 if kind == "fake":
-                    g = [x for x in g if x not in ("approval", "options", "chat", "voice")]
+                    g = [x for x in g if x not in ("approval", "options", "chat", "voice", "layout", "keyboard", "keybar", "sheet")]
+                # The speech clips need the mock's /dev/clip; the mock gets nothing else.
+                if kind == "mock":
+                    g = [x for x in groups if x == "clip"]
+                else:
+                    g = [x for x in g if x != "clip"]
                 for e in a.engines.split(","):
                     for d in a.devices.split(","):
                         results.extend(run_browser(inst, e, d, info, g, out))

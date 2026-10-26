@@ -45,6 +45,8 @@ const P = {
   move: '<path d="M5 12h13M13 6l6 6-6 6"/>',
   dup: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5H4v11h4"/>',
   copyto: '<path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
+  desktop: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
   model: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/>',
   clock: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
   stop: '<rect x="7" y="7" width="10" height="10" rx="1.5"/>',
@@ -57,6 +59,7 @@ const P = {
   chev: '<path d="M9 6l6 6-6 6"/>',
   back: '<path d="M15 6l-6 6 6 6"/>',
   filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
+  kbdown: '<rect x="3" y="3" width="18" height="11" rx="2"/><path d="M7 7h.01M11 7h.01M15 7h.01M7 10.5h10"/><path d="M9 18l3 3 3-3"/>',
 };
 export const icon = (n) => `<svg viewBox="0 0 24 24" aria-hidden="true">${P[n] || ''}</svg>`;
 export function paintIcons(root = document) {
@@ -84,7 +87,11 @@ export const store = {
 // long it stays (0: until tapped, swiped or removed).
 export function toast(text, level = 'info', action, ms) {
   const box = $('#toasts');
-  const el = h('div.toast.' + level, { role: 'status' }, h('span', {}, text));
+  // The same message again (copied twice): the shown one stays, no stack.
+  // (An action toast keeps its own life: asked again it does not stay
+  // longer, else a tip asked on every paint never goes.)
+  for (const o of box.children) if (o.dataset.t === level + '|' + text && !o.classList.contains('gone')) { if (!action) { clearTimeout(o._life); o._life = setTimeout(() => o.remove(), ms ?? 4000); } return o; }
+  const el = h('div.toast.' + level, { role: 'status', 'data-t': level + '|' + text }, h('span', {}, text));
   const gone = (dx = 0) => {
     if (!el.isConnected || el.classList.contains('gone')) return;
     el.classList.add('gone');
@@ -92,6 +99,8 @@ export function toast(text, level = 'info', action, ms) {
     setTimeout(() => el.remove(), 160);
   };
   for (const a of [action].flat().filter(Boolean)) el.append(h('button' + (a.cls ? '.' + a.cls : ''), { onclick: (e) => { e.stopPropagation(); a.fn(); gone(); } }, a.label));
+  // With an action there is a plain x too (a tap elsewhere on it dismisses as well).
+  if (action) el.append(h('button.tx', { type: 'button', 'aria-label': 'Dismiss', onclick: (e) => { e.stopPropagation(); gone(); }, html: icon('x') }));
   let x0 = null, dx = 0;
   el.addEventListener('pointerdown', (e) => { if (e.target.tagName !== 'BUTTON') { x0 = e.clientX; dx = 0; } });
   el.addEventListener('pointermove', (e) => {
@@ -111,7 +120,7 @@ export function toast(text, level = 'info', action, ms) {
   box.append(el);
   while (box.children.length > 3) box.firstChild.remove();
   const life = ms ?? (action ? 8000 : 4000);
-  if (life) setTimeout(() => gone(), life);
+  if (life) el._life = setTimeout(() => gone(), life);
   return el;
 }
 
@@ -161,7 +170,7 @@ export function hscroll(el) {
 export const isTouch = () => matchMedia('(pointer:coarse)').matches;
 // Wide and tall enough for the side list and split panes; a phone on its
 // side (932 x 430) keeps the phone layout, the terminal using the width.
-export const DESK = '(min-width:900px) and (min-height:560px)';
+export const DESK = '(min-width:760px) and (min-height:560px)';
 export const isDesk = () => matchMedia(DESK).matches;
 
 // A tab's accent color (its own, else its group's: `color` in the tab's
@@ -177,6 +186,69 @@ export function tcPaint(el, t) {
 }
 
 export function pctClass(p) { return p == null ? '' : p < 5 ? 'out' : p < 25 ? 'lo' : ''; }
+
+// Raw values in words, the same everywhere: a state key
+// ("not_logged_in" -> "not logged in"), a tab's state as what the agent
+// is doing ("approval" -> "waiting for an approval"), a cron line
+// ("0 8 * * 1-5" -> "weekdays at 08:00"; '' when it is not one, so the
+// caller falls back to the raw text).
+export const words = (s) => String(s ?? '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+const DOING = { approval: 'waiting for an approval', waiting: 'waiting', working: 'working', busy: 'busy', background: 'working in the background', starting: 'starting', ready: 'ready', ended: 'ended', error: 'stopped on an error', limit: 'out of usage' };
+export const stateWords = (s) => DOING[String(s || '').split(' ')[0]] || words(s) || 'busy';
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTHS = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const DAYN = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+export function cronWords(c) {
+  const f = String(c || '').trim().split(/\s+/);
+  if (f.length !== 5) return '';
+  const [mi, hr, dom, mon, dow] = f;
+  const num = (x) => /^\d+$/.test(x);
+  const two = (n) => String(n).padStart(2, '0');
+  const dayOf = (x) => (num(x) ? +x % 7 : DAYN[x.toLowerCase().slice(0, 3)]);
+  const nth = (n) => n + (n % 10 === 1 && n !== 11 ? 'st' : n % 10 === 2 && n !== 12 ? 'nd' : n % 10 === 3 && n !== 13 ? 'rd' : 'th');
+  let when = '';
+  if (num(mi) && num(hr)) when = 'at ' + two(hr) + ':' + two(mi);
+  else if (num(mi) && /^\d+(,\d+)+$/.test(hr)) when = 'at ' + hr.split(',').map((x) => two(x) + ':' + two(mi)).join(' and ');
+  else if (/^\*\/\d+$/.test(mi) && hr === '*') when = 'every ' + mi.slice(2) + ' minutes';
+  else if (num(mi) && /^\*\/\d+$/.test(hr)) when = 'every ' + hr.slice(2) + ' hours' + (+mi ? ' at :' + two(mi) : '');
+  else if (num(mi) && hr === '*') when = 'every hour' + (+mi ? ' at :' + two(mi) : '');
+  else if (mi === '*' && hr === '*') when = 'every minute';
+  else return '';
+  let day = '';
+  if (dow !== '*') {
+    const parts = dow.split(',').map((p) => {
+      const r = p.split('-');
+      if (r.length === 2) { const a = dayOf(r[0]), b = dayOf(r[1]); if (a == null || b == null) return null; if (a === 1 && b === 5) return 'weekdays'; const out = []; for (let d = a; ; d = (d + 1) % 7) { out.push(DAYS[d]); if (d === b) break; } return out.join(', '); }
+      const d = dayOf(p); return d == null ? null : DAYS[d] + 's';
+    });
+    if (parts.some((x) => x == null)) return '';
+    day = parts.join(' and ').replace(/^Saturdays and Sundays$|^Sundays and Saturdays$/, 'weekends');
+  }
+  if (dom !== '*') { if (!num(dom)) return ''; day = (day ? day + ', ' : '') + 'on the ' + nth(+dom); }
+  if (mon !== '*') { if (!num(mon) || !MONTHS[+mon]) return ''; day = (day ? day + ' ' : '') + 'in ' + MONTHS[+mon]; }
+  return (day ? day + ' ' : 'every day ' ) + when;
+}
+
+// A list that is loading: grey bars in the rows' shape (no words). `n`
+// rows; '.sm' for the compact rows of the tab panel and popovers.
+export function skeleton(n = 3, cls = '') {
+  return h('div.skel' + cls, { 'aria-busy': 'true', 'aria-label': 'Loading' },
+    Array.from({ length: n }, (_, i) => h('div.sk-r', {}, h('span.sk-b', { style: `width:${[58, 44, 66, 50][i % 4]}%` }), h('span.sk-b.sk-s', { style: `width:${[30, 38, 24, 34][i % 4]}%` }))));
+}
+// A request that failed: why, and Retry. A GodTerm older than the page
+// ("unknown frame type", "unknown tool") says so instead of the raw error.
+export function failRow(error, retry, what = 'This') {
+  const e = String(error || 'It did not work');
+  const old = /unknown (frame type|tool|git op)/i.test(e);
+  return h('div.fail', { role: 'alert' },
+    h('span.ft', {}, old ? `${what} needs a newer GodTerm: restart it to update.` : e),
+    retry && !old ? h('button.btn.sm', { type: 'button', onclick: retry }, 'Retry') : null);
+}
+// An empty list: one line, a hint, and one thing to do about it.
+export function emptyState(text, hint, action) {
+  return h('div.empty', {}, h('div', {}, text), hint ? h('div.eh', {}, hint) : null,
+    action ? h('button.btn.sm', { type: 'button', onclick: action.fn }, action.label) : null);
+}
 
 // Menus and sheets share one look: grouped lists with hairline rows
 // (icon, label, a trailing value), small section labels.

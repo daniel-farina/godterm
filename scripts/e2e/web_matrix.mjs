@@ -32,7 +32,17 @@ function rec(group, check, harness, status, detail = '', extra = {}) {
 // The page side: every frame sent (binary input by tab, JSON) and the
 // frames received, counted; the sockets, to drop them.
 function hooks() {
-  const G = (window.__gt = { sent: [], got: [], snaps: {}, resumes: {}, outB: {}, msgs: {}, socks: [], errors: [] });
+  const G = (window.__gt = { sent: [], got: [], snaps: {}, resumes: {}, outB: {}, msgs: {}, socks: [], errors: [], fail: {}, mock: {}, clips: [], client: null });
+  // Every clip the page plays: its edges and peak, for the voice checks.
+  const start0 = window.AudioBufferSourceNode?.prototype.start;
+  if (start0) window.AudioBufferSourceNode.prototype.start = function (...a) {
+    try {
+      const ch = this.buffer.getChannelData(0), n = ch.length, f = Math.round(this.buffer.sampleRate * 0.004);
+      let peak = 0; for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(ch[i]));
+      G.clips.push({ n, rate: this.buffer.sampleRate, first: ch[0], last: ch[n - 1], atFade: ch[f], mid: ch[n >> 1], peak });
+    } catch (e) { G.clips.push({ error: String(e) }); }
+    return start0.apply(this, a);
+  };
   const s8 = (b) => { let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return s; };
   const Orig = window.WebSocket;
   class W extends Orig {
@@ -46,20 +56,33 @@ function hooks() {
           let m;
           try { m = JSON.parse(e.data); } catch { return; }
           G.msgs[m.t] = (G.msgs[m.t] || 0) + 1;
+          if (m.t === 'hello') G.client = m.client;
           if (m.t === 'snapshot') G.snaps[m.tab] = (G.snaps[m.tab] || 0) + 1;
           if (m.t === 'resume') G.resumes[m.tab] = (G.resumes[m.tab] || 0) + 1;
           if (!['state', 'hello', 'snapshot'].includes(m.t)) G.got.push({ ...m, data: undefined, at: performance.now() });
           if (G.got.length > 2000) G.got.splice(0, 1000);
         } else {
           const b = new Uint8Array(e.data);
-          if (b[0] === 1) { const u = ((b[1] << 24) | (b[2] << 16) | (b[3] << 8) | b[4]) >>> 0; G.outB[u] = (G.outB[u] || 0) + b.length - 5; }
+          const u = ((b[1] << 24) | (b[2] << 16) | (b[3] << 8) | b[4]) >>> 0;
+          if (b[0] === 1) G.outB[u] = (G.outB[u] || 0) + b.length - 5;
+          // A gzipped snapshot (kind 6) counts as the tab's snapshot.
+          if (b[0] === 6) { G.msgs.snapshot = (G.msgs.snapshot || 0) + 1; G.snaps[u] = (G.snaps[u] || 0) + 1; }
         }
       });
     }
     send(d) {
       try {
-        if (typeof d === 'string') G.sent.push({ j: JSON.parse(d), at: performance.now() });
-        else {
+        if (typeof d === 'string') {
+          const j = JSON.parse(d);
+          G.sent.push({ j, at: performance.now() });
+          // A tool whose reply the test writes (G.fail: an error; G.mock:
+          // a control reply): answered here, never sent to GodTerm.
+          if (j.t === 'tool' && (G.fail[j.name] != null || G.mock[j.name] != null)) {
+            const result = G.fail[j.name] != null ? { ok: false, error: G.fail[j.name] } : G.mock[j.name];
+            setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ t: 'result', id: j.id, result }) })), 30);
+            return;
+          }
+        } else {
           const b = d instanceof Uint8Array ? d : new Uint8Array(d.buffer || d, d.byteOffset || 0, d.byteLength);
           if (b[0] === 1) G.sent.push({ uid: ((b[1] << 24) | (b[2] << 16) | (b[3] << 8) | b[4]) >>> 0, s: s8(b.subarray(5)), at: performance.now() });
           else G.sent.push({ kind: b[0], n: b.length, at: performance.now() });
@@ -262,6 +285,13 @@ async function main() {
       await sleep(150);
     }
   };
+  // The tab's options away: the sheet on a phone, the docked panel on a
+  // desktop (its popover too).
+  const closeOptions = async () => {
+    await closeSheets();
+    if (!PHONE) await H(async () => (await window.__h.mod('manage')).setPanel(false));
+    await sleep(200);
+  };
   const sentSince = (uid, t) => H(([u, t]) => window.__h.sentFor(u, t), [uid, t]);
   const now = () => H(() => window.__h.now());
   const clearLine = async (uid) => { await H(([u]) => import(document.querySelector('link[href*="js/conn.js"]').href).then((m) => m.sendInput(u, '\x15')), [uid]); await sleep(200); };
@@ -298,6 +328,20 @@ async function main() {
         // Not running and blank: the pane says so.
         if (!text && cur.running === false) R('tabs', 'not running says so', p.idleMsg ? 'pass' : 'fail', p.idleMsg || 'a blank pane');
         else R('tabs', 'snapshot drawn', text.length > 0 ? 'pass' : 'fail', JSON.stringify(text.split('\n').filter((l) => l.trim()).slice(-2).join(' | ')).slice(0, 120));
+        // Shown again after another tab (the scrolled terminal is reset
+        // for the new snapshot): still at its end, and the position a
+        // number (xterm once took the browser's scroll to 0 as the
+        // user's, a frame late: the top, or NaN and WebGL errors).
+        if (p.baseY > 0 && tabs.length > 1) {
+          const o = tabs.find((x) => x.id !== t.id);
+          await H((id) => window.__h.show(id), o.id);
+          await waitReady(o.id, 5000);
+          await H((id) => window.__h.show(id), t.id);
+          const ok2 = await waitReady(t.id);
+          await sleep(400);
+          const q = await H(() => window.__h.pane());
+          R('tabs', 'shown again: at its end', ok2 && Number.isFinite(q.viewportY) && q.viewportY === q.baseY ? 'pass' : 'fail', `at ${q.viewportY} of ${q.baseY}`);
+        }
       } catch (e) { R('tabs', 'open', 'fail', e.message); }
       await openDrawer(false);
     } else {
@@ -416,7 +460,12 @@ async function main() {
         const s = await now();
         await openPrompt();
         await page.fill('#sheet-body textarea', 'qa prompt box');
-        await page.locator('#sheet-body button.btn.pri', { hasText: 'Send' }).first().click();
+        // The dialog's action row is usable: its buttons are opaque, take
+        // the pointer and sit inside the sheet (a chat rule for message
+        // actions once hid every dialog's buttons under the same class).
+        const ab = await H(() => { const b = [...document.querySelectorAll('#sheet-body button.btn.pri')].find((x) => /Send/.test(x.textContent)); if (!b) return null; const cs = getComputedStyle(b), rs = getComputedStyle(b.parentElement), r = b.getBoundingClientRect(), sh = document.querySelector('#sheet').getBoundingClientRect(); return { opacity: +cs.opacity * +rs.opacity, pe: cs.pointerEvents === 'none' || rs.pointerEvents === 'none' ? 'none' : 'auto', inside: r.top >= sh.top - 1 && r.bottom <= sh.bottom + 1 && r.height >= 30, h: Math.round(r.height), rowPos: rs.position }; });
+        R('typing', 'Prompt box: its buttons are usable', ab && ab.opacity >= 0.99 && ab.pe === 'auto' && ab.inside ? 'pass' : 'fail', JSON.stringify(ab));
+        await page.locator('#sheet-body button.btn.pri', { hasText: 'Send' }).first().click({ timeout: 8000 });
         await sleep(1800);
         const fr = await H(([u, t]) => window.__gt.sent.filter((x) => x.uid === u && x.at >= t).map((x) => [x.s, x.at]), [uid, s]);
         const pi = fr.findIndex((f) => f[0].includes('qa prompt box')), ci = fr.findIndex((f, i) => i > pi && f[0] === '\r');
@@ -502,18 +551,44 @@ async function main() {
           const st2 = (await S()).tabs.find((x) => x.id === t.id);
           R('resize', 'server says sized by this browser', st2?.size_taken_by != null ? 'pass' : 'fail', `size_taken_by ${st2?.size_taken_by}`);
         } else {
+          // (A desktop in use sizes the tab once when it is shown, 250 ms
+          // after; then nothing goes out while nothing changes.)
+          await sleep(1000);
           const s = await now();
           await sleep(800);
           const rs = await H(([t]) => window.__h.jsonSince(t, 'resize'), [s]);
-          R('resize', 'desktop keeps the tab size', rs.length === 0 ? 'pass' : 'fail', `${rs.length} resize frames`);
+          R('resize', 'no resize while nothing changes', rs.length === 0 ? 'pass' : 'fail', `${rs.length} resize frames in 800 ms`);
+          // Take size: a desktop in use already sizes the tab it shows
+          // (deskfit), so the click sends a size only when none went yet;
+          // either way the state names this browser.
+          const me = await H(() => window.__gt.client);
           const s2 = await now();
           await page.locator('.pane:not([hidden]) .pane-head button[data-i="max"]').first().click();
           await sleep(900);
-          const take = (await H(([t]) => window.__h.jsonSince(t, 'resize'), [s2])).filter((r) => r.tab === uid);
+          const take = (await H(([t]) => window.__h.jsonSince(t, 'resize'), [tOpen])).filter((r) => r.tab === uid && r.cols);
+          const st1 = (await S()).tabs.find((x) => x.id === t.id);
+          R('resize', 'take size', st1?.size_taken_by === me ? 'pass' : 'fail', `${take.map((r) => r.cols + 'x' + r.rows + ' by ' + r.by).join(',') || 'sized before this check'}; taken by ${st1?.size_taken_by} (this browser: ${me})`);
+          // Give it back: a release, and the tab stays at its own size
+          // (deskfit does not take it again until this pane is typed in).
+          const s3 = await now();
           await page.locator('.pane:not([hidden]) .pane-head button[data-i="max"]').first().click();
-          await sleep(500);
-          const rel = (await H(([t]) => window.__h.jsonSince(t, 'resize'), [s2])).filter((r) => r.tab === uid && r.release);
-          R('resize', 'take size, then give it back', take.some((r) => r.cols) && rel.length ? 'pass' : 'fail', `${take.filter((r) => r.cols).map((r) => r.cols + 'x' + r.rows).join(',')}; ${rel.length} release`);
+          await sleep(1200);
+          const after = (await H(([t]) => window.__h.jsonSince(t, 'resize'), [s3])).filter((r) => r.tab === uid);
+          const rel = after.filter((r) => r.release), again = after.filter((r) => r.cols);
+          const st2 = (await S()).tabs.find((x) => x.id === t.id);
+          const hint = await H(() => { const e = document.querySelector('.pane:not([hidden]) .pane-hint'); return e && !e.hidden ? e.textContent : ''; });
+          R('resize', 'give the size back', rel.length && !again.length && st2?.size_taken_by == null ? 'pass' : 'fail', `${rel.length} release, ${again.length} sizes after it, taken by ${st2?.size_taken_by}, hint "${hint}"`);
+          // Typing takes it again (the pane is in use).
+          if (canType && !cfg.safe) {
+            const s4 = await now();
+            await focusTerm();
+            await page.keyboard.type('q');
+            await sleep(900);
+            const back = (await H(([t]) => window.__h.jsonSince(t, 'resize'), [s4])).filter((r) => r.tab === uid && r.cols);
+            const st3 = (await S()).tabs.find((x) => x.id === t.id);
+            R('resize', 'typing takes the size again', back.length && st3?.size_taken_by === me ? 'pass' : 'fail', `${back.length} sizes, taken by ${st3?.size_taken_by}`);
+            await clearLine(uid);
+          }
         }
       } catch (e) { R('resize', 'fit', 'fail', e.message); }
     }
@@ -572,7 +647,9 @@ async function main() {
       try {
         // Switch model: the tab's own list (Fable for Claude), or a note.
         await closeSheets();
-        await page.click('#b-tabmenu');
+        // (On a desktop the Tab button toggles the docked panel: open it
+        // only when it is shut.)
+        if (PHONE || (await H(() => document.querySelector('#tabpanel').hidden))) await page.click('#b-tabmenu');
         await sleep(350);
         await page.locator('#sheet-body li, .menu li, [role=menu] li, .mbody .li, .mbody button', { hasText: 'Switch model' }).first().click();
         await sleep(300);
@@ -582,8 +659,9 @@ async function main() {
         if (h === 'claude') R('options', 'model list', labels.includes('Fable') && /Fable/.test(txt) ? 'pass' : 'fail', `models [${labels}]`);
         else if (h === 'grok') R('options', 'model list', labels.length >= 2 && labels.every((l) => txt.includes(l)) ? 'pass' : 'fail', `models [${labels}]`);
         else R('options', 'model refused gracefully', /inside the CLI/.test(txt) && !/Sonnet|Opus/.test(txt) ? 'pass' : 'fail', JSON.stringify(txt.split('\n').find((l) => /CLI|model/i.test(l)) || txt.slice(0, 80)));
-        await page.keyboard.press('Escape');
-        await sleep(200);
+        // (Not the Escape key on a phone: a hardware keyboard's Escape
+        // hides the key bar, by design.)
+        await closeOptions();
         if (h !== 'claude' && h !== 'grok') {
           const r = await H((id) => window.__h.tool('set_tab_model', { tab: id, model: 'opus' }), t.id);
           R('options', 'set_tab_model refused', r.ok === false && /inside the CLI/.test(r.error || '') ? 'pass' : 'fail', r.error || JSON.stringify(r).slice(0, 100));
@@ -597,8 +675,8 @@ async function main() {
           R('options', 'rename', nm === 'qa-renamed' ? 'pass' : 'fail', `renamed to ${nm}`);
           // Pin and unpin.
           await H((id) => window.__h.tool('pin_tab', { tab: id }), t.id);
-          await sleep(300);
-          const pinned = (await S()).tabs.find((x) => x.id === t.id)?.pinned;
+          let pinned = false;
+          for (let i = 0; i < 10 && !pinned; i++) { await sleep(200); pinned = (await S()).tabs.find((x) => x.id === t.id)?.pinned; }
           await H((id) => window.__h.tool('unpin_tab', { tab: id }), t.id);
           R('options', 'pin', pinned ? 'pass' : 'fail', `pinned ${pinned}`);
           // Move: only within the same CLI, refused for the four others.
@@ -615,7 +693,7 @@ async function main() {
             R('options', 'archive without a session id', /session id|session/.test(msg) || ar.ok !== false ? 'pass' : 'fail', msg.slice(0, 140));
           }
         }
-      } catch (e) { R('options', 'menu', 'fail', e.message); await page.keyboard.press('Escape').catch(() => {}); }
+      } catch (e) { R('options', 'menu', 'fail', e.message); await closeOptions().catch(() => {}); }
     }
   }
 
@@ -839,6 +917,336 @@ async function main() {
     const n0 = avg(a, 'nodes'), n1 = avg(b, 'nodes');
     const grow = heap0 ? heap1 / heap0 : 1;
     rec('soak', 'page memory', '', !heap0 ? 'skip' : grow < 1.5 && n1 < n0 * 1.5 ? 'pass' : 'fail', heap0 ? `JS heap ${(heap0 / 1e6).toFixed(1)} -> ${(heap1 / 1e6).toFixed(1)} MB (x${grow.toFixed(2)}), DOM nodes ${n0.toFixed(0)} -> ${n1.toFixed(0)}, ${samples.length} samples` : 'no heap numbers in this engine');
+  }
+
+  // The sizes: the 760 px breakpoint (an iPad upright is a desktop, a
+  // phone on its side is a phone), the squeeze of a narrow desktop window
+  // (the terminal keeps 520 px), the status bar's "..." item, and a four
+  // way split that the window has no room for.
+  if (want('layout') && !PHONE) {
+    const vp = async (w, hh) => { await page.setViewportSize({ width: w, height: hh }); await sleep(700); };
+    const lay = () => H(() => {
+      const cs = (s) => getComputedStyle(document.querySelector(s));
+      const app = document.querySelector('#app');
+      return { desk: matchMedia('(min-width:760px) and (min-height:560px)').matches, sbar: cs('#sbar').display !== 'none', head: cs('.pane:not([hidden]) .pane-head').display !== 'none', side: cs('#side').position, sideOpen: document.querySelector('#side').classList.contains('open'), cls: [...app.classList].join(' '), panes: document.querySelector('#panes').clientWidth, tpfit: app.style.getPropertyValue('--tpfit'), chfit: app.style.getPropertyValue('--chfit'), panel: !document.querySelector('#tabpanel').hidden, chat: app.classList.contains('chat-open'), panelW: document.querySelector('#tabpanel').clientWidth, chatW: document.querySelector('#chat').clientWidth, n: document.querySelector('#panes').dataset.n, dir: document.querySelector('#panes').dataset.dir };
+    });
+    const brief = (l) => `desk ${l.desk}, status bar ${l.sbar}, pane header ${l.head}, side ${l.side}${l.sideOpen ? ' open' : ''}, terminals ${l.panes} px, panel ${l.panel ? l.panelW + ' px' : 'shut'}, chat ${l.chat ? l.chatW + ' px' : 'shut'}, classes "${l.cls}"`;
+    try {
+      await closeSheets();
+      await H(async () => (await window.__h.mod('manage')).setPanel(false));
+      await vp(820, 1180);
+      let l = await lay();
+      rec('layout', '820x1180 (an iPad upright) is the desktop layout', '', l.desk && l.sbar && l.head && !/sq-side/.test(l.cls) && l.panes >= 520 ? 'pass' : 'fail', brief(l));
+      await vp(844, 390);
+      l = await lay();
+      rec('layout', '844x390 (a phone on its side) is the phone layout', '', !l.desk && !l.sbar && !l.head && l.side === 'fixed' ? 'pass' : 'fail', brief(l));
+      // 1000x700 with the tab panel, then the chat: the side list folds,
+      // the one opened last stays, the terminal keeps 520 px.
+      await vp(1000, 700);
+      await H(async () => (await window.__h.mod('manage')).setPanel(true));
+      await sleep(400);
+      await H(async () => (await window.__h.mod('chat')).setChat(true));
+      await sleep(800);
+      l = await lay();
+      const open = (l.panel ? 1 : 0) + (l.chat ? 1 : 0);
+      rec('layout', '1000x700 with the panel and the chat: the terminal keeps 520 px', '', l.desk && l.panes >= 520 && /sq-side/.test(l.cls) && open === 1 && l.chat ? 'pass' : 'fail', brief(l));
+      // The folded side list opens over the terminal from the Tabs
+      // button; the scrim shuts it.
+      await page.click('#b-menu');
+      await sleep(400);
+      const o1 = await lay();
+      await page.mouse.click(990, 600);
+      await sleep(400);
+      const o2 = await lay();
+      rec('layout', 'squeezed: the Tabs button opens the list over the terminal, the scrim shuts it', '', o1.sideOpen && o1.side === 'fixed' && o1.panes >= 520 && !o2.sideOpen ? 'pass' : 'fail', `open ${o1.sideOpen} (${o1.side}, terminals ${o1.panes} px), after the scrim ${o2.sideOpen}`);
+      await H(async () => (await window.__h.mod('chat')).setChat(false));
+      await H(async () => (await window.__h.mod('manage')).setPanel(false));
+      // The status bar at 520 px (900 wide, the chat beside): whole items
+      // drop behind "..." which opens them as a menu above the bar.
+      await vp(900, 600);
+      await H(async () => (await window.__h.mod('chat')).setChat(true));
+      await sleep(800);
+      const sb = await H(() => { const bar = document.querySelector('#sbar'), more = bar.querySelector('.sb-i[data-k=more]'); return { w: bar.clientWidth, items: [...bar.querySelectorAll('.sb-i')].map((i) => i.dataset.k), more: !!more, title: more?.title || '', overflow: bar.scrollWidth > bar.clientWidth + 1, cut: [...bar.querySelectorAll('.sb-i')].some((i) => i.scrollWidth > i.clientWidth + 1) }; });
+      if (!sb.more) rec('layout', 'status bar drops whole items behind "..."', '', sb.overflow || sb.cut ? 'fail' : 'skip', `the ${sb.w} px bar holds [${sb.items}] whole`);
+      else {
+        await page.click('#sbar .sb-i[data-k=more]');
+        await sleep(300);
+        const m = await H(() => { const pop = document.querySelector('#pop'), bar = document.querySelector('#sbar').getBoundingClientRect(); const rows = pop && !pop.hidden ? [...pop.querySelectorAll('.sb-more .sb-i')].map((i) => i.dataset.k) : []; return { rows, above: pop && !pop.hidden ? pop.getBoundingClientRect().bottom <= bar.top + 2 : false }; });
+        const named = sb.title.replace(/^More: /, '').split(' · ').length;
+        await H((k) => document.querySelector(`#pop .sb-more .sb-i[data-k="${k}"]`)?.click(), m.rows[0]);
+        await sleep(400);
+        const sect = await H(() => ({ panel: !document.querySelector('#tabpanel').hidden, pop: !!document.querySelector('#pop:not([hidden])') }));
+        rec('layout', 'status bar drops whole items behind "..."', '', m.rows.length >= 1 && m.rows.length === named && m.above && !sb.cut && sect.panel && !sect.pop ? 'pass' : 'fail', `${sb.w} px bar keeps [${sb.items}], "${sb.title}" opens [${m.rows}] above it ${m.above}; a row opens its section in the panel ${sect.panel}`);
+        await H(async () => (await window.__h.mod('manage')).setPanel(false));
+      }
+      await H(async () => (await window.__h.mod('chat')).setChat(false));
+      // Four panes asked for at 800x600: room for two stacked (and a
+      // message says so); the grid comes with the room.
+      await vp(800, 600);
+      await H(async () => { const { panes } = await window.__h.mod('term'); panes.setN(2); });
+      await sleep(300);
+      await page.click('#b-split');
+      await sleep(600);
+      const toastTxt = await H(() => [...document.querySelectorAll('#toasts .toast')].map((t) => t.textContent).join(' | '));
+      l = await lay();
+      rec('layout', 'split 4 at 800x600 falls back to 2 stacked', '', l.n === '2' && l.dir === 'col' && /Room for 2 panes/.test(toastTxt) ? 'pass' : 'fail', `${l.n} panes (${l.dir}), terminals ${l.panes} px; "${toastTxt}"`);
+      await vp(1440, 900);
+      l = await lay();
+      rec('layout', 'and the 2x2 grid once the window has room', '', l.n === '4' && l.dir === 'grid' ? 'pass' : 'fail', `${l.n} panes (${l.dir})`);
+    } catch (e) { rec('layout', 'sizes', '', 'fail', e.message); }
+    await page.setViewportSize({ width: 1440, height: 900 }).catch(() => {});
+    await H(async () => { const { panes } = await window.__h.mod('term'); panes.setN(1); (await window.__h.mod('chat')).setChat(false); (await window.__h.mod('manage')).setPanel(false); }).catch(() => {});
+    await sleep(600);
+  }
+
+  // The keyboard on a desktop: out of the terminal with F6 and Shift+Esc
+  // (nothing reaches the tab), "?" for the shortcuts, and a dialog that
+  // Escape and the scrim close.
+  if (want('keyboard') && !PHONE && tabs.length) {
+    const uid = tabs[0].uid;
+    const areaOf = () => H(() => { const a = document.activeElement; const hosts = { '#side': 'tabs', '#panes': 'pane', '#sbar': 'status', '#tabpanel': 'panel', '#chat': 'assistant', '#top': 'toolbar' }; for (const [sel, n] of Object.entries(hosts)) if (document.querySelector(sel)?.contains(a)) return n + (a.classList.contains('xterm-helper-textarea') ? ':term' : ''); return a?.tagName || 'none'; });
+    try {
+      await closeSheets();
+      await H(async () => (await window.__h.mod('manage')).setPanel(false));
+      await H((id) => window.__h.show(id), tabs[0].id);
+      await waitReady(tabs[0].id);
+      await focusTerm();
+      const s = await now();
+      const seq = [];
+      for (let i = 0; i < 6; i++) { await page.keyboard.press('F6'); await sleep(150); seq.push(await areaOf()); }
+      const sent = await sentSince(uid, s);
+      const seen = new Set(seq);
+      rec('keyboard', 'F6 walks the areas and back to the terminal', '', ['status', 'toolbar', 'tabs', 'pane:term'].every((a) => seen.has(a)) && !sent ? 'pass' : 'fail', `${seq.join(' > ')}; sent to the tab ${show(sent)}`);
+      const s1 = await now();
+      await page.keyboard.press('Shift+F6');
+      await sleep(150);
+      const back = await areaOf();
+      rec('keyboard', 'Shift+F6 goes to the area before', '', back !== seq[5] && !(await sentSince(uid, s1)) ? 'pass' : 'fail', `${seq[5]} > ${back}`);
+      await focusTerm();
+      const s2 = await now();
+      await page.keyboard.press('Shift+Escape');
+      await sleep(200);
+      const where = await H(() => (document.activeElement?.closest('.pane-head') ? 'pane header: ' + (document.activeElement.title || document.activeElement.dataset.i) : (document.activeElement?.id || document.activeElement?.tagName)));
+      const esc = await sentSince(uid, s2);
+      rec('keyboard', 'Shift+Esc leaves the terminal for its pane header', '', /^pane header/.test(where) && !esc ? 'pass' : 'fail', `focus on ${where}; sent ${show(esc)}`);
+      // "?" with the focus on a button: the shortcuts sheet, modal, Esc
+      // closes it and the focus goes back.
+      await page.keyboard.press('?');
+      await sleep(350);
+      const help = await H(() => { const sh = document.querySelector('#sheet'); return { on: sh.classList.contains('on'), kind: sh.dataset.kind, title: sh.querySelector('.sh-title')?.textContent || '', inside: sh.contains(document.activeElement), rows: sh.querySelectorAll('.kh-r').length }; });
+      await page.keyboard.press('Escape');
+      await sleep(300);
+      const closed = await H(() => !document.querySelector('#sheet').classList.contains('on'));
+      const backOn = await H(() => !!document.activeElement?.closest('.pane-head'));
+      rec('keyboard', '? opens the shortcuts sheet, Esc closes it and gives the focus back', '', help.on && help.kind === 'keys' && /Keyboard shortcuts/.test(help.title) && help.inside && help.rows >= 10 && closed && backOn ? 'pass' : 'fail', `${JSON.stringify(help)}; closed ${closed}, focus back on the pane header ${backOn}`);
+      // "?" in the terminal is a key for the tab.
+      await focusTerm();
+      const s3 = await now();
+      await page.keyboard.press('?');
+      await sleep(250);
+      const q = await sentSince(uid, s3);
+      const open2 = await H(() => document.querySelector('#sheet').classList.contains('on'));
+      rec('keyboard', '? in the terminal is typed into the tab', '', q === '?' && !open2 ? 'pass' : 'fail', `sent ${show(q)}, sheet open ${open2}`);
+      await clearLine(uid);
+      // A dialog (Settings): centred, no grip, rounded; Escape, then a
+      // click on the scrim, close it.
+      await page.click('#b-gear');
+      await sleep(500);
+      const d = await H(() => { const sh = document.querySelector('#sheet'), r = sh.getBoundingClientRect(), cs = getComputedStyle(sh); return { on: sh.classList.contains('on'), kind: sh.dataset.kind, cx: Math.round(r.left + r.width / 2), cy: Math.round(r.top + r.height / 2), w: Math.round(r.width), h: Math.round(r.height), radius: cs.borderTopLeftRadius, grip: getComputedStyle(sh.querySelector('.sheet-grip')).display, left: Math.round(r.left) }; });
+      await page.keyboard.press('Escape');
+      await sleep(350);
+      const c1 = await H(() => !document.querySelector('#sheet').classList.contains('on'));
+      await page.click('#b-gear');
+      await sleep(500);
+      await page.mouse.click(Math.max(10, d.left - 40), 450);
+      await sleep(350);
+      const c2 = await H(() => !document.querySelector('#sheet').classList.contains('on') && !document.querySelector('#scrim').classList.contains('on'));
+      rec('keyboard', 'a desktop dialog is centred; Escape and the scrim close it', '', d.on && Math.abs(d.cx - 720) <= 4 && Math.abs(d.cy - 450) <= 12 && d.radius === '16px' && d.grip === 'none' && d.h <= 900 * 0.85 + 1 && c1 && c2 ? 'pass' : 'fail', `${JSON.stringify(d)}; closed by Escape ${c1}, by the scrim ${c2}`);
+      await closeSheets();
+    } catch (e) { rec('keyboard', 'keys', '', 'fail', e.message); await closeSheets(); }
+  }
+
+  // The phone's key bar: its order by use, the first seven beside Send on
+  // a 390 px phone, 44 px high.
+  if (want('keybar') && PHONE) {
+    try {
+      await closeSheets();
+      const labels = await H(() => [...document.querySelectorAll('#keybar button')].filter((b) => b.offsetWidth > 0).map((b) => b.textContent.trim() || b.dataset.i));
+      const order = ['Esc', 'Ctrl', 'Tab', '↑', '↓', '←', '→', 'Enter', '^C', 'Paste', 'image', 'PgUp', 'PgDn', 'Home', 'End', 'Alt', '⇧Tab', 'Prompt', 'A-', 'A+', 'Fit', 'Size'];
+      rec('keybar', 'the keys by use', '', JSON.stringify(labels) === JSON.stringify(order) ? 'pass' : 'fail', labels.join(' '));
+      await page.setViewportSize({ width: 390, height: 844 });
+      await sleep(700);
+      const fit = await H(() => { const bar = document.querySelector('#keybar'); bar.scrollLeft = 0; const r = bar.getBoundingClientRect(); const bs = [...bar.querySelectorAll('button')].filter((b) => b.offsetWidth > 0).slice(0, 7); const last = bs[bs.length - 1].getBoundingClientRect(); const send = document.querySelector('#b-ksend').getBoundingClientRect(); return { right: Math.round(last.right), edge: Math.round(Math.min(r.right, send.left)), w: bs.map((b) => Math.round(b.getBoundingClientRect().width)), h: Math.min(...bs.map((b) => Math.round(b.getBoundingClientRect().height))), scroll: bar.scrollLeft }; });
+      rec('keybar', '390 px: Esc, Ctrl, Tab and the arrows beside Send without a swipe', '', fit.right <= fit.edge + 1 && fit.h >= 44 && fit.scroll === 0 ? 'pass' : 'fail', `the seventh key ends at ${fit.right} of ${fit.edge} px, widths ${fit.w}, height ${fit.h}`);
+      await page.setViewportSize({ width: 430, height: 932 });
+      await sleep(700);
+    } catch (e) { rec('keybar', 'order', '', 'fail', e.message); await page.setViewportSize({ width: 430, height: 932 }).catch(() => {}); }
+  }
+
+  // The phone's bottom sheet: a message stays under it, a pull down or a
+  // flick closes it, a short pull settles back.
+  if (want('sheet') && PHONE && tabs.length) {
+    const pull = (steps, gapMs, endDy) => H(async ([steps, gapMs, endDy]) => {
+      const sheet = document.querySelector('#sheet'), el = sheet.querySelector('.sh-title') || sheet.querySelector('.sheet-grip');
+      const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y0 = r.top + r.height / 2;
+      const T = (yy) => ({ identifier: 3, target: el, clientX: x, clientY: yy, pageX: x, pageY: yy, screenX: x, screenY: yy });
+      const ev = (type, yy) => window.__h.touch(el, type, type === 'touchend' ? [] : [T(yy)], [T(yy)]);
+      ev('touchstart', y0);
+      let followed = false, sdy = '';
+      for (const dy of steps) { await new Promise((r) => setTimeout(r, gapMs)); ev('touchmove', y0 + dy); if (sheet.classList.contains('drag')) { followed = true; sdy = sheet.style.getPropertyValue('--sdy'); } }
+      await new Promise((r) => setTimeout(r, gapMs));
+      ev('touchend', y0 + endDy);
+      await new Promise((r) => setTimeout(r, 350));
+      return { followed, sdy, open: sheet.classList.contains('on'), dragLeft: sheet.classList.contains('drag') || !!sheet.style.getPropertyValue('--sdy') };
+    }, [steps, gapMs, endDy]);
+    const openOptions = async () => { await closeSheets(); await H((id) => window.__h.show(id), tabs[0].id); await page.click('#b-tabmenu'); await sleep(450); return H(() => document.querySelector('#sheet').classList.contains('on')); };
+    try {
+      const on0 = await openOptions();
+      await H(async () => (await window.__h.mod('util')).toast('qa: under the sheet', 'info'));
+      await sleep(150);
+      const z = await H(() => ({ toasts: +getComputedStyle(document.querySelector('#toasts')).zIndex, scrim: +getComputedStyle(document.querySelector('#scrim')).zIndex, sheet: +getComputedStyle(document.querySelector('#sheet')).zIndex }));
+      rec('sheet', 'a message stays under an open sheet', '', on0 && z.toasts < z.scrim && z.toasts < z.sheet ? 'pass' : 'fail', `sheet open ${on0}; z ${JSON.stringify(z)}`);
+      const a = await pull([4, 12, 30, 60, 100, 150, 200, 240], 40, 240);
+      rec('sheet', 'a pull down closes the sheet', '', on0 && a.followed && !a.open && !a.dragLeft ? 'pass' : 'fail', JSON.stringify(a));
+      const on1 = await openOptions();
+      const b = await pull([10, 40, 70], 12, 70);
+      rec('sheet', 'a flick down closes it', '', on1 && b.followed && !b.open ? 'pass' : 'fail', JSON.stringify(b));
+      const on2 = await openOptions();
+      const c = await pull([6, 14, 30, 46], 80, 46);
+      rec('sheet', 'a short pull settles back', '', on2 && c.followed && c.open && !c.dragLeft ? 'pass' : 'fail', JSON.stringify(c));
+      await closeSheets();
+    } catch (e) { rec('sheet', 'pull down', '', 'fail', e.message); await closeSheets(); }
+  }
+
+  // Rows that failed to load: the reason with Retry (the test answers the
+  // tool itself), an older GodTerm named as such, and the Open on Mac
+  // button's reply as a message where messages go on this device.
+  if (want('retry')) {
+    try {
+      await closeSheets();
+      await H(() => { window.__gt.fail.sessions = 'qa: the session index is busy'; });
+      await page.click('#b-sessions');
+      await page.waitForSelector('#sheet-body .fail', { timeout: 6000 });
+      const f1 = await H(() => { const f = document.querySelector('#sheet-body .fail'); return { text: f.textContent, retry: !!f.querySelector('button'), role: f.getAttribute('role') }; });
+      await H(() => { delete window.__gt.fail.sessions; });
+      await page.locator('#sheet-body .fail button', { hasText: 'Retry' }).first().click();
+      let loaded = false;
+      for (let i = 0; i < 40 && !loaded; i++) { await sleep(200); loaded = await H(() => !document.querySelector('#sheet-body .fail') && document.querySelectorAll('#sheet-body .srow, #sheet-body .empty').length > 0); }
+      rec('retry', 'Sessions: the reason with Retry, then the list', '', /session index is busy/.test(f1.text) && f1.retry && f1.role === 'alert' && loaded ? 'pass' : 'fail', `${JSON.stringify(f1)}; loaded after Retry ${loaded}`);
+      await closeSheets();
+      await H(() => { window.__gt.fail.sessions = 'unknown tool: sessions'; });
+      await page.click('#b-sessions');
+      await page.waitForSelector('#sheet-body .fail', { timeout: 6000 });
+      const f2 = await H(() => { const f = document.querySelector('#sheet-body .fail'); return { text: f.textContent, retry: !!f.querySelector('button') }; });
+      await H(() => { delete window.__gt.fail.sessions; });
+      rec('retry', 'an older GodTerm is named instead of the raw error', '', /needs a newer GodTerm/.test(f2.text) && !f2.retry ? 'pass' : 'fail', JSON.stringify(f2));
+      await closeSheets();
+      // Open on Mac.
+      await H(() => { window.__gt.mock.open_desktop = { ok: true, result: { say: 'qa: GodTerm is at the front' } }; });
+      await page.click('#b-mac');
+      await sleep(500);
+      const t1 = await H(() => [...document.querySelectorAll('#toasts .toast')].map((t) => t.className + ': ' + t.textContent));
+      const pos = await H(() => { const t = document.querySelector('#toasts .toast'); if (!t) return null; const r = t.getBoundingClientRect(), sb = document.querySelector('#sbar'), sr = sb && !sb.hidden ? sb.getBoundingClientRect() : null, kb = document.querySelector('#keyrow').getBoundingClientRect(); return { right: Math.round(r.right), bottom: Math.round(r.bottom), sbarTop: sr ? Math.round(sr.top) : null, keyTop: Math.round(kb.top), w: innerWidth, h: innerHeight }; });
+      await H(() => { window.__gt.mock.open_desktop = { ok: false, error: 'qa: the desktop is not here' }; });
+      await page.click('#b-mac');
+      await sleep(500);
+      const t2 = await H(() => [...document.querySelectorAll('#toasts .toast')].map((t) => t.className + ': ' + t.textContent));
+      await H(() => { delete window.__gt.mock.open_desktop; });
+      rec('retry', 'Open on Mac: the reply as a message', '', t1.some((x) => /\bok\b/.test(x) && /GodTerm is at the front/.test(x)) && t2.some((x) => /\bwarn\b/.test(x) && /desktop is not here/.test(x)) ? 'pass' : 'fail', `${t1.join(' | ')} / ${t2.join(' | ')}`);
+      if (!PHONE) rec('retry', 'desktop messages sit at the bottom right above the status bar', '', pos && pos.w - pos.right <= 20 && pos.sbarTop != null && pos.bottom <= pos.sbarTop + 1 ? 'pass' : 'fail', JSON.stringify(pos));
+      else rec('retry', 'phone messages float above the key bar', '', pos && pos.bottom <= pos.keyTop + 1 ? 'pass' : 'fail', JSON.stringify(pos));
+    } catch (e) { rec('retry', 'rows', '', 'fail', e.message); await H(() => { window.__gt.fail = {}; window.__gt.mock = {}; }).catch(() => {}); await closeSheets(); }
+  }
+
+  // Two clients on one tab: when the other takes the size, this pane
+  // yields and says so; scrolling here leaves it alone, typing takes it
+  // back.
+  if (want('shared')) {
+    const t0 = tabs.find((t) => t.typing && t.running !== false);
+    if (!t0 || cfg.safe) rec('shared', 'another client takes the size', '', 'skip', cfg.safe ? 'real accounts: no keys' : 'no tab to type into');
+    else {
+      let ctx2 = null;
+      const taken = (pg) => pg.evaluate(async (id) => (await window.__h.S()).tabs.find((x) => x.id === id)?.size_taken_by, t0.id);
+      const hintOf = () => H(() => { const e = document.querySelector('.pane:not([hidden]) .pane-hint'); return e && !e.hidden ? e.textContent : ''; });
+      try {
+        await closeSheets();
+        await H(async () => (await window.__h.mod('manage')).setPanel(false));
+        await H((id) => window.__h.show(id), t0.id);
+        await waitReady(t0.id);
+        if (PHONE) await H(() => window.__h.touchPane()); else await focusTerm();
+        const me = await H(() => window.__gt.client);
+        let mine = false;
+        for (let i = 0; i < 20 && !mine; i++) { await sleep(200); mine = (await taken(page)) === me; }
+        if (!mine) {
+          // Not sizing it now (gave it back earlier, or a hold the server
+          // dropped): typing takes it, and the pane is asked to send its
+          // size again.
+          if (PHONE) await H(() => window.__h.key('q')); else await page.keyboard.type('q');
+          await H(async () => { const { panes } = await window.__h.mod('term'); const p = panes.focused(); p.sent = false; p.yielded = false; p.layout(); });
+          for (let i = 0; i < 20 && !mine; i++) { await sleep(200); mine = (await taken(page)) === me; }
+          await clearLine(t0.uid);
+        }
+        await sleep(2300);
+        ctx2 = await browser.newContext(opts);
+        await ctx2.addInitScript(hooks);
+        const p2 = await ctx2.newPage();
+        await p2.goto(cfg.url);
+        await p2.waitForFunction(() => document.querySelector('#conn')?.classList.contains('live'), null, { timeout: 20000 });
+        await p2.evaluate(pageHelpers);
+        await p2.evaluate(() => window.__h.mod('term'));
+        await p2.evaluate(() => window.__h.mod('state'));
+        for (let i = 0; i < 50 && !(await p2.evaluate(async () => (await window.__h.S()).tabs.length)); i++) await sleep(100);
+        await p2.evaluate((id) => window.__h.show(id), t0.id);
+        await p2.waitForFunction((id) => window.__h.readyNow(id), t0.id, { timeout: 8000, polling: 100 }).catch(() => {});
+        if (PHONE) await p2.evaluate(() => window.__h.touchPane());
+        const other = await p2.evaluate(() => window.__gt.client);
+        let theirs = false;
+        for (let i = 0; i < 30 && !theirs; i++) { await sleep(200); theirs = (await taken(page)) === other; }
+        let hint = '';
+        for (let i = 0; i < 25 && !/^Sized by/.test(hint); i++) { await sleep(200); hint = await hintOf(); }
+        const pa = await H(async () => { const { panes } = await window.__h.mod('term'); const p = panes.focused(); return { yielded: p.yielded, sent: p.sent }; });
+        rec('shared', 'another client takes the size: this pane yields and says who', '', mine && theirs && /^Sized by .+ · use this window/.test(hint) && pa.yielded ? 'pass' : 'fail', `sized by this client ${mine} (${me}), then by ${other} ${theirs}; hint "${hint}", pane ${JSON.stringify(pa)}`);
+        // Scrolling here leaves the size with the other client.
+        const s1 = await now();
+        if (PHONE) await H(() => window.__h.drag(200));
+        else { const box = await page.locator('.pane:not([hidden]) .xterm-screen').first().boundingBox(); await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.wheel(0, -300); }
+        await sleep(1500);
+        const rs1 = (await H(([t]) => window.__h.jsonSince(t, 'resize'), [s1])).filter((r) => r.tab === t0.uid && r.cols);
+        const tk1 = await taken(page);
+        rec('shared', 'scrolling the yielded pane leaves the size alone', '', !rs1.length && tk1 === other && /^Sized by/.test(await hintOf()) ? 'pass' : 'fail', `${rs1.length} sizes sent, taken by ${tk1}, hint "${await hintOf()}"`);
+        if (PHONE) await H(() => document.querySelector('.pane:not([hidden]) .jump')?.click()); else await page.mouse.wheel(0, 4000);
+        await sleep(300);
+        // Typing takes it back.
+        const s2 = await now();
+        if (PHONE) await H(() => window.__h.key('q')); else { await focusTerm(); await page.keyboard.type('q'); }
+        mine = false;
+        for (let i = 0; i < 30 && !mine; i++) { await sleep(200); mine = (await taken(page)) === me; }
+        const rs2 = (await H(([t]) => window.__h.jsonSince(t, 'resize'), [s2])).filter((r) => r.tab === t0.uid && r.cols);
+        const hint2 = await hintOf();
+        rec('shared', 'typing here takes the size back', '', mine && rs2.length >= 1 && !hint2 ? 'pass' : 'fail', `taken by ${await taken(page)} (this client ${me}), ${rs2.length} sizes sent, hint "${hint2}"`);
+        await clearLine(t0.uid);
+      } catch (e) { rec('shared', 'two clients', '', 'fail', e.message); }
+      await ctx2?.close().catch(() => {});
+    }
+  }
+
+  // Speech clips (the mock's /dev/clip): a clip with non-zero edges is
+  // faded in and out, one at full scale is scaled under it.
+  if (want('clip')) {
+    if (ENGINE !== 'chromium') rec('clip', 'clip edges faded', '', 'skip', 'audio: Chromium only');
+    else {
+      try {
+        await sleep(2500);
+        await H(() => { window.__gt.clips = []; });
+        const st = await fetch(new URL('/dev/clip', cfg.url)).then((r) => r.status).catch((e) => String(e));
+        let clips = [];
+        for (let i = 0; i < 40 && clips.length < 2; i++) { await sleep(200); clips = await H(() => window.__gt.clips); }
+        const faded = (c) => !!c && !c.error && Math.abs(c.first) < 0.02 && Math.abs(c.last) < 0.02 && c.atFade > 0.5 && c.mid > 0.5;
+        const [a, b] = clips;
+        rec('clip', 'a clip with non-zero edges is faded in and out', '', clips.length >= 2 && faded(a) && Math.abs(a.mid - 20000 / 32768) < 0.02 ? 'pass' : 'fail', `${clips.length} clips played (/dev/clip ${st}): ${JSON.stringify(clips).slice(0, 400)}`);
+        rec('clip', 'a full scale clip is scaled under clipping', '', faded(b) && b.peak <= 0.95 && b.peak >= 0.9 ? 'pass' : 'fail', JSON.stringify(b || null));
+      } catch (e) { rec('clip', 'voice clips', '', 'fail', e.message); }
+    }
   }
 
   const errs = [...pageErrors, ...(await H(() => window.__gt.errors))];

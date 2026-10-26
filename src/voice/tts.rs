@@ -28,6 +28,9 @@ pub enum WebAudio {
     Pcm(Vec<f32>, u32),
     /// Drop what is queued (the reply was cut off).
     Stop,
+    /// The reply's volume (0 to 1) while a barge-in is decided, as
+    /// player::set_duck does on this Mac's speakers.
+    Duck(f32),
 }
 
 type WebOut = Box<dyn Fn(WebAudio) + Send>;
@@ -36,17 +39,39 @@ static WEB_OUT: Mutex<Option<WebOut>> = Mutex::new(None);
 /// Route speech to a browser (Some) or back to the speakers (None).
 pub fn set_web_out(f: Option<WebOut>) {
     *WEB_OUT.lock().unwrap_or_else(|e| e.into_inner()) = f;
+    // A new browser (or none) plays nothing yet, at full volume.
+    super::player::web_stop();
+    WEB_DUCK.store(1.0f32.to_bits(), Ordering::Relaxed);
 }
 
-/// Hand audio to the browser; false when none takes it.
+/// Hand audio to the browser; false when none takes it. What it plays
+/// goes on the browser's playback clock (the echo reference for its mic).
 fn web_out(a: WebAudio) -> bool {
     match WEB_OUT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         Some(f) => {
+            match &a {
+                WebAudio::Pcm(s, rate) => super::player::web_clip(s, *rate),
+                WebAudio::Stop => super::player::web_stop(),
+                WebAudio::Duck(_) => {}
+            }
             f(a);
             true
         }
         None => false,
     }
+}
+
+/// The volume last sent to the browser (f32 bits).
+static WEB_DUCK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// Duck the browser's playback to `v` (0 to 1; 1 is full volume) while a
+/// barge-in is decided. Sent only when it changes.
+pub fn web_duck(v: f32) {
+    let v = v.clamp(0.0, 1.0);
+    if !web_on() || WEB_DUCK.swap(v.to_bits(), Ordering::Relaxed) == v.to_bits() {
+        return;
+    }
+    web_out(WebAudio::Duck(v));
 }
 
 fn web_on() -> bool {
@@ -1073,7 +1098,11 @@ impl Worker {
                 "tts: {:.1} s of speech to the browser in {} clips",
                 web_s, batch.clips
             ));
-            let end = t + Duration::from_secs_f64(web_s + 0.15);
+            // At the end of the clips' length, or later when they came with
+            // gaps (each plays at once after one, see player::WebClock).
+            let end = (t + Duration::from_secs_f64(web_s))
+                .max(super::player::web_end().unwrap_or(t))
+                + Duration::from_millis(150);
             while Instant::now() < end {
                 if self.flush.swap(false, Ordering::SeqCst) || !self.current(gen) {
                     web_out(WebAudio::Stop);

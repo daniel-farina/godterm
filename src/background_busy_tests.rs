@@ -65,7 +65,7 @@ fn background_work_is_busy_in_state_and_snapshot() {
     // The assistant's snapshot says busy, never "ready, background".
     let p = app.state_preamble();
     assert!(
-        p.contains("BUSY in background (2 subagents, 1 shell), not idle"),
+        p.contains("WORKING in background (2 subagents, 1 shell), not idle"),
         "{p}"
     );
     assert!(!p.contains("ready, background"), "{p}");
@@ -75,7 +75,8 @@ fn background_work_is_busy_in_state_and_snapshot() {
         .map(|s| s.default)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(sp.contains("it is busy, never call it idle"), "{sp}");
+    assert!(sp.contains("never idle, finished or free"), "{sp}");
+    assert!(sp.contains("work_status"), "{sp}");
     let _ = std::fs::remove_dir_all(home);
 }
 

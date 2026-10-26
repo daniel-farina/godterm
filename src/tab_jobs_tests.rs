@@ -759,3 +759,17 @@ fn the_tab_server_entry_matches_what_the_socket_expects() {
     let req = json!({"client": s["env"]["GODTERM_CLIENT"], "tab": 9, "token": token, "tool": "list_jobs"});
     assert_eq!(tab_jobs::authorize(SHARED, &req), Ok(9));
 }
+
+#[test]
+fn the_hint_says_how_to_drive_the_browser_safely() {
+    for want in [
+        "--tab-id",
+        "wait-for-element",
+        "request-help",
+        "tab borrow",
+        "blocked CDP access",
+        "--help",
+    ] {
+        assert!(HINT.contains(want), "hint lacks {want}");
+    }
+}

@@ -200,10 +200,10 @@ impl App {
     /// turn boundary (its system prompt changes then, not mid turn).
     pub fn learned_changed(&mut self, say: &str) {
         self.assistant.prompt_dirty = true;
-        self.assistant.log.push(crate::app_assistant::Entry {
-            who: crate::app_assistant::Who::Note,
-            text: format!("Learned: {say}"),
-        });
+        self.assistant.log.push(crate::app_assistant::Entry::new(
+            crate::app_assistant::Who::Note,
+            format!("Learned: {say}"),
+        ));
         self.flash(format!("Assistant learned: {say}"));
     }
 

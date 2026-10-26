@@ -65,12 +65,3 @@ export async function sendImages(files, pane) {
   if (n) toast(n > 1 ? `${n} images added to ${t?.name || 'the tab'}` : `Image added to ${t?.name || 'the tab'}`, 'ok');
 }
 
-// The photo library or the camera (no `capture`, so iOS and Android offer
-// both), several at once. `then` gets the files instead of sending them.
-export function pickImages(pane, then) {
-  const inp = h('input', { type: 'file', accept: 'image/*', multiple: true, style: 'position:fixed;left:-100px;top:0;width:1px;height:1px;opacity:0' });
-  inp.addEventListener('change', () => { const f = [...inp.files]; if (then) { if (f.length) then(f); } else sendImages(f, pane); inp.remove(); });
-  document.body.append(inp);
-  inp.click();
-  setTimeout(() => inp.isConnected && !inp.files?.length && inp.remove(), 120000);
-}

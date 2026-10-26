@@ -40,6 +40,9 @@ pub struct Archived {
     /// The tab's Chrome profile folder (its Browser binding).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<String>,
+    /// Its more profiles beside that one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub browser_also: Vec<String>,
     /// Unix seconds.
     pub last_activity: i64,
     pub archived_at: i64,
@@ -64,6 +67,7 @@ impl Archived {
             tab_group: self.tab_group.clone(),
             pinned: self.pinned,
             browser: self.browser.clone(),
+            browser_also: self.browser_also.clone(),
         }
     }
 
@@ -190,6 +194,7 @@ mod tests {
                 wakeup: false,
             }],
             browser: None,
+            browser_also: vec![],
             last_activity: 1000,
             archived_at: 2000,
             by: "user".into(),

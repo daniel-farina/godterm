@@ -393,6 +393,7 @@ impl App {
                 tab_group: None,
                 pinned: false,
                 browser: None,
+                browser_also: vec![],
             };
             self.reopen_closed_tab(c).map(|_| ())
         })();
