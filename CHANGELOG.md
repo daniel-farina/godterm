@@ -5,6 +5,8 @@ All notable changes to GodTerm are recorded here. The format follows
 follow [Semantic Versioning](https://semver.org/). The release workflow
 copies the section for a tag into the GitHub release notes.
 
+## [Unreleased]
+
 ## [0.3.0] - 2026-10-26
 
 Platforms: macOS (Apple silicon and Intel, universal), Linux (x86_64 and aarch64) and Windows (x64; built on GitHub Actions). The Windows installer and zip are not code signed, so SmartScreen will warn: click More info, then Run anyway.
