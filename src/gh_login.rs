@@ -302,6 +302,7 @@ pub fn cancel() -> Info {
     }
 }
 
-#[cfg(test)]
+// The tests run a fake gh shell script, so Unix only.
+#[cfg(all(test, unix))]
 #[path = "gh_login_tests.rs"]
 mod tests;

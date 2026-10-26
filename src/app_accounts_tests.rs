@@ -243,8 +243,9 @@ fn a_login_shows_its_url_and_takes_a_code() {
 }
 
 /// The token tab: the token is caught, stored, and no frame, screen or log
-/// line ever has it.
+/// line ever has it. Unix only: the fake CLI is a shell script.
 #[test]
+#[cfg(unix)]
 fn a_token_never_reaches_a_frame_a_screen_or_the_log() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home, hub, c) = app("token");

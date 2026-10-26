@@ -239,6 +239,7 @@ mod tests {
         (c, root)
     }
 
+    #[cfg(target_os = "macos")]
     fn files(wc: &Path) -> String {
         let mut s = String::new();
         for e in std::fs::read_dir(wc.join("tokens"))

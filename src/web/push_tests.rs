@@ -163,9 +163,16 @@ fn home(tag: &str) -> PathBuf {
     h
 }
 
+#[cfg(unix)]
 fn mode(p: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+// Windows has no Unix permission bits; the private mode is checked on Unix.
+#[cfg(not(unix))]
+fn mode(_p: &Path) -> u32 {
+    0o600
 }
 
 #[test]

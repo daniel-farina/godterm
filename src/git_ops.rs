@@ -287,16 +287,25 @@ pub fn valid_remote(r: &str) -> bool {
 
 /// This machine's short name for diverged branches ("macbook").
 pub fn machine_name() -> String {
+    machine_slug(&host_name())
+}
+
+#[cfg(unix)]
+fn host_name() -> String {
     let mut buf = [0u8; 256];
     // SAFETY: gethostname writes at most buf.len() bytes into buf.
     let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
-    let raw = if ok {
+    if ok {
         let n = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
         String::from_utf8_lossy(&buf[..n]).into_owned()
     } else {
         String::new()
-    };
-    machine_slug(&raw)
+    }
+}
+
+#[cfg(not(unix))]
+fn host_name() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_default()
 }
 
 pub fn machine_slug(raw: &str) -> String {

@@ -5,7 +5,126 @@ All notable changes to GodTerm are recorded here. The format follows
 follow [Semantic Versioning](https://semver.org/). The release workflow
 copies the section for a tag into the GitHub release notes.
 
-## [Unreleased]
+## [0.3.0] - 2026-10-26
+
+Platforms: macOS (Apple silicon and Intel, universal), Linux (x86_64 and aarch64) and Windows (x64; built on GitHub Actions). The Windows installer and zip are not code signed, so SmartScreen will warn: click More info, then Run anyway.
+
+This release adds GodTerm Web, the whole app in a browser on a desktop or a phone, plus a Git section per tab, GodTerm Sync between machines, an Accounts screen and a live view of a tab's browser. GodTerm Web, Git and Sync are new, so feedback is welcome.
+
+### Added
+- GodTerm Web: the whole interface in a browser, served by the running
+  GodTerm (off unless `[web] enabled = true` or `godterm --web`; it binds
+  127.0.0.1:7878, and over Tailscale with `tailscale serve` or the
+  tailnet listener). Every tab is a live terminal (xterm.js) that shows
+  the same tabs, PTYs and assistant as the terminal UI at the same
+  moment, with the assistant chat, approvals, toasts, jobs, loops, modes,
+  usage, sessions search, tab options and new tabs. A reconnect resumes
+  each tab with only the output it missed.
+  - Phones: installable as an app (PWA, share target), a key bar with
+    Esc, Tab, Ctrl, arrows and Enter, swipes between tabs, pasted and
+    picked images, a composer that keeps its draft, and a tab that fits
+    the screen so zooming rewraps the text.
+  - Desktops: split panes, a resizable tab list with status chips and
+    groups, a docked tab panel, a status bar with the tab's repo and
+    voice, a tab that fits its pane while in use, and the tab's accent
+    color in the list, pane header, title and status bar.
+  - Voice from the browser: push to talk and open mic with a level
+    strip, wake word, direct mode and brainstorm, a voice per browser
+    (Kokoro af_heart by default), mic mute, and the agent's volume and
+    speaker mute in that browser.
+  - Push notifications when a tab waits for approval, finishes or fails,
+    or the assistant asks for a yes (only the tab name and the kind are
+    sent).
+  - One Settings screen with a search through every row, one theme
+    (Dark by default), a debug log (`godterm web-log`), and an Update
+    button when a newer web build is served.
+- Git section per tab (tab options > Git..., the ⚠ next to a tab's name,
+  or the web tab menu > Git): branch, remote, the GitHub owner, repo and
+  gh account it belongs to, warnings ("Not backed up: no GitHub repo",
+  unpushed commits, uncommitted changes), and commit, push, pull (fast
+  forward only), fetch, branches and a new private GitHub repo. Each one
+  shows its plan first and runs only on your confirm; GodTerm never
+  commits, pushes or forces on its own. Settings > GitHub sets owners,
+  ordered folder rules and bindings with a live preview and a diff to
+  confirm, and the web Git screen picks a gh account per owner and can
+  log in a new one. The assistant gets read only git tools (`git_status`
+  and more) and `godterm projects --git` lists each repo's state.
+- GodTerm Sync (`godterm sync init | clone | status | now | plan |
+  doctor`, Settings > Sync): GodTerm's own state, accounts layout and
+  conversations kept in private GitHub repos you own, so a second
+  machine can pick them up. Files are collected from an allowlist,
+  conversations go as append-only monthly repos, and secrets and large
+  files are checked before anything is pushed. Leases keep one machine
+  in charge of a conversation at a time: a tab another machine holds
+  opens read only, with Take over and Release in the app, the web app
+  and the assistant (each asks first).
+- Accounts screen in the web app: log in an account with a pasted code,
+  add, rename, color and remove accounts, and long-lived tokens, with a
+  confirm for each destructive action. Tokens live in the keychain, an
+  output filter catches a token before any screen, frame or log sees
+  it, and a token syncs only when you turn it on for that token and
+  only into a state repo GitHub reports as private.
+- Live browser view: the web Browser section shows the page the tab's
+  agent has open in its own browser (BrowserSkill), about 1.5 pictures a
+  second while someone watches, and takes clicks, wheel, typing, keys,
+  back, forward, reload and navigation. GodTerm attaches to the agent's
+  session and never starts one by itself.
+- Find in every tab: Ctrl-a * (or find in the palette) searches every
+  tab's screen and recent history on every account as you type; Enter
+  or a click goes to the match.
+- The command palette jumps to any open tab by name, account or folder.
+- Claude tabs offer Fable in the model bar, and the web Switch model
+  offers each tab's own models.
+- Codex and Cursor sessions in the sessions search and the web tab
+  filter's Other sessions, next to Claude and Grok.
+- First run as one flow: welcome, voice or not, an agent picker that
+  marks which CLIs are installed (and installs Claude Code or Grok Build
+  after a confirm), the agent's own login steps, then the tour.
+
+### Changed
+- Tabs and subagents no longer talk to the user on their own:
+  completions go to the assistant, which decides what to say.
+- Tabs with background work count as busy, not idle, and a tab at its
+  prompt reads ready everywhere.
+- More readable dim and faint text, and tight pane headers say ready or
+  approval instead of a bare waiting.
+- Empty states and errors say what to do next; a shorter tour; Help and
+  the README key lists match the real bindings, and Help scrolls on
+  short terminals.
+
+### Fixed
+- Cross harness: Grok Build 1.0.69 tabs read as ready and working, so
+  prompts sent to them are no longer reported dropped; Cursor's approval
+  keeps all its options, and numbered options that wrap, Antigravity's
+  folder trust and an OpenCode draft are read in a narrow tab; the web
+  app offers only the answers a CLI prompt can take; the assistant panel
+  on Grok no longer shows a false "log in an account" note.
+- Stability: a vt100 panic no longer kills a tab's reader (the screen is
+  rebuilt), no UI freeze on huge CSI counts, no dead app after an input
+  thread panic, and a resize that cuts a wide character in the last
+  column lays the screen out again.
+- Damaged state files are moved aside and the start is clean.
+- Reopened and restored tabs keep their Browser binding; narrow panes
+  keep a compact Browser button; sign in and Remote Control links open in
+  the default Chrome profile.
+- The Homebrew cask installs on every supported macOS (it refused all
+  but one).
+
+### Security
+- The update signature names the version, so an old signed build cannot
+  be offered under a newer tag; the updater refuses a signature without
+  it.
+- The assistant's read-write control token is accepted only from the
+  assistant's own process tree, a turn that reads out a tab's answer
+  cannot change anything, and a restart to update needs your clear yes.
+- Private, atomic writes for config rewrites, the usage cache and logs;
+  whisper-server is adopted only when it is GodTerm's own child; a
+  private socket folder.
+- Dependencies: rustls 0.23.46, rustls-webpki 0.103.16 and webpki roots
+  1.0.11 (RUSTSEC-2026-0346 to 0349 and 0381 to 0383); `cargo audit` is
+  clean.
+- SECURITY.md describes the threat model, what is trusted and the known
+  limits, and what Sync reads, refuses and never touches.
 
 ## [0.2.13] - 2026-10-22
 
