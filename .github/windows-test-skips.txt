@@ -23,8 +23,6 @@ bglock_tests::attach_and_fork_stay_in_the_tab
 # Windows binary builds, installs and passes its own smoke test). Port a test
 # and delete its line.
 
-
-
 # brainstorm_tests
 
 # busy_tests
@@ -33,47 +31,11 @@ bglock_tests::attach_and_fork_stay_in_the_tab
 
 # events_tests
 
-
-
-
-
 # image_tests
-
-# panel_win_tests
-panel_win_tests::quick_buttons_trigger_their_actions
-
 
 # provider_tests
 
 # quiet_tests
-
-# remote_keep_tests
-remote_keep_tests::a_failed_resume_starts_fresh
-remote_keep_tests::after_a_crash_it_resumes_and_remote_control_returns
-remote_keep_tests::honest_failure_then_restart_and_say_so
-remote_keep_tests::kept_on_comes_back_after_a_drop_and_rests_on_grok
-remote_keep_tests::kept_on_turns_on_at_start_and_not_when_off
-remote_keep_tests::restart_heals_a_replaced_claude
-remote_keep_tests::resume_off_keeps_nothing
-remote_keep_tests::resume_uses_the_kept_id_and_new_starts_another
-remote_keep_tests::retry_then_success_gives_the_link
-
-# remote_tests
-remote_tests::enable_use_switch_and_disable
-
-# selfswitch_tests
-selfswitch_tests::a_failed_resume_after_a_move_starts_fresh_with_a_fuller_summary
-selfswitch_tests::a_usage_limit_error_moves_and_sends_the_turn_again
-selfswitch_tests::ask_mode_has_yes_and_no_buttons
-selfswitch_tests::everyone_out_says_so_once_and_retries
-selfswitch_tests::moves_at_five_percent_on_either_limit_and_saves_it
-selfswitch_tests::off_does_nothing
-selfswitch_tests::remote_control_comes_back_on_the_new_account
-selfswitch_tests::the_conversation_comes_along
-
-
-
-
 
 # told_tests
 
@@ -81,15 +43,3 @@ selfswitch_tests::the_conversation_comes_along
 
 # wake_tests
 
-
-# web::tests
-web::tests::a_browser_that_comes_back_gets_only_what_it_missed
-web::tests::a_process_godterm_started_cannot_sign_in
-web::tests::a_reader_is_never_held_up_by_a_client_that_reads_nothing
-web::tests::a_resize_sends_its_size_and_a_respawn_a_new_snapshot
-web::tests::a_snapshot_then_output_has_no_gap_and_no_repeat
-web::tests::a_wheel_from_a_browser_reaches_the_app_as_its_mouse_reports
-web::tests::serve_identity_headers_sign_in_only_allowed_logins_on_ts_net
-web::tests::websocket_keeps_up_with_a_flood
-web::tests::websocket_sends_a_big_snapshot_gzipped_when_asked
-web::tests::websocket_streams_a_tab_and_takes_input

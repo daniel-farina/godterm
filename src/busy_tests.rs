@@ -262,7 +262,9 @@ fn work_for_a_busy_tab_forks_a_background_session() {
     // 8.3 short names and the \\?\ prefix canonicalize adds).
     let canon = |p: &std::path::Path| {
         let c = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-        c.to_string_lossy().trim_start_matches(r"\\?\").to_lowercase()
+        c.to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_lowercase()
     };
     let want = (
         canon(&t.app.panes[t.slot].tabs[0].cwd),
@@ -271,7 +273,12 @@ fn work_for_a_busy_tab_forks_a_background_session() {
     let seen: Vec<(String, String)> = T::lines(&t.envs)
         .iter()
         .filter_map(|l| l.split_once('|'))
-        .map(|(a, b)| (canon(std::path::Path::new(a)), canon(std::path::Path::new(b))))
+        .map(|(a, b)| {
+            (
+                canon(std::path::Path::new(a)),
+                canon(std::path::Path::new(b)),
+            )
+        })
         .collect();
     assert!(
         seen.iter().filter(|l| *l == &want).count() >= 2,

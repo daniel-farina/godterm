@@ -10053,7 +10053,8 @@ mod tests {
         // The prompt goes to claude by file (--append-system-prompt-file): read
         // it with the arguments.
         let argv = std::fs::read_to_string(&args_file).unwrap_or_default()
-            + &std::fs::read_to_string(crate::providers::claude::prompt_file_path()).unwrap_or_default();
+            + &std::fs::read_to_string(crate::providers::claude::prompt_file_path())
+                .unwrap_or_default();
         assert!(
             argv.contains("Learned preferences from the user")
                 && argv.contains("[rule 1] Check weekly usage"),
@@ -10629,7 +10630,8 @@ mod tests {
         // The prompt goes to claude by file (--append-system-prompt-file): read
         // it with the arguments.
         let argv = std::fs::read_to_string(&args_file).unwrap_or_default()
-            + &std::fs::read_to_string(crate::providers::claude::prompt_file_path()).unwrap_or_default();
+            + &std::fs::read_to_string(crate::providers::claude::prompt_file_path())
+                .unwrap_or_default();
         assert!(
             argv.contains("make exactly one send_prompt")
                 && argv.contains("recent_turns")

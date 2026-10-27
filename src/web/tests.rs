@@ -775,7 +775,7 @@ fn a_reader_is_never_held_up_by_a_client_that_reads_nothing() {
     // 8 MB through a tab whose only client never reads: the tab's own
     // screen keeps up (the reader is capped at STREAM_CAP a second).
     let (p, _rx) = shell_tab(
-        &["bytes:6000000:x", "say:\\n", "say:DONE\\n", "sleep:5"],
+        &["bytes:5999993:x", "say:\\n", "say:DONE\\n", "sleep:5"],
         24,
         80,
     );

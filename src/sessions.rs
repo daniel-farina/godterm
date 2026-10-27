@@ -1181,3 +1181,65 @@ mod tests {
         assert_eq!(fmt_tokens(2_500_000), "2.5M");
     }
 }
+
+/// A Claude conversation file that exists but holds no message: only
+/// bookkeeping records (title, mode, cost). `claude --resume` cannot open
+/// it ("No conversation found with session ID"), so a tab pointing at one
+/// starts a fresh conversation instead. None when there is no such file
+/// (it may still be arriving), so only a file proven empty counts.
+pub fn claude_session_is_empty(config_dir: &Path, id: &str) -> bool {
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        return false;
+    }
+    let Ok(projects) = std::fs::read_dir(config_dir.join("projects")) else {
+        return false;
+    };
+    for p in projects.flatten() {
+        let f = p.path().join(format!("{id}.jsonl"));
+        let Ok(file) = std::fs::File::open(&f) else {
+            continue;
+        };
+        let has_message = lossy_lines(std::io::BufReader::new(file))
+            .any(|l| l.contains("\"type\":\"user\"") || l.contains("\"type\":\"assistant\""));
+        return !has_message;
+    }
+    false
+}
+
+#[cfg(test)]
+mod empty_session_tests {
+    use super::*;
+
+    fn dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("godterm-empty-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("projects/-x")).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_conversation_file_with_only_bookkeeping_is_empty() {
+        let d = dir("book");
+        std::fs::write(
+            d.join("projects/-x/abc.jsonl"),
+            "{\"type\":\"cost-state\"}\n{\"type\":\"ai-title\"}\n{\"type\":\"mode\"}\n",
+        )
+        .unwrap();
+        assert!(claude_session_is_empty(&d, "abc"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_conversation_with_a_message_or_no_file_is_not_empty() {
+        let d = dir("msg");
+        std::fs::write(
+            d.join("projects/-x/abc.jsonl"),
+            "{\"type\":\"cost-state\"}\n{\"type\":\"user\",\"message\":{}}\n",
+        )
+        .unwrap();
+        assert!(!claude_session_is_empty(&d, "abc"));
+        assert!(!claude_session_is_empty(&d, "missing"));
+        assert!(!claude_session_is_empty(&d, "../abc"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

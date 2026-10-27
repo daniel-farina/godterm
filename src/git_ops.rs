@@ -482,7 +482,9 @@ pub fn full_args(ctx: &Ctx, args: &[String]) -> Vec<String> {
     a.extend(["-c".to_string(), "core.quotePath=false".to_string()]);
     a.extend([
         "-C".to_string(),
-        crate::fspath::plain(&ctx.top).to_string_lossy().into_owned(),
+        crate::fspath::plain(&ctx.top)
+            .to_string_lossy()
+            .into_owned(),
     ]);
     a.extend(args.iter().cloned());
     a

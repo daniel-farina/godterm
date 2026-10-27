@@ -56,7 +56,10 @@ mod tests {
     #[test]
     fn verbatim_prefix_is_removed() {
         let p = |s: &str| plain(Path::new(s));
-        assert_eq!(p(r"\\?\C:\Users\x\r.git"), PathBuf::from(r"C:\Users\x\r.git"));
+        assert_eq!(
+            p(r"\\?\C:\Users\x\r.git"),
+            PathBuf::from(r"C:\Users\x\r.git")
+        );
         assert_eq!(p(r"\\?\UNC\srv\share\r"), PathBuf::from(r"\\srv\share\r"));
         assert_eq!(p(r"\\?\Volume{1}\r"), PathBuf::from(r"\\?\Volume{1}\r"));
         assert_eq!(p("/tmp/x"), PathBuf::from("/tmp/x"));

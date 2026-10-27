@@ -1423,6 +1423,17 @@ impl App {
                 }
             }
             LaunchKind::Login => {} // native onboarding / login picker
+            LaunchKind::Resume(id)
+                if h == crate::harness::Harness::Claude
+                    && crate::sessions::claude_session_is_empty(&dir, id) =>
+            {
+                // Nothing was ever said in it: claude cannot resume it
+                // ("No conversation found"), so the tab starts fresh here.
+                crate::log::info(&format!(
+                    "launch: session {id} has no messages, starting a new conversation"
+                ));
+                self.flash("That conversation was empty: started a new one");
+            }
             LaunchKind::Resume(id) => args.extend(h.resume_args(id)),
         }
         // A tab held by a background run: attach to it, or fork a copy.

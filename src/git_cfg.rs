@@ -358,7 +358,11 @@ pub fn glob_problem(pat: &str) -> Option<String> {
     if !(p.starts_with("~/") || p == "~" || p.starts_with('/') || drive) {
         return Some(format!(
             "\"{p}\" is not a folder glob: start it with ~/ or /{}",
-            if cfg!(windows) { " or a drive like C:\\" } else { "" }
+            if cfg!(windows) {
+                " or a drive like C:\\"
+            } else {
+                ""
+            }
         ));
     }
     let full = crate::config::expand_tilde(p)

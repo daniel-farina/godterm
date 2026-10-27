@@ -105,8 +105,8 @@ mod events_tests;
 #[cfg(test)]
 mod failover_tests;
 mod find_all;
-mod fspath;
 mod first_run;
+mod fspath;
 #[cfg(test)]
 mod fuzz_tests;
 mod fuzzy;

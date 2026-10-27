@@ -496,7 +496,12 @@ mod tests {
         let a = Assets::from_dir(d.clone());
         assert_eq!(
             a.git.as_deref(),
-            Some(crate::fspath::canonical(&repo).unwrap().join(".git").as_path())
+            Some(
+                crate::fspath::canonical(&repo)
+                    .unwrap()
+                    .join(".git")
+                    .as_path()
+            )
         );
         let first = a.build();
         for busy in ["index.lock", "MERGE_HEAD", "rebase-merge"] {

@@ -847,7 +847,11 @@ impl Paths {
 /// The path of a demo agent's program (a Windows one is `name.exe`).
 fn agent_bin(p: &Paths, f: Flavor) -> String {
     let name = f.bin();
-    let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
     p.bin.join(file).to_string_lossy().into_owned()
 }
 

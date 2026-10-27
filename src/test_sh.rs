@@ -12,7 +12,11 @@ fn git_sh() -> PathBuf {
         .arg("--exec-path")
         .output()
         .expect("git");
-    let exec = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().replace('/', "\\"));
+    let exec = PathBuf::from(
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .replace('/', "\\"),
+    );
     // <root>\mingw64\libexec\git-core -> <root>\usr\bin\sh.exe
     for up in [3, 2] {
         let mut root = exec.clone();
