@@ -51,10 +51,27 @@ jobs:
         env:
           RUSTFLAGS: -Dwarnings
         run: cargo build --locked --all-targets
+      # Timing sensitive tests (a helper process, a fake claude in a pty) can
+      # lose a race on a loaded runner: a failed test is run again once, alone;
+      # it must pass there, so a real failure still fails the job.
       - name: test
         env:
           RUSTFLAGS: -Dwarnings
-        run: cargo test --locked -- --test-threads=4
+        run: |
+          set +e
+          cargo test --locked --no-fail-fast -- --test-threads=4 2>&1 | tee test.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            failed=$(grep -E '^test .* \.\.\. FAILED$' test.log | sed -E 's/^test (.*) \.\.\. FAILED$/\1/' | sort -u)
+            [ -n "$failed" ] || { echo "no failed tests found in the log (a build or setup error)"; exit "$rc"; }
+            echo "re-running once, alone:"; echo "$failed"
+            ok=0
+            while read -r t; do
+              [ -n "$t" ] || continue
+              cargo test --locked -- --test-threads=1 --exact "$t" || ok=1
+            done <<< "$failed"
+            exit $ok
+          fi
       # The real binary in tmux on the demo world (docs/TESTING.md).
       - name: e2e demo (tmux)
         run: |

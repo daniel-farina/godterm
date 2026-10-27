@@ -5,6 +5,8 @@
 
 use std::time::{Duration, Instant};
 
+use serde_json::{json, Value};
+
 use crate::app::{App, Modal, View};
 use crate::pane::Activity;
 use crate::pane::LaunchKind;
@@ -301,6 +303,103 @@ impl App {
             .map_err(|e| format!("{e:#}"))
     }
 
+    /// Queue a move for when the tab's work ends: one per tab (asking
+    /// again replaces the earlier ask instead of stacking).
+    pub fn queue_move(&mut self, q: QueuedMove) {
+        self.queued_moves.retain(|m| m.uid != q.uid);
+        self.queued_moves.push(q);
+    }
+
+    /// The move queued for a tab: (target account's name, why it waits).
+    pub fn move_pending(&self, uid: u64) -> Option<(String, String)> {
+        let q = self.queued_moves.iter().find(|m| m.uid == uid)?;
+        let (s, t) = self.find_tab(uid)?;
+        let to = self.cfg.accounts.get(q.target)?.display().to_string();
+        let why = self
+            .tab_busy_why(s, t)
+            .unwrap_or_else(|| "its work ends".into());
+        Some((to, why))
+    }
+
+    /// "Move now (stops the agents)": the plan for move_now, the tool a
+    /// busy tab's move picker offers after the move was queued.
+    pub(crate) fn move_now_plan_for(
+        &mut self,
+        args: &Value,
+    ) -> Result<(Value, String, bool), String> {
+        let tabs = self.tab_targets(args, true)?;
+        let to = match args.get("to") {
+            Some(v) if !v.is_null() => self.account_arg(v)?,
+            _ => return Err("to is required".into()),
+        };
+        let mut uids = vec![];
+        let mut stops: Vec<String> = vec![];
+        for &(s, t) in &tabs {
+            let uid = self.panes[s].tabs[t].uid;
+            if self.panes[s].account == Some(to) {
+                continue;
+            }
+            if let Some(why) = self.move_refusal(s, to) {
+                return Err(why);
+            }
+            uids.push(uid);
+            if let Some(w) = self.tab_busy_why(s, t) {
+                stops.push(format!("{}: {w}", self.panes[s].tabs[t].name()));
+            }
+        }
+        if uids.is_empty() {
+            return Err("those tabs are already on that account".into());
+        }
+        let label = self.cfg.accounts[to].display().to_string();
+        let q = if stops.is_empty() {
+            format!("Move {} to {label} now?", self.describe_set(&tabs))
+        } else {
+            format!(
+                "Move {} to {label} now? This stops what runs in {}.",
+                self.describe_set(&tabs),
+                stops.join("; ")
+            )
+        };
+        Ok((json!({"uids": uids, "to": to}), q, true))
+    }
+
+    /// The confirmed move_now: every tab moves at once, whatever runs in
+    /// it, and any earlier queued move of it is dropped.
+    pub(crate) fn move_now_run(&mut self, plan: &Value) -> Result<Value, String> {
+        let to = plan["to"].as_u64().ok_or("the plan has no account")? as usize;
+        let mut moved = vec![];
+        for uid in plan["uids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64)
+        {
+            let uid = self.current_uid(uid);
+            self.queued_moves.retain(|m| m.uid != uid);
+            let Some((s, t)) = self.find_tab(uid) else {
+                continue;
+            };
+            if self.panes[s].account == Some(to) {
+                continue;
+            }
+            self.move_tab_now(s, t, to, false, true);
+            let new = self.moved_ids.get(&uid).copied().or_else(|| {
+                self.pending_moves
+                    .last()
+                    .filter(|m| m.source_uid == uid)
+                    .map(|m| m.target_uid)
+            });
+            moved.push(json!({"from": crate::control::tab_id(uid), "now": new.map(crate::control::tab_id)}));
+        }
+        let label = self.cfg.accounts[to].display().to_string();
+        Ok(json!({"ok": true, "result": {
+            "moved": moved, "to": label,
+            "say": format!("Moved {} to {label}; what ran in {} was stopped.",
+                crate::control::plural(moved.len(), "tab"),
+                if moved.len() == 1 { "it" } else { "them" }),
+        }}))
+    }
+
     /// Move now, or ask first when the tab is busy.
     pub fn request_move(
         &mut self,
@@ -342,7 +441,7 @@ impl App {
         } else {
             "The tab moves once it finishes"
         });
-        self.queued_moves.push(q);
+        self.queue_move(q);
     }
 
     /// A move that did not happen: its old id names its own tab again.

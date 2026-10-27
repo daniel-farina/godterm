@@ -767,7 +767,7 @@ def main():
     ap.add_argument("--instance", default="demo", help="demo,demofull,fake,mock,unauth,real")
     ap.add_argument("--engines", default="webkit,chromium")
     ap.add_argument("--devices", default="phone,desktop")
-    ap.add_argument("--groups", default="tabs,live,typing,scroll,resize,reconnect,image,approval,options,chat,voice,stress,layout,keyboard,keybar,sheet,retry,shared,clip")
+    ap.add_argument("--groups", default="tabs,live,typing,scroll,resize,reconnect,image,approval,options,chat,voice,stress,layout,keyboard,keybar,sheet,retry,shared,move,clip")
     ap.add_argument("--real", default="account1,demo8,codex,cursor,agy,opencode", help="real instance: sandbox slot keys")
     ap.add_argument("--no-turns", action="store_true", help="real instance: no model turns at all")
     ap.add_argument("--soak", type=float, default=0, help="minutes of soak on the first instance")
@@ -806,7 +806,7 @@ def main():
                     except KeyboardInterrupt:
                         return
                 print(f"[{kind}] tabs: " + ", ".join(f"t{u} {i['harness']} {i['state']}{'' if i['typing'] else ' (no keys)'}" for u, i in info.items()), flush=True)
-                g = groups if kind in ("demo", "fake") else [x for x in groups if x not in ("chat", "voice", "stress", "shared", "retry")]
+                g = groups if kind in ("demo", "fake") else [x for x in groups if x not in ("chat", "voice", "stress", "shared", "retry", "move")]
                 if kind == "demofull":
                     # The full demo world (16 Claude and Grok tabs): their
                     # approvals, which the one-tab-per-harness world rarely shows.
@@ -815,9 +815,9 @@ def main():
                     g = [x for x in g if x not in ("approval", "options", "chat", "voice", "layout", "keyboard", "keybar", "sheet")]
                 # The speech clips need the mock's /dev/clip; the mock gets nothing else.
                 if kind == "mock":
-                    g = [x for x in groups if x == "clip"]
+                    g = [x for x in groups if x in ("clip", "move")]
                 else:
-                    g = [x for x in g if x != "clip"]
+                    g = [x for x in g if x not in ("clip", "move")]
                 for e in a.engines.split(","):
                     for d in a.devices.split(","):
                         results.extend(run_browser(inst, e, d, info, g, out))

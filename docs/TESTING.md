@@ -8,6 +8,7 @@ Three levels, from cheapest to most real:
 | e2e, demo world | the real binary in tmux on `godterm --demo` (made up accounts, the demo agent, no network) | `scripts/e2e/run.py` | tmux, python3 |
 | e2e, real accounts | the real binary under `sandbox-exec`, one cheap prompt per logged in harness | `scripts/e2e/run.py --suite accounts` | macOS, logged in CLIs |
 | Web matrix | GodTerm Web in WebKit and Chromium (phone and desktop) on every harness, plus WebSocket stress and a soak | `scripts/e2e/web_matrix.py` | tmux, python3, node with Playwright |
+| Web gate | every screen at five sizes, feature combinations and flows against the dev mock (see below) | `scripts/e2e/gate.sh` | node with Playwright |
 | Web perf | GodTerm Web's load, input, streaming, reconnect and memory numbers against a demo or fake instance (docs/WEB_APP.md, Performance) | `scripts/e2e/web_perf.mjs` | node with Playwright (`PW_DIR`) |
 | Clean machine | a fresh tart VM: install from the release artifacts, first run, setup, onboarding, Homebrew | `scripts/sandbox/vm/...` (below) | tart, the cirruslabs images |
 
@@ -203,6 +204,49 @@ the server's RSS and CPU every 10 s and the page's JS heap and DOM size
 
 Memory: one browser at a time; a run waits (then skips) while less than
 6 GB is free.
+
+## The web gate (scripts/e2e/gate.sh)
+
+Run it before merging UI work, and on every merge to master. One headless
+browser against `web/dev/mock.py` (a private port, never the live GodTerm),
+about two minutes, exit 1 with a list when something is broken:
+
+```sh
+scripts/e2e/gate.sh                      # Chromium, the web/ of this checkout
+scripts/e2e/gate.sh --engine both        # + WebKit
+scripts/e2e/gate.sh --sizes 390,1440     # some of 320 390 820 1440 2560
+scripts/e2e/gate.sh --only move          # screens and flows with that text in the name
+```
+
+- **Every screen at five sizes** (320x640 and 390x844 touch, 820x1180 touch,
+  1440x900, 2560x1440): each Settings section, Sessions, Manage, Accounts
+  and its form, Git, New tab, Approvals, the ? help, the Prompt and Paste
+  boxes, update, install, the voice sheet, the mic menu, the Assistant, the
+  tab list, the tab's options and every section in them (rename, move,
+  duplicate, copy, model, usage, colour, group, loops, Browser, Git), a
+  confirm sheet, the move picker, the move-now sheet and its confirm. In each
+  open dialog every button, input and select must be visible (opacity),
+  inside the viewport and inside what clips it, not covered (`elementFromPoint`
+  at its centre), not text-clipped (`scrollWidth <= clientWidth`), not
+  `pointer-events: none`, and the dialog must not scroll sideways. A modal
+  sheet owns the screen (what is behind its scrim is not checked); a message's
+  hover-only actions and controls in a closed `<details>` are not controls yet.
+- **Combinations**: push to talk with the Assistant open (the Talk button
+  on screen, 40 px or more), a muted mic with the chat, the tab panel and
+  the chat in a 1000 px window (the terminal keeps 520 px, the folded tab
+  list opens over it), a message over a sheet.
+- **Flows with real clicks**: move a tab (the pane follows it to its new
+  id), Move now (asks again, Yes moves), a prompt through the Prompt box
+  reaches the tab, approve and deny an approval, the pane layouts 1 > 2 > 4 > 1
+  (a desktop; the phone has no Layout button), rename, archive and restore
+  from the tab list's filter. Page errors fail it too.
+- **Screenshots**: one per screen in `e2e-results/gate-<time>/<size>/`
+  (`report.md` and `results.json` beside them), for a look before you merge.
+
+The mock gets `/dev/reset` (the world as it started, per size), `/dev/busy`
+(keep a tab busy), `/dev/approval` and `/dev/clip`. `GATE_SLOW=1` doubles
+the settle waits on a slow machine. To add a screen, add a `step()` in
+`scripts/e2e/web_gate.mjs` that opens it and calls `audit(name, roots)`.
 
 ## Host sandbox (scripts/sandbox/host)
 

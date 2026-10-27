@@ -17,7 +17,18 @@ export async function run(name, args, done = 'Done', extra) {
   if (conf) { if (conf.token) ownQuestion(conf.token); return confirmSheet(name, conf); }
   if (r.ok === false || r.error) { toast(r.error || r.result?.error || 'It did not work', 'error'); return r; }
   toast(say(r, done), 'ok');
+  followMoves(r);
   return r;
+}
+
+// A tab moved to another account continues under a new id: a pane that
+// showed the old one shows the new (the user stays where they were).
+function followMoves(r) {
+  for (const m of r?.result?.moved || []) {
+    if (!m?.now || !m.from) continue;
+    const i = panes.list.findIndex((p) => p.id === m.from);
+    if (i >= 0) panes.show(m.now, i);
+  }
 }
 
 function confirmSheet(name, c) {
@@ -270,13 +281,28 @@ function renameSheet(t) {
   if (!liveNow) setTimeout(() => inp.select(), 50);
 }
 
+// The move waits for the tab's work: say why, and offer to stop it and move
+// now (move_now asks once more, naming what it stops).
+function moveNowSheet(t, to, why) {
+  const acct = S.accounts.find((a) => a.account === to);
+  openSheet({ kind: 'confirm' }, h('div.sh-title', {}, h('span', {}, t.name + ' is busy')),
+    h('div.appr-q', {}, `Busy: ${why}. It moves to ${acct ? acct.label : 'the other account'} when they finish.`),
+    h('div.appr-btns', {}, h('button.btn.bad', { onclick: async () => { closeSheet(); await run('move_now', { tab: t.id, to }, 'Moved'); } }, 'Move now (stops the agents)'),
+      h('button.btn', { onclick: closeSheet }, 'Wait for them')));
+}
+
 function moveSheet(t, kind) {
   const h0 = harnessOf(t.account);
   const verbs = { move: ['Move to', 'Moved'], dup: ['Duplicate to', 'Duplicated'], copy: ['Copy session to', 'Copied'] };
   const go = (to) => async () => {
     leave();
     if (kind === 'copy') await run('copy_session', { session: t.session_id, account: to }, verbs[kind][1]);
-    else await run('move_tab', { tab: t.id, to, copy: kind === 'dup' || undefined }, verbs[kind][1]);
+    else {
+      const r = await run('move_tab', { tab: t.id, to, copy: kind === 'dup' || undefined }, verbs[kind][1]);
+      // Busy: the move was queued. The owner may want it at once.
+      const w = r?.result?.waiting_for?.[0];
+      if (w && kind === 'move') moveNowSheet(t, to, w.why);
+    }
   };
   const rows = S.accounts.filter((a) => a.account !== t.account && (a.harness || 'claude') === h0).map((a) => {
     const left = a.effective_left_pct ?? a.five_hour_left_pct;

@@ -638,6 +638,16 @@ pub const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "move_now",
+        description: "Move busy tabs to another account at once, stopping what runs in them (subagents, shells, a turn in progress) instead of waiting for it. Only after move_tab said a tab is busy and queued, and the user asked to move it now. Asks the user once with the exact list of what it stops.",
+        schema: || {
+            props(
+                json!({"tab": tab_prop(), "to": account_prop()}),
+                &["tab", "to"],
+            )
+        },
+    },
+    Tool {
         name: "copy_session",
         description: "Copy a past session (id or id prefix) to an account so it can be resumed there.",
         schema: || {
@@ -2264,6 +2274,10 @@ impl App {
         if q > 0 {
             v["queued_prompts"] = json!(q);
         }
+        // A move waiting for its work to end.
+        if let Some((to, why)) = self.move_pending(tab.uid) {
+            v["move_pending"] = json!({"to": to, "waiting_for": why});
+        }
         // Background sessions forked from this tab for requests it was too
         // busy for (its own work and loops are counted above).
         let bg = self.tab_background_runs(tab.uid);
@@ -2571,6 +2585,9 @@ impl App {
         }
         if tool == "archive_tabs" {
             return self.archive_plan_for(args);
+        }
+        if tool == "move_now" {
+            return self.move_now_plan_for(args);
         }
         if matches!(
             tool,
@@ -2951,6 +2968,9 @@ impl App {
         }
         if tool == "archive_tabs" {
             return self.archive_run(plan);
+        }
+        if tool == "move_now" {
+            return self.move_now_run(plan);
         }
         if let Some(r) = self.jobs_run_plan(tool, plan) {
             return r;
@@ -3713,7 +3733,7 @@ impl App {
         if let Some(r) = self.git_tool(tool, args) {
             return r;
         }
-        if tool == "take_over" || tool == "release_session" {
+        if tool == "take_over" || tool == "release_session" || tool == "move_now" {
             return self.planned(tool, args);
         }
         if tool == "edit_system_prompt" {
@@ -4523,6 +4543,7 @@ impl App {
                     .collect();
                 let (mut moved, mut there, mut later, mut refused) =
                     (vec![], vec![], vec![], vec![]);
+                let mut waits: Vec<Value> = vec![];
                 for uid in uids {
                     let Some((sl, t)) = self.find_tab(uid) else {
                         continue;
@@ -4540,14 +4561,19 @@ impl App {
                     }
                     if self.tab_has_running_work(sl, t) {
                         // Busy (also with background work, which a move
-                        // would stop): it moves once that ends.
-                        self.queued_moves.push(crate::app_tabmove::QueuedMove {
+                        // would stop): it moves once that ends, and the
+                        // answer says what it waits for.
+                        let why = self
+                            .tab_busy_why(sl, t)
+                            .unwrap_or_else(|| "it is busy".into());
+                        self.queue_move(crate::app_tabmove::QueuedMove {
                             uid,
                             target: to,
                             copy,
                             same_folder: true,
                         });
                         later.push(tab_id(uid));
+                        waits.push(json!({"tab": tab_id(uid), "name": self.panes[sl].tabs[t].name(), "why": why}));
                         continue;
                     }
                     self.move_tab_now(sl, t, to, copy, true);
@@ -4593,14 +4619,15 @@ impl App {
                 if !there.is_empty() {
                     say.push(format!("{} already there.", plural(there.len(), "tab")));
                 }
-                if !later.is_empty() {
+                for w in &waits {
                     say.push(format!(
-                        "{} busy; moving once done.",
-                        plural(later.len(), "tab")
+                        "{} is busy ({}); it moves when that ends. Move now stops it and moves at once.",
+                        w["name"].as_str().unwrap_or("The tab"),
+                        w["why"].as_str().unwrap_or("working")
                     ));
                 }
                 ok(
-                    json!({"moved": moved, "already_there": there, "after_current_work": later, "refused": refused, "to": label, "warning": warning,
+                    json!({"moved": moved, "already_there": there, "after_current_work": later, "waiting_for": waits, "move_now": if later.is_empty() { Value::Null } else { json!("move_now stops what runs and moves at once; it asks the user once") }, "refused": refused, "to": label, "warning": warning,
                           "note": "moved tabs continue under their new id (now); old ids still resolve to them", "say": say.join(" ")}),
                 )
             }

@@ -262,9 +262,9 @@ fn a_tab_with_running_subagents_is_working_everywhere() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// A subagent transcript silent for twenty minutes mid call still
-/// counts without any screen rows (the Agent tool's agents write
-/// nothing during a long tool call), and the screen alone counts too.
+/// A subagent transcript mid call written 3 minutes ago counts without
+/// screen rows; one silent for 25 minutes does not (a stopped agent),
+/// and the screen alone counts too.
 #[test]
 fn agents_count_from_transcripts_or_the_screen_alone() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -274,8 +274,8 @@ fn agents_count_from_transcripts_or_the_screen_alone() {
     subagent(&p, "agent-a", "Task a", Duration::from_secs(25 * 60));
     subagent(&p, "agent-b", "Task b", Duration::from_secs(3 * 60));
     let a = app.tab_activity(0, t);
-    assert_eq!(a.subagents_running, 2, "{a:?}");
-    assert_eq!(a.subagents[0].task.as_deref(), Some("Task a"));
+    assert_eq!(a.subagents_running, 1, "{a:?}");
+    assert_eq!(a.subagents[0].task.as_deref(), Some("Task b"));
     assert_eq!(a.subagents[0].tool.as_deref(), Some("Bash"));
     assert_eq!(app.state_word(0, t), "background");
     let (s, _) = ready_tab(&mut app, "screen-only");
@@ -288,5 +288,195 @@ fn agents_count_from_transcripts_or_the_screen_alone() {
     assert_eq!(a.subagents_running, 3, "{a:?}");
     assert_eq!(a.subagents[2].name.as_deref(), Some("Explore"));
     assert_eq!(app.state_word(0, s), "background");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+// ---- moving busy tabs ----
+
+const LIMIT_SCREEN: &str = "⏺ Waiting for 3 background agents to finish\r\n  ⎿  ○ general-purpose 52m 3s\r\n     ○ general-purpose 52m 3s\r\n     ○ Explore 50m 1s\r\n\r\n  Claude usage limit reached. Your limit will reset at 7pm.\r\n\r\n────────────────────────────\r\n❯ \r\n────────────────────────────\r\n";
+
+/// Stopped agents the way a dead session leaves them: the last real
+/// message a tool call, then an attachment and an api-request record.
+fn stopped_agent(transcript: &std::path::Path, id: &str, age: Duration) {
+    let dir = transcript.with_extension("").join("subagents");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join(format!("{id}.jsonl"));
+    write(
+        &p,
+        &[
+            json!({"type": "user", "isSidechain": true, "agentType": "general-purpose", "message": {"role": "user", "content": "Check the CI runner"}, "timestamp": stamp(3600)}),
+            json!({"type": "assistant", "isSidechain": true, "message": {"id": "s1", "content": [{"type": "tool_use", "id": "y1", "name": "Bash", "input": {"command": "gh run list"}}]}}),
+            json!({"type": "attachment", "attachment": {"type": "queued_command", "prompt": "x"}}),
+            json!({"type": "api-request", "isSidechain": true}),
+        ],
+    );
+    set_mtime(&p, age);
+}
+
+fn tab_row(app: &mut App, uid: u64) -> Value {
+    let st = app.control_call("get_state", &json!({}));
+    st["result"]["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == json!(crate::control::tab_id(uid)))
+        .cloned()
+        .unwrap()
+}
+
+/// A tab stopped at its usage limit whose agents are stale transcripts
+/// (and rows still drawn on its screen) is not working through agents:
+/// it reads ready, and a move to another account happens at once.
+#[test]
+fn a_tab_stopped_at_its_limit_moves_at_once() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("limitmove");
+    let (t, p) = ready_tab(&mut app, "hyper");
+    finished_turn(&p, "Rotate the keys", "Waiting for the agents.", 50 * 60);
+    for id in ["agent-a02c", "agent-a8de", "agent-a5a8"] {
+        stopped_agent(&p, id, Duration::from_secs(50 * 60));
+    }
+    // Stale transcripts alone: not running, with or without a limit.
+    let a = app.tab_activity(0, t);
+    assert_eq!(a.subagents_running, 0, "{a:?}");
+    assert_eq!(app.state_word(0, t), "ready");
+    // The screen still draws the rows and says the limit: limit wins.
+    app.panes[0].tabs[t]
+        .parser
+        .lock()
+        .unwrap()
+        .process(LIMIT_SCREEN.as_bytes());
+    assert!(app.tab_at_limit(0, t));
+    let a = app.tab_activity(0, t);
+    assert_eq!(a.subagents_running, 0, "{a:?}");
+    assert_eq!(app.state_word(0, t), "ready");
+    assert!(!app.tab_has_running_work(0, t));
+    assert!(app.tab_background_work(0, t).is_none());
+    let uid = app.panes[0].tabs[t].uid;
+    let w = app.control_call("work_status", &json!({}));
+    assert!(
+        !names(&w, "working").contains(&"hyper".to_string()),
+        "never working through agents: {w}"
+    );
+    // The move happens now, not queued.
+    let id = crate::control::tab_id(uid);
+    let v = app.control_call("move_tab", &json!({"tab": id, "to": 2}));
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["result"]["moved"].as_array().unwrap().len(), 1, "{v}");
+    assert!(app.queued_moves.is_empty());
+    assert!(v["result"]["after_current_work"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// The same stale transcripts on a tab that is not at a limit: the screen
+/// shows nothing running either, so it is not busy and moves at once; and
+/// the limit marked by GodTerm's scan counts like the screen's words.
+#[test]
+fn stale_agents_do_not_hold_a_move_and_the_limit_mark_counts() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("stalemove");
+    let (t, p) = ready_tab(&mut app, "stale");
+    finished_turn(&p, "Go", "Done.", 50 * 60);
+    stopped_agent(&p, "agent-x", Duration::from_secs(50 * 60));
+    assert!(!app.tab_has_running_work(0, t));
+    let uid = app.panes[0].tabs[t].uid;
+    let v = app.control_call(
+        "move_tab",
+        &json!({"tab": crate::control::tab_id(uid), "to": 2}),
+    );
+    assert_eq!(v["result"]["moved"].as_array().unwrap().len(), 1, "{v}");
+    // A recent agent plus the scan's limit mark: not busy either.
+    let (t2, p2) = ready_tab(&mut app, "marked");
+    finished_turn(&p2, "Go", "Waiting.", 60);
+    subagent(&p2, "agent-r", "Run it", Duration::from_secs(60));
+    assert_eq!(app.tab_activity(0, t2).subagents_running, 1);
+    let uid2 = app.panes[0].tabs[t2].uid;
+    app.limit_hit.insert(uid2);
+    assert_eq!(app.tab_activity(0, t2).subagents_running, 0);
+    assert!(!app.tab_has_running_work(0, t2));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// A busy tab (2 agents running) is queued, once, with the reason in the
+/// answer; the tab list carries the pending move; "move now" asks once and
+/// then moves it, dropping the queued move.
+#[test]
+fn a_queued_move_says_why_shows_in_the_list_and_can_be_forced() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("busymove");
+    let (t, p) = ready_tab(&mut app, "godterm");
+    finished_turn(&p, "Run it", "Waiting for the agents.", 60);
+    subagent(
+        &p,
+        "agent-1",
+        "Run the regression groups",
+        Duration::from_secs(60),
+    );
+    subagent(
+        &p,
+        "agent-2",
+        "Check the mobile batch",
+        Duration::from_secs(90),
+    );
+    let uid = app.panes[0].tabs[t].uid;
+    let id = crate::control::tab_id(uid);
+    let v = app.control_call("move_tab", &json!({"tab": id, "to": 2}));
+    assert_eq!(v["ok"], true, "{v}");
+    let r = &v["result"];
+    assert_eq!(r["after_current_work"], json!([id]), "{v}");
+    assert!(r["moved"].as_array().unwrap().is_empty());
+    let say = r["say"].as_str().unwrap();
+    assert!(
+        say.contains("godterm is busy (2 subagents (")
+            && say.contains("running)")
+            && say.contains("moves when that ends"),
+        "{say}"
+    );
+    assert!(r["waiting_for"][0]["why"]
+        .as_str()
+        .unwrap()
+        .contains("2 subagents"));
+    // Asking again does not stack a second move.
+    app.control_call("move_tab", &json!({"tab": id, "to": 2}));
+    assert_eq!(app.queued_moves.len(), 1);
+    // The tab list marks it.
+    let row = tab_row(&mut app, uid);
+    assert!(
+        row["move_pending"]["waiting_for"]
+            .as_str()
+            .unwrap()
+            .contains("2 subagents"),
+        "{row}"
+    );
+    assert_eq!(
+        row["move_pending"]["to"],
+        json!(app.cfg.accounts[1].display().to_string())
+    );
+    assert!(app.move_pending(uid).is_some());
+    // The busy tab stays where it is while it works.
+    app.tabmove_tick();
+    assert_eq!(app.queued_moves.len(), 1);
+    assert!(app.find_tab(uid).is_some());
+    // Move now asks first, naming what it stops.
+    let before = app.pending_moves.len();
+    let v = app.control_call("move_now", &json!({"tab": id, "to": 2}));
+    assert_eq!(v["needs_confirmation"], json!(true), "{v}");
+    let q = v["question"].as_str().unwrap();
+    assert!(
+        q.contains("now?") && q.contains("stops what runs") && q.contains("2 subagents"),
+        "{q}"
+    );
+    assert_eq!(app.pending_moves.len(), before, "nothing moved yet");
+    let tok = v["token"].as_str().unwrap().to_string();
+    app.assistant_turn += 1;
+    app.assistant.last_user = "yes".into();
+    let v = app.control_call("move_now", &json!({"confirm_token": tok}));
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["result"]["moved"].as_array().unwrap().len(), 1, "{v}");
+    assert!(app.queued_moves.is_empty(), "the queued move is dropped");
+    assert!(app.pending_moves.len() > before);
     let _ = std::fs::remove_dir_all(&home);
 }

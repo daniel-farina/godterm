@@ -44,6 +44,11 @@ pub fn limit_error(screen: &str) -> bool {
 }
 
 impl App {
+    /// Percent left of the account's binding bucket, when known.
+    pub(crate) fn account_binding_left(&self, a: usize) -> Option<f64> {
+        self.binding_left(a).map(|k| k.left_pct)
+    }
+
     /// The account's binding bucket, by its provider (generic).
     fn binding_left(&self, a: usize) -> Option<crate::providers::Bucket> {
         let b = self.account_buckets(a)?;
@@ -226,7 +231,7 @@ impl App {
         let to = self.cfg.accounts[o.to].display().to_string();
         if self.tab_has_running_work(s, t) {
             // Busy (its turn or background work): it moves once that ends.
-            self.queued_moves.push(crate::app_tabmove::QueuedMove {
+            self.queue_move(crate::app_tabmove::QueuedMove {
                 uid: o.uid,
                 target: o.to,
                 copy: false,

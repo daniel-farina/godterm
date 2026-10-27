@@ -130,6 +130,7 @@ pub fn chip(app: &App, tool: &str, args: &Value, status: &str) -> (String, Color
         ),
         "restore_archived" => ("↻ restored archived tabs".to_string(), theme::SAGE),
         "stop_loops" => ("■ stopped loops".to_string(), theme::CLAY),
+        "move_now" => ("→ moved now".to_string(), theme::SAGE),
         "work_status" => ("◦ checked what is being worked on".to_string(), theme::SAGE),
         "read_tab" | "recent_turns" => (
             format!(

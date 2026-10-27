@@ -1190,7 +1190,15 @@ and only once it is up does the original close; if it fails to start,
 the original stays open and the error is shown. The original transcript
 stays in the source account. A busy tab asks first: wait until it is idle
 (the move is queued), interrupt it and move, or cancel. A tab with no
-conversation yet just opens fresh in the same folder. The status bar says
+conversation yet just opens fresh in the same folder. "Busy" means a turn
+is running or subagents (written in the last five minutes, or drawn on its
+screen as "Waiting for N background agents") or shells still run; a tab
+stopped at its usage limit is never busy, its leftover agents are not
+work, so it moves at once. A queued move says why in the answer and the
+web toast ("busy: 2 subagents running; it moves when that ends"), shows a
+`→` in the tab list (the web list and status bar say "→ Account 3 when 2
+subagents end"), and the web move picker offers "Move now (stops the
+agents)", which asks once (assistant tool `move_now`). The status bar says
 "Moved 'api' to Account 3 (82% left)", and `↶ Undo move` in the menu bar
 (or `Ctrl-a U`) moves it back for 10 seconds. With `suggest_move_below`
 (10% by default, Settings > General) a tab whose account is nearly out

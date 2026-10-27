@@ -72,7 +72,7 @@ function git(t) {
 }
 
 function state(t) {
-  const extra = [t.label && t.label !== t.state ? t.label : '', t.queued_prompts ? t.queued_prompts + ' queued' : ''].filter(Boolean).join(' · ');
+  const extra = [t.label && t.label !== t.state ? t.label : '', t.queued_prompts ? t.queued_prompts + ' queued' : '', t.move_pending ? 'moving to ' + t.move_pending.to + ' when ' + t.move_pending.waiting_for + ' end' : ''].filter(Boolean).join(' · ');
   const tip = [t.state, t.waiting_for, t.background_work, extra].filter(Boolean).join(' · ') + ': click for the tab\'s options';
   return item('root', 'sb-state', tip, h('span.dot.' + (t.state || 'idle').split(' ')[0]), h('span.sb-v', {}, t.state || 'idle'), extra ? h('span.sb-d', {}, '· ' + extra) : null);
 }

@@ -94,6 +94,7 @@ function style() {
 .gsh.gp .gab{min-height:30px;padding:0 10px;font-size:12.5px}
 .touch .gsh.gp .gab{min-height:44px}
 .gsh.gp .gacts.main{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
+.gsh.gp .gacts.main .gab{white-space:normal;line-height:1.2;padding-top:4px;padding-bottom:4px}
 .gsh.gp .gcm{padding:6px 10px}
 .gsh.gp .gchip{height:22px;font-size:12px}
 .gsh.gp .gfoot .btn{flex:1}

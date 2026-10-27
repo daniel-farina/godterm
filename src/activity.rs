@@ -12,10 +12,15 @@ use std::time::{Duration, SystemTime};
 /// A subagent transcript written this recently is a running subagent,
 /// whatever its last line says (a message may still be streaming in).
 pub const SUBAGENT_FRESH: Duration = Duration::from_secs(30);
-/// A subagent transcript that stops mid tool call and is not written for
-/// this long was abandoned (its claude died or was interrupted): not
-/// running any more. Long tool calls (a build, a test run, a render)
-/// write nothing for many minutes, so this is generous.
+/// A subagent whose last real message is a tool call or a tool result
+/// counts as running by its transcript alone while it was written this
+/// recently. Older than this it counts only when the screen shows it
+/// ("Waiting for N background agents"): a stopped agent (its claude died,
+/// hit a limit or was interrupted) leaves exactly this tail behind, and
+/// must not keep a tab "busy" for hours.
+pub const SUBAGENT_RECENT: Duration = Duration::from_secs(5 * 60);
+/// An unfinished transcript older than this is never taken for a running
+/// agent, even when the screen shows agents (it is a different, dead one).
 pub const SUBAGENT_STALE: Duration = Duration::from_secs(2 * 3600);
 /// A transcript written this recently means the agent is working.
 pub const WRITE_FRESH: Duration = Duration::from_secs(10);
@@ -125,10 +130,15 @@ pub struct Subagent {
     pub age_s: u64,
     /// Seconds since its transcript was last written.
     pub idle_s: u64,
-    /// Still going: its last message is a tool call or a tool result
-    /// (or it was written in the last SUBAGENT_FRESH), and it has not
-    /// been silent for SUBAGENT_STALE.
+    /// Still going by its transcript: written in the last SUBAGENT_FRESH,
+    /// or its last real message is a tool call or a tool result and it
+    /// was written in the last SUBAGENT_RECENT. Attachment, api-request
+    /// and system records are not messages and are skipped.
     pub running: bool,
+    /// Its last real message is a tool call or a tool result (what a
+    /// running agent looks like, and a stopped one too), whenever it was
+    /// written.
+    pub unfinished: bool,
     /// The tool it is in, when it waits on one ("Bash", "Read").
     pub tool: Option<String>,
 }
@@ -292,24 +302,28 @@ pub fn subagent_of(path: &Path, now: SystemTime) -> Option<Subagent> {
                 last = Some(("assistant", tool.is_some(), tool));
             }
             Some("user") => {
-                let result = v["message"]["content"]
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|b| b["type"] == "tool_result"));
-                last = Some(("user", result, None));
+                // A tool result or a prompt leaves the model something to
+                // answer; "[Request interrupted by user]" ends it.
+                let stopped = user_text(&v)
+                    .is_some_and(|t| t.trim_start().starts_with("[Request interrupted"));
+                last = Some(("user", !stopped, None));
             }
+            // attachment, api-request, system, queue-operation...: not
+            // messages, they say nothing about whether it still works.
             _ => {}
         }
     }
     let unfinished = match last {
         // Mid tool call, or the model is answering a tool result.
         Some(("assistant", calls, _)) => calls,
-        Some(("user", _, _)) => true,
+        Some(("user", live, _)) => live,
         // Nothing parsable: only a fresh write says it runs.
         None => false,
         Some(_) => false,
     };
     s.tool = last.and_then(|l| l.2);
-    s.running = idle < SUBAGENT_FRESH || (unfinished && idle < SUBAGENT_STALE);
+    s.unfinished = unfinished && idle < SUBAGENT_STALE;
+    s.running = idle < SUBAGENT_FRESH || (unfinished && idle < SUBAGENT_RECENT);
     Some(s)
 }
 
@@ -554,8 +568,12 @@ impl crate::app::App {
             .as_deref()
             .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
             .map(|m| now.duration_since(m).unwrap_or_default().as_secs());
+        // A tab stopped at its usage limit has no agents working: they
+        // wait for a model that will not answer until the reset.
+        let limited = self.tab_at_limit(s, t);
         let mut subs = transcript
             .as_deref()
+            .filter(|_| !limited)
             .map(|p| running_subagents_of(p, now))
             .unwrap_or_default();
         // The screen is the other witness: claude's "Waiting for N
@@ -564,7 +582,7 @@ impl crate::app::App {
         // started elsewhere may have no transcript here; the rows still
         // show it. The larger count wins, the rows fill in names and
         // ages the transcripts did not give.
-        if tab.is_running() && matches!(tab.activity, crate::pane::Activity::Ready) {
+        if !limited && tab.is_running() && matches!(tab.activity, crate::pane::Activity::Ready) {
             let seen = screen_agents(&tab.screen_text());
             if seen.count() > subs.len() {
                 let from_rows: Vec<Subagent> = seen
@@ -625,11 +643,74 @@ impl crate::app::App {
     /// work), so prompt delivery does not wait for it.
     pub fn tab_background_work(&self, s: usize, t: usize) -> Option<String> {
         let tab = self.panes.get(s)?.tabs.get(t)?;
+        // Stopped at its usage limit: nothing it started goes on, and a
+        // move or archive must not wait for it.
+        if self.tab_at_limit(s, t) && tab.activity != crate::pane::Activity::Working {
+            return None;
+        }
         if let Some(w) = crate::ui_chrome::background_work(self, s, t) {
             return Some(w);
         }
         (tab.bg_wait && tab.is_running() && tab.activity == crate::pane::Activity::Ready)
             .then(|| "background work".to_string())
+    }
+
+    /// The tab is stopped at its usage limit: its screen shows the limit
+    /// error, GodTerm's scan marked it, or (at its prompt) its account's
+    /// binding limit is used up. Its subagents and shells are not work in
+    /// progress: they wait for a model that will not answer until the
+    /// reset.
+    pub fn tab_at_limit(&self, s: usize, t: usize) -> bool {
+        let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
+            return false;
+        };
+        if !tab.is_running() {
+            return false;
+        }
+        if self.limit_hit.contains(&tab.uid) || crate::app_failover::limit_error(&tab.screen_text())
+        {
+            return true;
+        }
+        matches!(
+            tab.activity,
+            crate::pane::Activity::Ready | crate::pane::Activity::Idle
+        ) && self.panes[s]
+            .account
+            .and_then(|a| self.account_binding_left(a))
+            .is_some_and(|left| left < 1.0)
+    }
+
+    /// Why a move (or anything that stops the tab) must wait for it, in
+    /// words: "2 subagents running (general-purpose (36 min), ...)",
+    /// "working on a turn", "1 shell running". None when nothing does.
+    pub fn tab_busy_why(&self, s: usize, t: usize) -> Option<String> {
+        let tab = self.panes.get(s)?.tabs.get(t)?;
+        if tab.is_running() && tab.activity == crate::pane::Activity::Working {
+            return Some("working on a turn".into());
+        }
+        self.tab_background_work(s, t)?;
+        let a = self.tab_activity(s, t);
+        let mut parts = vec![];
+        if let Some(l) = a.subagents_line() {
+            parts.push(format!("{l} running"));
+        }
+        if a.background_shells > 0 {
+            parts.push(format!(
+                "{} running",
+                crate::control::plural(a.background_shells, "shell")
+            ));
+        }
+        if a.background_tasks > 0 {
+            parts.push(format!(
+                "{} running",
+                crate::control::plural(a.background_tasks, "task")
+            ));
+        }
+        Some(if parts.is_empty() {
+            "background work running".to_string()
+        } else {
+            parts.join(", ")
+        })
     }
 
     /// Busy: working, waiting for an approval, or work still running in
@@ -712,9 +793,10 @@ mod tests {
     }
 
     /// A subagent whose transcript ends in a tool call or a tool result
-    /// runs, however long ago it was written (up to SUBAGENT_STALE); one
-    /// whose last message is plain text is done; a fresh write always
-    /// counts; one silent for hours mid call was abandoned.
+    /// runs while it was written in the last few minutes; one whose last
+    /// message is plain text is done; a fresh write always counts; one
+    /// silent for longer mid call was stopped (an attachment or
+    /// api-request record after its last message does not make it run).
     #[test]
     fn subagents_run_until_their_last_message_is_text() {
         let d = std::env::temp_dir().join(format!("godterm-subs-{}", std::process::id()));
@@ -732,20 +814,42 @@ mod tests {
         let call = r#"{"type":"assistant","isSidechain":true,"message":{"id":"m1","content":[{"type":"text","text":"Running the tests."},{"type":"tool_use","id":"x1","name":"Bash","input":{"command":"cargo test"}}]}}"#;
         let result = r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x1","content":"ok"}]}}"#;
         let done = r#"{"type":"assistant","isSidechain":true,"message":{"id":"m2","content":[{"type":"text","text":"All green."}]}}"#;
-        // In a tool call for 20 minutes: a long test run, still going.
+        // In a tool call for 3 minutes: a test run, still going.
         std::fs::write(
             sub.join("agent-mid-call.jsonl"),
             format!("{}\n{call}\n", prompt("Run the suite")),
         )
         .unwrap();
-        set_mtime(&sub.join("agent-mid-call.jsonl"), Duration::from_secs(1200));
-        // Thinking after a tool result, 5 minutes ago: going.
+        set_mtime(&sub.join("agent-mid-call.jsonl"), Duration::from_secs(180));
+        // Thinking after a tool result, 2 minutes ago: going.
         std::fs::write(
             sub.join("agent-thinking.jsonl"),
             format!("{}\n{call}\n{result}\n", prompt("Check the logs")),
         )
         .unwrap();
-        set_mtime(&sub.join("agent-thinking.jsonl"), Duration::from_secs(300));
+        set_mtime(&sub.join("agent-thinking.jsonl"), Duration::from_secs(120));
+        // Stopped agents: the last real message is a tool call, then only
+        // an attachment and an api-request record; 50 minutes old.
+        let noise = r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"x"}}
+{"type":"api-request","isSidechain":true}
+{"type":"system","subtype":"info"}"#;
+        std::fs::write(
+            sub.join("agent-stopped.jsonl"),
+            format!("{}\n{call}\n{noise}\n", prompt("Stopped one")),
+        )
+        .unwrap();
+        set_mtime(
+            &sub.join("agent-stopped.jsonl"),
+            Duration::from_secs(50 * 60),
+        );
+        // Interrupted by the user 4 minutes ago: ended, not running.
+        let cut = r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
+        std::fs::write(
+            sub.join("agent-cut.jsonl"),
+            format!("{}\n{call}\n{cut}\n", prompt("Cut one")),
+        )
+        .unwrap();
+        set_mtime(&sub.join("agent-cut.jsonl"), Duration::from_secs(4 * 60));
         // Reported 10 minutes ago: done.
         std::fs::write(
             sub.join("agent-done.jsonl"),
@@ -768,7 +872,12 @@ mod tests {
         .unwrap();
         let now = SystemTime::now();
         let all = subagents(&t, now);
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 7);
+        // The stopped one is unfinished (the screen may vouch for it) but
+        // not running by its transcript.
+        let stopped = all.iter().find(|s| s.id == "agent-stopped").unwrap();
+        assert!(stopped.unfinished && !stopped.running);
+        assert!(!all.iter().find(|s| s.id == "agent-cut").unwrap().unfinished);
         let running = running_subagents_of(&t, now);
         let mut ids: Vec<&str> = running.iter().map(|s| s.id.as_str()).collect();
         ids.sort();
@@ -778,7 +887,7 @@ mod tests {
         assert_eq!(mid.task.as_deref(), Some("Run the suite"));
         assert_eq!(mid.tool.as_deref(), Some("Bash"));
         assert!((35 * 60..=38 * 60).contains(&mid.age_s), "{}", mid.age_s);
-        assert!(mid.idle_s >= 1190);
+        assert!(mid.idle_s >= 170);
         assert_eq!(mid.label(), "general-purpose (36 min)");
         assert_eq!(running_subagents(&t, now), 3);
         let _ = std::fs::remove_dir_all(&d);

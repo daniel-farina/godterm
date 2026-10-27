@@ -902,8 +902,18 @@ function ensureTalk() {
     h('span.tk-ic', { html: svg(MIC) }), h('span.tk-l', {}, 'Talk'),
     h('span.tk-lv', {}, h('span.tk-meter', {}, h('i')), h('span.tk-db')));
   ptt(talk);
-  ($('#panes') || $('#main')).append(talk);
+  homeTalk();
+  // The assistant panel can cover the terminals (a phone, a squeezed
+  // window): Talk then sits in the panel, above its composer.
+  on('layout', homeTalk);
   return talk;
+}
+function homeTalk() {
+  if (!talk) return;
+  const main = $('#main');
+  const covered = $('#app')?.classList.contains('chat-open') && main && getComputedStyle(main).visibility === 'hidden';
+  const host = covered ? $('#chat') : ($('#panes') || main);
+  if (host && talk.parentElement !== host) host.append(talk);
 }
 
 function paintTalk(s) {

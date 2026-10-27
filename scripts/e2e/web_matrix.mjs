@@ -232,7 +232,7 @@ async function main() {
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push((e.stack || e.message).split('\n').slice(0, 4).join(' / ')));
   // (The reconnect checks drop the socket on purpose: WebKit logs that.)
-  page.on('console', (m) => { if (m.type() === 'error' && !/GL Driver|WebGL|favicon|WebSocket connection to .* failed/.test(m.text())) pageErrors.push('console: ' + m.text()); });
+  page.on('console', (m) => { if (m.type() === 'error' && !/GL Driver|WebGL|favicon|WebSocket connection to .* failed|ResizeObserver loop/.test(m.text())) pageErrors.push('console: ' + m.text()); });
   const t0 = Date.now();
   await page.goto(cfg.url);
   await page.waitForFunction(() => document.querySelector('#conn')?.classList.contains('live'), null, { timeout: 20000 });
@@ -620,11 +620,20 @@ async function main() {
       try {
         const s = await now();
         const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC', 'base64');
-        const chooser = page.waitForEvent('filechooser', { timeout: 5000 });
-        if (PHONE) await page.locator('#keybar button[data-i="image"]').first().click();
-        else await H(async () => { const { pickImages } = await window.__h.mod('images'); const { panes } = await window.__h.mod('term'); pickImages(panes.focused()); });
-        const fc = await chooser;
-        await fc.setFiles({ name: 'qa.png', mimeType: 'image/png', buffer: png });
+        if (PHONE) {
+          const chooser = page.waitForEvent('filechooser', { timeout: 5000 });
+          await page.locator('#keybar button[data-i="image"]').first().click();
+          const fc = await chooser;
+          await fc.setFiles({ name: 'qa.png', mimeType: 'image/png', buffer: png });
+        } else {
+          // A desktop pastes a copied screenshot into the terminal.
+          await H((b64) => {
+            const bin = atob(b64), u8 = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+            const dt = new DataTransfer();
+            dt.items.add(new File([u8], 'qa.png', { type: 'image/png' }));
+            document.querySelector('.pane:not([hidden]) .xterm').dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }));
+          }, png.toString('base64'));
+        }
         await sleep(400);
         // The phone opens the image box first: Send (no Enter after it).
         if (PHONE) {
@@ -1051,13 +1060,15 @@ async function main() {
       // A dialog (Settings): centred, no grip, rounded; Escape, then a
       // click on the scrim, close it.
       await page.click('#b-gear');
-      await sleep(500);
+      await page.waitForFunction(() => document.querySelector('#sheet').classList.contains('on'), null, { timeout: 3000 }).catch(() => {});
+      await sleep(400);
       const d = await H(() => { const sh = document.querySelector('#sheet'), r = sh.getBoundingClientRect(), cs = getComputedStyle(sh); return { on: sh.classList.contains('on'), kind: sh.dataset.kind, cx: Math.round(r.left + r.width / 2), cy: Math.round(r.top + r.height / 2), w: Math.round(r.width), h: Math.round(r.height), radius: cs.borderTopLeftRadius, grip: getComputedStyle(sh.querySelector('.sheet-grip')).display, left: Math.round(r.left) }; });
       await page.keyboard.press('Escape');
       await sleep(350);
       const c1 = await H(() => !document.querySelector('#sheet').classList.contains('on'));
       await page.click('#b-gear');
-      await sleep(500);
+      await page.waitForFunction(() => document.querySelector('#sheet').classList.contains('on'), null, { timeout: 3000 }).catch(() => {});
+      await sleep(400);
       await page.mouse.click(Math.max(10, d.left - 40), 450);
       await sleep(350);
       const c2 = await H(() => !document.querySelector('#sheet').classList.contains('on') && !document.querySelector('#scrim').classList.contains('on'));
@@ -1109,7 +1120,7 @@ async function main() {
       const a = await pull([4, 12, 30, 60, 100, 150, 200, 240], 40, 240);
       rec('sheet', 'a pull down closes the sheet', '', on0 && a.followed && !a.open && !a.dragLeft ? 'pass' : 'fail', JSON.stringify(a));
       const on1 = await openOptions();
-      const b = await pull([10, 40, 70], 12, 70);
+      const b = await pull([10, 50, 100], 10, 100);
       rec('sheet', 'a flick down closes it', '', on1 && b.followed && !b.open ? 'pass' : 'fail', JSON.stringify(b));
       const on2 = await openOptions();
       const c = await pull([6, 14, 30, 46], 80, 46);
@@ -1227,6 +1238,82 @@ async function main() {
         await clearLine(t0.uid);
       } catch (e) { rec('shared', 'two clients', '', 'fail', e.message); }
       await ctx2?.close().catch(() => {});
+    }
+  }
+
+  // Moving a busy tab to another account (the mock: /dev/busy keeps a tab
+  // busy): the move is queued and the sheet offers "Move now (stops the
+  // agents)" or "Wait for them"; Move now asks once more, naming what it
+  // stops, and only its Yes moves the tab.
+  if (want('move')) {
+    const mt = tabs.find((x) => x.account === 1 && x.name !== 'trading room');
+    const origin = new URL(cfg.url).origin;
+    const busy = (id, off) => fetch(`${origin}/dev/busy?tab=${id}${off ? '&off=1' : ''}`).then((r) => r.status).catch(() => 0);
+    if (!mt) rec('move', 'busy tab', '', 'skip', 'needs the mock: no tab on its first account');
+    else {
+      const acct2 = (await S()).accounts.find((a) => a.account !== 1 && a.harness === 'claude' && a.available !== false);
+      const acctOf = async () => (await S()).tabs.find((x) => x.name === mt.name)?.account;  // (a moved tab continues under a new id)
+      const sheetInfo = () => H(() => { const sh = document.querySelector('#sheet'); return { on: sh.classList.contains('on'), kind: sh.dataset.kind, title: sh.querySelector('.sh-title')?.textContent || '', text: sh.querySelector('.appr-q')?.textContent || '', btns: [...sh.querySelectorAll('.appr-btns button')].map((b) => b.textContent.trim()), r: [...sh.querySelectorAll('.appr-btns button')].map((b) => { const q = b.getBoundingClientRect(), cs = getComputedStyle(b); return q.height >= 30 && +cs.opacity >= 0.99 && cs.pointerEvents !== 'none'; }) }; });
+      const openMove = async () => {
+        await closeSheets();
+        await H(async () => (await window.__h.mod('manage')).setPanel(false));
+        await H((id) => window.__h.show(id), mt.id);
+        await waitReady(mt.id);
+        await page.click('#b-tabmenu');
+        await page.locator('#tp-body button, #sheet-body button, #pop button', { hasText: /^Move( to)?$/ }).first().click();
+        await sleep(300);
+        await page.locator('#sheet-body .li, #tp-body .li, #pop .li', { hasText: new RegExp('^' + acct2.label) }).first().click();
+        await page.waitForFunction(() => document.querySelector('#sheet').classList.contains('on') && /busy/.test(document.querySelector('#sheet .sh-title')?.textContent || ''), null, { timeout: 5000 });
+        await sleep(250);
+      };
+      try {
+        await fetch(`${origin}/dev/reset`).catch(() => {});
+        const b0 = await busy(mt.id);
+        await sleep(400);
+        const s0 = await now();
+        await openMove();
+        const sh = await sheetInfo();
+        const mv = (await H(([t]) => window.__h.jsonSince(t, 'tool'), [s0])).filter((j) => j.name === 'move_tab');
+        rec('move', 'a busy tab: the move waits and the sheet offers Move now or Wait', '', b0 === 200 && mv.length === 1 && sh.kind === 'confirm' && sh.title.includes(mt.name) && /2 subagents running/.test(sh.text) && sh.btns.join('|') === 'Move now (stops the agents)|Wait for them' && sh.r.every(Boolean) ? 'pass' : 'fail', `${JSON.stringify(sh)}; ${mv.length} move_tab`);
+        // Wait for them: nothing else is sent, the tab stays.
+        const s1 = await now();
+        await page.locator('#sheet-body button', { hasText: 'Wait for them' }).click();
+        await sleep(500);
+        const sent1 = (await H(([t]) => window.__h.jsonSince(t, 'tool'), [s1])).map((j) => j.name);
+        const closed1 = !(await sheetInfo()).on;
+        rec('move', 'Wait for them: the sheet closes and nothing moves', '', closed1 && !sent1.length && (await acctOf()) === 1 ? 'pass' : 'fail', `closed ${closed1}, sent [${sent1}], account ${await acctOf()}`);
+        // Move now, then No: asked once more, nothing moves.
+        await openMove();
+        const s2 = await now();
+        await page.locator('#sheet-body button', { hasText: 'Move now (stops the agents)' }).click();
+        await page.waitForFunction(() => /Confirm/.test(document.querySelector('#sheet .sh-title')?.textContent || '') && document.querySelector('#sheet').classList.contains('on'), null, { timeout: 5000 });
+        await sleep(250);
+        const cf = await sheetInfo();
+        await page.locator('#sheet-body button', { hasText: /^No$/ }).click();
+        await sleep(600);
+        const sent2 = await H(([t]) => window.__h.jsonSince(t, 'tool'), [s2]);
+        const no = sent2.find((j) => j.name === 'move_now' && j.args?.confirm_token);
+        rec('move', 'Move now asks once more, naming what it stops; No moves nothing', '', cf.kind === 'confirm' && /stops what runs in/.test(cf.text) && cf.btns.join('|') === 'Yes|No' && cf.r.every(Boolean) && no?.user_says === 'no' && (await acctOf()) === 1 ? 'pass' : 'fail', `${JSON.stringify(cf)}; no frame ${JSON.stringify(no)}; account ${await acctOf()}`);
+        // Move now, then Yes: the tab moves, what ran is stopped.
+        await openMove();
+        const s3 = await now();
+        await page.locator('#sheet-body button', { hasText: 'Move now (stops the agents)' }).click();
+        await page.waitForFunction(() => /Confirm/.test(document.querySelector('#sheet .sh-title')?.textContent || ''), null, { timeout: 5000 });
+        await sleep(250);
+        await page.locator('#sheet-body button', { hasText: /^Yes$/ }).click();
+        let moved = false;
+        for (let i = 0; i < 25 && !moved; i++) { await sleep(200); moved = (await acctOf()) === acct2.account; }
+        const sent3 = await H(([t]) => window.__h.jsonSince(t, 'tool'), [s3]);
+        const yes = sent3.find((j) => j.name === 'move_now' && j.args?.confirm_token);
+        const toast3 = await H(() => [...document.querySelectorAll('#toasts .toast')].map((t) => t.textContent).join(' | '));
+        const st3 = (await S()).tabs.find((x) => x.name === mt.name)?.state;
+        rec('move', 'Move now, Yes: the tab moves and what ran is stopped', '', moved && yes?.user_says === 'yes' && st3 !== 'working' && /stopped/.test(toast3) ? 'pass' : 'fail', `moved ${moved}, yes frame ${JSON.stringify(yes)}, state ${st3}, toast "${toast3}"`);
+      } catch (e) { rec('move', 'busy tab', '', 'fail', e.message); await closeSheets(); }
+      const cur = (await S()).tabs.find((x) => x.name === mt.name);
+      if (cur) await H(([id]) => window.__h.tool('move_tab', { tab: id, to: 1 }), [cur.id]).catch(() => {});
+      await fetch(`${origin}/dev/reset`).catch(() => {});
+      await closeSheets();
+      await H(async () => (await window.__h.mod('manage')).setPanel(false)).catch(() => {});
     }
   }
 

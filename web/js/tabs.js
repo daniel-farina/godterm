@@ -77,6 +77,7 @@ function sub(t) {
   if (t.label && t.label !== t.state) bits.push(t.label);
   else if (t.state && t.state !== 'ready') bits.push(t.state);
   if (t.waiting_for) bits.push(t.waiting_for);
+  if (t.move_pending) bits.push('→ ' + t.move_pending.to + ' when ' + t.move_pending.waiting_for + ' end');
   if (t.folder && grp !== 'folder') bits.push(t.folder);
   if (grp === 'harness' && t.account_label) bits.push(t.account_label);
   return bits.join(' · ');

@@ -250,6 +250,19 @@ def new_tab(account, name, folder, **kw):
     return t
 
 
+MOVED = {}
+
+
+def relaunch(t, to):
+    """A moved tab continues under a new id on the other account (as GodTerm does)."""
+    nt = new_tab(to, t.name, t.folder, cols=t.cols, rows=t.rows)
+    nt.state = "ready"
+    TABS.remove(t)
+    MOVED[str(t.uid)] = nt.uid
+    dirty()
+    return nt
+
+
 def seed():
     now = int(time.time() * 1000)
     CHAT.extend([
@@ -274,6 +287,7 @@ JOBS = [
 LOOPS = [{"job": "L7", "tab": "t3762", "cadence": "every 10m", "prompt": "Check the order book and report anything unusual.", "next": "in 4m"}]
 CLOSED = [{"index": 0, "tab": "old experiment", "account": 1, "cwd": "~/exp", "loops": 0}]
 APPROVALS = {}
+ARCHIVED0 = []
 MODES = {"memory_saver": False, "privacy": False, "voice": "push"}
 CHAT = []
 BUSY = [False]
@@ -290,7 +304,7 @@ def state():
     for a in ACCOUNTS:
         a["tabs"] = sum(1 for t in TABS if t.account == a["account"])
     return {
-        "accounts": ACCOUNTS, "tabs": [t.json(i + 1, n) for i, t in enumerate(TABS)],
+        "accounts": ACCOUNTS, "moved": MOVED, "tabs": [t.json(i + 1, n) for i, t in enumerate(TABS)],
         "jobs": {"count": len(JOBS), "active": sum(j["status"] == "active" for j in JOBS), "next": "morning brief in 14 h", "jobs": JOBS},
         "loops": LOOPS, "closed": CLOSED, "modes": modes_line(), "pending_confirmations": [],
         "voice": {"mode": MODES["voice"], "sample_rate": 24000},
@@ -614,9 +628,13 @@ def needs(name, args, question):
 
 def tool(name, a):
     if a.get("confirm_token"):
+        says = a.get("_says")
         name2, a = CONFIRM.pop(a["confirm_token"], (None, None))
         if name2 is None:
             return {"ok": False, "error": "that confirmation expired"}
+        if (says or "").strip().lower() in ("no", "cancel"):
+            # A no with the token drops the question, as in GodTerm.
+            return {"ok": True, "result": {"say": "Cancelled."}}
         a = {**a, "_confirmed": True}
     r = mock_sync.tool(name, a, needs, TABS)
     if r is not None:
@@ -653,8 +671,9 @@ def tool(name, a):
         dirty()
         return {"ok": True, "result": {"say": "Closed %s." % t.name}}
     if name == "archive_tabs" and t:
-        if not a.get("_confirmed"):
-            return needs(name, a, "Archive %s? Its session stops and it moves to Archived." % t.name)
+        # One tab named by id: no question, unless it is busy (then force=true is asked for).
+        if t.state in ("working", "background", "approval") and not a.get("force"):
+            return {"ok": False, "error": "%s is busy; force=true archives it anyway." % t.name}
         TABS.remove(t)
         ARCHIVED.insert(0, {"id": "arch%d" % t.uid, "name": t.name, "account": t.account, "account_label": acct(t.account)["label"], "provider": "claude",
                             "folder": getattr(t, "folder", ""), "session": None, "last_active": "just now", "archived": "just now", "by": "user"})
@@ -684,9 +703,21 @@ def tool(name, a):
             nt = new_tab(to, t.name, t.folder, cols=t.cols, rows=t.rows)
             dirty()
             return {"ok": True, "result": {"say": "Duplicated to %s." % acct(to)["label"], "tabs": ["t%d" % nt.uid]}}
-        t.account = to
-        dirty()
-        return {"ok": True, "result": {"say": "Moved %s to %s." % (t.name, acct(to)["label"])}}
+        if t.state in ("working", "background"):
+            # Busy: queued, with why (GodTerm's move_tab does the same).
+            why = "2 subagents running"
+            return {"ok": True, "result": {"say": "%s is busy (%s); it moves when that ends. Move now stops it and moves at once." % (t.name, why),
+                    "moved": [], "after_current_work": ["t%d" % t.uid], "waiting_for": [{"tab": "t%d" % t.uid, "name": t.name, "why": why}]}}
+        nt = relaunch(t, to)
+        return {"ok": True, "result": {"say": "Moved %s to %s." % (t.name, acct(to)["label"]), "moved": [{"from": "t%d" % t.uid, "now": "t%d" % nt.uid}]}}
+    if name == "move_now" and t:
+        to = int(a.get("to") or 1)
+        busy = t.state in ("working", "background")
+        if not a.get("_confirmed"):
+            # Asks once more, naming what it stops (GodTerm's move_now does).
+            return needs(name, a, "Move %s to %s now?%s" % (t.name, acct(to)["label"], " This stops what runs in %s: 2 subagents running." % t.name if busy else ""))
+        nt = relaunch(t, to)
+        return {"ok": True, "result": {"say": "Moved %s to %s; what ran in it was stopped." % (t.name, acct(nt.account)["label"]), "moved": [{"from": "t%d" % t.uid, "now": "t%d" % nt.uid}]}}
     if name == "copy_session":
         return {"ok": True, "result": {"say": "Copied the session to %s." % acct(int(a.get("account") or 1))["label"]}}
     if name in ("pin_tab", "unpin_tab") and t:
@@ -792,7 +823,7 @@ def handle_text(cl, m):
             broadcast({"t": "toast", "text": "Answered %s for %s" % (m.get("choice"), ap["tab_ref"].name), "level": "ok"})
     elif t == "tool":
         with LOCK:
-            r = tool(m.get("name"), m.get("args") or {})
+            r = tool(m.get("name"), {**(m.get("args") or {}), "_says": m.get("user_says")})
         time.sleep(0.15)
         cl.send({"t": "result", "id": m.get("id"), "result": r})
     elif t == "ping":
@@ -894,6 +925,30 @@ class H(http.server.BaseHTTPRequestHandler):
             mock_sync.set_on(u.path != "/dev/sync-off")
             mock_sync.ST["fail"] = u.path == "/dev/sync-fail"
             return self.reply(200, b"ok")
+        if u.path == "/dev/reset":
+            # The world as it started (tabs, chat, approvals, the archive), for tests.
+            with LOCK:
+                TABS.clear(); MOVED.clear(); APPROVALS.clear(); CHAT.clear(); LAST_PROMPT.clear()
+                ARCHIVED[:] = ARCHIVED0
+                NEXT_UID[0] = 3760
+                seed()
+                dirty()
+            return self.reply(200, b"ok")
+        if u.path == "/dev/busy":
+            # /dev/busy?tab=t3776 (or ?off=1 with it): a tab that stays busy
+            # (for the move sheet's "it moves when they finish").
+            q = urllib.parse.parse_qs(u.query)
+            with LOCK:
+                t = find((q.get("tab") or [""])[0])
+                if not t:
+                    return self.reply(404, b"no such tab")
+                if q.get("off"):
+                    t.work_left = 0
+                    t.set_state("ready")
+                else:
+                    t.work_left = 10 ** 6
+                    t.set_state("working")
+            return self.reply(200, b"ok")
         if u.path == "/dev/approval":
             with LOCK:
                 ask_approval(RNG.choice(TABS))
@@ -945,6 +1000,7 @@ if __name__ == "__main__":
     if args.port in (7878, 7879):
         raise SystemExit("ports 7878 and 7879 belong to the real GodTerm")
     seed()
+    ARCHIVED0.extend(ARCHIVED)
     threading.Thread(target=ticker, daemon=True).start()
     if args.bump_every:
         def bumper():

@@ -1248,6 +1248,13 @@ export const panes = {
     on('state', () => {
       // Nothing picked yet: start on the terminal UI's focused tab.
       if (!this.list.some((p) => p.id) && S.focused != null && !this.picked) { this.picked = true; this.show('t' + S.focused, 0); }
+      // A pane that shows a tab that moved to another account follows it
+      // (a move that waited for the tab's work finishes later).
+      if (S.moved) for (let i = 0; i < this.list.length; i++) {
+        const id = this.list[i].id, u = uidOf(id);
+        const to = id && S.moved[u];
+        if (to && !S.tabs.some((x) => x.id === id) && S.tabs.some((x) => uidOf(x.id) === to)) this.show('t' + to, i);
+      }
       for (const p of this.list) p.paintHead();
       // A size this phone took that the state no longer gives it: the Mac
       // was typed in (or another browser took it). Not sized again until

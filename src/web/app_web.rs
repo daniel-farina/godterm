@@ -419,6 +419,13 @@ impl App {
             "accounts": self.web_account_models(pick("accounts")),
             "tabs": self.web_tabs(&s),
             "focused": self.panes.get(self.focus).map(|p| p.cur().uid),
+            // Tabs moved to another account continue under a new id: the
+            // browser follows a pane that shows the old one.
+            "moved": self
+                .moved_ids
+                .iter()
+                .map(|(o, n)| (o.to_string(), json!(n)))
+                .collect::<serde_json::Map<String, Value>>(),
             "loops": pick("loops"),
             "jobs": pick("jobs"),
             "archived": pick("archived"),

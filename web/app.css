@@ -474,7 +474,8 @@ label.li{cursor:pointer}label.li input[type=checkbox]{width:18px;height:18px;mar
 .card .ct .cs{max-width:60%;text-align:right}
 .appr-q{font-size:16px;white-space:pre-wrap}
 .appr-btns{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px}
-.appr-btns .btn{min-height:56px;font-size:17px;font-weight:600}
+.appr-btns .btn{min-height:56px;font-size:17px;font-weight:600;white-space:normal;line-height:1.2;padding-top:8px;padding-bottom:8px;overflow-wrap:anywhere;text-wrap:balance}
+.appr-btns:has(.btn.bad){grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
 .bar{display:flex;align-items:center;gap:8px;font-size:13px}
 .bar .bn{width:auto;min-width:56px;max-width:42%;flex:none;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bar .bt{flex:1;min-width:40px;height:8px;border-radius:4px;background:var(--line);overflow:hidden}
@@ -717,6 +718,7 @@ body.hf #b-ptt[data-voice=muted]::before{animation:none}
 #panes{position:relative}
 #talk{position:absolute;z-index:6;right:12px;bottom:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-width:76px;height:76px;padding:0 10px;border-radius:38px;
  border:1.5px solid var(--chip-line);background:var(--chip);color:var(--chip-text);box-shadow:var(--shadow);touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#chat>#talk{right:12px;bottom:calc(var(--chath,72px) + 14px);z-index:8}
 #talk .tk-ic svg{width:24px;height:24px}
 #talk .tk-l{font-size:13px;font-weight:600;line-height:1.1;white-space:nowrap}
 #talk .tk-lv{flex-direction:column;gap:3px}
@@ -774,6 +776,7 @@ body.ptt .jump{bottom:100px}
  body.touch.ptt:not(.nokeys) #toasts{bottom:calc(176px + var(--sab))}
  body.touch.ptt.kb:not(.nokeys) #toasts{bottom:176px}
  #app.chat-open #toasts{bottom:calc(var(--chath,72px) + 6px)}
+ body.ptt #app.chat-open #toasts{bottom:calc(var(--chath,72px) + 126px)}
  .toast{box-shadow:var(--shadow)}
 }
 /* Under an open sheet or drawer (and their scrim), not over it: on every

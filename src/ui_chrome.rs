@@ -1335,6 +1335,10 @@ pub fn background_work(app: &App, s: usize, t: usize) -> Option<String> {
     if !matches!(tab.activity, Activity::Ready | Activity::Idle) {
         return None;
     }
+    // Stopped at its usage limit: what it started waits for the reset.
+    if app.tab_at_limit(s, t) {
+        return None;
+    }
     let mut cache = app.bg_cache.borrow_mut();
     let fresh = cache
         .get(&tab.uid)
@@ -2100,6 +2104,17 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
                 y,
                 limit,
                 "⧗ ",
+                Style::default().fg(theme::SAND).bg(bg),
+            );
+        }
+        // A move waiting for the tab's work to end.
+        if app.move_pending(t.uid).is_some() {
+            cx = text(
+                buf,
+                cx,
+                y,
+                limit,
+                "→ ",
                 Style::default().fg(theme::SAND).bg(bg),
             );
         }
