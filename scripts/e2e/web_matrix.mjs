@@ -93,7 +93,7 @@ function hooks() {
     }
   }
   window.WebSocket = W;
-  addEventListener('error', (e) => G.errors.push(String(e.message || e)));
+  addEventListener('error', (e) => { const m = String(e.message || e); if (!/ResizeObserver loop/.test(m)) G.errors.push(m); });
   addEventListener('unhandledrejection', (e) => G.errors.push('rejection: ' + String(e.reason?.message || e.reason)));
 }
 
@@ -230,7 +230,7 @@ async function main() {
   await ctx.addInitScript(hooks);
   const page = await ctx.newPage();
   const pageErrors = [];
-  page.on('pageerror', (e) => pageErrors.push((e.stack || e.message).split('\n').slice(0, 4).join(' / ')));
+  page.on('pageerror', (e) => { const m = (e.stack || e.message).split('\n').slice(0, 4).join(' / '); if (/ResizeObserver loop/.test(m)) return; pageErrors.push(m); console.log(`     (page error, after the checks above) ${m.slice(0, 160)}`); if (process.env.GT_DUMP && !pageErrors.dumped) { pageErrors.dumped = 1; page.evaluate(async () => { const { panes } = await window.__h.mod('term'); const p = panes.focused(); const b = p.term.buffer.active; return { id: p.id, rows: p.term.rows, cols: p.term.cols, len: b.length, ydisp: b.viewportY, ybase: b.baseY, type: b.type, ready: p.ready, clearing: !!p.clearing, gen: p.gen }; }).then((d) => console.log('     DUMP ' + JSON.stringify(d))).catch(() => {}); } });
   // (The reconnect checks drop the socket on purpose: WebKit logs that.)
   page.on('console', (m) => { if (m.type() === 'error' && !/GL Driver|WebGL|favicon|WebSocket connection to .* failed|ResizeObserver loop/.test(m.text())) pageErrors.push('console: ' + m.text()); });
   const t0 = Date.now();
@@ -510,13 +510,15 @@ async function main() {
           const box = await page.locator('.pane.focus .xterm-screen, .pane:not([hidden]) .xterm-screen').first().boundingBox();
           await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
           const s = await now();
+          const vpPre = await H(async () => { const { panes } = await window.__h.mod('term'); const t = panes.focused().term, v = t._core.viewport; return v && { ign: v._ignoreNextScrollEvent, last: v._lastScrollTop, st: v._viewportElement.scrollTop, sh: v._viewportElement.scrollHeight, rec: v._lastRecordedBufferLength, lines: t._core.buffer.lines.length, ydisp: t._core.buffer.ydisp, ybase: t._core.buffer.ybase }; });
+          const sn0 = await H((u) => (window.__gt.snaps[u] || 0) + '/' + (window.__gt.resumes[u] || 0), uid);
           await page.mouse.wheel(0, -400);
           await sleep(300);
           const q = await H(() => window.__h.pane());
           const g = await sentSince(uid, s);
           if (p.mouse !== 'none') R('scroll', `wheel -> mouse reports (${p.mouse})`, /\x1b\[<6[45];|\x1b\[M/.test(g) ? 'pass' : 'fail', `sent ${show(g)}`);
           else if (p.type === 'alternate') R('scroll', 'wheel on the alternate screen', g.length > 0 || q.viewportY === p.viewportY ? 'pass' : 'fail', `sent ${show(g)} (xterm: arrow keys or nothing)`);
-          else if (p.baseY > 0) R('scroll', 'wheel -> local history', q.viewportY < p.viewportY && !g ? 'pass' : 'fail', `${p.viewportY} -> ${q.viewportY}, sent ${show(g)}`);
+          else if (p.baseY > 0) R('scroll', 'wheel -> local history', q.viewportY < p.viewportY && !g ? 'pass' : 'fail', `${p.viewportY} -> ${q.viewportY}, sent ${show(g)}` + (q.viewportY < p.viewportY ? '' : ' ' + JSON.stringify(await H(async ([x, y]) => { const e = document.elementFromPoint(x, y); return { at: e ? e.tagName + '.' + e.className : null, scrollTop: document.querySelector('.pane:not([hidden]) .xterm-viewport')?.scrollTop, vp: await (async () => { const { panes } = await window.__h.mod('term'); const v = panes.focused().term._core.viewport; return v && { rh: v._currentRowHeight, dch: v._currentDeviceCellHeight, len: v._lastRecordedBufferLength, ign: v._ignoreNextScrollEvent, last: v._lastScrollTop, sh: v._viewportElement.scrollHeight, ch: v._viewportElement.clientHeight, cell: panes.focused().term._core._renderService.dimensions.css.cell.height }; })() }; }, [box.x + box.width / 2, box.y + box.height / 2])) + ` pre ${JSON.stringify(vpPre)} snaps/resumes ${sn0} -> ${await H((u) => (window.__gt.snaps[u] || 0) + '/' + (window.__gt.resumes[u] || 0), uid)}, frames since: ${(await H(([t]) => window.__gt.got.filter((x) => x.at >= t).map((x) => x.t + ':' + x.tab), [s])).join(',')}` + ' pane ' + JSON.stringify({ ydisp: q.viewportY, base: q.baseY, ready: q.ready, type: q.type })));
           else R('scroll', 'wheel', 'skip', 'no history');
           await page.mouse.wheel(0, 4000);
           await sleep(200);
@@ -534,7 +536,7 @@ async function main() {
           // Shown already when the page opened: sized then.
           const cur = (await S()).tabs.find((x) => x.id === t.id), pq = await H(() => window.__h.pane());
           const held = cur?.size_taken_by != null && cur.cols === pq.cols && cur.rows === pq.rows;
-          R('resize', 'fit to screen takes the size', (mine.length >= 1 && mine.every((r) => r.by)) || held ? 'pass' : 'fail', mine.length ? `${mine[mine.length - 1].cols}x${mine[mine.length - 1].rows} by ${mine[0].by}` : held ? `held since the page opened: ${pq.cols}x${pq.rows}` : `no resize (${rs.length} frames), tab ${cur?.cols}x${cur?.rows} taken by ${cur?.size_taken_by}`);
+          R('resize', 'fit to screen takes the size', (mine.length >= 1 && mine.every((r) => r.by)) || held ? 'pass' : 'fail', mine.length ? `${mine[mine.length - 1].cols}x${mine[mine.length - 1].rows} by ${mine[0].by}` : held ? `held since the page opened: ${pq.cols}x${pq.rows}` : `no resize (${rs.length} frames), tab ${cur?.cols}x${cur?.rows} taken by ${cur?.size_taken_by}; pane ${JSON.stringify(await H(async () => { const { panes } = await window.__h.mod('term'); const p = panes.focused(); return { id: p.id, ready: p.ready, yielded: p.yielded, take: p.take, sent: p.sent, held: p.held, sizing: p.sizing, size: p.cols + 'x' + p.rows, dims: p.fit.proposeDimensions(), body: [p.body.clientWidth, p.body.clientHeight], hidden: document.hidden, kb: document.body.className, rsT: !!p.rsT, frames: window.__gt.sent.filter((x) => x.j && x.j.t === 'resize').slice(-4).map((x) => x.j) }; }))}`);
           // Three quick zoom steps: one resize, after they settle.
           const s2 = await now();
           // (A tap on the faded control only wakes it: wake it first.)
@@ -829,8 +831,19 @@ async function main() {
       await sleep(800);
       const sayImg = (await H(([t]) => window.__h.jsonSince(t, 'say'), [s3]))[0];
       let um = null;
-      for (let i = 0; i < 160 && !um; i++) { await sleep(250); um = (await H(([t]) => window.__h.gotSince(t, 'assistant'), [s3])).find((m) => m.role === 'user' && /image 1/.test(m.text || '')); }
+      for (let i = 0; i < 160 && !um; i++) { await sleep(250); um = (await H(([t]) => window.__h.gotSince(t, 'assistant'), [s3])).find((m) => m.role === 'user' && /\[image \d+: \d+x\d+\]/.test(m.text || '')); }
       rec('chat', 'image into the chat', '', sayImg?.images?.length === 1 && um ? 'pass' : 'fail', `say images ${sayImg?.images?.length}; ${um ? um.text.slice(0, 80) : 'no user message naming it'}`);
+      // Pasted and dropped images become chips (thumbnails with a remove button) before sending.
+      const chips = async () => page.locator('#att .thumb').count();
+      const b64 = png.toString('base64');
+      await page.evaluate((b) => { const u8 = Uint8Array.from(atob(b), (c) => c.charCodeAt(0)); const dt = new DataTransfer(); dt.items.add(new File([u8], 'p.png', { type: 'image/png' })); document.querySelector('#say').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); }, b64);
+      await sleep(500);
+      const afterPaste = await chips();
+      await page.evaluate((b) => { const u8 = Uint8Array.from(atob(b), (c) => c.charCodeAt(0)); const dt = new DataTransfer(); dt.items.add(new File([u8], 'd.png', { type: 'image/png' })); const c = document.querySelector('#chat'); for (const t of ['dragenter', 'dragover', 'drop']) c.dispatchEvent(new DragEvent(t, { dataTransfer: dt, bubbles: true, cancelable: true })); }, b64);
+      await sleep(500);
+      const afterDrop = await chips();
+      while ((await chips()) > 0) { await page.locator('#att .thumb button').first().click(); await sleep(100); }
+      rec('chat', 'pasted and dropped images become chips', '', afterPaste === 1 && afterDrop === 2 ? 'pass' : 'fail', `chips after paste ${afterPaste}, after drop ${afterDrop}`);
       await page.click('#b-chat-x').catch(() => {});
       if (!PHONE) await H(async () => { const { panes } = await window.__h.mod('term'); panes.setN(1); });
     } catch (e) { rec('chat', 'web turn', '', 'fail', e.message); }

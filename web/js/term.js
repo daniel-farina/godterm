@@ -248,6 +248,23 @@ class Pane {
     try { t.loadAddon(new WebLinksAddon.WebLinksAddon((e, uri) => window.open(uri, '_blank', 'noopener'))); } catch {}
     this.fit = new FitAddon.FitAddon();
     t.loadAddon(this.fit);
+    // xterm's viewport turns a scroll event into rows with a row height it
+    // cached earlier; when that is still 0 (a reset, a resize or a switch
+    // in the same frames) the result is NaN, which became the scroll
+    // position and made the WebGL renderer read rows that do not exist
+    // ("loadCell" errors on every frame after). A scroll by NaN is none.
+    try {
+      const core = t._core, sl = core.scrollLines;
+      if (typeof sl === 'function') core.scrollLines = function (n, ...a) { return Number.isFinite(n) ? sl.call(this, n, ...a) : undefined; };
+    } catch {}
+    // xterm's viewport sets a flag to skip the scroll event its own scrollTop
+    // write causes; when the write changes nothing (the area is already
+    // there) no event comes and the flag stays, and the next real scroll
+    // (a wheel notch, a scrollbar drag) is taken for that echo and does
+    // nothing. Nothing of its own is pending when the user acts.
+    const unstick = () => { try { const v = t._core.viewport; if (v?._ignoreNextScrollEvent) v._ignoreNextScrollEvent = false; } catch {} };
+    this.host.addEventListener('wheel', unstick, { capture: true, passive: true });
+    this.host.addEventListener('pointerdown', unstick, { capture: true, passive: true });
     this.gpu();
     t.onData((d) => this.input(inputHook(d === '\r' && returnNewline() ? newlineFor(this.id) : d, this)));
     // Shift+Enter: a new line in the prompt, as in the terminal UI (xterm
@@ -634,6 +651,10 @@ class Pane {
     this.pos = m.pos;
     this.ready = true;
     this.msg.hidden = true;
+    // A kept terminal shown again (or back after a drop) was not sized
+    // while it was away: sized now when this pane is the viewer, as a
+    // snapshot would (a layout that finds nothing to change sends nothing).
+    this.layout();
     return true;
   }
 

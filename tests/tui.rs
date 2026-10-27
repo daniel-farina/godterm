@@ -35,7 +35,21 @@ fn make_home(tag: &str, extra: &str) -> PathBuf {
     let fake = home.join("fake-claude.sh");
     std::fs::write(
         &fake,
-        "#!/bin/sh\nenv > \"$PWD/.tab-env.txt\"\necho \"$*\" >> \"$PWD/.tab-args.txt\"\necho \"fake claude in $(basename \"$PWD\") args:$*\"\necho \"? for shortcuts\"\nexec cat\n",
+        // The screen shows the arguments, with a long one (the tab hint) cut to
+        // a marker so it cannot push the line start out of the narrow pane; the
+        // full list is in .tab-args.txt.
+        r#"#!/bin/sh
+env > "$PWD/.tab-env.txt"
+echo "$*" >> "$PWD/.tab-args.txt"
+o=""; sep=""
+for a in "$@"; do
+  if [ ${#a} -gt 60 ]; then a="<long>"; fi
+  o="$o$sep$a"; sep=" "
+done
+echo "fake claude in $(basename "$PWD") args:$o"
+echo "? for shortcuts"
+exec cat
+"#,
     )
     .unwrap();
     #[cfg(unix)]
@@ -1014,7 +1028,9 @@ done
         out.contains("\"serverInfo\"") && out.contains("\\\"tabs\\\""),
         "{out}"
     );
-    let args = std::fs::read_to_string(home.join("brain-args.txt")).unwrap();
+    // The system prompt goes to claude by file (--append-system-prompt-file).
+    let args = std::fs::read_to_string(home.join("brain-args.txt")).unwrap()
+        + &std::fs::read_to_string(home.join("assistant").join("system-prompt.md")).unwrap_or_default();
     for want in [
         "--input-format stream-json",
         "--output-format stream-json",
