@@ -1,9 +1,3 @@
-//! The assistant panel: a title with the account and model (a menu to
-//! switch), a toolbar that never clips (what does not fit goes to ⋯), one
-//! compact status line, the conversation as labelled turns with tool calls
-//! as readable action chips (raw arguments one click away), and the input
-//! box with the mic state and Send.
-
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, BorderType, Borders, Clear};
@@ -18,14 +12,11 @@ use crate::hits::UiAction;
 use crate::input_edit;
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 
-/// One logical row of the conversation: styled pieces, and what a click
-/// on it does.
 pub struct Row {
     pub parts: Vec<(String, Style)>,
     pub action: Option<UiAction>,
     pub indent: u16,
-    /// Already laid out to the panel's width (a reply's markdown): drawn
-    /// as it is, never wrapped again.
+
     pub pre: bool,
 }
 
@@ -38,7 +29,6 @@ fn row(parts: Vec<(String, Style)>) -> Row {
     }
 }
 
-/// A tool call as an action chip: icon, words, accent.
 pub fn chip(app: &App, tool: &str, args: &Value, status: &str) -> (String, Color) {
     let s = |k: &str| {
         args.get(k)
@@ -241,10 +231,9 @@ pub fn chip(app: &App, tool: &str, args: &Value, status: &str) -> (String, Color
     (format!("{text}{st}"), color)
 }
 
-/// The conversation as rows (logical; wrapped when drawn).
 pub fn rows(app: &App, width: u16) -> Vec<Row> {
     let mut out: Vec<Row> = vec![];
-    // Index of each send_prompt chip by tab id, for its delivery result.
+
     let mut by_tab: Vec<(String, usize)> = vec![];
     let label = |t: &str, c: Color| {
         (
@@ -265,8 +254,6 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
                 ]));
             }
             Who::Reply => {
-                // Its markdown laid out (tables as a grid), the spoken
-                // part first, then "more ›" and the rest, in normal text.
                 let lines = crate::md::reply_view(
                     &e.text,
                     app.cfg.assistant.spoken_sentences,
@@ -284,7 +271,6 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
                 pre: false,
             }),
             Who::Note => {
-                // A delivery result joins the chip it belongs to.
                 if let Some(rest) = e.text.strip_prefix("Prompt to ") {
                     if let Some((tab, what)) = rest.split_once(": ") {
                         if let Some(&(_, at)) = by_tab.iter().rev().find(|(t, _)| t == tab) {
@@ -315,7 +301,7 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
                         v["args"].clone(),
                         v["status"].as_str().unwrap_or("").to_string(),
                     ),
-                    // An entry from before the chips: its words as they are.
+
                     None => (
                         e.text.split(' ').next().unwrap_or("").to_string(),
                         Value::Null,
@@ -324,7 +310,7 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
                 };
                 let (text, color) = chip(app, &tool, &args, &status);
                 let mut parts = vec![(text, Style::default().fg(color))];
-                // A question out to a tab: waiting, then answered, in place.
+
                 if tool == "send_prompt" {
                     let q = args["text"].as_str().unwrap_or("");
                     if let Some(f) = app
@@ -375,7 +361,7 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
         }
         first = false;
     }
-    // Requests to tabs: each one's receipt (tab, first words, state, time).
+
     let shown: Vec<&crate::control::Delivery> = app
         .deliveries
         .iter()
@@ -417,7 +403,7 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
             pre: false,
         });
     }
-    // Brainstorm mode's card (first use, or the ⓘ): a click hides it.
+
     if app.brainstorm.card {
         if !out.is_empty() {
             out.push(row(vec![]));
@@ -459,7 +445,7 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
             pre: false,
         });
     }
-    // Update mode's card (first use, or a click on its chip).
+
     if app.updates.card {
         if !out.is_empty() {
             out.push(row(vec![]));
@@ -509,7 +495,7 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
         } else {
             app.assistant.current.clone()
         };
-        // Streaming: laid out as it comes (not cached, it changes).
+
         let blocks = crate::md::parse(&partial);
         let lines = crate::md::render(
             &blocks,
@@ -527,8 +513,6 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
     out
 }
 
-/// A reply laid out by `md`: the first line after the ◆ label, the others
-/// under it (two cells in), each drawn as it is.
 fn push_md(out: &mut Vec<Row>, lines: &[crate::md::Line], mark: (String, Style)) {
     for (k, l) in lines.iter().enumerate() {
         let mut parts = vec![];
@@ -545,8 +529,6 @@ fn push_md(out: &mut Vec<Row>, lines: &[crate::md::Line], mark: (String, Style))
     }
 }
 
-/// Wrap a row to physical lines of at most `w` cells (on spaces when it
-/// can), keeping each piece's style.
 pub fn wrap(r: &Row, w: u16) -> Vec<Vec<(String, Style)>> {
     if r.pre {
         return vec![r.parts.clone()];
@@ -561,7 +543,7 @@ pub fn wrap(r: &Row, w: u16) -> Vec<Vec<(String, Style)>> {
                 lines.push(vec![]);
                 col = 0;
             }
-            // A word longer than the line is cut across lines.
+
             let mut piece = String::new();
             for ch in word.chars() {
                 let cw = ch.width().unwrap_or(0);
@@ -584,9 +566,6 @@ pub fn wrap(r: &Row, w: u16) -> Vec<Vec<(String, Style)>> {
     lines
 }
 
-/// The toolbar's items, in order of importance.
-/// The toolbar, in order: in a view other than the conversation, the way
-/// back comes first (and is never dropped), then New, then the views.
 fn toolbar(app: &App) -> Vec<(String, UiAction, &'static str)> {
     use crate::menus::Cmd;
     use crate::panel_views::PanelView;
@@ -630,7 +609,6 @@ fn toolbar(app: &App) -> Vec<(String, UiAction, &'static str)> {
             "Admin actions: installs, settings and accounts it changed",
         ),
     ] {
-        // The view you are in is not a button to itself.
         if pv != view {
             v.push((label.into(), action, hint));
         }
@@ -638,8 +616,6 @@ fn toolbar(app: &App) -> Vec<(String, UiAction, &'static str)> {
     v
 }
 
-/// "‹ Conversation", with "● 2" when replies came while away; `size` 3
-/// is the full label, 2 "‹ Chat", 1 "‹" (narrow panels keep it whole).
 pub fn back_label(app: &App, size: u8) -> String {
     let unread = app.unread_replies();
     let dot = match unread {
@@ -659,7 +635,6 @@ pub fn cells(s: &str) -> u16 {
     unicode_width::UnicodeWidthStr::width(s) as u16
 }
 
-/// The compact status line.
 pub fn status_line(app: &App) -> String {
     let mut parts = vec![];
     let days = app.cfg.assistant.memory_days;
@@ -707,8 +682,6 @@ pub fn status_line(app: &App) -> String {
     parts.join(" · ")
 }
 
-/// What the assistant is doing, for the title: listening, thinking or
-/// speaking.
 pub fn state_chip(app: &App) -> Option<&'static str> {
     let speaking = app.voice.engine.as_ref().is_some_and(|v| v.speaking())
         || app.voice.preview.as_ref().is_some_and(|p| p.speaking());
@@ -723,7 +696,6 @@ pub fn state_chip(app: &App) -> Option<&'static str> {
     }
 }
 
-/// Remote Control and the kept session, at the top of the Admin view.
 pub fn remote_rows(app: &App) -> Vec<(String, Option<UiAction>)> {
     let mut v = vec![];
     let keep = app.cfg.assistant.remote_control;
@@ -778,9 +750,6 @@ pub fn remote_rows(app: &App) -> Vec<(String, Option<UiAction>)> {
     v
 }
 
-/// The account the assistant spends: the running brain's when it is of
-/// the chosen provider (a brain left from before a switch does not count),
-/// else the one it would start on.
 pub fn brain_account(app: &App) -> Option<usize> {
     let p = crate::providers::by_id(&app.cfg.assistant.provider);
     app.assistant
@@ -791,9 +760,6 @@ pub fn brain_account(app: &App) -> Option<usize> {
         .or_else(|| app.assistant_account())
 }
 
-/// The status row under the toolbar, and whether it is a sign in prompt
-/// (then a click starts the login). A provider with its own login (Grok)
-/// never needs an account: it asks for its own login only when missing.
 pub fn login_note(app: &App, acct: Option<usize>) -> (String, bool) {
     let p = crate::providers::by_id(&app.cfg.assistant.provider);
     match (p.own_home, acct) {
@@ -809,14 +775,9 @@ pub fn login_note(app: &App, acct: Option<usize>) -> (String, bool) {
     }
 }
 
-/// The title: "assistant · Claude · Account 2 · 5h 89% · wk 3% · haiku ▾",
-/// as parts (tone 2: the binding bucket when it is low). Narrow, whole
-/// pieces go: the other buckets, then "assistant", then the provider and
-/// the account; the binding bucket and the model stay.
 pub fn title_parts(app: &App, room: usize) -> Vec<(String, u8)> {
     let p = crate::providers::by_id(&app.cfg.assistant.provider);
-    // The chosen model, not the running brain's: right after a switch
-    // (even mid answer) the title already names what the next turn uses.
+
     let model = crate::providers::model_for(p, &app.cfg.assistant);
     let short_model = if p.id == "claude" {
         model
@@ -828,9 +789,9 @@ pub fn title_parts(app: &App, room: usize) -> Vec<(String, u8)> {
     } else {
         model.clone()
     };
-    // (text, tone, drop order: 0 never, lower first).
+
     let mut segs: Vec<(String, u8, u8)> = vec![("assistant".into(), 0, 2)];
-    // Not in the conversation: say where you are (kept on narrow panels).
+
     let view = app.panel_view();
     if view != crate::panel_views::PanelView::Conversation {
         segs.push((view.name().into(), 1, 0));
@@ -865,7 +826,6 @@ pub fn title_parts(app: &App, room: usize) -> Vec<(String, u8)> {
             + 2
     };
     for rank in 1..=4u8 {
-        // The rightmost of a rank goes first.
         while width(&segs) > room {
             match segs.iter().rposition(|s| s.2 == rank) {
                 Some(i) => {
@@ -897,12 +857,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let acct = brain_account(app);
-    // The title row's right side: the width carets and window controls.
+
     let room =
         area.width
             .saturating_sub(6 + crate::ui_panelwin::title_tail(app, area.width)) as usize;
     let title = title_parts(app, room);
-    // With the keys, a calm blue border; without, a dim one.
+
     let focused = app.assistant_has_focus();
     let border = if focused { theme::SLATE } else { FAINT };
     let block = Block::default()
@@ -922,8 +882,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let limit = inner.x + inner.width;
     let buf = f.buffer_mut();
     let mut hits = app.hits.borrow_mut();
-    // The title, on the border: a click opens account and model.
-    // Anywhere in the panel: it takes the keys (its own buttons win).
+
     hits.add(
         area,
         UiAction::AssistantFocus,
@@ -952,10 +911,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             remote_at = Some((x0, tx.saturating_sub(x0)));
         }
     }
-    // Right: the width carets and the window controls; the edge drags.
+
     let ctl_x = crate::ui_panelwin::draw_title_controls(buf, &mut hits, app, area);
     crate::ui_panelwin::edge_region(&mut hits, app, area);
-    // What it is doing, in the same calm accent.
+
     if let Some(chip) = state_chip(app) {
         tx = crate::hits::text(
             buf,
@@ -979,12 +938,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             "Remote Control: click to open its claude.ai link (also copied)",
         );
     }
-    // Toolbar: what fits, then ⋯ (everything; close is on the title row).
+
     let y = inner.y;
     let tail = cells(" ⋯ ");
     let mut x = inner.x;
     for (k, (mut l, a, hint)) in toolbar(app).into_iter().enumerate() {
-        // The way back always fits: shorter, never pushed out.
         if k == 0 && a == UiAction::AssistantConversation {
             for size in [3, 2, 1] {
                 l = back_label(app, size);
@@ -1023,7 +981,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         "More: conversation, rules, prompt, admin, timing, panel width, settings",
         theme::SLATE,
     );
-    // Status line (direct mode says where the voice goes instead).
+
     if let Some(d) = &app.direct.on {
         let line = format!("● mic at {} · click to bring back", d.name);
         crate::hits::text(
@@ -1091,8 +1049,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     }
     let buf = f.buffer_mut();
     let mut hits = app.hits.borrow_mut();
-    // Loops & schedules above the conversation: the composer (with its
-    // frame) and four rows of conversation stay.
+
     let top = {
         let avail = (inner.y + inner.height).saturating_sub(top + 5 + 4);
         top + crate::ui_schedules::draw(
@@ -1106,9 +1063,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             inner.height,
         )
     };
-    // The composer: a framed field at the bottom, 3 rows tall, growing
-    // with what is in it up to assistant.input_rows (its end shown).
-    // Inside the frame: one cell of padding, the "› " lead, the text.
+
     let bottom = inner.y + inner.height;
     let send_w = cells(" Send ");
     let mic_label = if app.voice.muted {
@@ -1121,7 +1076,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             _ => "● open mic",
         }
     };
-    // The speaker: a click (or Ctrl-a O) mutes what it says out loud.
+
     let spk_label = if app.cfg.voice.speaker_muted {
         "● silent"
     } else {
@@ -1129,8 +1084,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     };
     let tx = inner.x + 4;
     let right = limit.saturating_sub(2);
-    // The input wrapped, the caret's row and column in it, and the rows
-    // shown (scrolled to keep the caret in view).
+
     let in_text = app.assistant.input.as_str();
     let in_w = right.saturating_sub(tx).max(4) as usize;
     let in_rows = input_edit::rows(in_text, in_w);
@@ -1142,7 +1096,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .assistant
         .input_rows
         .max(crate::app_panelwin::INPUT_MIN_ROWS);
-    // Three rows of conversation stay above it (and its frame).
+
     let fit = bottom.saturating_sub(top + 3 + 2).max(1);
     let in_h = (in_total as u16)
         .max(crate::app_panelwin::INPUT_MIN_ROWS)
@@ -1177,12 +1131,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             w: in_w,
             top: in_top,
         }));
-    // A question waiting for the user's yes: Yes / No buttons above the
-    // input (a click answers, as typing "yes" would).
+
     let asking = (!app.pending_confirms.is_empty() || app.assistant.selfswitch.asked.is_some())
         && !app.assistant.show_admin;
-    // The quick bar above the input (and the question): it goes first
-    // when the panel is short.
+
     let free = frame_top.saturating_sub(top + u16::from(asking));
     let quick_h = crate::ui_panelwin::quick_rows(free);
     let quick_y = frame_top - quick_h;
@@ -1218,12 +1170,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
         v
     } else {
-        // On screen: what came in is seen.
         app.mark_replies_seen();
         rows(app, inner.width)
     };
-    // The chat's scrollbar sits on the panel's right border, so the text
-    // keeps its whole width.
+
     let chat_w = inner.width;
     let tlimit = limit;
     #[allow(clippy::type_complexity)]
@@ -1233,7 +1183,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             physical.push((r.indent, l, r.action.clone()));
         }
     }
-    // Scrolled back: the same lines stay in view as new ones arrive.
+
     let total = physical.len();
     let view = body_h as usize;
     let max_off = total.saturating_sub(view);
@@ -1245,7 +1195,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     app.assistant.chat_off.set(off);
     app.assistant.chat_seen.set(total);
     let skip = max_off - off;
-    // What is drawn, for selecting it with the mouse.
+
     let mut shown: Vec<String> = vec![];
     for (k, (indent, l, action)) in physical.into_iter().skip(skip).take(view).enumerate() {
         let ly = top + k as u16;
@@ -1276,9 +1226,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             hits.add(Rect::new(inner.x, ly, inner.width, 1), a, hint);
         }
     }
-    // The chat's scrollbar: the right border is its track and a muted thumb
-    // shows where the view is; dragging it or the wheel scrolls the chat
-    // only.
+
     let geo = ChatGeo {
         area: Rect::new(inner.x, top, inner.width + 1, body_h),
         total,
@@ -1287,7 +1235,6 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     if body_h > 0 && chat_w > 0 {
         app.assistant.chat_geo.set(Some(geo));
         if let Some((ts, tl)) = crate::scrollbar::thumb(body_h, total, view, geo.top(off)) {
-            // The track is the border itself; the thumb a muted block on it.
             let bx = limit;
             for k in ts..(ts + tl).min(body_h) {
                 if let Some(c) = buf.cell_mut((bx, top + k)) {
@@ -1377,13 +1324,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     *app.assistant_text.borrow_mut() = Some((body, shown));
-    // The quick actions.
+
     if quick_h > 0 {
         crate::ui_panelwin::draw_quick(buf, &mut hits, app, inner.x, quick_y, limit, quick_h);
     }
-    // The composer: its frame (calm slate with the keys, faint without),
-    // the field's own background inside, the text (or the placeholder),
-    // and the mic state, the speaker and Send on the frame's bottom edge.
+
     let frame_st = Style::default()
         .fg(if focused { theme::SLATE } else { FAINT })
         .bg(BAR_BG);
@@ -1410,7 +1355,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
-    // Brainstorm mode: its chip on the frame's top edge.
+
     let mut chip_x = inner.x + 2;
     if let Some(chip) = app.brainstorm_chip() {
         let s = format!(" {chip} ");
@@ -1434,7 +1379,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         );
         chip_x = x2 + 1;
     }
-    // Update mode: its chip next to it.
+
     if let Some(chip) = app.updates_chip() {
         let s = format!(" {chip} ");
         let end = fx1.saturating_sub(1);
@@ -1501,8 +1446,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             let Some(row) = in_rows.get(r) else {
                 continue;
             };
-            // Grapheme by grapheme (wide ones take two cells), the
-            // selection on a calm highlight.
+
             let mut x = tx;
             for (i, g) in in_text[row.start..row.end].grapheme_indices(true) {
                 let at = row.start + i;
@@ -1521,20 +1465,19 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 }
                 x += gw;
             }
-            // A selected line break: one cell after the line.
+
             if !row.soft && x < right && sel.is_some_and(|(a, b)| row.end >= a && row.end < b) {
                 crate::ui::select_cell(buf, x, y);
             }
         }
-        // The caret is the terminal's own cursor, at its row and column.
+
         if focused {
             let y = iy0 + (c_row - in_top) as u16;
             let x = (tx + c_col as u16).min(right.saturating_sub(1));
             app.want_cursor.set(Some((x, y)));
         }
     }
-    // The bottom edge: Send at the right; the speaker and the mic state
-    // at the left while they fit.
+
     let send_x = fx1.saturating_sub(1 + send_w);
     let mut ex = inner.x + 2;
     let spk_w = cells(spk_label) + 2;
@@ -1602,10 +1545,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// The empty input's words.
 pub const PLACEHOLDER: &str = "Type or speak…  (Enter sends, Shift+Enter new line)";
-/// While brainstorming, before anything is said.
+
 pub const PLACEHOLDER_BRAINSTORM: &str =
     "Brainstorming: talk as long as you like; say \"send it\" or press Enter to send";
-/// The same without the keys: how to give them to it.
+
 pub const PLACEHOLDER_AWAY: &str = "click or Ctrl-a . to type  (Enter sends, Shift+Enter new line)";

@@ -1,11 +1,3 @@
-//! Conversation ownership in the app (app_lease.rs): a resume waits for
-//! the lease, a session owned elsewhere opens read only, a lost lease
-//! blocks input and stops the CLI after its turn, jobs fire only on the
-//! owner, a moved tab keeps its lease, and pulled archive and jobs
-//! changes are applied by the app itself. The lease worker is not
-//! running: its commands are read from `lease.sent` and its events are
-//! handed in.
-
 use crate::app::{App, AppEvent};
 use crate::app_lease::{StopStage, TabLease};
 use crate::config::testing::LOCK as ENV_LOCK;
@@ -71,7 +63,7 @@ fn jobs_fire_only_on_the_machine_that_owns_their_conversation() {
         offline: false,
     });
     let id = add(&mut app, 0, t, "status", "status of the build?", 15);
-    // Another live machine owns the conversation: paused here.
+
     app.lease.board = Some(board("sess-b", "mac-id", now_ms()));
     app.job_clock = Some(T0 + 15 * 60 + 2);
     app.jobs_tick();
@@ -83,19 +75,19 @@ fn jobs_fire_only_on_the_machine_that_owns_their_conversation() {
         .lease_lines()
         .iter()
         .any(|l| l.starts_with("Paused jobs: 1")));
-    // Owned here: it runs.
+
     app.lease.board = Some(board("sess-b", "me-id", now_ms()));
     app.job_clock = Some(T0 + 30 * 60 + 2);
     app.jobs_tick();
     assert_eq!(deliveries_for(&app, "status of the build?").len(), 1);
-    // A job with no conversation runs only on its own machine.
+
     let mut j = app.jobs.find(&id).cloned().unwrap();
     j.target.session_id = None;
     j.machine = Some("mac-id".into());
     assert!(app.lease_job_block(&j).unwrap().contains("runs on mac-id"));
     j.machine = Some("me-id".into());
     assert!(app.lease_job_block(&j).is_none());
-    // New jobs remember this machine.
+
     assert_eq!(app.job_machine(), Some("me-id".to_string()));
     let _ = std::fs::remove_dir_all(home);
 }
@@ -109,7 +101,7 @@ fn a_resume_waits_for_the_lease_and_a_session_owned_elsewhere_is_read_only() {
     let t = app.panes[0].add_tab(dir);
     app.panes[0].tabs[t].session_id = Some("sess-x".into());
     app.launch_tab(0, t, LaunchKind::Resume("sess-x".into()));
-    // Nothing started: the lease (and a pull) first.
+
     assert!(!app.panes[0].tabs[t].is_running());
     assert!(
         matches!(&app.panes[0].tabs[t].lease, Some(TabLease::Waiting { sid, .. }) if sid == "sess-x")
@@ -122,7 +114,7 @@ fn a_resume_waits_for_the_lease_and_a_session_owned_elsewhere_is_read_only() {
             pull: true
         }]
     );
-    // MacBook has it, live: read only, with who and when.
+
     app.handle(AppEvent::Lease(Event::Held {
         sid: "sess-x".into(),
         status: live_elsewhere(),
@@ -137,7 +129,7 @@ fn a_resume_waits_for_the_lease_and_a_session_owned_elsewhere_is_read_only() {
     assert_eq!(j["state"], "read_only");
     assert_eq!(j["owner"], "MacBook");
     assert_eq!(j["active"], "active 1 min ago");
-    // The view says so on screen.
+
     app.panes[0].active = t;
     let mut term = crate::confirm_click_tests::term();
     crate::confirm_click_tests::draw(&mut app, &mut term);
@@ -153,18 +145,18 @@ fn a_resume_waits_for_the_lease_and_a_session_owned_elsewhere_is_read_only() {
         "{screen}"
     );
     assert!(screen.contains("Request take over") && screen.contains("Take over now"));
-    // Typing goes nowhere; r asks for it.
+
     app.focus = 0;
     app.on_grid_key(key('x'));
     assert!(!app.panes[0].tabs[t].is_running());
     app.on_grid_key(key('r'));
     assert!(matches!(app.lease.sent.last(), Some(Cmd::Request { sid, .. }) if sid == "sess-x"));
-    // Take over now asks first; y says yes.
+
     app.on_grid_key(key('T'));
     assert!(matches!(&app.panes[0].tabs[t].lease, Some(TabLease::ReadOnly(r)) if r.confirm));
     app.on_grid_key(key('y'));
     assert!(matches!(app.lease.sent.last(), Some(Cmd::TakeOverNow { sid, .. }) if sid == "sess-x"));
-    // Ours now: it resumes.
+
     app.handle(AppEvent::Lease(Event::Acquired {
         sid: "sess-x".into(),
         offline: false,
@@ -179,8 +171,7 @@ fn a_resume_waits_for_the_lease_and_a_session_owned_elsewhere_is_read_only() {
         app.panes[0].tabs[t].kind,
         LaunchKind::Resume("sess-x".into())
     );
-    // The web app sees no banner for an owned tab; an assistant call to
-    // the buttons' tool is refused.
+
     assert!(app.lease_json(0, t).is_none());
     let uid = app.panes[0].tabs[t].uid;
     let v = app.control_call(
@@ -210,7 +201,7 @@ fn a_lost_lease_blocks_input_lets_the_turn_end_then_stops_and_forks() {
         label: "MacBook".into(),
         conflict: false,
     }));
-    // Input is blocked at once; the running turn goes on.
+
     let tab = &app.panes[0].tabs[t];
     assert!(matches!(&tab.lease, Some(TabLease::Stopping { label, .. }) if label == "MacBook"));
     assert!(tab
@@ -229,7 +220,7 @@ fn a_lost_lease_blocks_input_lets_the_turn_end_then_stops_and_forks() {
             ..
         })
     ));
-    // The turn ended: interrupts follow (never a kill).
+
     app.panes[0].tabs[t].activity = Activity::Ready;
     app.lease_tick();
     assert!(matches!(
@@ -239,7 +230,7 @@ fn a_lost_lease_blocks_input_lets_the_turn_end_then_stops_and_forks() {
             ..
         })
     ));
-    // The CLI exited: what it never pushed becomes a fork.
+
     app.panes[0].tabs[t].state = PaneState::Exited(Some(0));
     app.lease_tick();
     assert!(
@@ -260,7 +251,7 @@ fn a_lost_lease_blocks_input_lets_the_turn_end_then_stops_and_forks() {
         j["note"],
         "Moved to MacBook; your unsent part is fork 1a2b3c4d"
     );
-    // f opens the fork in a new tab (on its own lease).
+
     let n = app.panes[0].tabs.len();
     app.focus = 0;
     app.panes[0].active = t;
@@ -317,7 +308,7 @@ fn a_moved_tab_keeps_its_lease_and_a_new_session_id_takes_its_own() {
         sid: "sess-m".into(),
         offline: false,
     });
-    // Its transcript, in the source account.
+
     let src = app.cfg.accounts[app.panes[0].account.unwrap()].config_dir();
     let cwd = app.panes[0].tabs[t].cwd.clone();
     let p = src
@@ -333,7 +324,7 @@ fn a_moved_tab_keeps_its_lease_and_a_new_session_id_takes_its_own() {
         })
         .unwrap();
     app.move_tab_now(0, t, target, false, true);
-    // The target tab resumed the same session at once: no new lease asked.
+
     let (s2, t2) = app
         .panes
         .iter()
@@ -357,7 +348,7 @@ fn a_moved_tab_keeps_its_lease_and_a_new_session_id_takes_its_own() {
         LaunchKind::Resume("sess-m".into())
     );
     assert!(app.lease.sent.is_empty(), "{:?}", app.lease.sent);
-    // A new session id seen in a tab (a copy, a duplicate): its own lease.
+
     app.lease_claim(s2, t2, "sess-new");
     app.lease_claim(s2, t2, "sess-new");
     assert_eq!(app.lease.sent.len(), 1);
@@ -374,11 +365,10 @@ fn pulled_archive_and_jobs_changes_are_applied_by_the_app_itself() {
     let t = running(&mut app, 0, "api", "sess-a");
     let id = add(&mut app, 0, t, "first", "a", 15);
     app.jobs.save().unwrap();
-    // The app adds a job after the sync read jobs.json...
+
     let id2 = add(&mut app, 0, t, "second", "b", 15);
     app.jobs.save().unwrap();
-    // ...and the sync hands over a rename of the first from another
-    // machine (the old way wrote the file it read, losing "second").
+
     let mut changed = serde_json::to_value(app.jobs.find(&id).unwrap()).unwrap();
     changed["name"] = serde_json::json!("first, renamed elsewhere");
     let mut set = std::collections::BTreeMap::new();
@@ -394,8 +384,7 @@ fn pulled_archive_and_jobs_changes_are_applied_by_the_app_itself() {
     let disk = crate::jobs::Store::load();
     assert_eq!(disk.find(&id).unwrap().name, "first, renamed elsewhere");
     assert!(disk.find(&id2).is_some());
-    // An archive entry removed elsewhere goes; a store it does not hold is
-    // refused (the sync then tries again).
+
     let mut set = std::collections::BTreeMap::new();
     set.insert("nope".to_string(), None);
     let (tx, rx) = std::sync::mpsc::channel();

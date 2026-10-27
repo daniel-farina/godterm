@@ -1,9 +1,3 @@
-// Images from the phone: picked (photo library or camera), pasted or
-// shared. Big photos and formats a model may not read (HEIC) are redrawn
-// as a JPEG of at most 2000 px first, so uploads stay quick over the
-// tailnet. Into a tab: GodTerm saves the file (as the terminal UI saves a
-// pasted image) and its path is pasted into the tab, which is how an
-// agent CLI takes an image ("[Image #1]" in Claude Code).
 import { h, on, toast } from './util.js';
 import { send } from './conn.js';
 import { S, tabById } from './state.js';
@@ -11,7 +5,6 @@ import { S, tabById } from './state.js';
 const OK_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const MAX_SIDE = 2000;
 
-// A data URL the server accepts (PNG, JPEG, GIF or WebP, small enough).
 export async function prepare(file) {
   if (!file || !/^image\//.test(file.type || 'image/')) throw new Error('not an image');
   let blob = file;
@@ -43,8 +36,6 @@ function upload(data) {
   });
 }
 
-// Send images into a tab pane: each saved on the Mac, then its path
-// pasted (Grok takes "Image: <path>").
 export async function sendImages(files, pane) {
   files = [...files].filter((f) => /^image\//.test(f.type || 'image/'));
   if (!files.length || !pane?.id) return;
@@ -64,4 +55,3 @@ export async function sendImages(files, pane) {
   note.remove();
   if (n) toast(n > 1 ? `${n} images added to ${t?.name || 'the tab'}` : `Image added to ${t?.name || 'the tab'}`, 'ok');
 }
-

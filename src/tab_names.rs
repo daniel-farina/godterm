@@ -1,19 +1,8 @@
-//! How a tab is named when GodTerm tells the user about it ("the hyper
-//! demo finished", "the trading room bot needs approval"): never only an
-//! account and a tab number. In order: the tab's own name when it means
-//! something (not the user's name, not the home folder, not a generic
-//! folder), the saved project or session description or alias
-//! (project_memory), the project or subproject name from the project
-//! index, the session's own title, then a few words of the tab's current
-//! task or first prompt. "on Account N" is added only when two tabs would
-//! otherwise sound the same.
-
 use std::path::Path;
 
 use crate::app::App;
 use crate::project_memory::Store;
 
-/// Folder names that say nothing about the work in them.
 const GENERIC: &[&str] = &[
     "~",
     "tmp",
@@ -39,8 +28,6 @@ const GENERIC: &[&str] = &[
     "tests",
 ];
 
-/// Whether a tab name (a custom name or its folder's) tells which work it
-/// is.
 pub fn meaningful(name: &str, user: Option<&str>) -> bool {
     let n = name.trim().to_lowercase();
     if n.is_empty() || n.chars().all(|c| c.is_ascii_digit() || c == '-') {
@@ -52,8 +39,6 @@ pub fn meaningful(name: &str, user: Option<&str>) -> bool {
     !GENERIC.contains(&n.as_str())
 }
 
-/// A few words of a longer text ("Trading room bot that posts..." ->
-/// "the trading room bot that posts").
 fn few_words(text: &str, n: usize) -> String {
     let words: Vec<&str> = text
         .split(['.', '\n', ';', ':'])
@@ -68,7 +53,6 @@ fn few_words(text: &str, n: usize) -> String {
         .to_string()
 }
 
-/// The user's name as a folder sees it: the home folder's own name.
 fn user_name() -> Option<String> {
     crate::config::home_dir()
         .file_name()
@@ -76,8 +60,6 @@ fn user_name() -> Option<String> {
 }
 
 impl App {
-    /// The name GodTerm says for tab `uid`, with "on Account N" when
-    /// another tab would sound the same.
     pub fn spoken_tab_name(&self, uid: u64) -> String {
         let store = crate::project_memory::load();
         let Some(base) = self.tab_base_name(&store, uid) else {
@@ -100,13 +82,12 @@ impl App {
         }
     }
 
-    /// The name before any clash is resolved; None when the tab is gone.
     pub(crate) fn tab_base_name(&self, store: &Store, uid: u64) -> Option<String> {
         let (s, t) = self.find_tab(uid)?;
         let tab = &self.panes[s].tabs[t];
         let user = user_name();
         let at_home = tab.cwd == crate::config::home_dir();
-        // 1. The tab's own name (custom, else its folder's).
+
         let own = tab.name();
         let custom = tab
             .custom_name
@@ -115,7 +96,7 @@ impl App {
         if meaningful(&own, user.as_deref()) && (custom || !at_home) {
             return Some(own);
         }
-        // 2. What was saved about the project or the session.
+
         let memo = store
             .get("project", &crate::project_memory::folder_key(&tab.cwd))
             .filter(|_| !at_home)
@@ -133,13 +114,13 @@ impl App {
                 return Some(format!("the {}", lower_first(&d)));
             }
         }
-        // 3. The project or subproject it is in.
+
         if !at_home {
             if let Some(p) = self.project_name_of(&tab.cwd, user.as_deref()) {
                 return Some(p);
             }
         }
-        // 4. The session's own title.
+
         if let Some(sid) = &tab.session_id {
             let ix = self.session_index.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(r) = ix.rows.iter().find(|r| &r.info.id == sid) {
@@ -154,7 +135,7 @@ impl App {
                 }
             }
         }
-        // 5. What it was asked to do.
+
         let task = self
             .deliveries
             .iter()
@@ -179,8 +160,6 @@ impl App {
         })
     }
 
-    /// The project index's name for a folder: the subproject's manifest
-    /// name, else the repo or root folder's name.
     fn project_name_of(&self, cwd: &Path, user: Option<&str>) -> Option<String> {
         let ix = self.project_index.lock().unwrap_or_else(|e| e.into_inner());
         let (root, map) = ix
@@ -188,7 +167,7 @@ impl App {
             .iter()
             .filter(|(r, _)| cwd.starts_with(r))
             .max_by_key(|(r, _)| r.components().count())?;
-        // The index keeps "/" separators; Windows folders use "\\".
+
         let rel = cwd
             .strip_prefix(root)
             .ok()?
@@ -222,7 +201,6 @@ impl App {
 fn lower_first(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
-        // Keep acronyms ("API server") as they are.
         Some(f) if c.clone().next().is_some_and(|n| n.is_lowercase()) => {
             f.to_lowercase().collect::<String>() + c.as_str()
         }
@@ -230,7 +208,6 @@ fn lower_first(s: &str) -> String {
     }
 }
 
-/// "the tab working on 'fix the login bug'".
 fn task_words(task: &str) -> String {
     let w = few_words(task, 5);
     if w.is_empty() {

@@ -51,8 +51,6 @@ class St:
     line = ""
 
 
-# The prompt, with the ready mark GodTerm reads for the CLI it stands in
-# for (src/prompt_cli.rs): Codex's "› ", OpenCode's "Ask anything".
 NAME = os.environ.get("FAKECLI_AS", "")
 PROMPT = {"codex": "› ", "opencode": "Ask anything> "}.get(NAME, "fake> ")
 
@@ -156,7 +154,6 @@ def main():
                 elif ch == b"\x03":
                     St.line = ""
                 elif ch == b"\x1b":
-                    # A key sequence: skip it (logged above).
                     j = i + 1
                     if j < len(b) and b[j:j + 1] in (b"[", b"O"):
                         j += 1
@@ -166,7 +163,6 @@ def main():
                     i = j
                     continue
                 elif ch[0] >= 0x20 or paste:
-                    # Whole UTF-8 sequences.
                     j = i + 1
                     while j < len(b) and 0x80 <= b[j] < 0xC0:
                         j += 1

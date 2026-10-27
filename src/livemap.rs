@@ -1,10 +1,3 @@
-//! Live map (View ▾ > Live map, Ctrl-a G): the model behind the animated
-//! diagram of every running session. A small read only snapshot of the app
-//! is taken four times a second; token rates come from a background thread
-//! that tails each tab's transcript by file offset; a particle sim moves
-//! tokens along the links between frames. None of it runs while the view
-//! is closed: the tailer thread stops itself when nobody asks for a while.
-
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -13,32 +6,24 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::app::{App, View};
 
-/// `[viz]` in config.toml.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(default)]
 pub struct VizCfg {
-    /// Fewer frames (8 a second) and fewer particles in the live map.
     pub reduced_motion: bool,
 }
 
-/// Frames a second while the view is open, and with reduced motion.
 pub const FPS: u64 = 30;
 pub const FPS_REDUCED: u64 = 8;
-/// A snapshot of the app this often (positions interpolate in between).
+
 pub const SNAP_EVERY: Duration = Duration::from_millis(250);
-/// The tailer thread ends when no snapshot asked for this long.
+
 pub const TAILER_IDLE: Duration = Duration::from_secs(2);
-/// Particles at most (and with reduced motion).
+
 pub const MAX_PARTICLES: usize = 700;
 pub const MAX_PARTICLES_REDUCED: usize = 140;
-/// Seconds the token rate averages over (EMA time constant).
+
 pub const RATE_TAU: f64 = 4.0;
 
-// ---------------------------------------------------------------------
-// Deterministic randomness
-// ---------------------------------------------------------------------
-
-/// SplitMix64: small, fast and reproducible from a seed.
 #[derive(Debug, Clone)]
 pub struct Rng(u64);
 
@@ -53,7 +38,7 @@ impl Rng {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
     }
-    /// Uniform in [0, 1).
+
     pub fn f(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
@@ -62,14 +47,9 @@ impl Rng {
     }
 }
 
-/// A stable hash of a number, for per node phases.
 pub fn hash01(x: u64) -> f64 {
     Rng::new(x ^ 0x5151_7A7A).f()
 }
-
-// ---------------------------------------------------------------------
-// Snapshot
-// ---------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeId {
@@ -119,9 +99,9 @@ pub struct TabSnap {
     pub subagents: usize,
     pub shells: usize,
     pub loops: usize,
-    /// Loop fires seen in its transcript so far.
+
     pub fires: usize,
-    /// Session totals when the session list knows them (in, out).
+
     pub session_tokens: Option<(u64, u64)>,
 }
 
@@ -170,17 +150,13 @@ fn rgb_of(c: ratatui::style::Color) -> (u8, u8, u8) {
     }
 }
 
-// ---------------------------------------------------------------------
-// Layout
-// ---------------------------------------------------------------------
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub id: NodeId,
     pub x: f64,
     pub y: f64,
     pub r: f64,
-    /// The account a tab orbits (its index in the snapshot), for links.
+
     pub parent: Option<usize>,
 }
 
@@ -188,7 +164,7 @@ pub struct Node {
 pub struct Placed {
     pub nodes: Vec<Node>,
     pub core: (f64, f64),
-    /// The account ring's radii.
+
     pub ring: (f64, f64),
     pub core_r: f64,
 }
@@ -199,15 +175,12 @@ impl Placed {
     }
 }
 
-/// How large a tab's satellite is: its context (log scale) and its rate.
 pub fn tab_radius(context: u64, rate: f64) -> f64 {
     let c = ((1.0 + context as f64).log10() / 5.3).clamp(0.0, 1.0);
     let r = ((1.0 + rate).log10() / 3.0).clamp(0.0, 1.0);
     1.4 + 2.4 * c + 1.0 * r
 }
 
-/// Where everything goes on a canvas `w` by `h` dots (y down), at `zoom`
-/// and sim time `t` (satellites orbit). `sizes` gives each tab's radius.
 pub fn layout(
     snap: &Snapshot,
     w: f64,
@@ -235,7 +208,7 @@ pub fn layout(
         r: core_r,
         parent: None,
     }];
-    // The account ring.
+
     let mut acc_pos = vec![];
     for i in 0..n {
         let (a, k) = if n == 1 {
@@ -256,7 +229,7 @@ pub fn layout(
             parent: None,
         });
     }
-    // Satellites: room between neighbours on the ring decides the orbit.
+
     let gap = if n <= 1 {
         rx.min(ry) * 0.9
     } else {
@@ -275,8 +248,7 @@ pub fn layout(
             (cx, cy)
         };
         let base = if i < n { orbit0 } else { core_r + orbit0 * 0.8 };
-        // Rings fill from the inside; each holds what fits at ~6.5 dots
-        // apart.
+
         let mut placed = 0;
         let mut ring = 0;
         while placed < tabs.len() {
@@ -303,7 +275,7 @@ pub fn layout(
             ring += 1;
         }
     }
-    // The assistant circles the core.
+
     if snap.brain_on {
         let br = core_r + (rx.min(ry) * 0.16).max(6.0);
         let a = t * 0.22 + 0.8;
@@ -316,7 +288,7 @@ pub fn layout(
             parent: None,
         });
     }
-    // Sessions in other terminals sit outside the ring.
+
     let g = snap.ghosts.len();
     for k in 0..g {
         let off = if n > 0 {
@@ -342,8 +314,6 @@ pub fn layout(
     }
 }
 
-/// The node under a point (dots): the closest one whose edge is within a
-/// small reach, satellites before the larger nodes they sit near.
 pub fn hit(placed: &Placed, x: f64, y: f64) -> Option<NodeId> {
     let mut best: Option<(f64, NodeId)> = None;
     for n in &placed.nodes {
@@ -352,7 +322,7 @@ pub fn hit(placed: &Placed, x: f64, y: f64) -> Option<NodeId> {
         if d > reach {
             continue;
         }
-        // Small things win ties with big things they overlap.
+
         let score = d - n.r * 0.5
             + match n.id {
                 NodeId::Core => 2.0,
@@ -366,18 +336,12 @@ pub fn hit(placed: &Placed, x: f64, y: f64) -> Option<NodeId> {
     best.map(|b| b.1)
 }
 
-/// A terminal cell to canvas dots (its center), for an area starting at
-/// (ax, ay).
 pub fn cell_to_dots(col: u16, row: u16, ax: u16, ay: u16) -> (f64, f64) {
     (
         (col.saturating_sub(ax)) as f64 * 2.0 + 1.0,
         (row.saturating_sub(ay)) as f64 * 4.0 + 2.0,
     )
 }
-
-// ---------------------------------------------------------------------
-// Particles
-// ---------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Link {
@@ -389,35 +353,32 @@ pub enum Link {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Particle {
     pub link: Link,
-    /// Output (tab to core) rather than input (core to tab).
+
     pub out: bool,
-    /// Progress along the link, 0..1.
+
     pub t: f64,
     pub speed: f64,
-    /// Sideways offset (dots) so streams look like streams.
+
     pub wob: f64,
-    /// 0..1, picks a shade.
+
     pub shade: f64,
     pub burst: bool,
 }
 
-/// How much flows along one link right now.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Flow {
     pub link: Link,
-    /// Tokens a second.
+
     pub rate_in: f64,
     pub rate_out: f64,
-    /// Particles a second regardless of tokens (a working tab looks alive).
+
     pub base: f64,
 }
 
-/// Particles a second for a token rate.
 pub fn spawn_rate(rate: f64, base: f64) -> f64 {
     (base + 0.8 * rate.max(0.0).sqrt()).min(26.0)
 }
 
-/// Link progress a second for a token rate (a link takes 1 to 3 seconds).
 pub fn speed_for(rate: f64) -> f64 {
     (0.34 + 0.16 * (1.0 + rate.max(0.0)).log10()).min(1.0)
 }
@@ -457,7 +418,6 @@ impl Sim {
         self.particles.push(p);
     }
 
-    /// Move everything `dt` seconds and spawn what the flows ask for.
     pub fn step(&mut self, dt: f64, flows: &[Flow]) {
         let dt = dt.clamp(0.0, 0.25);
         for p in &mut self.particles {
@@ -483,7 +443,6 @@ impl Sim {
         }
     }
 
-    /// A turn finished or tokens arrived: `n` fast particles at once.
     pub fn burst(&mut self, link: Link, out: bool, n: usize) {
         for _ in 0..n {
             let s = self.rng.range(0.7, 1.3);
@@ -491,18 +450,11 @@ impl Sim {
         }
     }
 
-    /// Drop the particles of links that are gone.
     pub fn keep_links(&mut self, live: &HashSet<Link>) {
         self.particles.retain(|p| live.contains(&p.link));
     }
 }
 
-// ---------------------------------------------------------------------
-// Token rates from transcripts
-// ---------------------------------------------------------------------
-
-/// One assistant message's usage: new input (with cache writes), output,
-/// and the context it had (cache reads included, for size only).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Usage {
     pub input: u64,
@@ -510,7 +462,6 @@ pub struct Usage {
     pub context: u64,
 }
 
-/// The usage of one transcript line, with its message id.
 pub fn usage_of_line(line: &str) -> Option<(Option<String>, Usage)> {
     if !line.contains("\"usage\"") {
         return None;
@@ -527,7 +478,6 @@ pub fn usage_of_line(line: &str) -> Option<(Option<String>, Usage)> {
     Some((
         id,
         Usage {
-            // Never cache reads in the headline: they repeat the context.
             input: fresh,
             output: g("output_tokens"),
             context: fresh + g("cache_read_input_tokens"),
@@ -535,24 +485,19 @@ pub fn usage_of_line(line: &str) -> Option<(Option<String>, Usage)> {
     ))
 }
 
-/// Where one transcript was read up to, and what was counted per message
-/// id (streaming repeats a message's usage on every content block).
 #[derive(Debug, Clone, Default)]
 pub struct Cursor {
     pub offset: u64,
     partial: String,
     seen: VecDeque<(String, Usage)>,
     pub primed: bool,
-    /// grok: last session totals seen.
+
     grok_last: Option<(u64, u64)>,
 }
 
-/// History read when a transcript is first seen (sizes only, no rate).
 pub const PRIME_BYTES: u64 = 256 * 1024;
 
 impl Cursor {
-    /// New lines in: the tokens they add (only what was not counted yet)
-    /// and the latest context.
     pub fn feed(&mut self, text: &str) -> (Usage, usize) {
         let mut all = std::mem::take(&mut self.partial);
         all.push_str(text);
@@ -595,12 +540,9 @@ impl Cursor {
     }
 }
 
-/// Read what a transcript gained since the cursor. The first read only
-/// primes (the last PRIME_BYTES give the context size, no rate).
 pub fn tail_file(path: &Path, cur: &mut Cursor) -> Option<(Usage, usize)> {
     let len = std::fs::metadata(path).ok()?.len();
     if len < cur.offset {
-        // Rewritten: start over.
         *cur = Cursor::default();
     }
     if cur.primed && len == cur.offset {
@@ -613,7 +555,7 @@ pub fn tail_file(path: &Path, cur: &mut Cursor) -> Option<(Usage, usize)> {
         len.saturating_sub(PRIME_BYTES)
     };
     f.seek(SeekFrom::Start(start)).ok()?;
-    // At most 4 MB per read, so one huge write cannot stall the thread.
+
     let mut buf = Vec::new();
     f.take((len - start).min(4 << 20))
         .read_to_end(&mut buf)
@@ -621,7 +563,6 @@ pub fn tail_file(path: &Path, cur: &mut Cursor) -> Option<(Usage, usize)> {
     cur.offset = start + buf.len() as u64;
     let mut text = String::from_utf8_lossy(&buf).into_owned();
     if !cur.primed && start > 0 {
-        // Skip the cut line.
         text = text
             .split_once('\n')
             .map(|x| x.1.to_string())
@@ -642,8 +583,6 @@ pub fn tail_file(path: &Path, cur: &mut Cursor) -> Option<(Usage, usize)> {
     Some((u, n))
 }
 
-/// grok keeps running totals in `<session>/usage.json`: the change since
-/// the last read.
 pub fn tail_grok(dir: &Path, cur: &mut Cursor) -> Option<(Usage, usize)> {
     let t = std::fs::read_to_string(dir.join("usage.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&t).ok()?;
@@ -682,7 +621,7 @@ pub enum TailMsg {
         usage: Usage,
         turns: usize,
     },
-    /// Running subagents, shells and other tasks under a tab.
+
     Background {
         uid: u64,
         subs: usize,
@@ -702,9 +641,6 @@ pub struct Tailer {
     pub rx: Receiver<TailMsg>,
 }
 
-/// The background worker: tails transcripts, counts what runs under each
-/// tab, finds sessions in other terminals. It ends on its own once no
-/// request came for TAILER_IDLE (the view closed).
 pub fn spawn_tailer() -> Option<Tailer> {
     let (tx, req_rx) = mpsc::channel::<TailReq>();
     let (msg_tx, rx) = mpsc::channel::<TailMsg>();
@@ -726,7 +662,7 @@ fn tailer_loop(req_rx: Receiver<TailReq>, tx: Sender<TailMsg>) {
             Ok(r) => {
                 req = Some(r);
                 last_req = Instant::now();
-                // Only the newest request matters.
+
                 while let Ok(r) = req_rx.try_recv() {
                     req = Some(r);
                 }
@@ -819,10 +755,6 @@ fn tailer_loop(req_rx: Receiver<TailReq>, tx: Sender<TailMsg>) {
     }
 }
 
-// ---------------------------------------------------------------------
-// The view's state
-// ---------------------------------------------------------------------
-
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Rate {
     pub ema_in: f64,
@@ -830,15 +762,14 @@ pub struct Rate {
     pend_in: f64,
     pend_out: f64,
     pub context: u64,
-    /// Since the view opened.
+
     pub seen_in: u64,
     pub seen_out: u64,
-    /// Sim time of the last tokens.
+
     pub last: f64,
 }
 
 impl Rate {
-    /// Fold what arrived over the last `dt` seconds into the averages.
     pub fn update(&mut self, dt: f64) {
         if dt <= 0.0 {
             return;
@@ -899,7 +830,7 @@ pub struct LiveMap {
     pub paused: bool,
     pub labels: bool,
     pub zoom: f64,
-    /// Sim time (stops while paused).
+
     pub t: f64,
     last_frame: Option<Instant>,
     snap_at: Option<Instant>,
@@ -908,19 +839,19 @@ pub struct LiveMap {
     pub ripples: Vec<Ripple>,
     pub ticker: VecDeque<Tick>,
     pub rates: HashMap<u64, Rate>,
-    /// Each tab's drawn size, eased toward its target.
+
     pub sizes: HashMap<u64, f64>,
-    /// Tokens a second, the last 60 seconds: (in, out).
+
     pub hist: VecDeque<(f64, f64)>,
     bucket: (f64, f64, f64),
     paths: HashMap<u64, (Option<String>, Option<PathBuf>, Instant)>,
     background: HashMap<u64, (usize, usize)>,
     ghosts: Vec<GhostSnap>,
     tailer: Option<Tailer>,
-    /// Where the last frame put things (for the mouse).
+
     pub placed: Placed,
     pub canvas: ratatui::layout::Rect,
-    /// Milliseconds a frame takes to build (EMA), and frames drawn.
+
     pub render_ms: f64,
     pub frames: u64,
     prev: HashMap<u64, (TabState, usize, String)>,
@@ -961,7 +892,6 @@ impl Default for LiveMap {
 }
 
 impl LiveMap {
-    /// The tailer thread is running (for tests: closed costs nothing).
     #[cfg(test)]
     pub fn tailer_alive(&self) -> bool {
         self.tailer
@@ -991,8 +921,6 @@ impl LiveMap {
         }
     }
 
-    /// Fold a fresh snapshot in: events for the ticker, bursts and ripples
-    /// for what changed.
     pub fn apply(&mut self, snap: Snapshot) {
         let first = !self.primed;
         self.primed = true;
@@ -1066,7 +994,6 @@ impl LiveMap {
         self.snap = snap;
     }
 
-    /// Messages from the tailer.
     pub fn drain(&mut self) {
         let Some(tl) = &self.tailer else { return };
         let msgs: Vec<TailMsg> = tl.rx.try_iter().collect();
@@ -1113,14 +1040,12 @@ impl LiveMap {
         }
     }
 
-    /// Tokens a second over all tabs: (in, out).
     pub fn totals(&self) -> (f64, f64) {
         self.rates
             .values()
             .fold((0.0, 0.0), |a, r| (a.0 + r.ema_in, a.1 + r.ema_out))
     }
 
-    /// What flows where right now, for the sim.
     pub fn flows(&self) -> Vec<Flow> {
         let mut v = vec![];
         for tb in &self.snap.tabs {
@@ -1162,8 +1087,6 @@ impl LiveMap {
         v
     }
 
-    /// Advance to `now`: snapshot when due, rates, sizes, particles.
-    /// `reduced` lowers the particle budget.
     pub fn advance(&mut self, now: Instant, reduced: bool) -> bool {
         let dt = self
             .last_frame
@@ -1181,7 +1104,7 @@ impl LiveMap {
         }
         let sdt = if self.paused { 0.0 } else { dt };
         self.t += sdt;
-        // Per second token buckets for the sparklines.
+
         self.bucket.0 += dt;
         if self.bucket.0 >= 1.0 {
             self.hist.push_back((self.bucket.1, self.bucket.2));
@@ -1190,7 +1113,7 @@ impl LiveMap {
             }
             self.bucket = (0.0, 0.0, 0.0);
         }
-        // Sizes ease toward their targets.
+
         let k = 1.0 - (-sdt * 3.0).exp();
         for tb in &self.snap.tabs {
             let r = self.rates.get(&tb.uid).cloned().unwrap_or_default();
@@ -1218,7 +1141,6 @@ impl LiveMap {
     }
 }
 
-/// 1234 -> "1.2k".
 pub fn human(n: f64) -> String {
     if n >= 1e9 {
         format!("{:.1}B", n / 1e9)
@@ -1233,19 +1155,11 @@ pub fn human(n: f64) -> String {
     }
 }
 
-// ---------------------------------------------------------------------
-// The app side
-// ---------------------------------------------------------------------
-
 impl App {
-    /// Reduced motion: the setting, or the memory saver.
     pub fn livemap_reduced(&self) -> bool {
         self.cfg.viz.reduced_motion || self.memory_saver_on()
     }
 
-    /// How often the screen must redraw for an animation, if any is on
-    /// screen: the live map (30 fps, 8 with reduced motion, fewer if
-    /// frames are slow) or the voice meter.
     pub fn anim_interval(&self) -> Option<Duration> {
         if self.view == View::LiveMap {
             let fps = if self.livemap_reduced() {
@@ -1262,27 +1176,25 @@ impl App {
         if self.meter_live() {
             return Some(Duration::from_millis(40));
         }
-        // The voice onboarding's welcome and checks: the mic meter moves.
+
         if self.onb_full_screen() {
             return Some(Duration::from_millis(80));
         }
-        // The new version chip's slow shimmer (10 frames a second).
+
         if self.update_badge().is_some() && crate::ui_updates::motion(self) {
             return Some(Duration::from_millis(100));
         }
-        // A spinner on screen (a visible tab working, waiting or running
-        // background jobs): 8 frames a second; nothing when all is idle.
+
         let spin = self
             .spinner_on_screen()
             .then_some(Duration::from_millis(125));
-        // The Approvals blink: wake at the next phase change only.
+
         match (spin, crate::attention::next_flip(self)) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         }
     }
 
-    /// Some pane on screen has a working, waiting or background tab.
     pub fn spinner_on_screen(&self) -> bool {
         if !matches!(self.view, View::Grid | View::Overview) {
             return false;
@@ -1333,9 +1245,6 @@ impl App {
         }
     }
 
-    /// Mouse on the live map: hover is read at draw time; a click on a
-    /// tab opens it, on an account focuses its pane; the wheel zooms.
-    /// Returns true when it took the event.
     pub fn livemap_mouse(&mut self, m: &crossterm::event::MouseEvent) -> bool {
         use crossterm::event::{MouseButton, MouseEventKind};
         if self.view != View::LiveMap || self.modal != crate::app::Modal::None {
@@ -1383,7 +1292,6 @@ impl App {
         }
     }
 
-    /// (pane, tab) of a tab id.
     pub fn livemap_find(&self, uid: u64) -> Option<(usize, usize)> {
         self.panes
             .iter()
@@ -1391,7 +1299,6 @@ impl App {
             .find_map(|(s, p)| p.tabs.iter().position(|t| t.uid == uid).map(|t| (s, t)))
     }
 
-    /// Where a tab's transcript is (claude: the jsonl; grok: its folder).
     fn livemap_path(&self, s: usize, t: usize) -> Option<PathBuf> {
         let a = self.panes[s].account?;
         let acc = self.cfg.accounts.get(a)?;
@@ -1406,7 +1313,6 @@ impl App {
         self.transcript_path(s, t)
     }
 
-    /// The read only picture of the app the map draws.
     pub fn livemap_snapshot(&mut self) -> Snapshot {
         let now = Instant::now();
         let mut fires: HashMap<u64, (usize, usize)> = HashMap::new();
@@ -1478,8 +1384,7 @@ impl App {
                     fires: fired,
                     session_tokens,
                 });
-                // Transcript paths are looked up every few seconds, not
-                // every snapshot.
+
                 let stale = match self.livemap.paths.get(&tab.uid) {
                     Some((sid, p, at)) => {
                         *sid != tab.session_id
@@ -1536,7 +1441,7 @@ impl App {
                 }
             })
             .collect();
-        // Ask the tailer for the next round (and start it if needed).
+
         let req = TailReq {
             jobs,
             homes: self.agent_homes(),
@@ -1584,8 +1489,6 @@ impl App {
         }
     }
 
-    /// One frame's model work: drain the tailer, snapshot when due, move
-    /// the sim. Called by the view's draw only.
     pub fn livemap_frame(&mut self) {
         let reduced = self.livemap_reduced();
         self.livemap.drain();
@@ -1593,8 +1496,7 @@ impl App {
             let s = self.livemap_snapshot();
             self.livemap.apply(s);
         }
-        // A tailer whose thread ended (idle) is dropped so the next
-        // snapshot starts a fresh one.
+
         if self
             .livemap
             .tailer
@@ -1679,7 +1581,7 @@ mod tests {
         assert!(!a.is_empty());
         assert!(a.iter().all(|p| (0.0..1.0).contains(&p.t)));
         assert!(a.iter().any(|p| p.out) && a.iter().any(|p| !p.out));
-        // A different seed gives a different picture.
+
         let mut b = Sim::new(43);
         for _ in 0..200 {
             b.step(1.0 / 30.0, &flows);
@@ -1724,7 +1626,7 @@ mod tests {
             s.burst(Link::Tab(0), true, 30);
         }
         assert!(s.particles.len() <= 50);
-        // Links that went away lose their particles.
+
         s.keep_links(&HashSet::from([Link::Tab(0)]));
         assert!(s.particles.iter().all(|p| p.link == Link::Tab(0)));
     }
@@ -1737,7 +1639,7 @@ mod tests {
                     let s = snap(n, tabs);
                     for t in [0.0, 13.7] {
                         let p = layout(&s, w, h, 1.0, t, &HashMap::new());
-                        // Core, accounts, every tab, the brain.
+
                         assert_eq!(p.nodes.len(), 1 + n + tabs + 1, "{n} accounts {tabs} tabs");
                         for nd in &p.nodes {
                             assert!(
@@ -1745,7 +1647,7 @@ mod tests {
                                 "{nd:?} outside {w}x{h}"
                             );
                         }
-                        // Accounts keep apart from each other and the core.
+
                         let acc: Vec<&Node> = p
                             .nodes
                             .iter()
@@ -1759,7 +1661,7 @@ mod tests {
                                 assert!(d > a.r + b.r, "{n} accounts overlap at {w}x{h}");
                             }
                         }
-                        // Each tab sits nearer its own account than the core does.
+
                         for nd in &p.nodes {
                             if let (NodeId::Tab(_), Some(a)) = (nd.id, nd.parent) {
                                 let an = p.get(NodeId::Account(a)).unwrap();
@@ -1783,16 +1685,16 @@ mod tests {
         for nd in &p.nodes {
             assert_eq!(hit(&p, nd.x, nd.y), Some(nd.id), "center of {:?}", nd.id);
         }
-        // Empty space: nothing.
+
         assert_eq!(hit(&p, 1.0, 1.0), None);
-        // A point just off a tab still finds it.
+
         let tab = p
             .nodes
             .iter()
             .find(|n| matches!(n.id, NodeId::Tab(_)))
             .unwrap();
         assert_eq!(hit(&p, tab.x + tab.r + 1.0, tab.y), Some(tab.id));
-        // Cells map to dot centers.
+
         assert_eq!(cell_to_dots(12, 7, 2, 1), (21.0, 26.0));
     }
 
@@ -1807,14 +1709,14 @@ mod tests {
         let d = std::env::temp_dir().join(format!("godterm-livemap-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("s.jsonl");
-        // History before the view opened: sizes only.
+
         std::fs::write(&f, line("m0", 10, 500, 90_000, 40)).unwrap();
         let mut c = Cursor::default();
         let (u, n) = tail_file(&f, &mut c).unwrap();
         assert_eq!((u.input, u.output, n), (0, 0, 0));
         assert_eq!(u.context, 90_510, "context counts cache reads");
         assert!(tail_file(&f, &mut c).is_none(), "nothing new, no read");
-        // New turns: streaming repeats an id; cache reads stay out.
+
         let mut more = String::new();
         more.push_str(&line("m1", 5, 1000, 100_000, 10));
         more.push_str(&line("m1", 5, 1000, 100_000, 300));
@@ -1822,7 +1724,7 @@ mod tests {
         more.push_str(&line("m2", 3, 0, 101_000, 50));
         let mut fh = std::fs::OpenOptions::new().append(true).open(&f).unwrap();
         use std::io::Write;
-        // Half a line first: nothing is counted until it ends.
+
         let (a, b) = more.split_at(more.len() - 20);
         fh.write_all(a.as_bytes()).unwrap();
         let (u1, n1) = tail_file(&f, &mut c).unwrap();
@@ -1832,7 +1734,7 @@ mod tests {
         assert_eq!(u1.output + u2.output, 300 + 50);
         assert_eq!(n1 + n2, 2);
         assert_eq!(u2.context, 101_003);
-        // The rate: an EMA of what arrived.
+
         let mut r = Rate::default();
         r.add(Usage {
             input: 1008,
@@ -1844,7 +1746,7 @@ mod tests {
         let first = r.ema_in;
         r.update(1.0);
         assert!(r.ema_in < first, "decays when nothing arrives");
-        // grok: deltas of its running totals.
+
         let gd = d.join("grok");
         std::fs::create_dir_all(&gd).unwrap();
         let w = |i: u64, o: u64| {
@@ -1934,12 +1836,12 @@ mod tests {
             }
             s
         };
-        // Closed: no frames, no thread, no animation timer.
+
         draw(&mut app, 200, 50);
         assert_eq!(app.livemap.frames, 0);
         assert!(!app.livemap.tailer_alive());
         assert_eq!(app.anim_interval(), None);
-        // Open: 30 fps, a snapshot, every tab placed.
+
         app.on_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('a'),
             KeyModifiers::CONTROL,
@@ -1959,14 +1861,14 @@ mod tests {
         assert!(app.livemap.frames > 0 && app.livemap.tailer_alive());
         let n_tabs: usize = app.panes.iter().map(|p| p.tabs.len()).sum();
         assert_eq!(app.livemap.snap.tabs.len(), n_tabs);
-        // Reduced motion: 8 fps.
+
         app.cfg.viz.reduced_motion = true;
         assert_eq!(
             app.anim_interval(),
             Some(Duration::from_millis(1000 / FPS_REDUCED))
         );
         app.cfg.viz.reduced_motion = false;
-        // Hover shows a tooltip; a click on a tab opens it.
+
         let uid = app.panes[1].tabs.last().unwrap().uid;
         let n = app.livemap.placed.get(NodeId::Tab(uid)).unwrap().clone();
         let c = app.livemap.canvas;
@@ -1980,7 +1882,7 @@ mod tests {
         app.on_mouse_event(ev(MouseEventKind::Moved));
         let text = draw(&mut app, 200, 50);
         assert!(text.contains("click to open this tab"), "{text}");
-        // The draw moved the satellite a little: aim again.
+
         let n = app.livemap.placed.get(NodeId::Tab(uid)).unwrap().clone();
         let ev = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -1991,7 +1893,7 @@ mod tests {
         app.on_mouse_event(ev);
         assert_eq!(app.view, View::Grid);
         assert_eq!(app.focus, 1);
-        // Closed again: the timer stops now, the thread on its own.
+
         assert_eq!(app.anim_interval(), None);
         let frames = app.livemap.frames;
         draw(&mut app, 200, 50);
@@ -2001,7 +1903,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert!(!app.livemap.tailer_alive(), "the tailer thread ended");
-        // Small terminals get the radial list.
+
         app.open_livemap();
         let text = draw(&mut app, 70, 20);
         assert!(text.contains("LIVE MAP") && text.contains("└─"), "{text}");

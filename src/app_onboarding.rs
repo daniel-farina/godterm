@@ -1,15 +1,3 @@
-//! Voice onboarding in the app (see onboarding.rs for the plan): the
-//! phases, what is said and when, the keys and clicks, what the user's
-//! speech does at each point, and how a lesson step notices it was done.
-//!
-//! Spoken lines wait for a quiet moment: never while the user is talking
-//! or being transcribed, never over the assistant's reply, never while
-//! listening is paused; the speaker mute silences them (they still show).
-//! A step is done when what it asks for really happened, however it was
-//! asked (spoken, typed, or with keys): the assistant answered, a Claude
-//! or Grok account was added or its login started, a tab opened in
-//! account 1, the layout or the view changed.
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
@@ -23,25 +11,22 @@ use crate::onboarding::{self, Needs, Outcome, Said, StepId, Steps};
 
 pub use crate::onboarding::Mark;
 
-/// Where the onboarding is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// The pre UI welcome: turn voice on, or skip.
     Welcome,
-    /// What voice needs: install it, or go on without voice.
+
     Install,
-    /// Say anything: the live meter and what was heard.
+
     Mic,
-    /// A sample in the local voice: did you hear it?
+
     Speaker,
-    /// The steps, on the normal UI (a card).
+
     Lesson,
-    /// The phrases card, then the normal UI.
+
     Recap,
 }
 
 impl Phase {
-    /// Drawn over the whole screen, before any UI.
     pub fn full_screen(self) -> bool {
         matches!(
             self,
@@ -50,7 +35,6 @@ impl Phase {
     }
 }
 
-/// What the screen showed when a step began (to tell when it is done).
 #[derive(Debug, Clone, PartialEq)]
 struct Snap {
     claude: usize,
@@ -68,37 +52,36 @@ pub struct Onb {
     pub steps: Steps,
     pub step_at: Instant,
     snap: Option<Snap>,
-    /// Voice is on for the lesson (false: requests are typed).
+
     pub voice: bool,
-    /// The last thing heard during the onboarding.
+
     pub heard: Option<String>,
     queue: VecDeque<String>,
     pub reminded: bool,
-    /// An install is running / its failure.
+
     pub installing: bool,
     pub install_error: Option<String>,
-    /// The mic test: what was heard, the mic's error.
+
     pub mic_heard: Option<String>,
-    /// The speaker test: heard (Some(true)), not heard (Some(false)).
+
     pub speaker: Option<bool>,
-    /// The first run's account login walk through waits for the end.
+
     pub login_walk: bool,
 }
 
 #[derive(Default)]
 pub struct OnbState {
     pub on: Option<Onb>,
-    /// The phrases card, opened on its own (Ctrl-a J, the palette).
+
     pub card: bool,
-    /// Apple's recognizer works here: 0 not known yet, 1 no, 2 yes.
+
     apple: Arc<AtomicU8>,
-    /// Everything the onboarding said (or would have, when muted).
+
     pub said: Vec<String>,
-    /// Tests: what Apple's check answers.
+
     pub apple_for_test: Option<bool>,
 }
 
-/// Click targets (UiAction::Onboarding).
 pub const BTN_VOICE_ON: u8 = 0;
 pub const BTN_SKIP_ALL: u8 = 1;
 pub const BTN_INSTALL: u8 = 2;
@@ -117,13 +100,10 @@ impl App {
         self.onb.on.as_ref().map(|o| o.phase)
     }
 
-    /// The welcome or the audio setup covers the screen.
     pub fn onb_full_screen(&self) -> bool {
         self.onb_phase().is_some_and(Phase::full_screen)
     }
 
-    /// Start it at this launch? `fresh_home`: there was no config.toml
-    /// when GodTerm started; `forced`: --onboarding.
     pub fn voice_onboarding_due(&self, fresh_home: bool, forced: bool) -> bool {
         let quiet = self.cfg.setup_dont_show
             || crate::config::env_var("NO_SPLASH").is_some()
@@ -137,8 +117,6 @@ impl App {
         )
     }
 
-    /// Open the welcome. `login_walk`: the first run's walk through the
-    /// account logins runs once the onboarding ends.
     pub fn start_voice_onboarding(&mut self, login_walk: bool) {
         crate::log::info("onboarding: the voice welcome");
         self.onb.card = false;
@@ -160,15 +138,13 @@ impl App {
             login_walk,
         });
         self.onb_check_apple();
-        // Voice already works here: "yes" can answer, no key needed. The
-        // mic opens first, so the hook is said by the engine's own voice.
+
         if !self.voice.muted && self.onb_needs().can_hear {
             self.onb_open_mic();
         }
         self.onb_say(onboarding::HOOK_SPOKEN);
     }
 
-    /// Whether Apple's recognizer works (checked once, off the UI thread).
     fn onb_check_apple(&self) {
         if self.onb.apple.load(Ordering::Relaxed) != 0 || cfg!(test) {
             return;
@@ -195,7 +171,6 @@ impl App {
         self.onb.apple.load(Ordering::Relaxed) == 2
     }
 
-    /// What voice still needs here.
     pub fn onb_needs(&self) -> Needs {
         onboarding::needs(&self.deps(), self.onb_apple())
     }
@@ -208,8 +183,6 @@ impl App {
         }
     }
 
-    /// The mic on in open mic (no wake word): every utterance reaches the
-    /// onboarding. The preview voice gives way to the engine's own.
     fn onb_open_mic(&mut self) {
         if let Some(p) = self.voice.preview.take() {
             p.stop();
@@ -225,7 +198,6 @@ impl App {
         self.start_voice(true);
     }
 
-    /// Welcome: "Turn voice on".
     pub fn onb_voice_on(&mut self) {
         let n = self.onb_needs();
         if let Some(o) = &mut self.onb.on {
@@ -236,7 +208,6 @@ impl App {
         }
         self.onb_set(Phase::Install);
         if n.install.is_empty() {
-            // Nothing GodTerm can do here: say so plainly.
             self.onb_say("Voice needs a few things I can't install here. They're on the screen. You can go on without voice.");
         } else {
             let names: Vec<&str> = n.install.iter().map(|x| x.1).collect();
@@ -252,7 +223,6 @@ impl App {
         }
     }
 
-    /// Install: run the existing installer on what is missing.
     pub fn onb_install(&mut self) {
         let n = self.onb_needs();
         if n.install.is_empty() {
@@ -268,7 +238,6 @@ impl App {
         self.onb_say("Installing now. I'll say each step.");
     }
 
-    /// Go on without voice: the lesson by typing to the assistant.
     pub fn onb_without_voice(&mut self) {
         if let Some(o) = &mut self.onb.on {
             o.voice = false;
@@ -303,7 +272,6 @@ impl App {
         ));
     }
 
-    /// The talk back engine as named on screen ("kokoro af_heart").
     pub fn onb_voice_label(&self) -> String {
         let (engine, why) = crate::voice::tts::effective_engine(&self.cfg.voice);
         match engine {
@@ -326,12 +294,11 @@ impl App {
         self.onb_begin_step();
     }
 
-    /// The current step's start: what the screen shows now, and its line.
     fn onb_begin_step(&mut self) {
         let Some(step) = self.onb.on.as_ref().and_then(|o| o.steps.current()) else {
             return self.onb_to_recap();
         };
-        // A project in account 1 needs an account 1.
+
         if step == StepId::Project && self.cfg.accounts.is_empty() {
             self.onb_say("There's no account yet, so I'll skip the project step.");
             if let Some(o) = &mut self.onb.on {
@@ -382,7 +349,6 @@ impl App {
         }
     }
 
-    /// Did the current step really happen?
     pub fn onb_step_met(&self) -> bool {
         let Some(o) = &self.onb.on else { return false };
         let (Some(step), Some(s)) = (o.steps.current(), &o.snap) else {
@@ -420,7 +386,6 @@ impl App {
         }
     }
 
-    /// Step done: a word of praise and the next one.
     fn onb_step_done(&mut self) {
         let next = self.onb.on.as_mut().and_then(|o| o.steps.done());
         crate::log::info(&format!("onboarding: step done, next {next:?}"));
@@ -467,7 +432,6 @@ impl App {
         self.onb_say(onboarding::RECAP_SPOKEN);
     }
 
-    /// The end: the marker, the normal UI, what waited for it.
     pub fn end_voice_onboarding(&mut self, how: Outcome) {
         let Some(o) = self.onb.on.take() else { return };
         crate::log::info(&format!(
@@ -481,7 +445,7 @@ impl App {
         if let Some(p) = &self.voice.preview {
             p.stop();
         }
-        // Done: from now on the wake word, as the recap says.
+
         if self.voice.engine.is_some() && self.voice.open_mic && how == Outcome::Done {
             self.voice.open_mic = false;
             self.stop_voice();
@@ -496,12 +460,10 @@ impl App {
                 self.flash("Voice skipped. Later: Ctrl-a : \"voice onboarding\".");
             }
         }
-        // No account yet: the first account picker, which also shows what
-        // is installed and installs a missing agent.
+
         if self.cfg.accounts.is_empty() {
             self.open_first_account();
         } else if !cfg!(test) && !self.required_missing().is_empty() {
-            // Claude Code itself missing: Settings > Setup first, as at any start.
             self.maybe_show_setup(false);
         } else if o.login_walk {
             self.start_onboarding();
@@ -510,7 +472,6 @@ impl App {
         }
     }
 
-    /// Say a short line at the next quiet moment.
     pub fn onb_say(&mut self, text: &str) {
         self.onb.said.push(text.to_string());
         if let Some(o) = &mut self.onb.on {
@@ -519,8 +480,6 @@ impl App {
         self.onb_flush();
     }
 
-    /// The user is talking, being transcribed, being answered, or asked
-    /// for quiet: not now.
     fn onb_quiet(&self) -> bool {
         use crate::voice::VoiceStatus;
         let talking = matches!(
@@ -540,7 +499,7 @@ impl App {
         if o.queue.is_empty() {
             return;
         }
-        // Lines waiting together are said as one.
+
         let text: Vec<String> = o.queue.drain(..).collect();
         let text = text.join(" ");
         if self.cfg.voice.speaker_muted || !self.cfg.voice.tts {
@@ -564,7 +523,6 @@ impl App {
         }
     }
 
-    /// Every tick: speech waiting, the reminder, the install, the steps.
     pub fn onboarding_tick(&mut self) {
         let Some(o) = &self.onb.on else { return };
         let phase = o.phase;
@@ -611,12 +569,8 @@ impl App {
         self.onb_flush();
     }
 
-    /// Speech while the onboarding runs. True when it was handled here
-    /// (the welcome and audio setup take everything; the lesson only its
-    /// own phrases, the rest goes on to the assistant).
     pub fn onboarding_heard(&mut self, text: &str, norm: &str) -> bool {
         let Some(phase) = self.onb_phase() else {
-            // Only when it was for us: the wake word, open mic, push to talk.
             let woke = self.strip_wake(norm).map(str::to_string);
             if woke.is_none() && !self.voice.open_mic && self.voice.always_on {
                 return false;
@@ -632,13 +586,13 @@ impl App {
             }
             return false;
         };
-        // The wake word is not part of the answer ("hey god, yes").
+
         let said_text = self
             .strip_wake(norm)
             .filter(|r| !r.trim().is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| text.to_string());
-        // Whisper's stock words for silence are no answer.
+
         if crate::app_openmic::is_noise(norm) {
             return phase.full_screen();
         }
@@ -688,7 +642,7 @@ impl App {
                 Said::Skip | Said::Next => self.onb_skip_step(),
                 Said::Back => self.onb_back(),
                 Said::Repeat => self.onb_repeat(),
-                // Everything else is a request: the assistant does it.
+
                 _ => return false,
             },
             Phase::Recap => match said {
@@ -702,7 +656,6 @@ impl App {
         true
     }
 
-    /// Typed to the assistant during the lesson: its phrases work too.
     pub fn onboarding_typed(&mut self, text: &str) -> bool {
         match self.onb_phase() {
             Some(Phase::Lesson | Phase::Recap) => {
@@ -732,7 +685,6 @@ impl App {
         self.onb_to_lesson();
     }
 
-    /// Keys while it runs; true when used here.
     pub fn onboarding_key(&mut self, k: &KeyEvent) -> bool {
         if self.onb.card && self.onb.on.is_none() {
             if matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
@@ -743,7 +695,7 @@ impl App {
         let Some(phase) = self.onb_phase() else {
             return false;
         };
-        // Ctrl-a and what follows it still work (quit, help).
+
         let ctrl_a = k.code == KeyCode::Char('a') && k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl_a || self.prefix {
             return false;
@@ -801,7 +753,7 @@ impl App {
                     self.end_voice_onboarding(Outcome::Stopped);
                 }
             }
-            // The normal UI has the keys (Ctrl-a J skips a step).
+
             Phase::Lesson => return false,
             Phase::Recap => {
                 if enter || esc || c == Some('q') {
@@ -816,7 +768,6 @@ impl App {
         true
     }
 
-    /// The mouse over the welcome and the audio setup: only its buttons.
     pub fn onboarding_mouse(&mut self, m: &MouseEvent) -> bool {
         if !(self.onb_full_screen() || self.onb.card && self.onb.on.is_none()) {
             return false;
@@ -879,8 +830,6 @@ impl App {
         }
     }
 
-    /// Ctrl-a J: skip the step during the lesson, finish the recap, or
-    /// the phrases card any other time.
     pub fn onboarding_ctrl_j(&mut self) {
         match self.onb_phase() {
             Some(Phase::Lesson) => self.onb_skip_step(),
@@ -890,7 +839,6 @@ impl App {
         }
     }
 
-    /// For the assistant's turn during the lesson.
     pub fn onboarding_turn_note(&self) -> Option<String> {
         let o = self.onb.on.as_ref()?;
         if o.phase != Phase::Lesson {
@@ -905,7 +853,6 @@ impl App {
     }
 }
 
-/// "a, b and c".
 fn join_and(v: &[&str]) -> String {
     match v.len() {
         0 => String::new(),

@@ -1,13 +1,3 @@
-//! GodTerm's own scheduler in the app: jobs (jobs.rs) fire from a tick,
-//! each delivering its prompt to its target tab through the same
-//! deliveries and receipts as any request. A target that was closed or
-//! archived is woken first (restored from the archive, or reopened by its
-//! session id on its account) without taking the screen; a busy tab gets
-//! the prompt queued after its work. How each run ends is kept on the job
-//! (`last_result`), a failure is said to the user and the assistant, and
-//! the assistant has create_job, list_jobs, update_job, delete_job,
-//! run_job_now and adopt_loop.
-
 use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDate, NaiveDateTime, TimeZone};
@@ -20,19 +10,15 @@ use crate::jobs::{self, CatchUp, Event, Job, RunResult, Target};
 use crate::pane::{Activity, LaunchKind};
 use crate::receipts::Receipt;
 
-/// GodTerm does not run jobs in the first moments after it starts: tabs
-/// are still coming back.
 const BOOT_GRACE: Duration = Duration::from_secs(8);
-/// Jobs are looked at this often.
+
 const EVERY: Duration = Duration::from_millis(900);
 
-/// A prompt a job sent, followed until its receipt ends.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobRun {
     pub job: String,
     pub delivery: u64,
-    /// The state of the delivery last put on the job (so a later note,
-    /// like a skipped run, is not overwritten by the same state again).
+
     pub seen: String,
 }
 
@@ -47,7 +33,6 @@ fn ok(v: Value) -> Value {
     json!({"ok": true, "result": v})
 }
 
-/// First `n` characters.
 fn head(s: &str, n: usize) -> String {
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= n {
@@ -60,9 +45,6 @@ fn head(s: &str, n: usize) -> String {
     }
 }
 
-/// A moment typed or said: "in 2 hours", "2 days", an RFC 3339 time,
-/// "2026-10-15 09:00", "2026-10-15T09:00"; a bare date is the end of that
-/// day when `end_of_day`, else refused (an hour is needed).
 pub fn parse_when(s: &str, now: i64, end_of_day: bool) -> Result<i64, String> {
     let t = s.trim();
     let low = t.to_lowercase();
@@ -102,7 +84,6 @@ pub fn parse_when(s: &str, now: i64, end_of_day: bool) -> Result<i64, String> {
     ))
 }
 
-/// Seconds as "in 3:12" under an hour, else "in 2h", "in 3d".
 fn rel_future(t: i64, now: i64) -> String {
     let s = t - now;
     if s <= 0 {
@@ -117,7 +98,6 @@ fn rel_future(t: i64, now: i64) -> String {
     format!("in {}d", s / 86_400)
 }
 
-/// "3m ago", "2h ago".
 fn ago(t: i64, now: i64) -> String {
     let s = (now - t).max(0);
     if s < 60 {
@@ -131,17 +111,14 @@ fn ago(t: i64, now: i64) -> String {
     }
 }
 
-/// What a row of the schedules section is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchedKind {
-    /// A GodTerm job.
     Managed,
-    /// A Claude loop in a session's memory.
+
     Session,
-    /// In `.claude/scheduled_tasks.json`: fires only while a session runs
-    /// in that project.
+
     Durable,
-    /// A Grok scheduled task.
+
     Grok,
 }
 
@@ -156,7 +133,6 @@ impl SchedKind {
     }
 }
 
-/// How the last run went, for the row's color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Good,
@@ -165,13 +141,12 @@ pub enum Tone {
     Plain,
 }
 
-/// One line of the section.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchedRow {
     pub kind: SchedKind,
-    /// Job id, or "uid:loop id" of a session loop: what a click acts on.
+
     pub key: String,
-    /// Its tab, when open.
+
     pub uid: Option<u64>,
     pub label: String,
     pub tab: String,
@@ -180,26 +155,23 @@ pub struct SchedRow {
     pub last: String,
     pub tone: Tone,
     pub paused: bool,
-    /// Session loops: when it expires.
+
     pub expires: Option<String>,
-    /// The job id or the loop id.
+
     pub id: String,
-    /// "t12" while its tab is open, else empty.
+
     pub tab_id: String,
-    /// The tab's folder (its last part) and account.
+
     pub folder: String,
     pub account: String,
-    /// What it is grouped under: "t12" for an open tab, "tab:<label>"
-    /// for a closed or archived target, "godterm" without one; and how
-    /// that group is called ("t12 hacker sim", "GodTerm").
+
     pub group: String,
     pub group_label: String,
-    /// A dynamic loop that wakes itself (no fixed schedule).
+
     pub dynamic: bool,
 }
 
 impl SchedRow {
-    /// "schedule" or "loop", for the small label.
     pub fn shape(&self) -> &'static str {
         if self.dynamic {
             "loop"
@@ -209,7 +181,6 @@ impl SchedRow {
     }
 }
 
-/// The last part of a folder path.
 pub(crate) fn folder_tail(p: &str) -> String {
     std::path::Path::new(p)
         .file_name()
@@ -217,27 +188,22 @@ pub(crate) fn folder_tail(p: &str) -> String {
         .unwrap_or_else(|| p.to_string())
 }
 
-/// The per row buttons.
 pub const OP_RUN: u8 = 0;
 pub const OP_PAUSE: u8 = 1;
 pub const OP_DELETE: u8 = 2;
 pub const OP_ADOPT: u8 = 3;
-/// Session loops: ask the tab to cancel it (two clicks).
+
 pub const OP_STOP: u8 = 4;
-/// Go to its tab.
+
 pub const OP_OPEN: u8 = 5;
-/// A second click on delete within this long deletes.
+
 pub(crate) const CONFIRM: Duration = Duration::from_secs(6);
 
 impl App {
-    /// Now, Unix seconds (a test may fix it).
     pub fn job_now(&self) -> i64 {
         self.job_clock.unwrap_or_else(jobs::now_ts)
     }
 
-    /// A tab moved to another account (a new tab id, a new account): its
-    /// jobs follow. Else, once the old id is forgotten (a restart), they
-    /// look for the session in the old account and resume a stale copy.
     pub(crate) fn jobs_follow_move(&mut self, from: u64, to: u64, account: &str) {
         let mut n = 0;
         for j in self
@@ -263,9 +229,6 @@ impl App {
         }
     }
 
-    // ---- finding the target ----
-
-    /// The open tab a target names: by its id, else by its session.
     pub fn job_tab(&self, t: &Target) -> Option<(usize, usize)> {
         if let Some(u) = t.uid {
             if let Some(x) = self.locate_uid(u) {
@@ -281,7 +244,6 @@ impl App {
         })
     }
 
-    /// Where the target is: open, archived (id) or closed.
     pub fn job_target_state(&self, t: &Target) -> &'static str {
         if self.job_tab(t).is_some() {
             "open"
@@ -304,7 +266,6 @@ impl App {
             .map(|e| e.id.clone())
     }
 
-    /// The target for tab (s, i).
     pub fn job_target_of(&self, s: usize, i: usize) -> Target {
         let tab = &self.panes[s].tabs[i];
         let (provider, account) = match self.panes[s].account {
@@ -324,8 +285,6 @@ impl App {
         }
     }
 
-    /// Keep each job's target up to date with its open tab (its session
-    /// id appears once the tab has run; a rename changes the label).
     fn jobs_refresh_targets(&mut self) {
         let mut changed = false;
         for k in 0..self.jobs.jobs.len() {
@@ -343,8 +302,6 @@ impl App {
         }
     }
 
-    /// Open the target if it is not, without taking the screen; returns
-    /// its tab id and how it was woken.
     fn job_wake(&mut self, t: &Target) -> Result<(u64, Option<&'static str>), String> {
         if let Some((s, i)) = self.job_tab(t) {
             let tab = &self.panes[s].tabs[i];
@@ -365,7 +322,7 @@ impl App {
             self.launch_tab(s, i, kind);
             return Ok((uid, Some(why)));
         }
-        // Keep what is on screen: the reopen focuses the new tab.
+
         let focus = self.focus;
         let view = self.view;
         let actives: Vec<usize> = self.panes.iter().map(|p| p.active).collect();
@@ -378,7 +335,7 @@ impl App {
             let sid = sid.clone().ok_or(
                 "its tab was closed and it never had a session, so there is nothing to resume",
             )?;
-            // The Undo stack's copy would reopen it a second time.
+
             self.closed.retain(|c| c.session_id.as_ref() != Some(&sid));
             let c = crate::closed::ClosedTab {
                 account: t.account.clone(),
@@ -423,8 +380,6 @@ impl App {
         ))
     }
 
-    // ---- running ----
-
     fn set_result(&mut self, id: &str, state: &str, detail: impl Into<String>) {
         let now = self.job_now();
         if let Some(j) = self.jobs.find_mut(id) {
@@ -437,9 +392,6 @@ impl App {
         self.state_dirty = true;
     }
 
-    /// Send job `id`'s prompt to its tab now. `manual`: run_job_now (not
-    /// held back by a run still going). Returns the delivery id, and what
-    /// it took to open the tab.
     pub fn fire_job(
         &mut self,
         id: &str,
@@ -461,7 +413,7 @@ impl App {
             self.jobs_save();
             return Err(why.into());
         }
-        // Sync on: only the machine owning its conversation runs it.
+
         if let Some(why) = self.lease_job_block(&j) {
             self.set_result(id, "skipped", why.clone());
             self.jobs_save();
@@ -540,8 +492,6 @@ impl App {
         });
     }
 
-    /// Follow the prompts jobs sent: their receipts become the job's last
-    /// result.
     fn jobs_follow(&mut self) {
         let runs = self.job_runs.clone();
         let mut done = vec![];
@@ -594,7 +544,7 @@ impl App {
                 {
                     x.seen = state.to_string();
                 }
-                // Keep what the run's start said (woke, missed) in front.
+
                 let prev = self
                     .jobs
                     .find(&r.job)
@@ -621,8 +571,6 @@ impl App {
         self.job_runs.retain(|r| !done.contains(&r.job));
     }
 
-    /// Every second or so: fire what is due, follow what was sent, say
-    /// what ended or is about to. Nothing runs in the first seconds.
     pub fn jobs_tick(&mut self) {
         if self.job_clock.is_none() {
             if self.jobs_boot.elapsed() < BOOT_GRACE || self.jobs_ticked.elapsed() < EVERY {
@@ -633,7 +581,7 @@ impl App {
         if self.jobs.jobs.is_empty() && self.job_runs.is_empty() {
             return;
         }
-        // A run from before a restart can no longer be followed.
+
         for k in 0..self.jobs.jobs.len() {
             let j = &self.jobs.jobs[k];
             if j.last_result.as_ref().is_some_and(|r| !r.is_final())
@@ -669,7 +617,6 @@ impl App {
     fn job_event(&mut self, e: Event) {
         match e {
             Event::Fire { id, missed_by } => {
-                // (A failure was already said.)
                 let _ = self.fire_job(&id, missed_by, false);
             }
             Event::Skipped { id, missed_by } => {
@@ -709,9 +656,6 @@ impl App {
         }
     }
 
-    // ---- jobs of a tab (archiving) ----
-
-    /// Jobs that target tab `uid`.
     pub fn jobs_owned_by(&self, uid: u64) -> Vec<&Job> {
         self.jobs
             .jobs
@@ -720,8 +664,6 @@ impl App {
             .collect()
     }
 
-    /// "2 jobs (nightly check, digest) will wake it when they run", for
-    /// archiving a tab; None without jobs.
     pub fn jobs_wake_note(&self, uid: u64) -> Option<String> {
         let js = self.jobs_owned_by(uid);
         if js.is_empty() {
@@ -737,9 +679,6 @@ impl App {
         ))
     }
 
-    // ---- the section's rows ----
-
-    /// Managed jobs, then session loops, durable ones and Grok tasks.
     pub fn sched_rows(&self) -> Vec<SchedRow> {
         let now_ts = self.job_now();
         let mut v = vec![];
@@ -870,8 +809,7 @@ impl App {
                     .map(|e| format!("expires {}", crate::loops::rel(e, now))),
             });
         }
-        // Two rows of one tab with the same label (two crons with the
-        // same prompt): their ids tell them apart.
+
         let n = v.len();
         let twins: Vec<bool> = (0..n)
             .map(|a| (0..n).any(|b| b != a && v[b].group == v[a].group && v[b].label == v[a].label))
@@ -884,7 +822,6 @@ impl App {
         v
     }
 
-    /// A click on a row: go to its tab.
     pub fn sched_open(&mut self, key: &str) {
         let rows = self.sched_rows();
         let Some(r) = rows.iter().find(|r| r.key == key) else {
@@ -902,7 +839,6 @@ impl App {
         }
     }
 
-    /// A button on a row.
     pub fn sched_action(&mut self, key: &str, op: u8) {
         let rows = self.sched_rows();
         let Some(r) = rows.iter().find(|r| r.key == key).cloned() else {
@@ -967,14 +903,12 @@ impl App {
         }
     }
 
-    /// Whether the delete button of this row waits for its second click.
     pub fn sched_delete_armed(&self, key: &str) -> bool {
         self.sched_confirm
             .as_ref()
             .is_some_and(|(k, at)| k == key && at.elapsed() < CONFIRM)
     }
 
-    /// Open or close the section (kept in the state).
     pub fn toggle_sched(&mut self) {
         self.sched_open = !self.sched_open;
         self.state_dirty = true;
@@ -987,18 +921,12 @@ impl App {
         };
         j.enabled = !pause;
         if !pause {
-            // Resumed: the next regular time (what passed while paused
-            // is not a missed run).
             j.next_run = jobs::next_after(j, now, None);
         }
         self.state_dirty = true;
         self.jobs_save();
     }
 
-    // ---- adopting a session loop ----
-
-    /// Turn the session loop `loop_id` of tab `uid` into a job. `cancel`:
-    /// ask the tab to cancel its own loop.
     pub fn adopt_loop_now(
         &mut self,
         uid: u64,
@@ -1028,7 +956,6 @@ impl App {
         Ok(job)
     }
 
-    /// The job a session loop becomes.
     pub fn job_from_loop(
         &self,
         row: &crate::app_loops::LoopRow,
@@ -1057,7 +984,6 @@ impl App {
             if l.recurring {
                 cron = Some(c.clone());
             } else {
-                // A one time cron: its next time.
                 at = crate::loops::next_fire(c, Local::now()).map(|t| t.timestamp());
                 if at.is_none() {
                     return Err("that one time loop has no later time".into());
@@ -1094,8 +1020,6 @@ impl App {
         Ok(j)
     }
 
-    // ---- the assistant's tools ----
-
     fn job_state_words(&self, j: &Job) -> &'static str {
         match (&j.finished, j.enabled) {
             (Some(f), _) if f == "ended" => "ended",
@@ -1111,6 +1035,9 @@ impl App {
             "id": j.id,
             "name": j.name,
             "prompt": head(&j.prompt, 200),
+            "prompt_full": j.prompt,
+            "cron": j.cron,
+            "every_min": j.every_min,
             "schedule": j.cadence(),
             "status": self.job_state_words(j),
             "tab": {
@@ -1144,7 +1071,6 @@ impl App {
         v
     }
 
-    /// get_state: a summary the assistant always has.
     pub fn jobs_state_json(&self) -> Value {
         let now = self.job_now();
         let active: Vec<&Job> = self.jobs.jobs.iter().filter(|j| j.active()).collect();
@@ -1186,7 +1112,7 @@ impl App {
             Some(Value::String(t)) => Some(t.to_lowercase()),
             _ => None,
         };
-        // A tab's agent sees its own tab's only (see tab_scoped).
+
         let only = args.get("_only_uid").and_then(Value::as_u64);
         let jobs: Vec<Value> = self
             .jobs
@@ -1245,7 +1171,6 @@ impl App {
         ))
     }
 
-    /// The arguments of create_job / update_job, applied to `j`.
     fn job_apply(&mut self, j: &mut Job, args: &Value, creating: bool) -> Result<(), String> {
         let now = self.job_now();
         let s = |k: &str| {
@@ -1261,7 +1186,7 @@ impl App {
         if let Some(p) = s("prompt") {
             j.prompt = p;
         }
-        // A target.
+
         if args.get("tab").is_some_and(|v| !v.is_null()) {
             let (sl, t) = self.one_tab(args)?;
             j.target = self.job_target_of(sl, t);
@@ -1280,7 +1205,7 @@ impl App {
                 label: e.label.clone(),
             };
         }
-        // A schedule: exactly one kind.
+
         let cron = s("cron");
         let every = match args.get("every").or(args.get("every_minutes")) {
             Some(Value::Number(n)) => Some(
@@ -1383,13 +1308,10 @@ impl App {
         }
     }
 
-    /// With sync on, a new job remembers this machine (a job with no
-    /// session runs only here).
     pub(crate) fn job_machine(&self) -> Option<String> {
         (self.lease_on() && !self.lease.me.is_empty()).then(|| self.lease.me.clone())
     }
 
-    /// The question for a job about to be created or changed.
     fn job_question(&self, verb: &str, j: &Job) -> String {
         let when = match j.next_run {
             Some(n) => format!(", next {}", jobs::local_words(n)),
@@ -1412,7 +1334,6 @@ impl App {
         )
     }
 
-    /// (plan, question, needs a yes) for the job tools.
     pub(crate) fn jobs_plan_for(
         &mut self,
         tool: &str,
@@ -1547,8 +1468,6 @@ impl App {
         }
     }
 
-    /// A job from a loop, with the schedule from the arguments when the
-    /// loop has none (a dynamic /loop).
     fn job_from_loop_args(
         &self,
         row: &crate::app_loops::LoopRow,
@@ -1577,7 +1496,6 @@ impl App {
         }
     }
 
-    /// Run a confirmed (or harmless) job plan.
     pub(crate) fn jobs_run_plan(
         &mut self,
         tool: &str,

@@ -1,8 +1,3 @@
-//! Writing git against local bare repos (file:// remotes, never a real
-//! host): commit, push, pull fast forward, sync, diverged pushed as a
-//! branch with every remote ref only moving forward, branch create and
-//! switch, and the no force property over every argument list.
-
 use super::*;
 
 fn base(tag: &str) -> PathBuf {
@@ -12,7 +7,6 @@ fn base(tag: &str) -> PathBuf {
     crate::fspath::canonical(&b).unwrap()
 }
 
-/// Fixture git, isolated from the user's settings.
 pub(crate) fn g(dir: &Path, args: &[&str]) -> String {
     let home = std::env::temp_dir().join(format!("godterm-ops-home-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
@@ -55,7 +49,6 @@ fn fixture_commit(dir: &Path, file: &str, text: &str, msg: &str) {
     g(dir, &["commit", "-q", "-m", msg]);
 }
 
-/// A bare remote and two clones of it (one commit on main).
 pub(crate) struct Fx {
     pub root: PathBuf,
     pub bare: PathBuf,
@@ -89,7 +82,6 @@ fn remote_head(fx: &Fx, branch: &str) -> String {
     g(&fx.bare, &["rev-parse", &format!("refs/heads/{branch}")])
 }
 
-/// Every ref the remote had before is an ancestor of what it has now.
 fn only_forward(fx: &Fx, before: &[(String, String)]) {
     for (r, old) in before {
         let now = g(&fx.bare, &["rev-parse", r]);
@@ -119,7 +111,7 @@ fn commit_push_pull_sync() {
     let fx = fixture("cps");
     let a = Ctx::new(&fx.a);
     let b = Ctx::new(&fx.b);
-    // Commit only what is staged, then everything.
+
     w(&fx.a.join("x.txt"), "x\n");
     assert_eq!(
         commit(&a, "nothing staged", false),
@@ -133,11 +125,11 @@ fn commit_push_pull_sync() {
     assert_eq!(push(&a).unwrap(), "Pushed main to origin.");
     only_forward(&fx, &before);
     assert_eq!(remote_head(&fx, "main"), g(&fx.a, &["rev-parse", "HEAD"]));
-    // B is behind: pull fast forwards it.
+
     assert_eq!(pull(&b).unwrap(), "Pulled (fast forward).");
     assert!(fx.b.join("x.txt").exists());
     assert_eq!(pull(&b).unwrap(), "Already up to date.");
-    // B commits; sync on A pulls it; then A commits and sync pushes.
+
     fixture_commit(&fx.b, "y.txt", "y\n", "Add y");
     push(&b).unwrap();
     assert_eq!(sync(&a).unwrap(), "Synced: pulled 1.");
@@ -190,10 +182,10 @@ fn diverged_goes_to_its_own_branch() {
         remote_head(&fx, "godterm/alice-s-macbook/main-20261025"),
         g(&fx.a, &["rev-parse", "HEAD"])
     );
-    // The same day again with newer work: a second name, never a force.
+
     fixture_commit(&fx.a, "a2.txt", "a2\n", "more");
     let said = push_as_branch(&a, "Alice's MacBook.local", "20261025").unwrap();
-    // (the first name fast forwards, so it is reused)
+
     assert!(
         said.contains("godterm/alice-s-macbook/main-20261025"),
         "{said}"
@@ -207,7 +199,7 @@ fn diverged_branch_name_taken_gets_a_suffix() {
     let fx = fixture("div2");
     let a = Ctx::new(&fx.a);
     let b = Ctx::new(&fx.b);
-    // B already pushed something under the name A would use.
+
     g(&fx.b, &["switch", "-q", "-c", "side"]);
     fixture_commit(&fx.b, "s.txt", "s\n", "side");
     g(
@@ -353,7 +345,7 @@ fn forbidden_lists() {
         let a: Vec<String> = g.iter().map(|s| s.to_string()).collect();
         assert_eq!(forbidden(&a), None, "{g:?}");
     }
-    // A refused list never runs.
+
     let r = run(
         &Ctx::new(&std::env::temp_dir()),
         &["push".to_string(), "--force".to_string()],
@@ -361,8 +353,6 @@ fn forbidden_lists() {
     assert!(matches!(r, Err(Fail::Msg(m)) if m.starts_with("refused")));
 }
 
-/// Over random names (dashes, plus signs, colons, "force"), every list
-/// any builder makes is either refused at build time or free of force.
 #[test]
 fn no_force_in_any_built_list() {
     let alpha: Vec<char> = "ab-+:f/.@{} ~^_*FORCEforce0".chars().collect();
@@ -405,7 +395,7 @@ fn no_force_in_any_built_list() {
         if let Ok(a) = a {
             let full = full_args(&ctx, &a);
             assert_eq!(forbidden(&full), None, "{full:?}");
-            // Options only: a message after -m and paths after -- are data.
+
             let mut skip = false;
             for x in &a {
                 if x == "--" {
@@ -466,7 +456,7 @@ fn credential_options_carry_no_token() {
         "credential.https://github.com.helper=!'/Applications/God Term/godterm' git-credential --account alice_acme"
     ));
     assert!(joined.contains("credential.useHttpPath=true"));
-    // A bad account name adds no helper at all.
+
     let bad = Ctx {
         account: Some("x; rm -rf ~".into()),
         ..ctx.clone()

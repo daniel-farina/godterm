@@ -1,5 +1,3 @@
-//! Open tabs persisted to `~/.godterm/state.json` so they reopen on restart.
-
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,74 +10,67 @@ pub struct TabState {
     pub cwd: String,
     #[serde(default)]
     pub session_id: Option<String>,
-    /// Custom tab name, if renamed.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Accent color from the tab's menu.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
-    /// Its id (t12): kept across restarts, so what the assistant remembers
-    /// about t12 still means this tab.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uid: Option<u64>,
-    /// Its group's name in the account's list.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
-    /// When it was first opened (seconds since 1970).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened: Option<u64>,
-    /// A turn was in progress at this save: after a restart it gets one
-    /// "continue" prompt (restore_continue_working).
+
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub was_working: bool,
-    /// When it was last seen working (seconds since 1970); an old mark
-    /// does not fire.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_at: Option<u64>,
-    /// The last prompt it was given, when known.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_prompt: Option<String>,
-    /// Its row said "finished" (a turn ended unseen) at this save.
+
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub finished: bool,
-    /// The Chrome profile folder bound to this tab's browser button (the
-    /// primary one when there are more).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<String>,
-    /// More Chrome profiles bound to the tab beside `browser`. Older
-    /// state has none, and an older GodTerm reading this keeps the
-    /// primary only.
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub browser_also: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SlotState {
-    /// Account name (not index, so config edits do not shuffle slots).
     #[serde(default)]
     pub account: Option<String>,
     #[serde(default)]
     pub active: usize,
     #[serde(default)]
     pub tabs: Vec<TabState>,
-    /// The pane's tab list is collapsed to a strip.
+
     #[serde(default)]
     pub sidebar_collapsed: bool,
-    /// Per pane tab list position override.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_pos: Option<crate::slot::TabPos>,
-    /// Tab list width dragged by hand.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_w: Option<u16>,
-    /// Hidden from the layout (running in the background).
+
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
-    /// Tab groups (name, color, collapsed), in order.
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<crate::tab_groups::TabGroup>,
-    /// The list's sort.
+
     #[serde(default, skip_serializing_if = "is_manual")]
     pub sort: crate::tab_groups::TabSort,
 }
@@ -104,73 +95,66 @@ pub struct SessionsView {
 pub struct AppState {
     #[serde(default)]
     pub focus: usize,
-    /// The next tab id: ids are never handed out twice, also across
-    /// restarts (a remembered t12 is that tab, or no tab at all).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_uid: Option<u64>,
     #[serde(default)]
     pub slots: Vec<SlotState>,
-    /// The terminal window's last size and position.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<crate::window::SavedWindow>,
-    /// Recently used folders for the New Tab dialog.
+
     #[serde(default)]
     pub recents: Vec<crate::picker::RecentDir>,
-    /// Runtime toggles (Ctrl-a e, Ctrl-a E) that override config.toml
-    /// until the setting is changed there.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_email: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privacy: Option<bool>,
-    /// Memory saver toggled with the Mem button / Ctrl-a Z.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_saver: Option<bool>,
-    /// How voice was running at the last save: "open" (open mic), "wake",
-    /// "push" or "off". With `voice.enabled` the next start comes back in
-    /// that mode, so an open mic reopens after a restart or crash.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
-    /// Layout picked with Ctrl-a L (overrides `layout` until it changes).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<String>,
-    /// Sessions view sort and filters.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions_view: Option<SessionsView>,
-    /// Recently closed tabs, oldest first (Ctrl-a W reopens).
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub closed_tabs: Vec<crate::closed::ClosedTab>,
-    /// Tab list width: "narrow", "normal" (default) or "wide".
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_list_width: Option<String>,
-    /// Dragged column and row sizes per shape.
+
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub ratios: crate::layout::RatioMap,
-    /// Requests to tabs not run yet (queued in GodTerm, typed in but not
-    /// seen, or in claude's queue): queued again after a restart or crash.
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deliveries: Vec<SavedDelivery>,
-    /// The assistant panel's Loops & schedules section is collapsed (it
-    /// is open by default).
+
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sched_collapsed: bool,
 }
 
-/// A request to a tab, saved until it runs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SavedDelivery {
     pub id: u64,
-    /// The tab id (uid).
+
     pub tab: u64,
     pub text: String,
-    /// queued, sending, sent or received.
+
     pub state: String,
-    /// When it was typed in (epoch ms), to find it in the transcript.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent_ms: Option<i64>,
-    /// A request from the user (its receipts are said).
+
     #[serde(default)]
     pub notify: bool,
-    /// When it was asked for (epoch s).
+
     #[serde(default)]
     pub created: i64,
 }
@@ -180,8 +164,6 @@ impl AppState {
         app_home().join("state.json")
     }
 
-    /// The saved state; a damaged file is moved aside (recover.rs) and
-    /// reads as none, so the start is clean.
     pub fn load() -> Option<AppState> {
         crate::recover::load_json(&Self::path())
     }
@@ -197,7 +179,6 @@ impl AppState {
     }
 }
 
-/// Claude's project dir name for a cwd: every non alphanumeric char is '-'.
 pub fn encode_project_dir(cwd: &Path) -> String {
     cwd.to_string_lossy()
         .chars()
@@ -205,8 +186,6 @@ pub fn encode_project_dir(cwd: &Path) -> String {
         .collect()
 }
 
-/// The newest transcript for `cwd` written since `since`, skipping ids in
-/// `taken`. Used to learn the session id of a tab we started fresh.
 pub fn detect_session(
     config_dir: &Path,
     cwd: &Path,
@@ -224,10 +203,7 @@ pub fn detect_session(
         let Some(id) = p.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
             continue;
         };
-        // A background run's own fork (`/bg`, `claude --bg`) is not this
-        // tab's conversation: adopting it would resume a job id that
-        // claude refuses ("running in the background") or that has no
-        // conversation yet on another account.
+
         if taken.contains(&id) || crate::session_ids::is_bg_session(config_dir, &id) {
             continue;
         }

@@ -1,22 +1,3 @@
-//! Accounts and logins from the web app's Accounts screen (`accounts`
-//! frames, not a control tool: the assistant cannot send them), and the
-//! long-lived token flow (`claude setup-token`), shared with the terminal
-//! UI's palette.
-//!
-//! - A login runs the CLI's own login in a tab of that account, as the
-//!   terminal UI does. Its screen is read (login_screen.rs): the sign in
-//!   URL goes to the browser as an "Open sign-in page" button, a code the
-//!   CLI asks for comes back from the phone and is typed into that tab
-//!   (never logged), and the account's login state is followed until it
-//!   shows logged in.
-//! - A token runs `claude setup-token` in a secret tab (pane.rs `secret`):
-//!   the token is taken out of the output before any screen sees it and
-//!   stored only in the keychain (acct_tokens.rs). The browser gets its
-//!   last four characters and creation date, never the token.
-//! - Log out, remove, copy and delete a token ask first (a one time
-//!   confirm id, 5 minutes); removing never deletes the account's folder
-//!   unless the user also ticked that, which asks a second time.
-
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -36,11 +17,11 @@ pub enum FlowKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stage {
     Starting,
-    /// The sign in page is known.
+
     SignIn,
-    /// The CLI waits for the code from the page.
+
     Code,
-    /// A code was typed in; waiting for the CLI.
+
     Checking,
     Done(String),
     Failed(String),
@@ -48,20 +29,20 @@ pub enum Stage {
 
 pub struct Flow {
     pub account: usize,
-    /// The account's name (indexes can move when config.toml changes).
+
     pub name: String,
     pub uid: u64,
     pub kind: FlowKind,
     pub stage: Stage,
     pub started: Instant,
     pub screen: LoginScreen,
-    /// Error lines already seen when the code was last sent.
+
     errors_seen: usize,
-    /// Onboarding screens answered (and when), so each gets one Enter.
+
     pressed: Vec<(&'static str, Instant)>,
-    /// The token tab's filter.
+
     catch: Option<Arc<Mutex<Scrub>>>,
-    /// Started from the terminal UI: the sign in page opens on the Mac.
+
     open_on_mac: bool,
     opened: bool,
     ended_at: Option<Instant>,
@@ -98,7 +79,6 @@ impl Flow {
     }
 }
 
-/// A destructive action waiting for the user's yes.
 struct Confirm {
     id: String,
     op: String,
@@ -110,16 +90,16 @@ struct Confirm {
 pub struct AcctState {
     pub flows: Vec<Flow>,
     confirms: Vec<Confirm>,
-    /// Browsers with the Accounts screen open (they get `view` pushes).
+
     pub watchers: Vec<u64>,
     last_view: String,
     last_tick: Option<Instant>,
     last_refresh: Option<Instant>,
-    /// Token facts by account name, read off the main thread.
+
     meta: Arc<Mutex<HashMap<String, Option<Meta>>>>,
     meta_at: Option<Instant>,
     meta_busy: Arc<std::sync::atomic::AtomicBool>,
-    /// Removed this run (they stay listed until GodTerm restarts).
+
     pub removed: Vec<String>,
 }
 
@@ -160,8 +140,6 @@ impl App {
         self.acct.flows.iter().rev().find(|f| &f.name == name)
     }
 
-    /// Token facts (cached; read again in the background every minute or
-    /// after a change).
     fn token_meta(&mut self, name: &str) -> Option<Meta> {
         let stale = self
             .acct
@@ -215,8 +193,6 @@ impl App {
         self.acct.meta_at = None;
     }
 
-    /// The Accounts screen's data. No secret is in it: login state, email
-    /// (unless privacy is on), plan, usage, token date and last four.
     pub fn accounts_view(&mut self) -> Value {
         let deps = self.deps();
         let brain = self.assistant.brain.as_ref().and_then(|b| b.account);
@@ -328,8 +304,7 @@ impl App {
             "swatches": swatches,
             "assistant_provider": self.cfg.assistant.provider,
             "privacy": self.privacy(),
-            // Syncing tokens: off unless turned on here, and only into a
-            // state repo checked private before each push.
+
             "token_sync": {
                 "on": prefs.sync_all,
                 "sync_enabled": self.cfg.sync.enabled,
@@ -342,7 +317,6 @@ impl App {
         })
     }
 
-    /// An `accounts` frame from a browser (src/web/ws.rs).
     pub fn web_accounts(&mut self, client: u64, v: Value) {
         let Some(c) = self.web.as_ref().and_then(|w| w.hub.client(client)) else {
             return;
@@ -371,7 +345,6 @@ impl App {
         c.out.text(out.to_string());
     }
 
-    /// One Accounts operation. Destructive ones answer `confirm` first.
     pub fn accounts_op(&mut self, op: &str, v: &Value) -> Result<Value, String> {
         self.acct.confirms.retain(|c| c.at.elapsed() < CONFIRM_FOR);
         match op {
@@ -383,7 +356,6 @@ impl App {
             }
             "code" => self.acct_code(v),
             "open_mac" => {
-                // A sign in that comes back to localhost: on the Mac.
                 let a = self.acct_index(v)?;
                 let url = self
                     .acct_flow(a)
@@ -506,8 +478,7 @@ impl App {
                     return Err("it has no token yet".into());
                 }
                 acct_tokens::set_uses_token(&name, on)?;
-                // The assistant on this account starts again with (or
-                // without) it.
+
                 if self.assistant.brain.as_ref().and_then(|b| b.account) == Some(a) {
                     self.assistant.brain = None;
                 }
@@ -535,7 +506,6 @@ impl App {
         }
     }
 
-    /// Ask before a destructive action: a one time id and the question.
     fn acct_ask(&mut self, op: &str, v: &Value) -> Result<Value, String> {
         let a = self.acct_index(v)?;
         let c = &self.cfg.accounts[a];
@@ -637,7 +607,7 @@ impl App {
                 if args["delete_data"].as_bool() != Some(true) {
                     return Ok(json!({"said": format!("Removed {label}; its folder is kept")}));
                 }
-                // The folder is a second, separate yes.
+
                 let dir = crate::config::tilde(&self.cfg.accounts[a].config_dir());
                 let id = new_id();
                 self.acct.confirms.push(Confirm {
@@ -698,8 +668,6 @@ impl App {
         }
     }
 
-    /// The code from the sign in page, typed into the login tab. Never
-    /// logged or echoed back.
     fn acct_code(&mut self, v: &Value) -> Result<Value, String> {
         let a = self.acct_index(v)?;
         let code = v["code"].as_str().unwrap_or("").trim().to_string();
@@ -766,7 +734,7 @@ impl App {
             return Err("the account could not be added".into());
         }
         let a = self.cfg.accounts.len() - 1;
-        // add_account started its login in the account's pane: watch it.
+
         if let Some(p) = self.panes.iter().position(|p| p.account == Some(a)) {
             let uid = self.panes[p].cur().uid;
             self.acct_watch(a, uid, FlowKind::Login, None, false);
@@ -803,8 +771,6 @@ impl App {
         });
     }
 
-    /// Start account `a`'s own login in a tab of its pane (a new tab when
-    /// the shown one is in use), watched for the Accounts screen.
     pub fn acct_start_login(&mut self, a: usize, open_on_mac: bool) -> Result<u64, String> {
         if self
             .acct_flow(a)
@@ -834,8 +800,6 @@ impl App {
         Ok(uid)
     }
 
-    /// `claude setup-token` for account `a` in a secret tab of its pane:
-    /// the token it prints is caught before any screen sees it.
     pub fn acct_start_token(&mut self, a: usize, open_on_mac: bool) -> Result<u64, String> {
         let c = self.cfg.accounts[a].clone();
         if c.harness() != crate::harness::Harness::Claude {
@@ -893,7 +857,6 @@ impl App {
         Ok(uid)
     }
 
-    /// From the palette: a long-lived token for the focused pane's account.
     pub fn palette_create_token(&mut self) {
         let Some(a) = self.panes.get(self.focus).and_then(|p| p.account) else {
             self.flash("No account in this pane");
@@ -908,8 +871,6 @@ impl App {
         }
     }
 
-    /// Every tick: follow the login and token tabs; push the Accounts
-    /// view to browsers that have it open when it changed.
     pub fn acct_tick(&mut self) {
         if self.acct.flows.is_empty() && self.acct.watchers.is_empty() {
             return;
@@ -937,7 +898,7 @@ impl App {
                 f.stage = Stage::Failed("it timed out; start it again".into());
                 continue;
             }
-            // A token first: it may be caught in the last output.
+
             if let Some(tok) = f
                 .catch
                 .as_ref()
@@ -990,7 +951,6 @@ impl App {
             match f.kind {
                 FlowKind::Token => {
                     if f.screen.token_created || !running {
-                        // Printed but never caught (or the CLI ended).
                         f.stage = Stage::Failed(if f.screen.token_created {
                             "the token was printed in a form GodTerm did not recognize; nothing was saved. Close that tab".into()
                         } else {
@@ -1035,7 +995,7 @@ impl App {
                 Stage::Starting
             };
         }
-        // Finished ones stay listed a while ("signed in"), then go.
+
         for f in &mut flows {
             if f.done() && f.ended_at.is_none() {
                 f.ended_at = Some(Instant::now());
@@ -1045,10 +1005,10 @@ impl App {
             f.ended_at
                 .is_none_or(|t| t.elapsed() < Duration::from_secs(180))
         });
-        // A flow started meanwhile (by a tick's action) is kept too.
+
         flows.append(&mut self.acct.flows);
         self.acct.flows = flows;
-        // Login state, at most every 2 s while a login runs.
+
         if !refresh.is_empty()
             && self
                 .acct
@@ -1065,7 +1025,6 @@ impl App {
         self.acct_push();
     }
 
-    /// The view to the browsers that watch it, when it changed.
     fn acct_push(&mut self) {
         let Some(hub) = self.web.as_ref().map(|w| Arc::clone(&w.hub)) else {
             return;
@@ -1088,7 +1047,6 @@ impl App {
         }
     }
 
-    /// For the assistant's state: login flows in words (never a token).
     pub fn acct_state_lines(&self) -> String {
         let mut s = String::new();
         for f in &self.acct.flows {
@@ -1113,8 +1071,6 @@ impl App {
     }
 }
 
-/// An account's login in one word: logged_in, logged_out, expired (the
-/// usage API refused it, or its token ran out with no refresh) or cli.
 pub fn login_state(st: &crate::app::AccountState) -> &'static str {
     let login = &st.login;
     if login.cli_managed {
@@ -1130,8 +1086,6 @@ pub fn login_state(st: &crate::app::AccountState) -> &'static str {
     }
 }
 
-/// Set one key of the `[[account]]` named `name` in config.toml (found by
-/// name, as remove_account does), keeping the file's comments.
 fn set_account_field(name: &str, key: &str, value: toml_edit::Item) -> Result<(), String> {
     use crate::config::Config;
     let path = Config::path();
@@ -1151,10 +1105,7 @@ fn set_account_field(name: &str, key: &str, value: toml_edit::Item) -> Result<()
     crate::config::write_atomic(&path, out.as_bytes()).map_err(|e| e.to_string())
 }
 
-/// Move a folder to the Trash (~/.Trash), named so it is found again.
 fn to_trash(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    // Only an account folder GodTerm made (under its own accounts/),
-    // never the main ~/.claude or ~/.grok.
     let managed = crate::config::app_home().join("accounts");
     let h = crate::config::home_dir();
     if crate::creds::is_default_dir(dir)

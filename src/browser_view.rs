@@ -1,17 +1,3 @@
-//! The live view of a tab's browser in the web app (`bview` frames,
-//! docs/WEB_APP.md): the page the tab's agent drives, as pictures that
-//! refresh while someone watches, and clicks, scrolls, history and typing
-//! sent back through `bsk`.
-//!
-//! It never starts a `bsk` session on its own: it attaches to the session
-//! the tab's agent already has (one on the tab's own browser, named in the
-//! agent's transcript or the only one there), or to one the user started
-//! with the view's Start button. Sessions on other browsers are never
-//! looked at. One capture loop runs per session, shared by everyone
-//! watching it, only while someone watches (each viewer says it still
-//! does every 20 s; a closed socket or 90 s of silence drops it), with no
-//! two captures at once and at most about 1.5 frames a second.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -22,27 +8,21 @@ use serde_json::{json, Value};
 use crate::browser::{self, Browser, ChromeProfile};
 use crate::web::tap::Outbox;
 
-/// Binary frame kind of a picture (docs/WEB_APP.md).
 pub const KIND_PICTURE: u8 = 5;
 
-/// A viewer that has not said it still watches for this long is dropped.
 const KEEP_FOR: Duration = Duration::from_secs(90);
-/// The fastest and slowest the pictures refresh: twice the time a capture
-/// takes, within these.
+
 const MIN_PERIOD: Duration = Duration::from_millis(650);
 const MAX_PERIOD: Duration = Duration::from_secs(3);
-/// URL and title are asked for this often.
+
 const META_EVERY: Duration = Duration::from_secs(2);
-/// After an action the next picture comes this soon.
+
 const AFTER_ACTION: Duration = Duration::from_millis(250);
-/// Pictures wider than this are scaled down.
+
 const MAX_WIDTH: u32 = 1440;
-/// The longest one `bsk` call of the view may take.
+
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
-// ---------- parsing ----------
-
-/// One `bsk session list --json` entry.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BskSession {
     pub id: String,
@@ -69,8 +49,6 @@ fn list_of<'a>(v: &'a Value, key: &str) -> &'a [Value] {
         .unwrap_or(&[])
 }
 
-/// `bsk session list --json`: an array (or `{sessions: [...]}`). Entries
-/// without an id are dropped; garbage gives nothing.
 pub fn parse_sessions(text: &str) -> Vec<BskSession> {
     let Ok(v) = serde_json::from_str::<Value>(text) else {
         return vec![];
@@ -87,7 +65,6 @@ pub fn parse_sessions(text: &str) -> Vec<BskSession> {
         .collect()
 }
 
-/// A tab of the session's Agent Window.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PageTab {
     pub id: String,
@@ -96,7 +73,6 @@ pub struct PageTab {
     pub active: bool,
 }
 
-/// `bsk tab list --json`: an array (or `{tabs: [...]}`).
 pub fn parse_tabs(text: &str) -> Vec<PageTab> {
     let Ok(v) = serde_json::from_str::<Value>(text) else {
         return vec![];
@@ -115,12 +91,10 @@ pub fn parse_tabs(text: &str) -> Vec<PageTab> {
         .collect()
 }
 
-/// The tab the pictures show: the active one, else the first.
 pub fn current_tab(tabs: &[PageTab]) -> Option<&PageTab> {
     tabs.iter().find(|t| t.active).or_else(|| tabs.first())
 }
 
-/// Width and height of a PNG (its IHDR) or a JPEG (its first SOF).
 pub fn image_size(b: &[u8]) -> Option<(u32, u32)> {
     if b.len() >= 24 && b.starts_with(b"\x89PNG\r\n\x1a\n") && &b[12..16] == b"IHDR" {
         let w = u32::from_be_bytes([b[16], b[17], b[18], b[19]]);
@@ -146,7 +120,6 @@ pub fn image_size(b: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
-/// The `--session <id>` of a bsk command (a literal id, not `$VAR`).
 fn session_arg(cmd: &str) -> Option<String> {
     let w = crate::tab_browser::shell_words(cmd);
     let mut found = None;
@@ -163,7 +136,6 @@ fn session_arg(cmd: &str) -> Option<String> {
     found
 }
 
-/// `"session_id": "<id>"` in a command's output.
 fn session_in_output(s: &str) -> Option<String> {
     let mut found = None;
     let mut rest = s;
@@ -181,9 +153,6 @@ fn session_in_output(s: &str) -> Option<String> {
     found
 }
 
-/// The session the tab's agent used last, from the tail of its transcript
-/// (JSONL): a `--session <id>` in a bsk command it ran, or the session id
-/// a `bsk session start --json` printed for it.
 pub fn last_session(tail: &str) -> Option<String> {
     for l in tail.lines().rev() {
         if !l.contains("session") {
@@ -221,8 +190,6 @@ fn walk_strings(v: &Value, f: &mut impl FnMut(&str)) {
     }
 }
 
-/// A bsk id: short, letters, digits, `-`, `_`, `.` and `:` only (so it can
-/// go into an argument list and a log line as it is).
 pub fn valid_id(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
@@ -230,24 +197,15 @@ pub fn valid_id(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "-_.:".contains(c))
 }
 
-// ---------- which session ----------
-
-/// What the view of a tab attaches to.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Choice {
-    /// This session, and why it is the tab's.
     Session(String, &'static str),
-    /// None: the agent has not opened the browser.
+
     NoSession,
-    /// Several sessions on the tab's browser and nothing says which is
-    /// this tab's.
+
     Unsure(usize),
 }
 
-/// The tab's session among `sessions`: only those on `instances` (the
-/// tab's own browser) count. One the user started from this view comes
-/// first, then the one the agent's transcript names, then the only one
-/// there (unless another tab uses the same browser).
 pub fn choose(
     sessions: &[BskSession],
     instances: &[String],
@@ -273,33 +231,28 @@ pub fn choose(
     }
 }
 
-// ---------- what the UI thread hands over ----------
-
-/// Everything a `bview` frame needs from the app, taken on the UI thread
-/// (the bsk calls run on their own thread).
 #[derive(Debug, Clone, Default)]
 pub struct Ctx {
     pub uid: u64,
     pub bin: Option<PathBuf>,
-    /// The tab's Chrome profile (None: no browser set).
+
     pub profile: Option<ChromeProfile>,
     pub enabled_profiles: usize,
     pub this_enabled: bool,
-    /// The agent's transcript, for the session it used.
+
     pub transcript: Option<PathBuf>,
-    /// The tab's more profiles, each with whether its extension is on.
+
     pub also: Vec<(ChromeProfile, bool)>,
-    /// Labels the user linked to profiles (`[browser] links`).
+
     pub links: crate::tab_browser::Links,
-    /// Another tab is bound to the same profile.
+
     pub shared: bool,
-    /// Where pictures are written for a moment.
+
     pub tmp: PathBuf,
-    /// `sips` (macOS) to make JPEGs; None sends the PNG.
+
     pub sips: Option<PathBuf>,
 }
 
-/// Sessions started from the view, by tab uid.
 fn started() -> &'static Mutex<HashMap<u64, String>> {
     static S: std::sync::OnceLock<Mutex<HashMap<u64, String>>> = std::sync::OnceLock::new();
     S.get_or_init(Default::default)
@@ -320,8 +273,6 @@ fn bsk(ctx: &Ctx, args: &[&str], timeout: Duration) -> Result<String, String> {
     }
 }
 
-/// The message of a bsk JSON error (`{error: {message}}`, `{error: "..."}`,
-/// `{message}`).
 fn bsk_error(out: &str) -> Option<String> {
     let v: Value = serde_json::from_str(out.trim()).ok()?;
     let e = v.get("error").unwrap_or(&v);
@@ -333,7 +284,6 @@ fn bsk_error(out: &str) -> Option<String> {
     Some(crate::sessions::snippet(m, 160))
 }
 
-/// The tab's own browsers (bsk instances) now.
 fn instances(ctx: &Ctx) -> Result<Vec<Browser>, String> {
     let p = ctx.profile.as_ref().ok_or("no browser set")?;
     let all = browser::parse_browsers(&bsk(ctx, &["browsers", "--json"], CALL_TIMEOUT)?);
@@ -351,7 +301,6 @@ fn instances(ctx: &Ctx) -> Result<Vec<Browser>, String> {
     Ok(out)
 }
 
-/// The tab's session, or a `bview` reply saying why there is none.
 fn resolve(ctx: &Ctx) -> Result<String, Value> {
     let none = |state: &str, say: String, can_start: bool| json!({"ok": true, "state": state, "say": say, "can_start": can_start});
     let Some(p) = ctx.profile.as_ref() else {
@@ -408,8 +357,6 @@ fn resolve(ctx: &Ctx) -> Result<String, Value> {
     }
 }
 
-// ---------- the capture loops ----------
-
 struct Viewer {
     client: u64,
     uid: u64,
@@ -420,11 +367,11 @@ struct Viewer {
 #[derive(Default)]
 struct Shared {
     viewers: Vec<Viewer>,
-    /// The newest URL and title (sent to a viewer that joins).
+
     meta: Option<Value>,
-    /// Bring the next capture forward (an action happened).
+
     soon: bool,
-    /// The viewport in CSS pixels, once asked for.
+
     viewport: Option<(f64, f64)>,
 }
 
@@ -455,7 +402,6 @@ fn all_streams() -> Vec<Arc<Stream>> {
         .collect()
 }
 
-/// The stream `client` watches for tab `uid`.
 fn watched(client: u64, uid: u64) -> Option<Arc<Stream>> {
     all_streams().into_iter().find(|s| {
         s.lock()
@@ -465,7 +411,6 @@ fn watched(client: u64, uid: u64) -> Option<Arc<Stream>> {
     })
 }
 
-/// A capture loop runs for `session` (tests; the tests that use it are Unix only).
 #[cfg(test)]
 #[cfg_attr(not(unix), allow(dead_code))]
 pub fn streaming(session: &str) -> bool {
@@ -475,7 +420,6 @@ pub fn streaming(session: &str) -> bool {
         .contains_key(session)
 }
 
-/// Stop watching tab `uid` (every tab with None) for `client`.
 pub fn unwatch(client: u64, uid: Option<u64>) {
     for s in all_streams() {
         let mut g = s.lock();
@@ -488,10 +432,9 @@ pub fn unwatch(client: u64, uid: Option<u64>) {
     }
 }
 
-/// Watch `session` for tab `uid`: joins its loop, or starts one.
 fn watch(ctx: &Ctx, session: &str, client: u64, out: &Arc<Outbox>) {
     let uid = ctx.uid;
-    // A view shows one session per tab.
+
     for s in all_streams() {
         if s.session != session {
             let mut g = s.lock();
@@ -546,7 +489,6 @@ fn watch(ctx: &Ctx, session: &str, client: u64, out: &Arc<Outbox>) {
         .spawn(move || capture_loop(&s));
 }
 
-/// Send `v` (a `bview` frame without its tab) to every viewer.
 fn tell(s: &Stream, v: &Value) {
     for w in &s.lock().viewers {
         let mut m = v.clone();
@@ -556,8 +498,6 @@ fn tell(s: &Stream, v: &Value) {
     }
 }
 
-/// Drop viewers that left; false when none is left (the loop is then
-/// taken out of the registry, unless one joined meanwhile).
 fn prune(s: &Arc<Stream>) -> bool {
     let mut map = streams().lock().unwrap_or_else(|e| e.into_inner());
     let mut g = s.lock();
@@ -613,7 +553,7 @@ fn capture_loop(s: &Arc<Stream>) {
             }
             Err(e) => {
                 fails += 1;
-                // Gone (the agent stopped it): say so and stop.
+
                 let live = bsk(&s.ctx, &["session", "list", "--json"], CALL_TIMEOUT)
                     .map(|o| parse_sessions(&o).iter().any(|x| x.id == s.session));
                 if live == Ok(false) {
@@ -634,8 +574,7 @@ fn capture_loop(s: &Arc<Stream>) {
                 }
             }
         }
-        // Twice the capture's time (no overlap, at most ~1.5 a second),
-        // slower while it keeps failing; sooner after an action.
+
         let took = t0.elapsed();
         let mut period = (took * 2).clamp(MIN_PERIOD, MAX_PERIOD);
         if fails > 0 {
@@ -663,8 +602,6 @@ fn capture_loop(s: &Arc<Stream>) {
     crate::log::info(&format!("bview: stopped watching session {}", s.session));
 }
 
-/// One viewport picture: JPEG when that is smaller (and scaled down when
-/// very wide), else the PNG.
 fn capture(ctx: &Ctx, session: &str) -> Result<Vec<u8>, String> {
     let _ = std::fs::create_dir_all(&ctx.tmp);
     let tag: String = session
@@ -719,13 +656,10 @@ fn to_jpeg(sips: &Path, png_bytes: &[u8], png: &Path, jpg: &Path) -> Option<Vec<
     let out = ok.then(|| std::fs::read(jpg).ok()).flatten();
     let _ = std::fs::remove_file(jpg);
     let out = out.filter(|j| image_size(j).is_some())?;
-    // A scaled picture is always taken; else only a smaller one.
+
     (w > MAX_WIDTH || out.len() < png_bytes.len()).then_some(out)
 }
 
-// ---------- actions ----------
-
-/// A URL typed in the view: http(s) only; a bare host gets https.
 pub fn clean_url(s: &str) -> Option<String> {
     let s = s.trim();
     if s.is_empty() || s.len() > 4096 || s.chars().any(char::is_control) {
@@ -755,7 +689,6 @@ pub fn clean_url(s: &str) -> Option<String> {
     Some(format!("https://{s}"))
 }
 
-/// A key for `bsk press`: a name or a combo (`Enter`, `Ctrl+A`).
 pub fn valid_key(k: &str) -> bool {
     !k.is_empty() && k.len() <= 24 && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '+')
 }
@@ -765,10 +698,6 @@ fn frac(v: &Value, k: &str) -> Option<f64> {
         .filter(|x| x.is_finite() && (0.0..=1.0).contains(x))
 }
 
-/// The page script of a click at (fx, fy) (fractions of the viewport):
-/// the element there is marked for a real `bsk click` when its centre is
-/// that element too (a button, a link); else the click is dispatched at
-/// the point itself (a big container, a canvas).
 pub fn click_script(fx: f64, fy: f64, mark: &str) -> String {
     format!(
         r#"(() => {{
@@ -790,7 +719,6 @@ pub fn click_script(fx: f64, fy: f64, mark: &str) -> String {
     )
 }
 
-/// The first object with `key` in a JSON answer.
 fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     match v {
         Value::Object(o) => o
@@ -801,7 +729,6 @@ fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     }
 }
 
-/// Run one action on `session`. Ok: a word for the page.
 fn act(ctx: &Ctx, session: &str, v: &Value, stream: &Stream) -> Result<String, String> {
     let what = v["do"].as_str().unwrap_or("");
     let s = session;
@@ -875,7 +802,6 @@ fn act(ctx: &Ctx, session: &str, v: &Value, stream: &Stream) -> Result<String, S
             }
         }
         "wheel" => {
-            // Fractions of the picture, in page pixels.
             let dy = v["dy"]
                 .as_f64()
                 .filter(|x| x.is_finite())
@@ -933,13 +859,6 @@ fn act(ctx: &Ctx, session: &str, v: &Value, stream: &Stream) -> Result<String, S
     }
 }
 
-// ---------- a frame ----------
-
-/// Answer one `bview` frame (on its own thread): `open` attaches the view
-/// to the tab's session and starts the pictures, `keep` says the viewer
-/// still watches, `close` stops, `act` runs an action on the watched
-/// session, `start` starts a session on the tab's browser (the user's
-/// press of the Start button).
 pub fn handle(ctx: &Ctx, client: u64, out: &Arc<Outbox>, v: &Value) {
     let op = v["op"].as_str().unwrap_or("");
     let reply = |mut r: Value| {
@@ -1048,16 +967,11 @@ pub fn handle(ctx: &Ctx, client: u64, out: &Arc<Outbox>, v: &Value) {
     }
 }
 
-/// The first 8 characters of a session id (for the page; the id itself
-/// never needs to leave GodTerm).
 fn short(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
-// ---------- the UI thread's side ----------
-
 impl crate::app::App {
-    /// What a `bview` frame for tab `uid` needs to know.
     pub fn bview_ctx(&self, uid: u64) -> Ctx {
         use crate::tab_browser::{button_state, ext_state, BtnState, ExtState};
         let env = self.browser_env_pub();
@@ -1127,7 +1041,6 @@ impl crate::app::App {
         }
     }
 
-    /// A `bview` frame from a browser: answered on its own thread.
     pub fn web_bview(&mut self, client: u64, v: Value) {
         let Some(c) = self.web.as_ref().and_then(|w| w.hub.client(client)) else {
             return;

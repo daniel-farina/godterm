@@ -1,9 +1,3 @@
-// AudioWorklet: mono mix, resample to 16 kHz, PCM16 chunks of 20 ms.
-// Also, a few times a second, what it sees (an object, not a buffer):
-// how often process() ran, how many of those had no input channels (the
-// mic source gives nothing: seen on iPhone home screen apps) and the
-// loudest sample, so the page can tell "never scheduled" from "no input"
-// from "only zeros".
 class Mic16k extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -31,7 +25,7 @@ class Mic16k extends AudioWorkletProcessor {
       s /= ch.length;
       const m = s < 0 ? -s : s;
       if (m > this.peak) this.peak = m;
-      // Linear interpolation between the previous and this sample.
+
       while (this.pos <= 1) {
         const v = this.prev + (s - this.prev) * this.pos;
         this.out[this.n++] = Math.max(-1, Math.min(1, v)) * 32767;

@@ -1,6 +1,3 @@
-// Management through `tool` frames: tab options, new tab, usage, jobs,
-// loops, modes. A tool that answers needs_confirmation gets its question
-// shown with a Yes; the yes calls it again with only confirm_token.
 import { $, h, on, emit, toast, store, pctClass, idOf, icon, isDesk, li, group, SWATCHES, words, cronWords, failRow } from './util.js';
 import { tool } from './conn.js';
 import { S, tabById } from './state.js';
@@ -21,8 +18,6 @@ export async function run(name, args, done = 'Done', extra) {
   return r;
 }
 
-// A tab moved to another account continues under a new id: a pane that
-// showed the old one shows the new (the user stays where they were).
 function followMoves(r) {
   for (const m of r?.result?.moved || []) {
     if (!m?.now || !m.from) continue;
@@ -36,14 +31,13 @@ function confirmSheet(name, c) {
   return new Promise((resolve) => {
     const yes = async () => {
       closeSheet();
-      // With a token the yes is the token alone; without one, confirm: true.
-      // The tap on Yes is the user's own answer (user_says), as typing it would be.
+
       resolve(await run(name, c.token ? { confirm_token: c.token } : { ...(c.args || {}), confirm: true }, 'Done', { user_says: 'yes' }));
     };
     openSheet({ kind: 'confirm' }, h('div.sh-title', {}, h('span', {}, 'Confirm')), h('div.appr-q', {}, q),
       h('div.appr-btns', {}, h('button.btn.pri', { onclick: yes }, 'Yes'), h('button.btn', { onclick: async () => {
         closeSheet();
-        // A no with the token drops the question in GodTerm too.
+
         if (c.token) await tool(name, { confirm_token: c.token }, 60000, { user_says: 'no' });
         resolve(null);
       } }, 'No')));
@@ -68,9 +62,6 @@ const harnessOf = (n) => S.accounts.find((a) => a.account === n)?.harness || 'cl
 export { li, group };
 const short = (p, n = 26) => (!p ? '' : p.length > n ? '…' + p.slice(-(n - 1)) : p);
 
-// Where the tab menu is shown: the docked panel (a desktop that has it
-// open), a popover at the click (a desktop), the bottom sheet (a phone).
-// Submenus replace it in place: a drill-down in the panel.
 let host = { pop: false, panel: false, at: null };
 const PANEL = { pop: true, panel: true, at: null };
 function show(...kids) {
@@ -78,8 +69,7 @@ function show(...kids) {
   else if (host.pop) openMenu(host.at, h('div.mbody.slide', {}, kids));
   else openSheet({ kind: 'tab' }, h('div.mbody.slide', {}, kids));
 }
-// Done in a submenu: the panel goes back to the tab's options, a menu or
-// a sheet closes.
+
 function leave() {
   if (host.panel) panelPaint('root');
   else closeSheet();
@@ -88,7 +78,6 @@ function sub(t, name, ...kids) {
   show(h('div.subhead', {}, h('button.ib.sm', { 'aria-label': 'Back', title: 'Back', onclick: () => go('root', t), html: icon('back') }), h('span', {}, name)), ...kids);
 }
 
-// The sections of a tab's options, by name (the status bar opens them).
 const SECTIONS = {
   root: (t) => menu(t.id),
   rename: (t) => renameSheet(t),
@@ -103,13 +92,13 @@ const SECTIONS = {
   browser: (t) => browserSheet(t),
   git: (t) => {
     const panel = host.panel;
-    // (Mounted after the import: the panel is named, not the host then.)
+
     const inPanel = (fn) => () => { const prev = host; host = PANEL; try { fn(); } finally { host = prev; } };
     const place = panel ? { mount: (body) => inPanel(() => sub(t, 'Git', body))(), back: inPanel(() => panelPaint('root')) } : null;
     return import('./git.js').then((m) => m.gitSheet(t, place));
   },
 };
-// Painted again as the state changes (the others fetch, or hold typing).
+
 const LIVE = new Set(['root', 'usage', 'model', 'loops', 'color', 'group', 'move', 'dup', 'copy']);
 let view = 'root';
 function go(key, t) {
@@ -124,8 +113,6 @@ export function tabActions(id, at = null) {
   menu(id);
 }
 
-// A status bar item: its section in the docked panel (a desktop opens
-// the panel for it), else a popover above the item.
 export function tabSection(id, key, r) {
   if (isDesk()) { setPanel(true); panelPaint(key); return; }
   const t = tabById(id);
@@ -134,10 +121,6 @@ export function tabSection(id, key, r) {
   go(key, t);
 }
 
-// ---- the docked panel (desktop) ----
-// The shown tab's options as a right hand panel instead of a dropdown:
-// the Tab button toggles it (kept per browser), it follows the tab shown,
-// and the terminals refit once when it opens or closes.
 let panelOn = false, panelTab = '', panelSig = '';
 export const panelIsOn = () => panelOn;
 export function setPanel(on, save = true) {
@@ -158,7 +141,7 @@ function paintPanel(kids, live) {
   b.replaceChildren(h('div.mbody' + (live ? '' : '.slide'), {}, kids));
   b.scrollTop = live ? top : 0;
 }
-// What a live section shows, to paint again only when it changed.
+
 function sigOf(t) {
   if (!t) return '';
   const a = acctOf(t.account);
@@ -181,7 +164,7 @@ function panelPaint(key = view, live = false) {
 let liveNow = false;
 {
   const el = $('#tabpanel');
-  // A click or typing in the panel answers there (not in a popover).
+
   for (const ev of ['pointerdown', 'focusin', 'keydown']) el.addEventListener(ev, () => { host = PANEL; }, true);
   let down = false;
   el.addEventListener('pointerdown', () => { down = true; }, true);
@@ -255,7 +238,6 @@ function menu(id) {
     ]));
 }
 
-// Archive; a working tab is archived only after a second yes (force).
 async function archive(t) {
   leave();
   const r = await tool('archive_tabs', { tab: t.id });
@@ -281,8 +263,6 @@ function renameSheet(t) {
   if (!liveNow) setTimeout(() => inp.select(), 50);
 }
 
-// The move waits for the tab's work: say why, and offer to stop it and move
-// now (move_now asks once more, naming what it stops).
 function moveNowSheet(t, to, why) {
   const acct = S.accounts.find((a) => a.account === to);
   openSheet({ kind: 'confirm' }, h('div.sh-title', {}, h('span', {}, t.name + ' is busy')),
@@ -299,7 +279,7 @@ function moveSheet(t, kind) {
     if (kind === 'copy') await run('copy_session', { session: t.session_id, account: to }, verbs[kind][1]);
     else {
       const r = await run('move_tab', { tab: t.id, to, copy: kind === 'dup' || undefined }, verbs[kind][1]);
-      // Busy: the move was queued. The owner may want it at once.
+
       const w = r?.result?.waiting_for?.[0];
       if (w && kind === 'move') moveNowSheet(t, to, w.why);
     }
@@ -312,7 +292,6 @@ function moveSheet(t, kind) {
   sub(t, verbs[kind][0], h('div.mnote', {}, `Only ${h0} accounts can continue a ${h0} conversation.`), ...group('', rows));
 }
 
-// The swatches the terminal UI offers (its own, over its group's), then None.
 const COLORS = [...SWATCHES, 'default'];
 function colorSheet(t) {
   sub(t, 'Accent color', ...group('', COLORS.map((c) => {
@@ -336,8 +315,7 @@ function groupSheet(t) {
 function modelSheet(t) {
   const hs = harnessOf(t.account);
   const acct = S.accounts.find((a) => a.account === t.account);
-  // The tab's model bar as GodTerm has it (Claude: Haiku, Sonnet, Opus,
-  // Fable; Grok's three), else the CLI picks its model itself.
+
   const models = Array.isArray(acct?.models) ? acct.models
     : (hs === 'grok' ? ['grok-4.7-build-fast', 'grok-4.7', 'grok-4.6'] : hs === 'claude' ? ['haiku', 'sonnet', 'opus', 'fable'] : []).map((m) => ({ arg: m, label: m }));
   if (!models.length) {
@@ -354,8 +332,6 @@ function modelSheet(t) {
     effortRow(t, hs));
 }
 
-// Claude Code's effort (its /effort command, sent as a prompt: after the
-// turn when busy); other CLIs show theirs, set inside the CLI.
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 function effortRow(t, hs) {
   if (hs !== 'claude') return t.effort ? h('div.mnote', {}, 'Effort ' + t.effort + ' (set inside the CLI)') : null;
@@ -369,7 +345,7 @@ const usageHint = (t) => {
   const left = a?.effective_left_pct ?? a?.five_hour_left_pct;
   return [a?.label, left != null ? left + '% left' : ''].filter(Boolean).join(' · ');
 };
-// The tab's account: its usage bars, and the accounts it can move to.
+
 function usageSheet(t) {
   const h0 = harnessOf(t.account);
   const others = S.accounts.filter((a) => a.account !== t.account && (a.harness || 'claude') === h0).map((a) => {
@@ -382,7 +358,6 @@ function usageSheet(t) {
     h('div.list', {}, li('usage', 'All accounts', { fn: () => { closeSheet(); manageSheet(); }, hint: 'Manage', chev: true })));
 }
 
-// A card row: a dot, a title with a right hint, and a line under it.
 const card = (title, right, line, dot) => h('div.lrow', {},
   h('div.ct', {}, dot ? h('span.dot.' + dot) : null, h('b', {}, title), right ? h('span.cs', {}, right) : null),
   line ? h('div.cs', {}, line) : null);
@@ -391,16 +366,9 @@ const ago = (ms) => {
   return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago';
 };
 
-// BrowserSkill for this tab: its Chrome profiles (the primary first) with
-// Open, Make primary, Remove and Clear; every Chrome profile with Use for
-// this tab and Also use; the connected browsers with the profile each is,
-// unmatched ones first, and This is <profile> to link one; then bsk's own
-// status. Every button is the user's own (tab_browser, link_browser):
-// agents never pick a browser.
 async function browserSheet(t) {
   const body = h('div', {}, h('div.mnote', {}, 'Checking BrowserSkill...'));
-  // The live view of the page the agent drives (bview.js): only while
-  // the agent has a session there, or one the user starts on purpose.
+
   const live = h('div', {});
   const rest = h('div', {});
   sub(t, 'Browser', body, live, rest);
@@ -420,8 +388,7 @@ async function browserSheet(t) {
     rest.replaceChildren(...more);
   };
   paint(r.result || r);
-  // Kept fresh while open (a first look may still be running, browsers
-  // connect and go): every few seconds, not while a picker is open.
+
   const again = async () => {
     if (!body.isConnected) return;
     if (!body.parentNode?.contains(document.activeElement) || document.activeElement?.tagName !== 'SELECT') {
@@ -459,7 +426,6 @@ function browserBody(t, v, paint) {
   const labelOf = (id) => browsers.find((b) => b.instance_id === id)?.label || id;
   const many = bound.length > 1;
 
-  // This tab: its profiles, the primary first.
   const mine = bound.length ? bound.map((b, i) => {
     const conn = (b.browsers || []).map(labelOf);
     const line = [b.email, EXT_WORD[b.state] || b.state,
@@ -477,7 +443,6 @@ function browserBody(t, v, paint) {
     ? 'Agents in this tab use only these browsers: the primary one unless the task is about another, and they ask you when unclear.'
     : 'Agents in this tab use only this browser.') : null;
 
-  // Every Chrome profile.
   const profRows = profiles.map((p) => {
     const st = p.state === 'on' ? 'ready' : 'approval';
     const tag = p.primary ? (many ? 'this tab · primary' : 'this tab') : p.bound ? 'this tab' : '';
@@ -489,7 +454,6 @@ function browserBody(t, v, paint) {
         bound.length ? btn('Also use', act('add', p.profile_dir, 'Added')) : null));
   });
 
-  // Connected browsers, unmatched first.
   const pick = (b) => {
     const s = h('select.inl', { 'aria-label': 'Which Chrome profile is this browser', onchange: () => s.value && link(b.label, s.value)() },
       h('option', { value: '' }, b.profile_dir ? 'This is another…' : 'This is…'),
@@ -532,9 +496,6 @@ function browserBody(t, v, paint) {
   ].flat().filter(Boolean)];
 }
 
-// The section as a GodTerm from before tab_browser shows it (read only,
-// until a restart): its Chrome profile, the browsers bsk sees, the
-// profiles and their extension, and what the doctor found.
 async function browserSheetOld(t, body, live) {
   const b = t.browser;
   if (b) import('./bview.js').then((m) => live.replaceChildren(h('div.gl', {}, 'Live view'), m.liveSlot(t))).catch(() => {});
@@ -569,7 +530,6 @@ async function browserSheetOld(t, body, live) {
     v.checked_secs_ago != null ? h('div.mnote', {}, 'Checked ' + v.checked_secs_ago + ' s ago' + (v.doctor?.summary ? ' · ' + v.doctor.summary : '')) : null].filter(Boolean));
 }
 
-// Jobs and loops, optionally only one tab's.
 export function jobRows(tabName) {
   const jobs = (S.jobs?.jobs || []).filter((j) => !tabName || j.tab === tabName);
   return jobs.map((j) => {
@@ -578,8 +538,34 @@ export function jobRows(tabName) {
       h('div.cs', {}, [j.status, j.tab && 'tab ' + j.tab, j.next && 'next ' + j.next, j.last && 'last ' + j.last].filter(Boolean).join(' · ')),
       h('div.acts', {}, h('button.btn.sm', { onclick: () => run('run_job_now', { job: j.id }, 'Started') }, 'Run now'),
         h('button.btn.sm', { onclick: () => run('update_job', { job: j.id, action: paused ? 'resume' : 'pause' }, paused ? 'Resumed' : 'Paused') }, paused ? 'Resume' : 'Pause'),
+        h('button.btn.sm', { onclick: () => jobEditSheet(j) }, 'Edit'),
         h('button.btn.sm.bad', { onclick: () => run('delete_job', { job: j.id }, 'Deleted') }, 'Delete')));
   });
+}
+
+async function jobEditSheet(j) {
+  const r = await tool('list_jobs', {});
+  const full = (r.result?.jobs || r.jobs || []).find((x) => x.id === j.id) || {};
+  const name = h('input', { type: 'text', value: full.name || j.name, placeholder: 'Name' });
+  const text = full.prompt_full ?? full.prompt ?? '';
+
+  const cut = full.prompt_full == null && text.length >= 200;
+  const prompt = h('textarea.f', { rows: 6, placeholder: 'Prompt to send', disabled: cut }, text);
+  const sched = full.cron || (full.every_min ? full.every_min + ' minutes' : '');
+  const every = h('input', { type: 'text', value: sched, placeholder: 'every: 30 minutes, or cron: 0 9 * * 1-5' });
+  const back = () => (sheetKind === 'manage' ? manageSheet() : closeSheet());
+  const save = async () => {
+    const args = { job: j.id, name: name.value.trim() || j.name };
+    if (!cut && prompt.value.trim()) args.prompt = prompt.value.trim();
+    const e = every.value.trim();
+    if (e && e !== sched) { if (/^[\d*\/,-]+(\s+[\d*\/,-]+){4}$/.test(e)) args.cron = e; else if (/^(in |\d{4}-)/.test(e)) args.at = e; else args.every = e; }
+    closeSheet();
+    await run('update_job', args, 'Job saved');
+  };
+  openSheet({ kind: 'jobedit', tall: true }, title('Edit job'), h('div.gl', {}, 'Name'), name, h('div.gl', {}, 'Prompt'), prompt,
+    cut ? h('div.mnote', {}, 'This GodTerm sends only the start of the prompt: restart it to edit the prompt here.') : null,
+    h('div.gl', {}, 'Schedule'), every, h('div.mnote', {}, 'Its tab stays the same. Leave the schedule as it is to keep it.'),
+    h('div.acts', {}, h('button.btn', { onclick: back }, 'Cancel'), h('button.btn.pri', { onclick: save }, 'Save')));
 }
 export function loopRows(tabId) {
   return (S.loops || []).filter((l) => !tabId || l.tab === tabId).map((l) => h('div.lrow', {},
@@ -615,8 +601,7 @@ export function newTabSheet() {
   const dir = h('input', { type: 'text', placeholder: '~/project or a recent project name', list: 'folders', autocapitalize: 'off', spellcheck: 'false' });
   const name = h('input', { type: 'text', placeholder: 'Or a task name: makes a new folder' });
   const prompt = h('textarea.f', { rows: 3, placeholder: 'Optional first prompt' });
-  // The folders in use, most used first, as one tap choices (a phone's
-  // datalist is hard to reach); the last folder opened here comes first.
+
   const count = new Map();
   for (const t of S.tabs) if (t.folder) count.set(t.folder, (count.get(t.folder) || 0) + 1);
   const lastDir = store.get('newtab.dir', null);
@@ -650,13 +635,12 @@ export function usageCards(only) {
     return h('div.lrow', {}, h('div.ct', {}, h('b', {}, a.label), h('span.cs', {}, [a.harness, `${a.tabs ?? 0} ${(a.tabs ?? 0) === 1 ? 'tab' : 'tabs'}`, a.assistant_runs_here && 'assistant', a.logged_in === false && 'logged out'].filter(Boolean).join(' · '))),
       buckets.map((b) => h('div.bar', {}, h('span.bn', {}, b.bucket), h('span.bt', { html: `<i class="${pctClass(b.left_pct)}" style="width:${Math.max(0, Math.min(100, b.left_pct ?? 0))}%"></i>` }),
         h('span.bv', {}, `${b.left_pct ?? '?'}%${b.resets_at ? ' · ' + b.resets_at.replace(/^\w+ /, '') : ''}`))),
-      // (A logged out account's "not_logged_in" says what the header says.)
+
       a.usage_error && !(a.logged_in === false && /logged/i.test(a.usage_error)) ? h('div.cs', {}, words(a.usage_error)) : null,
       a.next_reset_that_unblocks ? h('div.cs', {}, 'Unblocks ' + a.next_reset_that_unblocks) : null);
   });
 }
 
-// The modes in plain words, as the terminal UI's buttons say them.
 const VOICE = { off: 'Voice off', push: 'Push to talk', wake: 'Wake word', open: 'Open mic' };
 function modesCard() {
   const f = S.mode_flags || {};
@@ -680,7 +664,6 @@ function closedCards() {
     h('div.acts', {}, h('button.btn.sm', { onclick: () => run('reopen_closed', { index: c.index }, 'Reopening') }, 'Reopen'))));
 }
 
-// Who archived or closed it, in words.
 const BY = { web: 'from the web app', user: 'by you', assistant: 'by the assistant' };
 function archivedCards() {
   return (S.archived?.recent || []).map((a) => h('div.lrow', {}, h('div.ct', {}, h('b', {}, a.name), h('span.cs', {}, [a.account_label, a.archived && [a.archived, BY[a.by] || (a.by ? 'by ' + a.by : '')].filter(Boolean).join(' ')].filter(Boolean).join(' · '))),
@@ -701,11 +684,26 @@ export function manageSheet() {
   openSheet({ kind: 'manage', tall: true }, ...paint());
 }
 
-// Keep an open Manage sheet live (but not while typing in it).
+export function loopsAllSheet() {
+  const rows = loopRows();
+  openSheet({ kind: 'loopsall', tall: true }, title(`Loops · ${rows.length}`),
+    rows.length ? h('div.list', {}, rows) : h('div.mnote', { style: 'padding:0 4px' }, 'No loops running'));
+}
+export function jobsAllSheet() {
+  const rows = jobRows();
+  openSheet({ kind: 'jobsall', tall: true }, title(`Scheduled · ${rows.length}${S.jobs?.next ? ' · next ' + S.jobs.next : ''}`),
+    rows.length ? h('div.list', {}, rows) : h('div.mnote', { style: 'padding:0 4px' }, 'Nothing scheduled'));
+}
+
 let lastPaint = 0;
 on('state', () => {
   if (performance.now() - lastPaint < 1000) return;
   lastPaint = performance.now();
+  if ((sheetKind === 'loopsall' || sheetKind === 'jobsall') && !$('#sheet-body').contains(document.activeElement)) {
+    const top = $('#sheet-body').scrollTop;
+    (sheetKind === 'loopsall' ? loopsAllSheet : jobsAllSheet)();
+    $('#sheet-body').scrollTop = top;
+  }
   if (sheetKind === 'manage' && !$('#sheet-body').contains(document.activeElement)) {
     const top = $('#sheet-body').scrollTop;
     manageSheet();
@@ -713,8 +711,6 @@ on('state', () => {
   }
 });
 
-// GodTerm's own update: the notes, and an update now that asks first
-// (restart_to_update restarts GodTerm into the new version).
 export function updateSheet(u, text) {
   const notes = h('div.list', {}, h('div.lrow', { style: 'white-space:pre-wrap;font-size:14px;max-height:45vh;overflow:auto' }, u.notes || 'No release notes.'));
   openSheet({ kind: 'update' }, title(text), u.state ? h('div.dim', {}, u.state) : null, notes,

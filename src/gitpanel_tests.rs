@@ -1,8 +1,3 @@
-//! The Git section in the app: the assistant's git tools can only read or
-//! prepare (no tool, with or without a confirm token, commits, pushes,
-//! pulls, switches, binds or creates), and the TUI panel does each of
-//! those only on the user's own keys, after its confirmation.
-
 use super::*;
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::git_ops::tests::{fixture, g};
@@ -36,7 +31,7 @@ fn assistant_tools_cannot_change_anything() {
     std::fs::write(fx.a.join(".env"), "SECRET=1\n").unwrap();
     let before = snapshot(&fx);
     let dir = fx.a.to_string_lossy().to_string();
-    // No tool by any changing name exists, with or without a token.
+
     for t in NEVER_TOOLS {
         assert!(
             !crate::control::TOOLS.iter().any(|x| x.name == *t),
@@ -52,7 +47,7 @@ fn assistant_tools_cannot_change_anything() {
         }
     }
     app.assistant_calls = 0;
-    // Every git tool there is reads or prepares.
+
     for t in crate::control::TOOLS
         .iter()
         .filter(|t| t.name.starts_with("git_"))
@@ -88,7 +83,7 @@ fn assistant_tools_cannot_change_anything() {
         !crate::git_map::store_path().exists(),
         "a tool saved a binding"
     );
-    // What it prepared is waiting for the user, not done.
+
     assert_eq!(git_panel::draft(&fx.a).as_deref(), Some("Add w"));
     assert_eq!(git_panel::proposal(&fx.a).unwrap().repo, "a");
     let _ = std::fs::remove_dir_all(&fx.root);
@@ -119,7 +114,6 @@ fn screen(app: &mut App) -> String {
     s
 }
 
-/// The screen as HTML with its colors (for screenshots).
 fn screen_html(app: &mut App) -> String {
     use ratatui::style::Color;
     let mut t = crate::confirm_click_tests::term();
@@ -156,7 +150,6 @@ fn screen_html(app: &mut App) -> String {
     s
 }
 
-/// Where the test's screen dumps go (for the report).
 fn dump(name: &str, text: &str) {
     if let Some(d) = std::env::var_os("GODTERM_GIT_SHOTS") {
         let _ = std::fs::create_dir_all(&d);
@@ -170,7 +163,7 @@ fn tui_panel_commits_and_pushes_on_the_users_keys() {
     let fx = fixture("tui");
     let (mut app, home) = app_in("tui", &fx.a);
     std::fs::write(fx.a.join("notes.txt"), "n\n").unwrap();
-    // Tab options list it.
+
     assert!(app
         .tab_actions(0, 0)
         .iter()
@@ -185,7 +178,7 @@ fn tui_panel_commits_and_pushes_on_the_users_keys() {
     assert!(s.contains("Commit..."), "{s}");
     assert!(s.contains("No repo defined"), "{s}");
     let head0 = g(&fx.a, &["rev-parse", "HEAD"]);
-    // c opens the commit box with a first message; Enter checks.
+
     key(&mut app, KeyCode::Char('c'));
     let s = screen(&mut app);
     dump("tui-commit.txt", &s);
@@ -199,7 +192,7 @@ fn tui_panel_commits_and_pushes_on_the_users_keys() {
         head0,
         "nothing before the yes"
     );
-    // Esc backs out: still nothing.
+
     key(&mut app, KeyCode::Esc);
     assert_eq!(g(&fx.a, &["rev-parse", "HEAD"]), head0);
     key(&mut app, KeyCode::Char('c'));
@@ -216,7 +209,7 @@ fn tui_panel_commits_and_pushes_on_the_users_keys() {
         "{:?}",
         d.note
     );
-    // Push: checked, confirmed, pushed.
+
     key(&mut app, KeyCode::Char('p'));
     let s = screen(&mut app);
     key(&mut app, KeyCode::Enter);
@@ -227,9 +220,9 @@ fn tui_panel_commits_and_pushes_on_the_users_keys() {
         "{:?}\n{s}",
         d.note
     );
-    // A secret: Enter asks for the phrase; a wrong one pushes nothing.
+
     std::fs::write(fx.a.join("k.txt"), format!("x = AKIA{}\n", "Z".repeat(16))).unwrap();
-    // (the panel reads git again every few seconds; r does it now)
+
     key(&mut app, KeyCode::Char('r'));
     key(&mut app, KeyCode::Char('c'));
     key(&mut app, KeyCode::Enter);
@@ -257,7 +250,7 @@ fn tui_panel_commits_and_pushes_on_the_users_keys() {
         g(&fx.bare, &["rev-parse", "refs/heads/main"]),
         g(&fx.a, &["rev-parse", "HEAD"])
     );
-    // The tab list's badge and the state's warning, from the cache.
+
     app.git_tab_finished(&fx.a);
     crate::project_git::update(
         &app.project_index,

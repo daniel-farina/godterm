@@ -1,21 +1,9 @@
-//! Project .env files, as is (docs/SYNC.md 2.7). Every `.env` and
-//! `.env.*` (not `.env.example` / `.env.sample`) at a known project root
-//! and up to three folders down is captured, whether or not the project
-//! has a repo; nothing under a never folder, no symlinks. Stored at
-//! `env/<project-key>/<relpath>` in the state repo, never in the
-//! project's own repo: a file git would not ignore gets a warning.
-//! Restored with mode 0600 through a temp file (O_NOFOLLOW) and a rename;
-//! a local file that differs is kept, the other machine's copy written
-//! next to it as `.env.from-<machine>`, and the changed key names (never
-//! values) are reported.
-
 use anyhow::{bail, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use super::Ctx;
 
-/// Folders never walked into.
 const SKIP_DIRS: &[&str] = &[
     "node_modules",
     "target",
@@ -33,8 +21,6 @@ pub fn is_env_name(n: &str) -> bool {
         && !n.ends_with(".sync-tmp")
 }
 
-/// Known project roots: tab folders (open, closed, archived), the
-/// projects the assistant described, and bound repos.
 pub fn project_roots(ctx: &Ctx) -> Vec<PathBuf> {
     let mut v: BTreeSet<PathBuf> = BTreeSet::new();
     let read = |f: &str| -> serde_json::Value {
@@ -87,7 +73,6 @@ pub fn project_roots(ctx: &Ctx) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The .env files of one project root (path relative to it, path).
 pub fn env_files(root: &Path, never: &[PathBuf]) -> Vec<(String, PathBuf)> {
     let mut out = vec![];
     walk(root, root, 3, never, &mut out);
@@ -123,10 +108,7 @@ fn walk(root: &Path, d: &Path, depth: u32, never: &[PathBuf], out: &mut Vec<(Str
     }
 }
 
-/// Whether git would leave a file out of the project's repo: Some(true)
-/// ignored, Some(false) NOT ignored (warn), None no repo there.
 pub fn ignored(root: &Path, rel: &str) -> Option<bool> {
-    // Read only: check-ignore never writes.
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -144,9 +126,6 @@ pub fn ignored(root: &Path, rel: &str) -> Option<bool> {
     }
 }
 
-/// Write a restored .env: refuses a symlink (or a folder refused by the
-/// never list) at the target, mode 0600, a temp file opened with
-/// O_NOFOLLOW and O_EXCL, then renamed over.
 pub fn write_env(p: &Path, data: &[u8], never: &[PathBuf]) -> Result<()> {
     use std::io::Write;
     if let Some(why) = super::paths::refused(p, never) {
@@ -180,7 +159,6 @@ pub fn write_env(p: &Path, data: &[u8], never: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-/// KEY=value pairs of a .env text.
 fn pairs(t: &str) -> BTreeMap<String, String> {
     t.lines()
         .filter_map(|l| {
@@ -195,7 +173,6 @@ fn pairs(t: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The keys that differ between two .env texts (names only).
 pub fn changed_keys(a: &[u8], b: &[u8]) -> Vec<String> {
     let (x, y) = (
         pairs(&String::from_utf8_lossy(a)),
@@ -208,7 +185,6 @@ pub fn changed_keys(a: &[u8], b: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// The name a remote copy gets next to a differing local file.
 pub fn keep_both_path(p: &Path, machine: &str) -> PathBuf {
     let slug: String = machine
         .chars()
@@ -250,7 +226,7 @@ mod tests {
             .map(|(r, _)| r)
             .collect();
         assert_eq!(found, vec![".env", ".env.local", "api/.env"]);
-        // Written 0600, through a rename.
+
         let p = d.join("proj/.env");
         write_env(&p, b"A=2\nB=3\n", &[]).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"A=2\nB=3\n");
@@ -261,7 +237,7 @@ mod tests {
                 std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
                 0o600
             );
-            // A symlink at the target is never followed or replaced.
+
             std::fs::write(d.join("elsewhere"), "keep").unwrap();
             std::os::unix::fs::symlink(d.join("elsewhere"), d.join("proj/.env.prod")).unwrap();
             assert!(write_env(&d.join("proj/.env.prod"), b"X=1", &[]).is_err());
@@ -269,7 +245,7 @@ mod tests {
                 std::fs::read_to_string(d.join("elsewhere")).unwrap(),
                 "keep"
             );
-            // A folder linked into the vault is refused.
+
             std::os::unix::fs::symlink("/Volumes/Private/p", d.join("vp")).unwrap();
             assert!(write_env(&d.join("vp/.env"), b"X=1", &[]).is_err());
         }
@@ -282,7 +258,7 @@ mod tests {
             d.join("proj/.env.from-Mac-Book")
         );
         assert!(!is_env_name(".env.from-x") && is_env_name(".env.production"));
-        // check-ignore: not a repo, then a repo that ignores .env only.
+
         assert_eq!(ignored(&d.join("proj"), ".env"), None);
         let ok = std::process::Command::new("git")
             .args(["init", "-q"])

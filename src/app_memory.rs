@@ -1,13 +1,8 @@
-//! Memory saver and buffer settings: history per tab (smaller for tabs
-//! not on screen), idle background tabs suspended (their claude stopped,
-//! resumed with --resume when shown), caches and helpers dropped.
-
 use std::time::{Duration, Instant};
 
 use crate::app::App;
 use crate::pane::{Activity, LaunchKind};
 
-/// While the memory saver is on.
 pub const SAVER_VISIBLE_LINES: usize = 200;
 pub const SAVER_BACKGROUND_LINES: usize = 0;
 pub const SAVER_WRITER_QUEUE: usize = 64;
@@ -16,7 +11,6 @@ pub const SAVER_TRANSCRIPT_CACHE: usize = 10;
 pub const SAVER_VOICE_IDLE_MIN: u32 = 5;
 pub const SAVER_TTS_UNLOAD_S: u32 = 60;
 
-/// "10m", "30s", "1h", "90" (seconds); "off" or "0" disables.
 pub fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim().to_lowercase();
     if s.is_empty() || s == "off" || s == "0" || s == "never" {
@@ -38,7 +32,6 @@ impl App {
         self.rt_mem_saver.unwrap_or(self.cfg.memory_saver)
     }
 
-    /// The Mem button, Ctrl-a Z, "save memory".
     pub fn toggle_memory_saver(&mut self) {
         let on = !self.memory_saver_on();
         self.set_memory_saver(on);
@@ -59,8 +52,7 @@ impl App {
         }
         self.mem_ticked = crate::clock::ago(Duration::from_secs(5));
         self.memory_tick();
-        // Asked for: the tab on screen gets its new size now too (unless
-        // it is scrolled back; then once it is at the bottom).
+
         for s in 0..self.panes.len() {
             for t in 0..self.panes[s].tabs.len() {
                 let lines = self.history_for(s, t);
@@ -71,7 +63,6 @@ impl App {
         }
     }
 
-    /// Writer queue, read buffer, scrollback default and caches.
     pub fn apply_buffers(&mut self) {
         let saver = self.memory_saver_on();
         let (q, r) = if saver {
@@ -92,13 +83,12 @@ impl App {
                 vc.tts_unload_after_s = vc.tts_unload_after_s.clamp(1, SAVER_TTS_UNLOAD_S);
             }
             if assistant {
-                vc.tts_unload_after_s = 0; // keep the voice warm for replies
+                vc.tts_unload_after_s = 0;
             }
             v.configure_tts(&vc);
         }
     }
 
-    /// Restore mode: the memory saver always restores lazily.
     pub fn restore_mode(&self) -> &str {
         if self.force_eager {
             "eager"
@@ -109,7 +99,6 @@ impl App {
         }
     }
 
-    /// On screen right now (the active tab of a pane on the current page).
     pub fn tab_visible(&self, s: usize, t: usize) -> bool {
         self.view == crate::app::View::Grid
             && self
@@ -119,7 +108,6 @@ impl App {
             && self.pane_rects.get(s).is_some_and(|r| r.width > 0)
     }
 
-    /// History lines for a tab.
     pub fn history_for(&self, s: usize, t: usize) -> usize {
         let visible = self.tab_visible(s, t) || self.panes[s].active == t;
         if self.memory_saver_on() {
@@ -141,17 +129,12 @@ impl App {
         }
     }
 
-    /// A new history limit waits: never rebuild a tab scrolled back (the
-    /// wheel is in its history) or shrink the one on screen; it applies
-    /// once the view is back at the bottom or the tab leaves the screen.
     pub fn history_held(&self, s: usize, t: usize, lines: usize) -> bool {
         let tab = &self.panes[s].tabs[t];
         tab.history_lines() != lines
             && (tab.scroll > 0 || (self.tab_visible(s, t) && lines < tab.history_lines()))
     }
 
-    /// A tab the saver may pause: idle, off screen, its conversation
-    /// known, no loops, not waiting for you, not being moved.
     pub fn suspendable(&self, s: usize, t: usize, idle_for: Duration) -> bool {
         let tab = &self.panes[s].tabs[t];
         tab.is_running()
@@ -167,11 +150,9 @@ impl App {
                 .any(|m| m.source_uid == tab.uid || m.target_uid == tab.uid)
             && !self.queued_moves.iter().any(|m| m.uid == tab.uid)
             && !self.stop_reqs.iter().any(|r| r.uid == tab.uid)
-            // Background shells or subagents: busy, and pausing would kill them.
             && self.tab_background_work(s, t).is_none()
     }
 
-    /// Stop a tab's claude; it resumes its conversation when shown.
     pub fn suspend_tab(&mut self, s: usize, t: usize) {
         let tab = &mut self.panes[s].tabs[t];
         let Some(id) = tab.session_id.clone() else {
@@ -191,7 +172,6 @@ impl App {
         tab.set_history(0);
     }
 
-    /// About once a second: history caps, idle tabs, voice helpers.
     pub fn memory_tick(&mut self) {
         if self.mem_ticked.elapsed() < Duration::from_millis(900) {
             return;
@@ -224,7 +204,7 @@ impl App {
                 }
             }
         }
-        // Voice helpers stop after a while without use (push to talk only).
+
         let idle_min = if self.memory_saver_on() {
             SAVER_VOICE_IDLE_MIN
         } else {
@@ -241,8 +221,6 @@ impl App {
         }
     }
 
-    /// Free now: pause every idle background tab regardless of how long it
-    /// has been idle, drop caches, trim history.
     pub fn free_now(&mut self) {
         let mut paused = 0;
         for s in 0..self.panes.len() {
@@ -268,7 +246,6 @@ impl App {
         self.refresh_mem();
     }
 
-    /// Parsed transcript caches and loop scanners of tabs not running.
     pub fn drop_caches(&mut self) {
         for st in &mut self.accounts {
             *st.cache.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();

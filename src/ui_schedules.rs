@@ -1,12 +1,3 @@
-//! The Loops & schedules section above the assistant chat: one line for
-//! every running scheduled thing (GodTerm's own jobs, Claude's session
-//! loops, durable ones, Grok's tasks), open by default and collapsible
-//! (the choice is kept). Rows of one tab are grouped under a small header
-//! when there are several; columns are aligned; as many rows show as fit
-//! (up to about 40% of the panel) and the rest scroll. A click on a row
-//! opens its detail card (ui_schedcard) with labeled buttons; managed
-//! rows keep their small run, pause and delete buttons.
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -18,13 +9,12 @@ use crate::hits::{contains, text, Hits, UiAction};
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 use crate::ui_assistant::cells;
 
-/// The name keeps at least this many cells.
 const LABEL_MIN: u16 = 12;
-/// A row button: " ▶ ".
+
 const BTN_W: u16 = 3;
-/// The buttons column: three buttons, or " details ".
+
 const BTNS_W: u16 = 9;
-/// The kind badge column ("managed ").
+
 const BADGE_W: u16 = 8;
 
 fn tone_color(t: Tone) -> Color {
@@ -36,7 +26,6 @@ fn tone_color(t: Tone) -> Color {
     }
 }
 
-/// `s` cut to `w` cells (with "…" when cut).
 pub fn fit(s: &str, w: u16) -> String {
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if cells(&flat) <= w {
@@ -53,7 +42,6 @@ pub fn fit(s: &str, w: u16) -> String {
     out
 }
 
-/// The columns after the name, left to right.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Col {
     Tab,
@@ -64,7 +52,6 @@ pub enum Col {
     Last,
 }
 
-/// Dropped first when the name would get too narrow.
 const DROP_ORDER: [Col; 6] = [
     Col::Folder,
     Col::Shape,
@@ -108,14 +95,10 @@ fn col_cap(c: Col) -> u16 {
     }
 }
 
-/// Rows under a group header leave these to the header.
 fn header_has(c: Col) -> bool {
     matches!(c, Col::Tab | Col::Folder)
 }
 
-/// Column widths for `rows` (each with whether it is indented under a
-/// group header) in `w` cells (after the badge, before the buttons):
-/// (name width, the columns shown with their widths).
 pub fn columns(rows: &[(&SchedRow, bool)], w: u16) -> (u16, Vec<(Col, u16)>) {
     let all = [
         Col::Tab,
@@ -150,7 +133,6 @@ pub fn columns(rows: &[(&SchedRow, bool)], w: u16) -> (u16, Vec<(Col, u16)>) {
     (name, cols)
 }
 
-/// The buttons a managed row has: (glyph, op, hint).
 fn buttons(r: &SchedRow, app: &App) -> Vec<(&'static str, u8, String)> {
     vec![
         (
@@ -176,10 +158,6 @@ fn buttons(r: &SchedRow, app: &App) -> Vec<(&'static str, u8, String)> {
     ]
 }
 
-/// Draw the section at (x, y), `w` wide, in at most `avail` rows of a
-/// panel `panel_h` tall: a title row, the lines, and a divider row under
-/// it that sets it off from the chat (all inside the rows returned, which
-/// the chat never draws over). Returns the rows it took.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     buf: &mut Buffer,
@@ -193,7 +171,7 @@ pub fn draw(
 ) -> u16 {
     app.sched_ui.rect.set(Rect::default());
     let (rows, lines) = app.sched_view();
-    // One row of `avail` is the divider.
+
     let (shown, h) = plan(
         app.sched_open,
         lines.len(),
@@ -215,21 +193,19 @@ pub fn draw(
             }
         }
     }
-    // The divider under the section: a calm rule, so the chat below is
-    // plainly another area.
+
     for xx in x..end {
         if let Some(c) = buf.cell_mut((xx, y + h)) {
             c.set_char('─');
             c.set_style(Style::default().fg(FAINT).bg(BAR_BG));
         }
     }
-    // The header: ▾/▸, the title, a count per kind, the scroll, failures.
+
     let head_rect = Rect::new(x, y, w, 1);
     let hovered = app
         .mouse_pos
         .is_some_and(|(c, r)| contains(head_rect, c, r));
-    // The title row is a band of its own (SEL_BG), the rows under it the
-    // panel's background.
+
     let hbg = SEL_BG;
     for xx in x..end {
         if let Some(c) = buf.cell_mut((xx, y)) {
@@ -299,8 +275,7 @@ pub fn draw(
             );
         }
     }
-    // The whole section (the divider too) is the wheel's: rows and buttons
-    // laid over it win their clicks.
+
     hits.add(
         Rect::new(x, y, w, h + 1),
         UiAction::SchedArea,
@@ -365,7 +340,7 @@ pub fn draw(
                     &format!(" · {count}"),
                     Style::default().fg(DIM).bg(bg),
                 );
-                // Its folder and account, if there is room.
+
                 let first = rows.iter().find(|r| &r.group == key);
                 if let Some(r) = first {
                     let wh: Vec<&str> = [r.folder.as_str(), r.account.as_str()]
@@ -443,7 +418,7 @@ fn draw_row(
         }
     }
     let dim = r.paused;
-    // The kind badge.
+
     text(
         buf,
         g.badge_x,
@@ -492,7 +467,7 @@ fn draw_row(
         );
         cx += wd + 1;
     }
-    // The row: a click opens its card.
+
     let hint = match r.kind {
         SchedKind::Managed => format!(
             "Details of \"{}\" (managed by GodTerm): run, pause, delete, open its tab",
@@ -514,7 +489,6 @@ fn draw_row(
         hint.clone(),
     );
     if r.kind != SchedKind::Managed {
-        // A plain labeled chip: the card has the actions.
         let rect = Rect::new(g.btn_x, y, BTNS_W.min(end - g.btn_x), 1);
         let h = app.mouse_pos.is_some_and(|(c, cy)| contains(rect, c, cy));
         text(

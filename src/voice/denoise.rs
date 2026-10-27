@@ -1,20 +1,10 @@
-//! Neural noise suppression for steady non speech noise (fans, hum, keys,
-//! street noise): RNNoise through `nnnoiseless`, a pure Rust port, so it
-//! works the same on Linux. RNNoise runs at 48 kHz in 10 ms frames; the
-//! mic stream is 16 kHz, so frames go up 3x through a polyphase low pass,
-//! through the network, and back down. About 12 ms of delay.
-//!
-//! It does not remove other people talking (that is speech too; see
-//! speaker.rs for that).
-
 use nnnoiseless::DenoiseState;
 
 const UP: usize = 3;
-/// Low pass taps (per 48 kHz sample); a multiple of UP.
+
 const TAPS: usize = 48;
 
 fn lowpass() -> Vec<f32> {
-    // Windowed sinc, cutoff 7.6 kHz at 48 kHz, Blackman window, unity DC.
     let fc = 7_600.0 / 48_000.0;
     let m = (TAPS - 1) as f32;
     let mut h: Vec<f32> = (0..TAPS)
@@ -38,16 +28,15 @@ fn lowpass() -> Vec<f32> {
 pub struct Denoiser {
     st: Box<DenoiseState<'static>>,
     h: Vec<f32>,
-    /// Last 16 kHz inputs (for the upsampler).
+
     up_hist: Vec<f32>,
-    /// 48 kHz samples waiting for a full RNNoise frame.
+
     pending: Vec<f32>,
-    /// Denoised 48 kHz samples not yet downsampled (primed with a frame
-    /// of silence, so output keeps pace with input).
+
     ready: std::collections::VecDeque<f32>,
-    /// Last 48 kHz denoised samples (for the downsampler).
+
     down_hist: Vec<f32>,
-    /// RNNoise's speech probability for the last frame.
+
     pub vad: f32,
 }
 
@@ -70,14 +59,13 @@ impl Denoiser {
         }
     }
 
-    /// Denoise one 16 kHz frame in place (any length).
     pub fn process(&mut self, frame: &mut [i16]) {
         let k = TAPS / UP;
         let mut out = vec![0f32; DenoiseState::FRAME_SIZE];
         for s in frame.iter() {
             self.up_hist.rotate_left(1);
             self.up_hist[k - 1] = *s as f32;
-            // Polyphase: output phase p uses taps p, p+3, p+6, ...
+
             for p in 0..UP {
                 let mut acc = 0f32;
                 for j in 0..k {
@@ -117,7 +105,7 @@ mod tests {
     fn lowpass_has_unity_gain_and_cuts_highs() {
         let h = lowpass();
         assert!((h.iter().sum::<f32>() - 1.0).abs() < 1e-4);
-        // Response at 12 kHz (well over the cutoff) is small.
+
         let w = 2.0 * std::f32::consts::PI * 12_000.0 / 48_000.0;
         let (re, im) = h.iter().enumerate().fold((0.0, 0.0), |(r, i), (n, v)| {
             (r + v * (w * n as f32).cos(), i - v * (w * n as f32).sin())
@@ -128,7 +116,7 @@ mod tests {
     #[test]
     fn keeps_a_voice_band_tone_and_cuts_steady_noise() {
         let mut d = Denoiser::new();
-        // 2 s of white-ish noise at about -30 dBFS.
+
         let mut seed = 7u32;
         let mut noise = || {
             seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
@@ -150,13 +138,12 @@ mod tests {
             "noise cut by {:.1} dB",
             db(before) - db(after)
         );
-        // Output keeps the frame length and the stream stays in step.
+
         let mut fr = vec![0i16; FRAME];
         d.process(&mut fr);
         assert_eq!(fr.len(), FRAME);
     }
 
-    /// CPU cost: denoising must run far faster than real time.
     #[test]
     fn faster_than_real_time() {
         let mut d = Denoiser::new();
@@ -164,12 +151,12 @@ mod tests {
             .map(|i| ((i * 37) % 2000) as i16 - 1000)
             .collect();
         let t = std::time::Instant::now();
-        let frames = 100; // 3 s of audio
+        let frames = 100;
         for _ in 0..frames {
             d.process(&mut fr);
         }
         let took = t.elapsed().as_secs_f32();
-        // Debug builds are slow; still well under real time.
+
         assert!(took < 3.0, "{took:.2} s for 3 s of audio");
     }
 }

@@ -21,7 +21,6 @@ REC = os.path.join(P, "rec")
 rec = json.load(open(os.path.join(REC, "marks.json")))
 narr = {l["id"]: l for l in json.load(open(os.path.join(P, "public/audio/narration.json")))["lines"]}
 
-# ---- the terminal page: 240x60 cells on 1920x1080 CSS px, output 3840 wide
 VW, VH, OUTW, OUTH = 1920, 1080, 3840, 2160
 CW, CH, OX, OY = 1915 / 240, 18.0, 2.5, 0.0
 FULL = {"x": 0.0, "y": 0.0, "w": VW, "h": VH}
@@ -95,7 +94,6 @@ R["bottom_left2"] = cells(0, 29, 160, 29)
 R["sessions_top"] = cells(0, 0, 140, 12)
 R["menu"] = cells(0, 0, 110, 28)
 
-# ---- building the cut
 scenes, overlays, voice, renders = [], [], [], []
 T = 0.0
 
@@ -145,7 +143,6 @@ def ov(**kw):
     overlays.append(kw)
 
 
-# 1. hook: Work's gauge drains (2x speed), zoomed on its footer
 cam_hook = cam_for(R["work_gauges"], pad=1.5)
 a0 = M("burn_start") + 0.2
 out, _ = term_scene("s01_hook", a0, a0 + 8.8, rate=2.0, keys=[(a0 - 1, cam_hook, 0)],
@@ -154,9 +151,6 @@ say("n01_hook", 0.35)
 ov(type="kinetic", start=0.5, end=out(a0 + 8.8) - 0.2, text="Usage limit.\nMid-task.", accent=["limit."], style="hook", hideCaptions=False)
 ov(type="box", start=out(a0 + 5.5), end=out(a0 + 8.8), rect=to_out(grow(R["work_gauges"], 4), cam_hook), tone="warn")
 
-# 2. intro
-# Cut points on the song's grid (120 BPM, first beat ~0.06 s): the grid
-# shot starts on the 4 bar phrase at 8.03 s, the move lands on the drop.
 BEAT0, BEAT = 0.058, 60.0 / 120.45
 def on_beat(n):
     return BEAT0 + n * BEAT
@@ -165,10 +159,8 @@ scenes.append({"type": "intro", "start": round(T, 3), "dur": round(intro_d, 3)})
 say("n02_meet", T + 0.3)
 T += intro_d
 
-# 3. the grid: every account side by side, then the gauges
 a3 = M("grid") - 0.8
 cam_g = cam_for(R["top_gauges"], pad=1.05)
-# the grid runs until the zero shot ends on the drop (beat 44, ~21.97 s)
 grid_d = max(9.0, on_beat(44) - T - 3.8)
 out, cam = term_scene("s03_grid", a3, a3 + grid_d, keys=[(a3 - 1, FULL, 0), (a3 + 5.0, cam_g, 1.2)],
                       focus={"x": 0, "y": 0, "w": OUTW, "h": OUTH})
@@ -176,14 +168,12 @@ say("n03_grid", out(a3) + 0.25)
 ov(type="spotlight", start=out(a3 + 6.4), end=out(a3 + 9.5), rect=to_out(grow(R["top_gauges"], 2), cam_g), dim=0.55)
 ov(type="callout", start=out(a3 + 6.6), end=out(a3 + 9.5), rect=to_out(R["work_gauges"], cam_g), text="5-hour + weekly limits, live", side="top")
 
-# 4. zero
 z = M("burn_zero")
 cam_z = cam_for(R["work_gauges"], pad=1.7)
 out, _ = term_scene("s04_zero", z - 2.4, z + 1.4, keys=[(z - 3.4, cam_z, 0)], focus=to_out(R["work_gauges"], cam_z))
 say("n04_zero", out(z - 2.4) + 0.3)
 ov(type="box", start=out(z - 0.2), end=out(z + 1.4), rect=to_out(grow(R["work_gauges"], 4), cam_z), tone="warn", label="5-hour limit reached")
 
-# 5. move it: double click the tab, pick the account with the most left
 m0 = M("dbl_tab") - 2.6
 cam_tabs = cam_for(cells(0, 1, 100, 29), pad=1.0)
 pick = R.get("picker", cells(68, 23, 104, 14))
@@ -204,7 +194,6 @@ rt = R.get("research_tab")
 ov(type="callout", start=out(mv) + 1.2, end=out(mv + 5.4) - 0.1, rect=to_out(cells(181, 2, 58, 6), cam_r),
    text="Same conversation. Fresh limits.", side="bottom")
 
-# 6. voice: what is everyone working on; then open a tab by voice
 v0 = M("panel") - 1.6
 vh0, vh1 = M("voice_heard", 0), M("voice_heard", 1)
 rate6 = 0.82
@@ -228,7 +217,6 @@ if pt:
     ov(type="box", start=out(M("v2_tab")) + 0.9, end=out(v_end) - 0.1, rect=to_out(grow(cells(pt[0] - 3, pt[1], 21, 2), 3), cam_pr),
        tone="spectrum", label="new tab, by voice")
 
-# 7. approvals: one queue, every account
 p0 = M("approvals") - 2.0
 ap_r = R.get("approvals", cells(65, 24, 108, 16))
 cam_m = cam_for(cells(0, 0, 120, 20), pad=1.0)
@@ -245,7 +233,6 @@ apc = rec["regions"].get("approvals", {"col": 65, "row": 24})
 ov(type="callout", start=out(M("approvals")) + 0.6, end=out(M("approved", 0)) + 0.4, rect=to_out(cells(apc["col"] + 2, apc["row"], 40, 1), cam_a),
    text="Every account. One queue.", side="top")
 
-# 8. the live map, by voice
 lm0 = M("voice_start", 2) - 0.5
 lm1 = M("map") + 7.4
 cam_core = cam_for(cells(60, 8, 120, 46), pad=1.0)
@@ -255,7 +242,6 @@ say("u03_map", out(M("voice_heard", 2)) - dur("u03_map", 1.6) - 0.05, 1.6)
 g3 = say("g03_map", out(M("map")) - 0.2, 1.2)
 say("n10_map", g3 + 0.3)
 
-# 9. take over the claude in the other terminal
 ext_off = marks.get("ext_t0", [{"offset": 2.05}])[0].get("offset", 2.05)
 e0 = M("ext_show") - 0.3
 out, cam = term_scene("s09a_external", e0, e0 + 4.2, keys=[(e0 - 1, FULL, 0)], focus={"x": 0, "y": 0, "w": OUTW, "h": OUTH},
@@ -282,7 +268,6 @@ cam_t = cam_for(R["research_top"], pad=1.08)
 out, cam = term_scene("s09c_taken", tg - 0.2, tg + 4.4, keys=[(tg - 1.2, cam_t, 0)], focus=to_out(R["research_top"], cam_t))
 ov(type="callout", start=out(tg) + 0.4, end=out(tg + 4.4) - 0.1, rect=to_out(cells(181, 2, 58, 6), cam_t), text="History and all.", side="bottom")
 
-# 10. tab groups, pins, colors; then search every session
 g0 = M("groups") - 0.8
 cam_gr = cam_for(cells(0, 1, 64, 14), pad=1.0)
 out, cam = term_scene("s10a_groups", g0, M("group_fold") + 2.2, keys=[(g0 - 1, cam_gr, 0)], focus=to_out(cells(0, 1, 24, 12), cam_gr))
@@ -297,7 +282,6 @@ if h:
     ov(type="box", start=out(M("search_done")) + 0.1, end=out(M("search_done") + 2.4) - 0.1, rect=to_out(grow(cells(0, h[1], 150, 1), 3), cam_se),
        tone="spectrum", label="every past session")
 
-# 11. Claude Code and Grok Build, together
 n0 = M("taken_grid") + 5.0
 cam_b = cam_for(cells(0, 29, 160, 29), pad=1.0)
 out, cam = term_scene("s11_both", n0, n0 + 4.6, keys=[(n0 - 1, cam_b, 0)], focus=to_out(cells(0, 29, 160, 29), cam_b))
@@ -305,14 +289,9 @@ say("n13_both", out(n0) + 0.25)
 ov(type="callout", start=out(n0) + 0.5, end=out(n0 + 4.6) - 0.1, rect=to_out(cells(2, 30, 30, 1), cam_b), text="Claude Code", side="bottom")
 ov(type="callout", start=out(n0) + 0.9, end=out(n0 + 4.6) - 0.1, rect=to_out(cells(82, 30, 30, 1), cam_b), text="Grok Build", side="bottom", tone="spectrum")
 
-# 12. outro
-# The outro holds until the next 4 bar boundary of the music (120 BPM:
-# every 8 s), so the song's phrase and the video end together.
-# the outro holds to the song's final hit and tail (it ends ~125.9 s)
 od = max(8.2, a.song_end - T) if a.song_end > 0 else 8.2
 t = say("n14_outro", T + 0.8)
 t = say("n15_url", t + 0.3)
-# never cut the last line: it ends at least 1.3 s before the end
 od = max(od, t + 1.3 - T)
 scenes.append({"type": "outro", "start": round(T, 3), "dur": round(od, 3), "badge": "Now available", "url": "godterm.com"})
 T += od
@@ -320,11 +299,9 @@ T += od
 edit = {
     "fps": 30, "width": OUTW, "height": OUTH, "durationInFrames": int(round(T * 30)),
     "footage": {"width": OUTW, "height": OUTH}, "transitionFrames": 9, "poster": 12.0,
-    # music bed about -18 LUFS, -12 dB under every voice line, quick release
     "music": {"file": "audio/placeholder-pad.wav", "gain": 0.75, "duckTo": 0.19, "attack": 0.15, "release": 0.35, "fadeIn": 0.05, "fadeOut": 0.8},
     "voice": sorted(voice, key=lambda v: v["start"]), "scenes": scenes, "overlays": overlays,
 }
-# keep whatever music render.sh set
 old = os.path.join(P, "public/edit.json")
 if os.path.exists(old):
     try:
@@ -334,7 +311,6 @@ if os.path.exists(old):
 json.dump(edit, open(old, "w"), indent=1)
 json.dump(renders, open(os.path.join(REC, "renders.json"), "w"), indent=1)
 print(f"{T:.1f} s, {len(scenes)} scenes, {len(overlays)} overlays, {len(voice)} voice lines, {len(renders)} renders")
-# overlapping voice lines?
 vs = sorted(voice, key=lambda v: v["start"])
 for x, y in zip(vs, vs[1:]):
     end = x["start"] + dur(x["id"], 2.0)

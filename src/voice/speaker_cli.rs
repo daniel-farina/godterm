@@ -1,6 +1,3 @@
-//! `godterm voice ...`: install the speaker model, show the enrolled
-//! profile, and evaluate speaker verification offline on WAV folders.
-
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -9,16 +6,12 @@ use super::speaker::{self, ClipEmbs, SpeakerModel, SpeakerProfile};
 use super::speaker_fbank::Fbank;
 use super::speaker_gate::{Acoustic, NearField};
 
-/// macOS voices synthesized as "other people" when calibrating an
-/// enrollment (classic voices present on every Mac).
 pub const NEGATIVE_VOICES: &[&str] = &["Fred", "Junior", "Kathy", "Ralph", "Albert"];
 const NEGATIVE_LINES: &[&str] = &[
     "Can you send me the report later?",
     "Let's go over the plan tomorrow morning.",
 ];
 
-/// Embeddings of synthesized other voices (macOS `say`; none elsewhere).
-/// Writes only temporary files, plays nothing.
 pub fn synth_negatives(model: &mut SpeakerModel) -> Vec<ClipEmbs> {
     if !cfg!(target_os = "macos") {
         return vec![];
@@ -141,7 +134,6 @@ fn wavs(dir: &Path) -> Vec<(String, Vec<i16>)> {
         .collect()
 }
 
-/// Mix `b` into `a` at `db` (relative gain), starting `offset` samples in.
 pub fn mix(a: &[i16], b: &[i16], db: f32, offset: usize) -> Vec<i16> {
     let g = super::audio::gain_factor(db);
     let n = a.len().max(offset + b.len());
@@ -165,9 +157,6 @@ fn rate(ok: usize, n: usize) -> String {
     format!("{ok}/{n} ({:.0}%)", ok as f32 * 100.0 / n as f32)
 }
 
-/// The offline evaluation: enroll on DIR/enroll, then score DIR/user (the
-/// same voice), DIR/other (other voices), DIR/distant (other voices far
-/// away), and the user mixed with other voices at -10, -15 and -20 dB.
 fn eval(dir: &Path, model_path: &Path, threads: usize) -> Result<()> {
     let t = Instant::now();
     let mut m = SpeakerModel::load(model_path, threads)?;
@@ -287,8 +276,7 @@ fn eval(dir: &Path, model_path: &Path, threads: usize) -> Result<()> {
         }
         println!("mixed {db:>3} dB accepted {}   lowest {lo:.2}", rate(ok, n));
     }
-    // Latency on 3 s clips (several runs, after warm up): the user (the
-    // full clip matches, done) and another voice (all windows scored).
+
     let joined: Vec<i16> = user.iter().flat_map(|(_, s)| s.iter().copied()).collect();
     let three = joined[..joined.len().min(48_000)].to_vec();
     let them: Vec<i16> = bg

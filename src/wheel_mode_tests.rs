@@ -1,10 +1,3 @@
-//! The wheel over a pane after a click or a tab switch, whatever the agent
-//! has switched on. The agent (Claude or Grok alike: the pane only sees
-//! the terminal modes) may report the mouse from the main screen without
-//! scrolling anything itself; its history is ours to scroll then. On the
-//! alternate screen there is no history: the agent gets the wheel as mouse
-//! events when it asked, else as arrow keys. Nothing real runs.
-
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -27,7 +20,6 @@ fn mouse(app: &mut crate::app::App, kind: MouseEventKind, x: u16, y: u16) {
     )));
 }
 
-/// Pane 0 running, with `history` lines of output and these modes on.
 fn pane_with(tag: &str, history: usize, modes: &[u8]) -> (crate::app::App, std::path::PathBuf) {
     let (mut app, home) = test_app(tag);
     let t = app.panes[0].cur_mut();
@@ -47,12 +39,10 @@ fn body(app: &crate::app::App) -> (u16, u16) {
     (r.x + r.width / 2, r.y + r.height / 2)
 }
 
-/// True when something was written to the pane's child since `pane_with`.
-fn wrote(app: &crate::app::App) -> bool {
-    app.panes[0].cur().last_input.elapsed() < Duration::from_secs(60)
+fn wrote(_app: &crate::app::App) -> bool {
+    crate::pane::SENT.with(|s| !s.borrow().is_empty())
 }
 
-/// Click the pane, as a user does before scrolling, and draw.
 fn click_pane(app: &mut crate::app::App, t: &mut ratatui::Terminal<ratatui::backend::TestBackend>) {
     draw(app, t);
     let (x, y) = body(app);
@@ -68,8 +58,9 @@ fn a_pane_that_reports_the_mouse_on_the_main_screen_still_scrolls_its_history() 
     let mut t = term();
     click_pane(&mut app, &mut t);
     let (x, y) = body(&app);
-    // The click itself went to the agent; forget that.
+
     app.panes[0].cur_mut().last_input = Instant::now() - Duration::from_secs(3600);
+    crate::pane::SENT.with(|s| s.borrow_mut().clear());
     mouse(&mut app, MouseEventKind::ScrollUp, x, y);
     assert!(
         app.panes[0].cur().scroll > 0,
@@ -153,7 +144,7 @@ fn a_plain_pane_scrolls_as_before_and_a_drag_still_selects() {
     mouse(&mut app, MouseEventKind::ScrollUp, x, y);
     assert!(app.panes[0].cur().scroll > 0);
     assert!(!wrote(&app));
-    // Selecting text by dragging still works after scrolling.
+
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
     mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x + 6, y);
     mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 6, y);

@@ -1,6 +1,3 @@
-//! Pane layout: how N panes are arranged in the main area, with paging
-//! when they do not fit at a usable size (at least MIN_W x MIN_H each).
-
 use ratatui::layout::Rect;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -10,13 +7,12 @@ pub const MIN_H: u16 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// 1, 2 side by side, 3 = 2 + 1, 4 = 2x2, 5-6 = 3x2, 7-9 = 3x3.
     Auto,
-    /// A fixed grid, columns x rows.
+
     Grid(usize, usize),
     Columns,
     Rows,
-    /// The focused pane large, the others stacked beside it.
+
     Focus,
 }
 
@@ -35,7 +31,6 @@ pub fn parse_mode(layout: &str, grid: &str) -> Mode {
     }
 }
 
-/// "3x2" -> (3 columns, 2 rows).
 pub fn parse_grid(s: &str) -> Option<(usize, usize)> {
     let (c, r) = s
         .trim()
@@ -51,7 +46,6 @@ pub fn next_mode(cur: &str) -> &'static str {
     MODES[(i + 1) % MODES.len()]
 }
 
-/// Column widths and row heights a user dragged, per shape ("3x2").
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ratios {
     pub cols: Vec<f32>,
@@ -60,7 +54,6 @@ pub struct Ratios {
 
 pub type RatioMap = BTreeMap<String, Ratios>;
 
-/// Where pane `index` (into the list of visible panes) goes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Placed {
     pub index: usize,
@@ -68,12 +61,10 @@ pub struct Placed {
     pub rect: Rect,
 }
 
-/// A border between two columns or rows that can be dragged.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Border {
-    /// true: between columns (drag left / right).
     pub vertical: bool,
-    /// Between track `i` and `i + 1`.
+
     pub i: usize,
     pub rect: Rect,
 }
@@ -83,13 +74,12 @@ pub struct Arranged {
     pub placed: Vec<Placed>,
     pub pages: usize,
     pub per_page: usize,
-    /// Shape key of the current page ("3x2", "2+1"), for ratios.
+
     pub shape: String,
     pub borders: Vec<Border>,
-    /// Cells of a fixed grid on the current page with no pane in them.
+
     pub empty: Vec<Rect>,
-    /// Where the panes of the current page would go with none collapsed
-    /// (empty when none is): their PTYs keep that size.
+
     pub unfolded: Vec<Placed>,
 }
 
@@ -103,7 +93,6 @@ fn auto_shape(n: usize) -> (usize, usize) {
     }
 }
 
-/// Split `len` into tracks by `weights` (equal when they do not fit).
 fn tracks(start: u16, len: u16, n: usize, weights: Option<&Vec<f32>>) -> Vec<(u16, u16)> {
     let n = n.max(1);
     let w: Vec<f32> = match weights {
@@ -127,8 +116,6 @@ fn tracks(start: u16, len: u16, n: usize, weights: Option<&Vec<f32>>) -> Vec<(u1
     out
 }
 
-/// Lay out `n` visible panes in `area`. `focus` is an index into them;
-/// the page shown is the one holding it.
 pub fn arrange(n: usize, area: Rect, mode: Mode, focus: usize, ratios: &RatioMap) -> Arranged {
     let max_c = ((area.width / MIN_W) as usize).max(1);
     let max_r = ((area.height / MIN_H) as usize).max(1);
@@ -146,7 +133,7 @@ pub fn arrange(n: usize, area: Rect, mode: Mode, focus: usize, ratios: &RatioMap
     if mode == Mode::Focus {
         return arrange_focus(n, area, focus.min(n - 1), max_r, ratios);
     }
-    // Capacity of a page.
+
     let (c, r) = match mode {
         Mode::Grid(c, r) => (c.min(max_c), r.min(max_r)),
         Mode::Columns => (n.min(max_c), 1),
@@ -166,8 +153,7 @@ pub fn arrange(n: usize, area: Rect, mode: Mode, focus: usize, ratios: &RatioMap
     for page in 0..pages {
         let first = page * per_page;
         let k = (n - first).min(per_page);
-        // A partly filled page of an automatic layout gets the shape for
-        // its own count; fixed grids keep their cells.
+
         let (pc, pr) = match mode {
             Mode::Auto => {
                 let (a, b) = auto_shape(k);
@@ -224,9 +210,7 @@ pub fn arrange(n: usize, area: Rect, mode: Mode, focus: usize, ratios: &RatioMap
                 borders.push(Border {
                     vertical: false,
                     i,
-                    // One row: the upper pane's bottom border. The row
-                    // under it is the lower pane's header (its account ▾,
-                    // tabs, ×), which must stay clickable.
+
                     rect: Rect::new(area.x, (y + h).saturating_sub(1), area.width, 1),
                 });
             }
@@ -285,7 +269,7 @@ fn arrange_focus(n: usize, area: Rect, focus: usize, max_r: usize, ratios: &Rati
             ),
         });
     }
-    // Panes that do not fit are reachable by number; they are not paged.
+
     Arranged {
         placed,
         pages: 1,
@@ -297,13 +281,10 @@ fn arrange_focus(n: usize, area: Rect, focus: usize, max_r: usize, ratios: &Rati
     }
 }
 
-/// The least width a caret step leaves a pane (a border drag may go lower).
 pub const CARET_MIN_W: u16 = 30;
 
-/// How much of the row one step of the width carets moves.
 pub const STEP_FRAC: f32 = 0.10;
 
-/// The weights as `n` usable tracks (equal when they do not fit).
 fn usable(weights: &[f32], n: usize) -> Vec<f32> {
     if weights.len() == n && weights.iter().all(|x| *x > 0.0) {
         weights.to_vec()
@@ -312,10 +293,6 @@ fn usable(weights: &[f32], n: usize) -> Vec<f32> {
     }
 }
 
-/// Column `col` made wider (`grow`) or narrower by a step of about a tenth
-/// of the row, the neighbour on its right giving or taking the space (the
-/// one on its left for the last column). Neither goes under the least a
-/// border drag allows; with no room the weights come back unchanged.
 pub fn resize_col(weights: &[f32], n: usize, len: u16, col: usize, grow: bool) -> Vec<f32> {
     let mut w = usable(weights, n);
     if n < 2 || col >= n || len == 0 {
@@ -335,7 +312,6 @@ pub fn resize_col(weights: &[f32], n: usize, len: u16, col: usize, grow: bool) -
     w
 }
 
-/// The width column `col` would have after a step (for the hover text).
 pub fn width_after(weights: &[f32], n: usize, start: u16, len: u16, col: usize, grow: bool) -> u16 {
     let w = resize_col(weights, n, len, col, grow);
     tracks(start, len, n, Some(&w))
@@ -344,8 +320,6 @@ pub fn width_after(weights: &[f32], n: usize, start: u16, len: u16, col: usize, 
         .unwrap_or(0)
 }
 
-/// New weights after dragging border `i` to `pos` (a column or row
-/// coordinate) in a track list of `n` covering `start..start + len`.
 pub fn drag(weights: &[f32], n: usize, start: u16, len: u16, i: usize, pos: u16) -> Vec<f32> {
     let mut w: Vec<f32> = if weights.len() == n {
         weights.to_vec()
@@ -387,7 +361,7 @@ mod tests {
         assert_eq!(shape(6), "3x2");
         assert_eq!(shape(7), "3x3");
         assert_eq!(shape(9), "3x3");
-        // 2 + 1: the third pane spans the bottom.
+
         let a = arrange(3, area, Mode::Auto, 0, &none);
         assert_eq!(a.placed[2].rect.width, 200);
         assert_eq!(a.placed[0].rect.width + a.placed[1].rect.width, 200);
@@ -424,7 +398,7 @@ mod tests {
                             r.y >= area.y && r.bottom() <= area.bottom(),
                             "{mode:?} {n} {r:?}"
                         );
-                        // Big enough, unless the whole area is smaller.
+
                         if mode != Mode::Focus {
                             assert!(
                                 r.width >= MIN_W.min(w) && r.height >= MIN_H.min(h),
@@ -459,15 +433,15 @@ mod tests {
     fn paging() {
         let none = RatioMap::new();
         let area = Rect::new(0, 0, 200, 50);
-        // 3x3 per page: 12 panes take two pages; the second has a 2x2.
+
         let a = arrange(12, area, Mode::Auto, 0, &none);
         assert_eq!((a.pages, a.per_page), (2, 9));
         assert_eq!(a.placed.iter().filter(|p| p.page == 1).count(), 3);
         assert_eq!(arrange(12, area, Mode::Auto, 10, &none).shape, "2+1");
-        // A small terminal pages sooner: 80x24 holds 2x2.
+
         let a = arrange(5, Rect::new(0, 0, 80, 24), Mode::Auto, 0, &none);
         assert_eq!((a.pages, a.per_page), (2, 4));
-        // Columns: as many as fit side by side.
+
         let a = arrange(6, area, Mode::Columns, 0, &none);
         assert_eq!((a.per_page, a.pages), (5, 2));
     }
@@ -480,7 +454,7 @@ mod tests {
         assert_eq!(a.placed[0].index, 2);
         assert!(a.placed[0].rect.width > 120);
         assert_eq!(a.placed.len(), 4);
-        // Too narrow for a side column: just the focused pane.
+
         let a = arrange(4, Rect::new(0, 0, 70, 30), Mode::Focus, 1, &none);
         assert_eq!(a.placed.len(), 1);
     }
@@ -504,7 +478,7 @@ mod tests {
         assert!((w[0] / (w[0] + w[1]) - 0.6).abs() < 0.001, "{w:?}");
         let w = resize_col(&[], 2, 200, 1, false);
         assert!((w[1] / (w[0] + w[1]) - 0.4).abs() < 0.001, "{w:?}");
-        // The last column grows at the left neighbour's cost.
+
         let w = resize_col(&[1.0, 1.0], 2, 200, 1, true);
         assert!(w[1] > w[0]);
         assert_eq!(width_after(&[], 2, 0, 200, 0, true), 120);
@@ -540,9 +514,9 @@ mod tests {
         }
         let cols = tracks(0, 200, 2, Some(&w));
         assert!(cols[0].1 >= 30, "{cols:?}");
-        // At the minimum nothing moves any more.
+
         assert_eq!(resize_col(&w, 2, 200, 0, false), w);
-        // One column, or a column out of range: unchanged.
+
         assert_eq!(resize_col(&[], 1, 200, 0, true), vec![1.0]);
         assert_eq!(resize_col(&[1.0, 1.0], 2, 200, 5, true), vec![1.0, 1.0]);
     }
@@ -563,10 +537,10 @@ mod tests {
         let a = arrange(2, area, Mode::Auto, 0, &map);
         assert_eq!(a.placed[0].rect.width, 140);
         assert_eq!(a.borders.len(), 1);
-        // Never smaller than half the minimum.
+
         let w = drag(&[1.0, 1.0], 2, 0, 200, 0, 1);
         assert!(w[0] / (w[0] + w[1]) * 200.0 >= 4.9, "{w:?}");
-        // Out of range border: unchanged.
+
         assert_eq!(drag(&[1.0, 1.0], 2, 0, 200, 1, 50), vec![1.0, 1.0]);
     }
 }

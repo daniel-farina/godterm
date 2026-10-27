@@ -1,14 +1,3 @@
-//! Target speaker verification: only the enrolled user's voice gets
-//! through. Each finished utterance is turned into a speaker embedding by a
-//! small open model (WeSpeaker ResNet34 by default, ONNX through `ort`) and
-//! compared with the centroid of the user's enrollment clips by cosine
-//! similarity. Background talkers (a phone call across the room, a TV)
-//! score low and are dropped before transcription.
-//!
-//! When the user talks over background chatter the whole utterance is
-//! mixed, so the score is the best of the full clip and its 1.5 s windows:
-//! a window where the user dominates still matches.
-
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -16,7 +5,6 @@ use std::time::Instant;
 
 use super::speaker_fbank::{subtract_mean, Fbank, NUM_BINS};
 
-/// A downloadable speaker model.
 #[derive(Debug, Clone, Copy)]
 pub struct ModelInfo {
     pub name: &'static str,
@@ -28,7 +16,6 @@ pub struct ModelInfo {
     pub source: &'static str,
 }
 
-/// Known models; the first is the default.
 pub const MODELS: &[ModelInfo] = &[
     ModelInfo {
         name: "wespeaker-resnet34",
@@ -47,8 +34,6 @@ pub fn models_dir() -> PathBuf {
         .join("godterm-models")
 }
 
-/// The configured model: "auto" or a known name means that model in
-/// ~/.cache/godterm-models; anything else is a path.
 pub fn model_path(setting: &str) -> PathBuf {
     let s = setting.trim();
     if s.is_empty() || s == "auto" {
@@ -73,7 +58,6 @@ pub fn sha256_file(p: &Path) -> Result<String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// `godterm voice install-speaker [name]`: download once, check the hash.
 pub fn install(name: Option<&str>) -> Result<PathBuf> {
     let m = match name {
         None => &MODELS[0],
@@ -122,13 +106,9 @@ pub fn install(name: Option<&str>) -> Result<PathBuf> {
     Ok(p)
 }
 
-/// 1.5 s windows every 0.5 s (in 10 ms feature frames).
 pub const WIN_FRAMES: usize = 150;
 pub const HOP_FRAMES: usize = 50;
 
-/// Window start frames over `frames` feature frames whose speech share
-/// (frames flagged in `speech`) is at least 40%. Clips no longer than a
-/// window and a bit get no windows (the full clip is the window).
 pub fn windows(frames: usize, speech: &[bool]) -> Vec<usize> {
     if frames < WIN_FRAMES + HOP_FRAMES / 2 {
         return vec![];
@@ -147,15 +127,13 @@ pub fn windows(frames: usize, speech: &[bool]) -> Vec<usize> {
         if e >= frames {
             break;
         }
-        // The last window ends at the end of the clip.
+
         s = (s + HOP_FRAMES).min(frames - WIN_FRAMES);
     }
     v.dedup();
     v
 }
 
-/// Per feature frame (10 ms hop): does it carry speech energy (within 30
-/// dB of the loudest frame and over -60 dBFS)?
 pub fn speech_frames(samples: &[i16]) -> Vec<bool> {
     let n = Fbank::num_frames(samples.len());
     let lv: Vec<f32> = (0..n)
@@ -192,7 +170,6 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     d / (na.sqrt() * nb.sqrt())
 }
 
-/// The normalized mean of normalized embeddings.
 pub fn centroid<'a>(embs: impl IntoIterator<Item = &'a Vec<f32>>) -> Vec<f32> {
     let mut c: Vec<f32> = vec![];
     for e in embs {
@@ -208,7 +185,6 @@ pub fn centroid<'a>(embs: impl IntoIterator<Item = &'a Vec<f32>>) -> Vec<f32> {
     c
 }
 
-/// The embeddings of one utterance: the full clip first, then its windows.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClipEmbs {
     pub full: Vec<f32>,
@@ -217,7 +193,6 @@ pub struct ClipEmbs {
 }
 
 impl ClipEmbs {
-    /// Best match to the centroid over the full clip and its windows.
     pub fn score(&self, c: &[f32]) -> f32 {
         std::iter::once(&self.full)
             .chain(&self.windows)
@@ -226,18 +201,17 @@ impl ClipEmbs {
     }
 }
 
-/// A loaded speaker embedding model.
 pub struct SpeakerModel {
     session: ort::session::Session,
-    /// Multiply int16 samples by this (1 for kaldi scale, 1/32768).
+
     scale: f32,
-    /// Subtract the per utterance feature mean.
+
     cmn: bool,
     pub dim: usize,
     pub load_ms: u128,
     pub path: PathBuf,
     fbank: Fbank,
-    /// Batched windows work (dynamic batch axis).
+
     batch: bool,
 }
 
@@ -271,8 +245,7 @@ impl SpeakerModel {
                 eprintln!("meta {k} = {:?}", meta(&k));
             }
         }
-        // sherpa-onnx exports say how they were trained; WeSpeaker uses
-        // int16 scale samples and mean normalized features.
+
         let normalize = meta("normalize_samples").map(|v| v.trim() == "1");
         let framework = meta("framework").unwrap_or_default();
         let scale = match normalize {
@@ -297,7 +270,7 @@ impl SpeakerModel {
             fbank: Fbank::new(),
             batch: true,
         };
-        // Probe once: output size, and whether a batch of 2 works.
+
         let probe: Vec<i16> = (0..24_000)
             .map(|i| ((i as f32 * 0.07).sin() * 3000.0) as i16)
             .collect();
@@ -312,7 +285,6 @@ impl SpeakerModel {
         Ok(m)
     }
 
-    /// Windows run as one batch.
     pub fn batch_ok(&self) -> bool {
         self.batch
     }
@@ -329,7 +301,6 @@ impl SpeakerModel {
         self.fbank.compute(&x)
     }
 
-    /// Run the model on `b` utterances of `t` frames each (row major).
     fn run(&mut self, feats: &[f32], b: usize, t: usize) -> Result<Vec<Vec<f32>>> {
         let name = self
             .session
@@ -361,14 +332,10 @@ impl SpeakerModel {
             .collect())
     }
 
-    /// Embeddings of one utterance (full clip plus its speech windows).
     pub fn embed(&mut self, samples: &[i16]) -> Result<ClipEmbs> {
         self.embed_until(samples, None)
     }
 
-    /// Like `embed`, but stop after the full clip when it already scores
-    /// at least `stop.1` against `stop.0` (the user alone, the common case:
-    /// the windows only matter when the clip is mixed).
     pub fn embed_until(
         &mut self,
         samples: &[i16],
@@ -414,20 +381,18 @@ impl SpeakerModel {
     }
 }
 
-/// Threads for the speaker model: it is small, two or four are plenty.
 pub fn auto_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| (n.get() / 4).clamp(1, 4))
         .unwrap_or(2)
 }
 
-/// When the speaker check applies (`voice.speaker_lock`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lock {
     Off,
-    /// Only hands free open mic utterances (where background talkers bite).
+
     OpenMicOnly,
-    /// Every hands free utterance (wake word and open mic).
+
     Always,
 }
 
@@ -440,7 +405,6 @@ impl Lock {
         }
     }
 
-    /// Push to talk is always the user at the keyboard: never checked.
     pub fn applies(self, ptt: bool, open_mic: bool) -> bool {
         match self {
             Lock::Off => false,
@@ -450,35 +414,31 @@ impl Lock {
     }
 }
 
-/// How loud and how bright the user sounds (see speaker_gate).
 pub use super::speaker_gate::Acoustic;
 
-/// The enrolled voice: `~/.godterm/voice/speaker_profile.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SpeakerProfile {
-    /// Model file the embeddings came from (a new model needs retraining).
     pub model: String,
     pub dim: usize,
     pub centroid: Vec<f32>,
     pub clips: Vec<ClipEmbs>,
     #[serde(default)]
     pub acoustics: Vec<Acoustic>,
-    /// Leave one out scores of the user's own clips.
+
     pub user_scores: Vec<f32>,
-    /// Scores of other voices (synthesized at enrollment).
+
     #[serde(default)]
     pub negative_scores: Vec<f32>,
-    /// Calibrated accept threshold.
+
     pub threshold: f32,
     pub trained_at: String,
 }
 
-/// The lowest and highest threshold calibration may pick.
 pub const MIN_THRESHOLD: f32 = 0.30;
 pub const MAX_THRESHOLD: f32 = 0.65;
-/// Without any negatives: this far under the user's low scores.
+
 pub const NO_NEG_GAP: f32 = 0.20;
-/// Keep at most this many enrollment clips (the newest).
+
 pub const MAX_CLIPS: usize = 40;
 
 fn percentile(v: &[f32], p: f32) -> f32 {
@@ -491,13 +451,8 @@ fn percentile(v: &[f32], p: f32) -> f32 {
     s[i.min(s.len() - 1)]
 }
 
-/// Centroid, leave one out user scores, negative scores, threshold.
 pub type Calibration = (Vec<f32>, Vec<f32>, Vec<f32>, f32);
 
-/// Centroid, leave one out user scores, negative scores and the threshold.
-/// The threshold sits halfway between the user's low scores (20th
-/// percentile) and the best scoring other voice, clamped to a sane range
-/// and always a little under the user's low scores.
 pub fn calibrate(clips: &[ClipEmbs], negatives: &[ClipEmbs]) -> Result<Calibration> {
     if clips.len() < 2 {
         bail!("need at least 2 clips of your voice (have {})", clips.len());
@@ -573,8 +528,6 @@ impl SpeakerProfile {
         })
     }
 
-    /// The threshold in use: a fixed `speaker_threshold` (over 0), else the
-    /// calibrated one plus `speaker_margin`.
     pub fn effective_threshold(&self, fixed: f32, margin: f32) -> f32 {
         if fixed > 0.0 {
             fixed.clamp(0.0, 1.0)
@@ -583,7 +536,6 @@ impl SpeakerProfile {
         }
     }
 
-    /// One line for the training dialog, doctor and the log.
     pub fn summary(&self) -> String {
         let lo = self.user_scores.iter().cloned().fold(1.0, f32::min);
         let hi = self.user_scores.iter().cloned().fold(-1.0, f32::max);
@@ -602,19 +554,17 @@ impl SpeakerProfile {
     }
 }
 
-/// One scored utterance.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Verdict {
     pub score: f32,
     pub threshold: f32,
     pub accepted: bool,
-    /// Embedding time.
+
     pub ms: u32,
-    /// Windows scored (0 when the full clip already matched).
+
     pub windows: usize,
 }
 
-/// Score an utterance against the profile.
 pub fn verify(
     model: &mut SpeakerModel,
     profile: &SpeakerProfile,
@@ -633,24 +583,19 @@ pub fn verify(
     })
 }
 
-/// Commands for the speaker guard (through the voice thread).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
-    /// Start enrolling; `append` keeps the saved clips.
-    EnrollStart {
-        append: bool,
-    },
+    EnrollStart { append: bool },
     EnrollCalibrate,
     EnrollSave,
     EnrollCancel,
     Reset,
 }
 
-/// What the guard reports back to the app.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Checked(Check),
-    /// Enrollment clips so far.
+
     Clips(usize),
     Calibrated(Result<String, String>),
     Saved(Result<String, String>),
@@ -658,7 +603,6 @@ pub enum Event {
 }
 
 impl Guard {
-    /// Run a command; what to tell the app.
     pub fn command(&mut self, c: Cmd) -> Option<Event> {
         let err = |e: anyhow::Error| format!("{e:#}");
         match c {
@@ -677,24 +621,20 @@ impl Guard {
     }
 }
 
-/// What the speaker guard made of one utterance.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Check {
-    /// The speaker score, when a profile and the model are there.
     pub verdict: Option<Verdict>,
-    /// Why it sounds far away (near field gate), if it does.
+
     pub far: Option<String>,
-    /// The lock applies to this utterance (hands free, per the setting).
+
     pub applies: bool,
 }
 
 impl Check {
-    /// Drop it: the lock applies and the voice or the distance says no.
     pub fn reject(&self) -> bool {
         self.applies && (self.verdict.is_some_and(|v| !v.accepted) || self.far.is_some())
     }
 
-    /// "speaker mismatch, ignored (score 0.41)" and the like.
     pub fn reason(&self) -> Option<String> {
         if !self.reject() {
             return None;
@@ -707,7 +647,6 @@ impl Check {
     }
 }
 
-/// Enrollment and per utterance checks, owned by the voice thread.
 pub struct Guard {
     pub lock: Lock,
     fixed: f32,
@@ -720,11 +659,11 @@ pub struct Guard {
     pub profile: Option<SpeakerProfile>,
     near: super::speaker_gate::NearField,
     fbank: Fbank,
-    /// Clips collected while enrolling.
+
     enroll: Option<Vec<(ClipEmbs, Acoustic)>>,
-    /// Calibrated, not saved yet.
+
     pending: Option<SpeakerProfile>,
-    /// Synthesized other voices (made once per run).
+
     negatives: Option<Vec<ClipEmbs>>,
 }
 
@@ -735,7 +674,7 @@ impl Guard {
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default();
-        // A profile from another model is useless (retrain).
+
         let profile = SpeakerProfile::load().filter(|p| p.model == file);
         let near = super::speaker_gate::NearField::new(
             profile
@@ -765,7 +704,6 @@ impl Guard {
         g
     }
 
-    /// The model, loaded on first use.
     pub fn ensure_model(&mut self) -> Result<&mut SpeakerModel> {
         if self.model.is_none() {
             if let Some(e) = &self.model_err {
@@ -797,8 +735,6 @@ impl Guard {
             .map(|p| p.effective_threshold(self.fixed, self.margin))
     }
 
-    /// Score one finished utterance. Push to talk and accepted hands free
-    /// speech teach the near field gate the user's level.
     pub fn check(&mut self, samples: &[i16], ptt: bool, open_mic: bool) -> Check {
         let applies = self.lock.applies(ptt, open_mic);
         let ac = Acoustic::of(samples, &self.fbank);
@@ -829,7 +765,6 @@ impl Guard {
         self.enroll.is_some()
     }
 
-    /// Start collecting clips; `append` keeps the saved profile's clips.
     pub fn enroll_start(&mut self, append: bool) -> Result<()> {
         self.ensure_model()?;
         let mut v = vec![];
@@ -848,7 +783,6 @@ impl Guard {
         Ok(())
     }
 
-    /// Add one enrollment clip; the count so far.
     pub fn enroll_clip(&mut self, samples: &[i16]) -> Result<usize> {
         let ac = Acoustic::of(samples, &self.fbank);
         let e = self.ensure_model()?.embed(samples)?;
@@ -863,7 +797,6 @@ impl Guard {
         Ok(v.len())
     }
 
-    /// Calibrate on the clips (other voices synthesized as negatives).
     pub fn enroll_calibrate(&mut self) -> Result<String> {
         let clips = self
             .enroll
@@ -884,7 +817,6 @@ impl Guard {
         Ok(s)
     }
 
-    /// Save the calibrated profile and use it from now on.
     pub fn enroll_save(&mut self) -> Result<String> {
         let p = self
             .pending
@@ -911,7 +843,6 @@ impl Guard {
     }
 }
 
-/// 16 kHz mono 16-bit WAV (any chunk layout) to samples.
 pub fn read_wav16(p: &Path) -> Result<Vec<i16>> {
     let b = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
     if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
@@ -964,9 +895,9 @@ mod tests {
         assert!((cosine(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6);
         assert!(cosine(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
         assert!((cosine(&[1.0, 1.0], &[-1.0, -1.0]) + 1.0).abs() < 1e-6);
-        // Scale does not matter.
+
         assert!((cosine(&[3.0, 4.0], &[6.0, 8.0]) - 1.0).abs() < 1e-6);
-        // Degenerate input scores 0, never NaN.
+
         assert_eq!(cosine(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
         assert_eq!(cosine(&[1.0], &[1.0, 0.0]), 0.0);
         let c = centroid([&vec![2.0, 0.0], &vec![0.0, 1.0]]);
@@ -978,9 +909,8 @@ mod tests {
     fn best_window_wins() {
         let me = unit(&[1.0, 0.1, 0.0]);
         let clip = ClipEmbs {
-            // The full clip is mixed with someone else...
             full: unit(&[0.5, 0.8, 0.0]),
-            // ...but one window is mostly the user.
+
             windows: vec![unit(&[0.0, 1.0, 0.2]), unit(&[0.95, 0.15, 0.0])],
         };
         let s = clip.score(&me);
@@ -990,15 +920,14 @@ mod tests {
 
     #[test]
     fn windows_cover_speech_only() {
-        // Short clips: the full clip only.
         assert!(windows(100, &[true; 100]).is_empty());
         assert!(windows(174, &[true; 174]).is_empty());
-        // 3 s of speech: 1.5 s windows every 0.5 s, the last at the end.
+
         let w = windows(300, &[true; 300]);
         assert_eq!(w, vec![0, 50, 100, 150]);
         let w = windows(320, &[true; 320]);
         assert_eq!(w, vec![0, 50, 100, 150, 170]);
-        // Silence in the middle: windows that are mostly silence are skipped.
+
         let mut sp = vec![true; 400];
         sp[120..330].iter_mut().for_each(|b| *b = false);
         let w = windows(400, &sp);
@@ -1011,7 +940,6 @@ mod tests {
 
     #[test]
     fn calibration_separates_user_from_others() {
-        // The user's clips cluster around one direction, others elsewhere.
         let user: Vec<ClipEmbs> = (0..6)
             .map(|i| ClipEmbs {
                 full: unit(&[1.0, 0.15 * (i as f32 - 2.5), 0.1, 0.0]),
@@ -1034,10 +962,10 @@ mod tests {
             "{neg_hi} < {thr} < {user_lo}"
         );
         assert!((MIN_THRESHOLD..=MAX_THRESHOLD).contains(&thr));
-        // No negatives: under the user's scores, never below the floor.
+
         let (_, _, _, t2) = calibrate(&user, &[]).unwrap();
         assert!(t2 >= MIN_THRESHOLD && t2 < user_lo);
-        // One clip is not enough.
+
         assert!(calibrate(&user[..1], &neg).is_err());
     }
 
@@ -1058,7 +986,7 @@ mod tests {
         assert_eq!(Lock::parse("always"), Lock::Always);
         assert_eq!(Lock::parse("open_mic_only"), Lock::OpenMicOnly);
         assert_eq!(Lock::parse("weird"), Lock::OpenMicOnly);
-        // Push to talk is never checked.
+
         for l in [Lock::Off, Lock::OpenMicOnly, Lock::Always] {
             assert!(!l.applies(true, true));
         }
@@ -1087,11 +1015,11 @@ mod tests {
     #[test]
     fn wav_reader_skips_extra_chunks() {
         let mut w = super::super::audio::wav_bytes(&[1, -2, 3]);
-        // Insert a LIST chunk between fmt and data.
+
         let at = w.windows(4).position(|c| c == b"data").unwrap();
         let mut extra = b"LIST".to_vec();
         extra.extend_from_slice(&3u32.to_le_bytes());
-        extra.extend_from_slice(&[0, 0, 0, 0]); // 3 bytes + pad
+        extra.extend_from_slice(&[0, 0, 0, 0]);
         w.splice(at..at, extra);
         let p = std::env::temp_dir().join(format!("gt-wav-{}.wav", std::process::id()));
         std::fs::write(&p, &w).unwrap();
@@ -1099,8 +1027,6 @@ mod tests {
         let _ = std::fs::remove_file(&p);
     }
 
-    /// With the real model installed: a Samantha profile accepts Samantha
-    /// and rejects other macOS voices (skipped without the model or `say`).
     #[test]
     fn real_model_accepts_the_enrolled_voice() {
         let path = model_path("auto");
@@ -1126,7 +1052,7 @@ mod tests {
             "Please read the last reply back to me.",
         ];
         let Some(first) = say("Samantha", lines[0], "e0.wav") else {
-            return; // no `say` here
+            return;
         };
         let mut m = SpeakerModel::load(&path, 2).unwrap();
         let mut clips = vec![m.embed(&first).unwrap()];
@@ -1149,9 +1075,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The guard end to end with the real model and `say` voices: enroll,
-    /// calibrate, save, then open mic accepts the user and drops another
-    /// voice and a far away one; push to talk is never dropped.
     #[test]
     fn guard_enrolls_and_locks_open_mic() {
         if !model_path("auto").is_file() || !cfg!(target_os = "macos") {
@@ -1186,7 +1109,7 @@ mod tests {
         ];
         for (i, l) in lines.iter().enumerate() {
             let Some(s) = say("Samantha", l, &format!("e{i}.wav")) else {
-                return; // no `say`
+                return;
             };
             assert_eq!(g.enroll_clip(&s).unwrap(), i + 1);
         }
@@ -1205,11 +1128,11 @@ mod tests {
             .reason()
             .unwrap()
             .starts_with("speaker mismatch (score 0."));
-        // Wake word mode with open_mic_only: scored, not enforced.
+
         assert!(!g.check(&other, false, false).reject());
-        // Push to talk: never dropped.
+
         assert!(!g.check(&other, true, true).reject());
-        // The user, far away (20 dB down, muffled): the near field gate.
+
         let far: Vec<i16> = {
             let mut y = 0f32;
             me.iter()

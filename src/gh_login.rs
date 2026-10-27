@@ -1,14 +1,3 @@
-//! A gh login for one more GitHub account, started by the user's click in
-//! the web Git screen ("Add account..."): runs exactly
-//! `gh auth login --hostname github.com --git-protocol https --web`
-//! with no terminal, so gh prints its one-time code and the device URL
-//! (and opens no browser, asks nothing), then waits until the user signs
-//! in on GitHub. The code and the URL go to the screen; gh's other output
-//! stays here. One login at a time; it can be cancelled, and it gives up
-//! after 15 minutes. Never `gh auth switch` or logout. Note that gh makes
-//! the newly logged in account its active one; GodTerm pushes per account
-//! (git_cred) so that does not change which account pushes for an owner.
-
 use serde::Serialize;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -16,7 +5,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The only gh argument list this runs.
 pub const ARGS: [&str; 7] = [
     "auth",
     "login",
@@ -30,8 +18,6 @@ pub const ARGS: [&str; 7] = [
 const DEVICE_URL: &str = "https://github.com/login/device";
 const GIVE_UP: Duration = Duration::from_secs(15 * 60);
 
-/// What the screen shows: state is starting, code, done, failed or
-/// cancelled.
 #[derive(Debug, Clone, Serialize, Default, PartialEq)]
 pub struct Info {
     pub state: String,
@@ -39,7 +25,7 @@ pub struct Info {
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// The account gh says it logged in.
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,7 +38,6 @@ impl Info {
     }
 }
 
-/// gh's one-time code in a line ("! First copy your one-time code: ABCD-1234").
 pub fn parse_code(line: &str) -> Option<String> {
     let i = line.find("one-time code")?;
     let rest = line[i..].split_once(':')?.1;
@@ -69,8 +54,6 @@ pub fn parse_code(line: &str) -> Option<String> {
     ok.then_some(code)
 }
 
-/// A github.com https URL in a line (gh: "Open this URL to continue in
-/// your web browser: https://github.com/login/device").
 pub fn parse_url(line: &str) -> Option<String> {
     let i = line.find("https://github.com/")?;
     let u: String = line[i..]
@@ -83,7 +66,6 @@ pub fn parse_url(line: &str) -> Option<String> {
         .then_some(u)
 }
 
-/// The account in "✓ Logged in as alice".
 pub fn parse_account(line: &str) -> Option<String> {
     let i = line.find("Logged in as ")?;
     let name: String = line[i + 13..]
@@ -93,8 +75,6 @@ pub fn parse_account(line: &str) -> Option<String> {
     crate::git_map::valid_owner(&name).then_some(name)
 }
 
-/// One line of gh's output into `info`; the last other line is kept as
-/// the error to show when gh fails.
 fn take_line(info: &mut Info, last: &mut String, line: &str) {
     let line = line.trim();
     if line.is_empty() {
@@ -116,13 +96,12 @@ fn take_line(info: &mut Info, last: &mut String, line: &str) {
         info.account = Some(a);
         return;
     }
-    // Never a token-looking line (gh does not print one; be sure).
+
     if !line.contains("gho_") && !line.contains("ghp_") {
         *last = line.chars().take(300).collect();
     }
 }
 
-/// A login under way (or finished: its last Info stays readable).
 pub struct Login {
     info: Arc<Mutex<Info>>,
     child: Arc<Mutex<Option<Child>>>,
@@ -133,7 +112,6 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Login {
-    /// Start `gh` (`ARGS`), with `env` added (tests: a temp GH_CONFIG_DIR).
     pub fn start(gh: &Path, env: &[(&str, &str)]) -> Login {
         let info = Arc::new(Mutex::new(Info {
             state: "starting".into(),
@@ -253,7 +231,6 @@ impl Login {
         lock(&self.info).clone()
     }
 
-    /// Stop it (nothing changes when it already finished).
     pub fn cancel(&self) {
         let mut g = lock(&self.child);
         if let Some(ch) = g.as_mut() {
@@ -271,10 +248,8 @@ impl Drop for Login {
     }
 }
 
-/// The app's one login (a new one replaces a finished one).
 static CURRENT: Mutex<Option<Login>> = Mutex::new(None);
 
-/// Start a login, or the one under way: its Info.
 pub fn start(gh: &Path) -> Info {
     let mut g = lock(&CURRENT);
     if let Some(l) = g.as_ref().filter(|l| l.info().running()) {
@@ -286,7 +261,6 @@ pub fn start(gh: &Path) -> Info {
     i
 }
 
-/// The current login's Info (state "" when there is none).
 pub fn poll() -> Info {
     lock(&CURRENT).as_ref().map(Login::info).unwrap_or_default()
 }
@@ -302,7 +276,6 @@ pub fn cancel() -> Info {
     }
 }
 
-// The tests run a fake gh shell script, so Unix only.
 #[cfg(all(test, unix))]
 #[path = "gh_login_tests.rs"]
 mod tests;

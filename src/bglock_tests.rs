@@ -1,8 +1,3 @@
-//! The morning of 2026-10-12: a tab's resume refused by a Claude Code
-//! background run, a session searched by its id, open_session on the
-//! wrong account, and read_tab reading another tab after a failed move.
-//! Every claude here is the test stub.
-
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -84,7 +79,6 @@ impl T {
         std::fs::read_to_string(&self.args).unwrap_or_default()
     }
 
-    /// Until the stub has recorded `n` launches.
     fn launches(&mut self, n: usize) -> bool {
         let p = self.args.clone();
         self.pump(10, |_| {
@@ -108,7 +102,6 @@ impl T {
     }
 }
 
-/// A transcript of `id` in `dir` (a config dir), with real messages.
 fn transcript(dir: &Path, cwd: &Path, id: &str, prompt: &str) -> PathBuf {
     let p = dir
         .join("projects")
@@ -124,7 +117,6 @@ fn transcript(dir: &Path, cwd: &Path, id: &str, prompt: &str) -> PathBuf {
     f
 }
 
-/// Claude Code's record of a background run `short` (a fork of `from`).
 fn bg_job(dir: &Path, cwd: &Path, short: &str, sid: &str, from: &Path) {
     let j = dir.join("jobs").join(short);
     std::fs::create_dir_all(&j).unwrap();
@@ -139,7 +131,7 @@ fn bg_job(dir: &Path, cwd: &Path, short: &str, sid: &str, from: &Path) {
         json!({"workers": {short: {"sessionId": sid, "dispatch": {"launch": {"mode": "resume", "sessionId": from, "fork": true}}}}}).to_string(),
     )
     .unwrap();
-    // Its own transcript: only a title so far.
+
     let p = dir
         .join("projects")
         .join(crate::state::encode_project_dir(cwd));
@@ -162,9 +154,6 @@ fn ids(v: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A session id finds its session whole, by its first 8 characters, cut
-/// one short as pasted, and by a background run's job id (which leads to
-/// the session the run continues).
 #[test]
 fn sessions_match_full_prefix_truncated_and_job_ids() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -189,7 +178,7 @@ fn sessions_match_full_prefix_truncated_and_job_ids() {
             .control_call("sessions", &json!({"text": q, "state": "all"}));
         assert_eq!(ids(&v), vec![SID.to_string()], "{q}: {v}");
     }
-    // The job id: its fork has no turns yet, so the session it continues.
+
     bg_job(&dir, &cwd, "516d52e6", JOB_SID, &main);
     let v = t
         .app
@@ -198,14 +187,14 @@ fn sessions_match_full_prefix_truncated_and_job_ids() {
     assert!(got.contains(&SID.to_string()), "{v}");
     assert_eq!(v["result"]["background_runs"][0]["job"], "516d52e6", "{v}");
     assert_eq!(v["result"]["background_runs"][0]["continues"], SID, "{v}");
-    // open_session takes the cut short id, on the account that holds it.
+
     let v = t.app.control_call(
         "open_session",
         &json!({"id": "d34c6258-af8c-417b-8e66-53936c24b49"}),
     );
     assert_eq!(v["result"]["opened"], SID, "{v}");
     assert_eq!(v["result"]["account"], "Account 3", "{v}");
-    // A prefix of two sessions is ambiguous, never a guess.
+
     transcript(&dir, &cwd, "d34c6258-0000-4000-8000-000000000009", "twin");
     t.app.kick_index(true);
     let v = t
@@ -220,10 +209,6 @@ fn sessions_match_full_prefix_truncated_and_job_ids() {
     );
 }
 
-/// open_session resumes where the session lives: asked for Account 1, a
-/// session only Account 3 holds opens on Account 3 (Account 1 would say
-/// "No conversation found"); a main ~/.claude session is copied into the
-/// asked account, replacing an older copy there (kept in trash).
 #[test]
 fn open_session_resumes_with_the_config_dir_that_holds_it() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -258,7 +243,6 @@ fn open_session_resumes_with_the_config_dir_that_holds_it() {
         p.kill_all();
     }
 
-    // A main install session, newer than Account 1's old copy.
     let other = "bbbb2222-0000-4000-8000-000000000002";
     let main = t.home.join("main-claude");
     let _m = crate::config::testing::main_dirs(&main, None);
@@ -289,9 +273,6 @@ fn open_session_resumes_with_the_config_dir_that_holds_it() {
     );
 }
 
-/// A resume refused by a background run: the tab offers attach, stop and
-/// resume, or fork; the assistant's fix_resume does each in that tab, on
-/// its account, and stop asks once.
 #[test]
 fn a_background_lock_offers_attach_stop_and_fork() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -313,7 +294,7 @@ fn a_background_lock_offers_attach_stop_and_fork() {
     let lock = t.app.panes[s].tabs[0].bg_lock.clone().unwrap();
     assert_eq!(lock.short, "516d52e6");
     assert_eq!(lock.session_id.as_deref(), Some(SID));
-    // The tab shows the three choices; get_state and read_tab say so.
+
     let bar = crate::session_ids::lock_choices("516d52e6");
     assert!(bar.contains("attaches") && bar.contains("stops") && bar.contains("forks"));
     let tid = format!("t{uid}");
@@ -322,7 +303,7 @@ fn a_background_lock_offers_attach_stop_and_fork() {
         .control_call("read_tab", &json!({"tab": tid, "what": "screen"}));
     assert_eq!(r["result"]["tab"], json!(tid));
     assert_eq!(r["result"]["background_lock"]["job"], "516d52e6", "{r}");
-    // No fresh tab in its folder in place of the fix.
+
     let v = t.app.control_call(
         "open_tab",
         &json!({"account": 3, "dir": cwd.display().to_string()}),
@@ -331,7 +312,7 @@ fn a_background_lock_offers_attach_stop_and_fork() {
         v["error"].as_str().unwrap_or("").contains("fix_resume"),
         "{v}"
     );
-    // Stop asks once, then stops and resumes the session here.
+
     t.said("fix it");
     let v = t
         .app
@@ -361,8 +342,6 @@ fn a_background_lock_offers_attach_stop_and_fork() {
     assert_eq!(t.app.panes[s].tabs[0].uid, uid, "the same tab");
 }
 
-/// Attach (Enter, the default) runs `claude attach <job>` in the tab;
-/// fork resumes with --fork-session. Neither stops the run.
 #[test]
 fn attach_and_fork_stay_in_the_tab() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -383,7 +362,7 @@ fn attach_and_fork_stay_in_the_tab() {
         t.args()
     );
     assert_eq!(t.app.panes[s].tabs[0].session_id.as_deref(), Some(SID));
-    // Back to the lock (the attach ended), then the key f forks.
+
     t.app.panes[s].tabs[0].kill();
     t.app.launch_tab(s, 0, LaunchKind::Resume(SID.into()));
     assert!(t.pump(10, |a| a.panes[s].tabs[0].bg_lock.is_some()));
@@ -405,7 +384,6 @@ fn attach_and_fork_stay_in_the_tab() {
     assert!(!t.args().contains("stop "), "nothing was stopped");
 }
 
-/// A background run's own fork is never adopted as the tab's session.
 #[test]
 fn a_background_fork_is_not_the_tabs_session() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -422,16 +400,13 @@ fn a_background_fork_is_not_the_tabs_session() {
     );
 }
 
-/// read_tab names exactly the tab asked for after open and close churn:
-/// a move that failed leaves the source open under its own id, and a tab
-/// reused for another session keeps reading as itself.
 #[test]
 fn read_tab_returns_the_asked_tab_after_churn() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut t = setup("read", &[]);
     let a = t.app.pane_for_account(0);
     let b = t.app.pane_for_account(2);
-    // Two tabs, then a failed move of the first (its copy t-new exited).
+
     t.app.panes[a].add_tab(t.home.clone());
     let src = t.app.panes[a].tabs[0].uid;
     let other = t.app.panes[a].tabs[1].uid;
@@ -446,7 +421,7 @@ fn read_tab_returns_the_asked_tab_after_churn() {
         name: "godterm".into(),
         target: 2,
     });
-    // While it moves, the old id follows the move.
+
     assert_eq!(t.app.current_uid(src), dst);
     t.app.tabmove_tick();
     assert!(t.app.pending_moves.is_empty(), "the move failed");
@@ -470,14 +445,14 @@ fn read_tab_returns_the_asked_tab_after_churn() {
             "{r}"
         );
     }
-    // A stale record (an older move) never wins over a tab that exists.
+
     t.app.moved_ids.insert(src, dst);
     let r = t.app.control_call(
         "read_tab",
         &json!({"tab": format!("t{src}"), "what": "screen"}),
     );
     assert_eq!(r["result"]["tab"], json!(format!("t{src}")), "{r}");
-    // Close one, open another: the ids still name their own tabs.
+
     t.app.panes[a].close_tab(1, t.home.clone());
     let fresh = t.app.panes[a].add_tab(t.home.clone());
     let fuid = t.app.panes[a].tabs[fresh].uid;
@@ -492,7 +467,7 @@ fn read_tab_returns_the_asked_tab_after_churn() {
         &json!({"tab": format!("t{fuid}"), "what": "screen"}),
     );
     assert_eq!(r["result"]["tab"], json!(format!("t{fuid}")), "{r}");
-    // A completed move (the source closed) follows, and says so.
+
     t.app.panes[a].close_tab(0, t.home.clone());
     let r = t.app.control_call(
         "read_tab",

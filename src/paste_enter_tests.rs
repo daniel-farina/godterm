@@ -1,9 +1,3 @@
-//! A paste then Enter into a real PTY (a stub claude that, like claude,
-//! reads a CR in the same read as a paste as a new line, and is slow to
-//! read, as on a loaded machine): voice "send to tab" and the login code
-//! paste submit once, never as a stray newline. With the old timed Enter
-//! (80 ms after the paste) both came in one read and nothing was sent.
-
 use crate::config::testing::LOCK as ENV_LOCK;
 
 const STUB: &str = r#"#!/usr/bin/env python3
@@ -53,7 +47,6 @@ fn have_python() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// An app whose tab 1 runs the stub, ready for input.
 fn started(tag: &str) -> Option<(crate::app::App, std::path::PathBuf)> {
     use crate::creds::CredSource;
     if !have_python() {
@@ -104,7 +97,6 @@ fn screen(app: &crate::app::App) -> String {
         .contents()
 }
 
-/// Run the app's ticks until the stub recorded `want` (or time is up).
 fn submitted(app: &mut crate::app::App, home: &std::path::Path, want: &str) -> String {
     let f = home.join("work/submitted.txt");
     let t0 = std::time::Instant::now();
@@ -143,7 +135,7 @@ fn a_login_code_paste_submits_once() {
         return;
     };
     app.paste_then_enter(0, 0, "AbC123-xyz#state");
-    // Enter waits for the echo: never queued twice, gone once pressed.
+
     assert_eq!(app.pending_enters.len(), 1);
     let got = submitted(&mut app, &home, "AbC123-xyz#state\n");
     assert_eq!(got.matches("AbC123").count(), 1);
@@ -152,8 +144,6 @@ fn a_login_code_paste_submits_once() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// No echo at all (a screen that never shows it): Enter anyway, after
-/// a while, once.
 #[test]
 fn no_echo_still_presses_enter() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

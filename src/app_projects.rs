@@ -1,9 +1,3 @@
-//! The assistant's project tools: search_projects (look deeper inside
-//! project folders on demand), describe_project and describe_session
-//! (saved descriptions, so the next find is instant) and rename_session
-//! (the harness's own session title), plus what find and sessions take
-//! from the project index and the saved descriptions.
-
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -44,8 +38,6 @@ fn strings(v: Option<&Value>) -> Option<Vec<String>> {
 }
 
 impl App {
-    /// Folders worth mapping besides the sessions' own: open tabs, the
-    /// tab history and saved project descriptions.
     pub fn project_extra_roots(&self) -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = self
             .panes
@@ -63,8 +55,6 @@ impl App {
         v
     }
 
-    /// The roots the project index maps (for open_path and
-    /// search_projects).
     pub fn project_roots(&self) -> Vec<PathBuf> {
         let ix = self.project_index.lock().unwrap_or_else(|e| e.into_inner());
         let mut v: Vec<PathBuf> = ix.roots.keys().cloned().collect();
@@ -72,8 +62,6 @@ impl App {
         v
     }
 
-    /// find's hits from saved descriptions and the project index:
-    /// (score, hit).
     pub fn project_hits(&self, query: &str, limit: usize) -> Vec<(f64, Value)> {
         let mut out: Vec<(f64, Value)> = vec![];
         let store = crate::project_memory::load();
@@ -92,7 +80,7 @@ impl App {
                 .unwrap_or_else(|| format!("saved {}", m.updated.get(..10).unwrap_or("")));
             let why = format!("from saved description ({when}), matched its {on}");
             let saved = crate::project_memory::json(m, stale.as_deref());
-            // Saved entries rank first: a small lift over the index.
+
             let sc = (sc + 0.05).min(1.05);
             if m.kind == "project" {
                 saved_paths.push(PathBuf::from(&m.key));
@@ -121,7 +109,6 @@ impl App {
         out
     }
 
-    /// Run a project tool; None when `tool` is not one of them.
     pub fn projects_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         if !TOOL_NAMES.contains(&tool) {
             return None;
@@ -158,7 +145,7 @@ impl App {
             None => {
                 self.kick_index(false);
                 let all = self.project_roots();
-                // Nested roots are walked as part of their parent.
+
                 all.iter()
                     .filter(|r| !all.iter().any(|o| o != *r && r.starts_with(o)))
                     .cloned()
@@ -182,7 +169,7 @@ impl App {
             lim.max_hits = n.clamp(1, 30) as usize;
         }
         let r = crate::project_index::deep_search(&roots, &q, content, &lim, &allowed);
-        // Remember the day each root was deep-searched.
+
         let mut store = crate::project_memory::load();
         for root in &roots {
             store.note_deep_search(root);
@@ -310,9 +297,6 @@ impl App {
         ))
     }
 
-    /// rename_session's plan: each session resolved, with how it is
-    /// renamed (its tab's /rename, or the harness's title record). One
-    /// session runs at once; several ask once.
     pub(crate) fn rename_plan_for(
         &mut self,
         args: &Value,
@@ -382,8 +366,7 @@ impl App {
             let name = it["name"].as_str().unwrap_or("").to_string();
             let path = PathBuf::from(it["path"].as_str().unwrap_or(""));
             let grok = it["harness"].as_str() == Some(crate::harness::Harness::Grok.name());
-            // Open in a tab that runs it: the harness's own /rename there,
-            // and the tab gets the name too.
+
             let tab = (0..self.panes.len())
                 .flat_map(|s| (0..self.panes[s].tabs.len()).map(move |t| (s, t)))
                 .find(|&(s, t)| {

@@ -1,8 +1,3 @@
-//! Clicks outside the assistant panel take the keys from it: a tab in a
-//! tab list, a pane, the menu bar. Only a click inside its own rect
-//! (docked or floating, this frame's) focuses it, and a click on the
-//! floating panel never reaches the pane beneath.
-
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::confirm_click_tests::{click, draw, term, test_app};
 use crate::hits::UiAction;
@@ -40,13 +35,13 @@ fn a_tab_click_selects_it_and_takes_the_keys() {
             "{mode}: the keys left the panel"
         );
         assert!(app.assistant.show, "the panel stays open");
-        // Typed keys and pastes go to the session, not the panel input.
+
         type_x(&mut app);
         app.handle(crate::app::AppEvent::Input(crossterm::event::Event::Paste(
             "pasted".into(),
         )));
         assert!(app.assistant.input.is_empty(), "{mode}");
-        // Its border dims (rounded, not the thick focused one).
+
         draw(&mut app, &mut t);
         let r = app.last_hits.find(&UiAction::AssistantFocus).unwrap().rect;
         assert_eq!(t.backend().buffer()[(r.x, r.y)].symbol(), "╭", "{mode}");
@@ -63,7 +58,7 @@ fn pane_and_panel_clicks_focus_what_was_clicked() {
         open_panel(&mut app, mode);
         let mut t = term();
         draw(&mut app, &mut t);
-        // A pane: it gets the keys.
+
         let p = app.pane_rects[0];
         app.on_mouse_event(crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
@@ -73,12 +68,12 @@ fn pane_and_panel_clicks_focus_what_was_clicked() {
         });
         assert_eq!(app.focus, 0, "{mode}");
         assert!(!app.assistant_has_focus(), "{mode}");
-        // The menu bar too.
+
         app.assistant.focused = true;
         draw(&mut app, &mut t);
         click(&mut app, &UiAction::Home);
         assert!(!app.assistant_has_focus(), "{mode}: menu bar");
-        // Inside the panel: the panel.
+
         draw(&mut app, &mut t);
         let pr = app.last_hits.find(&UiAction::AssistantFocus).unwrap().rect;
         app.on_mouse_event(crossterm::event::MouseEvent {
@@ -111,7 +106,7 @@ fn the_floating_panel_keeps_its_clicks() {
     let mut t = term();
     draw(&mut app, &mut t);
     let panel = app.last_hits.find(&UiAction::AssistantFocus).unwrap().rect;
-    // A point of the panel over a pane.
+
     let (i, pr) = app
         .pane_rects
         .iter()

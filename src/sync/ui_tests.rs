@@ -1,10 +1,3 @@
-//! The sync tools the web's Settings > Sync and the assistant share
-//! (app_sync.rs): the dry run with its checks, enable (init) and join
-//! (clone) behind one question each, pause and resume, and the richer
-//! status. Fixture homes under target/tmp and local bare repos stand in
-//! for GitHub: nothing here reaches GitHub, gh's login state or a real
-//! home.
-
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -14,8 +7,6 @@ use super::*;
 use crate::app::App;
 use crate::config::testing::LOCK as ENV_LOCK;
 
-/// An app whose GodTerm home is `home/.godterm`, with `[sync]` pointing
-/// at `remotes` (a folder of bare repos) and sync off.
 fn app_at(home: &Path, remotes: &Path) -> App {
     let app_home = home.join(".godterm");
     std::fs::create_dir_all(&app_home).unwrap();
@@ -37,14 +28,12 @@ fn app_at(home: &Path, remotes: &Path) -> App {
     app
 }
 
-/// The user's next message (a new assistant turn).
 fn user_says(app: &mut App, said: &str) {
     app.assistant_turn += 1;
     app.assistant.last_user = said.into();
     app.assistant.turn_reads = 0;
 }
 
-/// A tool whose reply is finished off the UI thread (sync_plan).
 fn call_wait(app: &mut App, tool: &str, args: Value) -> Value {
     let v = app.control_call(tool, &args);
     if v.get("_wait").is_none() {
@@ -57,7 +46,6 @@ fn call_wait(app: &mut App, tool: &str, args: Value) -> Value {
     json!({"ok": true, "result": r})
 }
 
-/// Wait for the background init or clone to finish.
 fn op_done(app: &App) -> crate::app_sync::SyncOp {
     let t = Instant::now();
     loop {
@@ -76,7 +64,6 @@ fn cfg_text(home: &Path) -> String {
     std::fs::read_to_string(home.join(".godterm/config.toml")).unwrap()
 }
 
-/// `[sync]` as config.toml has it now.
 fn sync_cfg(home: &Path) -> SyncCfg {
     crate::config::Config::parse(&cfg_text(home)).unwrap().sync
 }
@@ -91,7 +78,6 @@ fn enable_sync_runs_the_plan_then_asks_once_then_inits_in_the_background() {
     w(&home.join("code/site/README.md"), "site\n");
     let mut app = app_at(&home, &remotes);
 
-    // "enable sync": init on its own is refused until a plan was made.
     user_says(&mut app, "enable sync");
     let v = app.control_call("sync_init", &json!({"_client": "brain"}));
     assert_eq!(v["ok"], false, "{v}");
@@ -101,7 +87,6 @@ fn enable_sync_runs_the_plan_then_asks_once_then_inits_in_the_background() {
     );
     assert!(!remotes.join("tester").exists(), "nothing created");
 
-    // The dry run: repo, account, warnings, and what to do next.
     let p = call_wait(&mut app, "sync_plan", json!({"_client": "brain"}));
     let pr = &p["result"];
     assert_eq!(pr["preflight"]["state_repo"], "tester/godterm-state", "{p}");
@@ -121,7 +106,6 @@ fn enable_sync_runs_the_plan_then_asks_once_then_inits_in_the_background() {
     assert!(pr["text"].as_str().unwrap().contains("Sync plan (dry run"));
     assert!(!remotes.join("tester").exists(), "a plan writes nothing");
 
-    // A plan for another owner does not cover this one.
     let v = app.control_call(
         "sync_init",
         &json!({"_client": "brain", "owner": "someone"}),
@@ -134,20 +118,19 @@ fn enable_sync_runs_the_plan_then_asks_once_then_inits_in_the_background() {
         "{v}"
     );
 
-    // init asks once, naming the private repo; nothing before the yes.
     let v = app.control_call("sync_init", &json!({"_client": "brain"}));
     assert_eq!(v["needs_confirmation"], true, "{v}");
     let q = v["question"].as_str().unwrap();
     assert!(q.contains("private state repo tester/godterm-state"), "{q}");
     assert!(q.contains("Project repos are never touched"), "{q}");
     let tok = v["token"].as_str().unwrap().to_string();
-    // The same turn's token is refused: the user has not heard it.
+
     let same = app.control_call(
         "sync_init",
         &json!({"_client": "brain", "confirm_token": tok}),
     );
     assert_eq!(same["ok"], false, "{same}");
-    // An unclear answer runs nothing.
+
     user_says(&mut app, "what would that cost?");
     let un = app.control_call(
         "sync_init",
@@ -157,7 +140,6 @@ fn enable_sync_runs_the_plan_then_asks_once_then_inits_in_the_background() {
     assert!(app.sync_op().is_none());
     assert!(!remotes.join("tester/godterm-state.git").exists());
 
-    // A clear yes in a later turn: started in the background.
     user_says(&mut app, "yes");
     let ok = app.control_call(
         "sync_init",
@@ -170,7 +152,7 @@ fn enable_sync_runs_the_plan_then_asks_once_then_inits_in_the_background() {
     assert_eq!(op.kind, "init");
     assert!(remotes.join("tester/godterm-state.git/HEAD").is_file());
     assert!(sync_cfg(&home).enabled);
-    // Status while it is on: the op, the repo, the next sync.
+
     app.reload_config_now();
     assert!(app.cfg.sync.enabled);
     let st = app.control_call("sync_status", &json!({}));
@@ -181,13 +163,13 @@ fn enable_sync_runs_the_plan_then_asks_once_then_inits_in_the_background() {
     assert_eq!(s["repos"][0]["role"], "state");
     assert!(s["next"]["words"].is_string(), "{st}");
     assert!(s["never"].as_str().unwrap().contains("never"));
-    // A second init is refused now.
+
     let again = app.control_call("sync_init", &json!({"_client": "brain"}));
     assert!(
         again["error"].as_str().unwrap().contains("already on"),
         "{again}"
     );
-    // The visibility marker shows in the status (private here).
+
     w(
         &remotes.join("tester/godterm-state.git/visibility"),
         "PRIVATE\n",
@@ -208,7 +190,6 @@ fn enable_sync_runs_the_plan_then_asks_once_then_inits_in_the_background() {
         "{st}"
     );
 
-    // Pause and resume: [sync] paused in config.toml, status says so.
     let v = app.control_call("sync_pause", &json!({"pause": true}));
     assert_eq!(v["result"]["paused"], true, "{v}");
     assert!(sync_cfg(&home).paused);
@@ -216,7 +197,7 @@ fn enable_sync_runs_the_plan_then_asks_once_then_inits_in_the_background() {
     let st = app.control_call("sync_status", &json!({}));
     assert_eq!(st["result"]["paused"], true);
     assert_eq!(st["result"]["next"]["paused"], true);
-    // sync_now still runs once while paused.
+
     let now = app.control_call("sync_now", &json!({}));
     assert!(
         now["result"]["say"]
@@ -236,13 +217,12 @@ fn join_checks_the_repo_asks_once_then_clones() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let r = root("ui-clone");
     let remotes = r.join("remotes");
-    // The first machine (the sync's own fixture) made the state repo.
+
     let (a, _) = fixture_a(&r);
     restore::init(&a, a.cfg.sync.clone(), &|_| true).unwrap();
     let home = r.join("m2");
     let mut app = app_at(&home, &remotes);
 
-    // A repo that is not there: the check says so, clone is refused.
     let p = call_wait(
         &mut app,
         "sync_plan",
@@ -252,11 +232,10 @@ fn join_checks_the_repo_asks_once_then_clones() {
     assert!(p["result"]["plan"].is_null(), "a join check makes no plan");
     let v = app.control_call("sync_clone", &json!({"repo": "tester/nothing-here"}));
     assert!(v["error"].as_str().unwrap().contains("cannot join"), "{v}");
-    // Bad names are refused at once.
+
     let v = app.control_call("sync_clone", &json!({"repo": "no-slash"}));
     assert_eq!(v["ok"], false, "{v}");
 
-    // The real one: checked, then asked once, run on the yes.
     let p = call_wait(
         &mut app,
         "sync_plan",
@@ -277,7 +256,7 @@ fn join_checks_the_repo_asks_once_then_clones() {
     assert!(q.contains("never committed to or pushed"), "{q}");
     assert!(!sync_cfg(&home).enabled);
     let tok = v["token"].as_str().unwrap().to_string();
-    // A no drops it.
+
     user_says(&mut app, "no");
     let no = app.control_call(
         "sync_clone",
@@ -285,7 +264,7 @@ fn join_checks_the_repo_asks_once_then_clones() {
     );
     assert_eq!(no["result"]["cancelled"], true, "{no}");
     assert!(app.sync_op().is_none());
-    // Asked again, and a yes.
+
     let v = app.control_call(
         "sync_clone",
         &json!({"_client": "brain", "repo": "tester/godterm-state", "label": "Laptop"}),
@@ -317,13 +296,13 @@ fn the_web_confirm_dialog_is_the_users_yes() {
     std::fs::create_dir_all(&remotes).unwrap();
     let home = r.join("m3");
     let mut app = app_at(&home, &remotes);
-    // Preview, then Enable: the reply is the dialog's question...
+
     let p = call_wait(&mut app, "sync_plan", json!({"_client": "web"}));
     assert_eq!(p["result"]["preflight"]["can_init"], true, "{p}");
     let v = app.control_call("sync_init", &json!({"_client": "web"}));
     assert_eq!(v["needs_confirmation"], true, "{v}");
     let tok = v["token"].as_str().unwrap().to_string();
-    // ...and its Yes comes as the user's own turn (ws.rs user_says).
+
     app.handle(crate::app::AppEvent::UserTurn("yes".into()));
     let ok = app.control_call(
         "sync_init",
@@ -331,7 +310,7 @@ fn the_web_confirm_dialog_is_the_users_yes() {
     );
     assert_eq!(ok["result"]["started"], true, "{ok}");
     assert_eq!(op_done(&app).ok, Some(true));
-    // Pausing needs sync on; sync_now with sync off says how to turn it on.
+
     let mut off = app_at(&r.join("m4"), &remotes);
     let v = off.control_call("sync_pause", &json!({}));
     assert!(v["error"].as_str().unwrap().contains("off"), "{v}");

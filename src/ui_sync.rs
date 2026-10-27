@@ -1,7 +1,3 @@
-//! Settings > Sync: the state repo, the last sync, what waits, machines,
-//! conversation repos, warnings (projects not backed up among them).
-//! Read only; `godterm sync now` or the assistant's sync_now syncs.
-
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};

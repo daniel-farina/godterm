@@ -1,8 +1,3 @@
-//! Instant one word commands: a tiny, fixed set of controls that run at
-//! once, without the assistant, when they are the whole utterance. Nothing
-//! else is parsed locally; the assistant interprets everything else.
-
-/// The default set (Settings > Voice > instant set).
 pub const DEFAULTS: &[&str] = &[
     "stop",
     "yes",
@@ -23,25 +18,23 @@ pub const DEFAULTS: &[&str] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Instant {
-    /// Stop talking back (and the rest of the current reply).
     Stop,
-    /// Approve the waiting tab (or answer yes to the open dialog).
+
     Approve,
-    /// Deny the waiting tab (or no to the open dialog).
+
     Deny,
     Sleep,
     Wake,
     NextTab,
     PrevTab,
-    /// Turn the mic off (only a click or Ctrl-a X turns it back on).
+
     Mute,
-    /// Stop acting on speech for the default pause.
+
     Pause,
-    /// End a pause early.
+
     Resume,
 }
 
-/// An action by name, for "phrase=action" entries.
 pub fn action(name: &str) -> Option<Instant> {
     Some(
         match name.trim().to_lowercase().replace([' ', '-'], "_").as_str() {
@@ -60,8 +53,6 @@ pub fn action(name: &str) -> Option<Instant> {
     )
 }
 
-/// The configured phrases with their actions. A bare phrase is a built in
-/// one ("next tab"); "phrase=action" adds a synonym ("yep=approve").
 pub fn table(list: &[String]) -> Vec<(String, Instant)> {
     list.iter()
         .filter_map(|e| {
@@ -75,7 +66,6 @@ pub fn table(list: &[String]) -> Vec<(String, Instant)> {
         .collect()
 }
 
-/// Lower case words only: "Next tab!" -> "next tab".
 fn clean(s: &str) -> String {
     let t: String = s
         .chars()
@@ -90,9 +80,6 @@ fn clean(s: &str) -> String {
     t.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The instant command this whole utterance is, if any. "please" and
-/// "okay" around it are allowed; anything else makes it a request for the
-/// assistant.
 pub fn match_instant(utterance: &str, table: &[(String, Instant)]) -> Option<Instant> {
     let mut words: Vec<String> = clean(utterance)
         .split(' ')
@@ -115,8 +102,6 @@ pub fn match_instant(utterance: &str, table: &[(String, Instant)]) -> Option<Ins
     table.iter().find(|(p, _)| *p == u).map(|(_, a)| *a)
 }
 
-/// True when the reply is a clear no ("no", "don't", "cancel", "leave
-/// them"), not a question.
 pub fn negative(reply: &str) -> bool {
     let raw = reply.trim();
     if raw.is_empty() || raw.ends_with('?') {
@@ -142,9 +127,6 @@ pub fn negative(reply: &str) -> bool {
     .any(|n| c.contains(n))
 }
 
-/// A question without its question mark, as speech recognition writes it:
-/// "do you close them", "did you do it", "is it done", "can you send it".
-/// "do it" stays a request.
 fn spoken_question(reply: &str) -> bool {
     let c = clean(reply);
     let mut w = c.split(' ');
@@ -161,14 +143,12 @@ fn spoken_question(reply: &str) -> bool {
         | "will" | "shall" | "have" | "has" | "am" | "isn't" | "aren't" | "didn't" => {
             subject(second)
         }
-        // "do you close them" asks; "do it" tells.
+
         "do" => second.is_some_and(|s| ["you", "i", "we", "they", "these", "those"].contains(&s)),
         _ => false,
     }
 }
 
-/// True when the reply is a clear yes: an affirmative word or phrase, no
-/// question, no negation. Destructive confirmations need this.
 pub fn affirmative(reply: &str) -> bool {
     let raw = reply.trim();
     if raw.is_empty() || raw.ends_with('?') || spoken_question(raw) {
@@ -258,7 +238,6 @@ mod tests {
             ("Next tab.", Some(Instant::NextTab)),
             ("previous tab", Some(Instant::PrevTab)),
             ("okay next tab", Some(Instant::NextTab)),
-            // Anything more is a request for the assistant.
             ("yes and close the others", None),
             ("stop the api tab", None),
             ("approve the one in account two", None),
@@ -305,7 +284,6 @@ mod tests {
             "it's santa in his house",
             "don't close them",
             "yes? which ones",
-            // Spoken: speech recognition drops the question mark.
             "do you close them",
             "did you do it",
             "is it done",

@@ -1,9 +1,3 @@
-// The live view of a tab's browser (the Browser section and its big
-// dialog): the page the tab's agent drives, as pictures GodTerm sends
-// while the view is open (`bview` frames, binary kind 5), with clicks,
-// scrolling, back/forward/reload, a URL to open and typing sent back.
-// GodTerm never starts a browser session for it on its own: it attaches
-// to the session the agent has, or the user presses Start.
 import { h, on, toast, icon, isDesk, failRow } from './util.js';
 import { send, conn } from './conn.js';
 
@@ -11,12 +5,11 @@ export const KIND_PICTURE = 5;
 
 let seq = 0;
 const waits = new Map();
-// Views by tab uid: one `open` per tab while any view of it is up.
+
 const views = new Map();
-// The newest page facts and picture per tab (a view that joins starts
-// with them).
+
 const lastMeta = new Map(), lastPic = new Map();
-// GodTerm answers "unknown frame type" when it is older than the view.
+
 let unsupported = false;
 
 on('msg:bview', (m) => {
@@ -37,10 +30,10 @@ on('bin:' + KIND_PICTURE, (uid, bytes) => {
   const url = URL.createObjectURL(new Blob([bytes], { type }));
   lastPic.set(uid, url);
   for (const v of vs) v.onPicture(url);
-  // Each view keeps its own reference until its next picture.
+
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 });
-// Back after a lost connection: the views attach again.
+
 on('conn', (s) => { if (s === 'live') for (const [uid, vs] of views) if (vs.size) openFor(uid); });
 document.addEventListener('visibilitychange', () => {
   for (const [uid, vs] of views) {
@@ -49,14 +42,14 @@ document.addEventListener('visibilitychange', () => {
     else openFor(uid);
   }
 });
-// Still watching: every 20 s (GodTerm drops a view silent for 90 s).
+
 setInterval(() => {
   for (const [uid, vs] of views) {
     for (const v of [...vs]) if (!v.alive()) v.detach();
     if (vs.size && !document.hidden) send({ t: 'bview', op: 'keep', tab: uid });
   }
 }, 1000 * 20);
-// A view whose element left the page (the sheet closed) stops at once.
+
 setInterval(() => { for (const [, vs] of views) for (const v of [...vs]) if (!v.alive()) v.detach(); }, 1000);
 
 function ask(frame, ms = 60000) {
@@ -118,7 +111,6 @@ const ICONS = {
   fwd: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
 };
 
-// One view of tab `t`'s browser. `big`: the dialog's.
 class View {
   constructor(t, big) {
     this.t = t;
@@ -165,7 +157,6 @@ class View {
     return this;
   }
 
-  // Still in the page (its slot, or its own element in the dialog).
   alive() { return (this.host || this.el).isConnected; }
 
   detach() {
@@ -239,8 +230,6 @@ class View {
     if (r.ok !== false) this.typed.value = '';
   }
 
-  // Click: a tap where it is; drag or the wheel: scroll (fractions of the
-  // picture's height, GodTerm turns them into page pixels).
   input() {
     let down = null, dy = 0, dx = 0, flushT = 0;
     const rect = () => this.img.getBoundingClientRect();
@@ -296,10 +285,6 @@ class View {
   }
 }
 
-// The live view for the Browser section: a slot that shows the view when
-// the agent has a session, or why not (with Start, which the user presses
-// on purpose). `onState(r)` hears every answer (the section keeps its
-// cards whatever it is).
 export function liveSlot(t) {
   const slot = h('div.list', {}, h('div.mnote', {}, 'Looking for the agent\'s browser session...'));
   if (unsupported) { slot.replaceChildren(h('div.mnote', {}, 'The live view needs a GodTerm restart.')); return slot; }
@@ -327,7 +312,7 @@ export function liveSlot(t) {
     slot.replaceChildren(h('div.lrow', {}, ...kids));
   };
   v.host = slot;
-  // Attach once the slot is in the page (the section mounts it next).
+
   const t0 = Date.now();
   const tick = () => {
     if (slot.isConnected) v.attach();
@@ -337,7 +322,6 @@ export function liveSlot(t) {
   return slot;
 }
 
-// The big view: a dialog on a desktop, the whole screen on a phone.
 let dlg = null;
 function openDialog(t) {
   closeDialog();

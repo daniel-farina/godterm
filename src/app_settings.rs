@@ -1,6 +1,3 @@
-//! Settings screen actions: change, reset and edit values, account
-//! management, live memory figures.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::process::{Command, Stdio};
 
@@ -8,11 +5,10 @@ use crate::app::{App, Modal, View};
 use crate::config::Config;
 use crate::settings::{self, Kind, Section, Setting, SECTIONS};
 
-/// Resident memory of godterm and of each tab's process, in KB.
 #[derive(Debug, Clone, Default)]
 pub struct MemStats {
     pub own_kb: u64,
-    /// (pane, tab, label, kb)
+
     pub tabs: Vec<(usize, usize, String, u64)>,
 }
 
@@ -22,7 +18,6 @@ impl MemStats {
     }
 }
 
-/// RSS in KB for these pids, from one `ps` call.
 pub fn rss_of(pids: &[u32]) -> std::collections::HashMap<u32, u64> {
     let mut out = std::collections::HashMap::new();
     if pids.is_empty() {
@@ -48,7 +43,6 @@ pub fn rss_of(pids: &[u32]) -> std::collections::HashMap<u32, u64> {
     out
 }
 
-/// A line of the settings list.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsLine {
     Header {
@@ -67,9 +61,6 @@ impl App {
             View::Settings
         };
         if self.view == View::Settings {
-            // Devices, models and voices for the pickers, in the background.
-            // Devices, voices and models, in the background, once (a hung
-            // ffmpeg or audio system never blocks the screen).
             settings::start_audio_lists(&self.cfg.voice, false);
             if !cfg!(test) {
                 self.want_grok_usage();
@@ -81,13 +72,10 @@ impl App {
         SECTIONS[self.settings_section.min(SECTIONS.len() - 1)].0
     }
 
-    /// The rows that can be selected: a search's matches, or the section's
-    /// rows that apply now, minus those under a collapsed header.
     pub fn settings_rows(&self) -> Vec<Setting> {
         self.settings_view().0
     }
 
-    /// The rows, and the lines that show them (headers, then rows).
     pub fn settings_view(&self) -> (Vec<Setting>, Vec<SettingsLine>) {
         let mut rows = vec![];
         let mut lines = vec![];
@@ -141,7 +129,6 @@ impl App {
         (rows, lines)
     }
 
-    /// Fold or unfold a header of the section.
     pub fn toggle_settings_group(&mut self, g: &'static str) {
         if !self.settings_collapsed.remove(g) {
             self.settings_collapsed.insert(g);
@@ -150,14 +137,12 @@ impl App {
         self.settings_sel = self.settings_sel.min(n.saturating_sub(1));
     }
 
-    /// Write a setting and reload so it applies at once.
     pub fn setting_write(&mut self, row: usize, item: Option<toml_edit::Item>) {
         let Some(s) = self.settings_rows().get(row).cloned() else {
             return;
         };
         match settings::write(&Config::path(), &s.key, item) {
             Ok(()) => {
-                // Settings win over the runtime toggles from now on.
                 match &s.key {
                     settings::Key::Global("privacy") => self.rt_privacy = None,
                     settings::Key::Global("layout") | settings::Key::Global("grid") => {
@@ -196,8 +181,6 @@ impl App {
             Kind::Text | Kind::List | Kind::Secret => self.setting_edit(row),
             _ => {
                 if let Some(item) = settings::stepped(&self.cfg, &s, dir) {
-                    // Switching to bypass from the settings screen is explicit
-                    // enough; it still logs.
                     self.setting_write(row, Some(item));
                 }
             }
@@ -213,7 +196,6 @@ impl App {
             return self.open_grok_logins();
         }
         if s.kind == Kind::Secret {
-            // Typed fresh, never shown.
             self.settings_sel = row;
             self.modal = Modal::EditSetting(row, String::new());
         } else if matches!(s.kind, Kind::Text | Kind::List) {
@@ -259,11 +241,6 @@ impl App {
         self.setting_write(row, None);
     }
 
-    /// Remove account `a` from config.toml (its config dir stays on disk).
-    /// It is found there by name: the file's order need not match the one
-    /// in memory (a removed account stays shown until the next start, and
-    /// the file may have been edited by hand), and an index past the end
-    /// used to panic.
     pub fn remove_account(&mut self, a: usize) {
         let path = Config::path();
         let want = self.cfg.accounts.get(a).map(|x| x.name.clone());
@@ -304,7 +281,6 @@ impl App {
         }
     }
 
-    /// Open config.toml in $EDITOR in a new tab, or the system text editor.
     pub fn open_config_in_editor(&mut self) {
         let path = Config::path();
         match std::env::var("EDITOR")
@@ -320,7 +296,7 @@ impl App {
                 self.run_in_new_tab(p, &prog, args);
                 self.view = View::Grid;
             }
-            // (Tests never open an editor on the desktop.)
+
             None if cfg!(test) || std::env::var_os("GODTERM_NO_OPEN").is_some() => {}
             None => {
                 let _ = Command::new("open")
@@ -338,7 +314,6 @@ impl App {
         }
     }
 
-    /// `godterm doctor` in a new tab of the focused pane.
     pub fn run_doctor_tab(&mut self) {
         let exe = std::env::current_exe()
             .map(|p| p.to_string_lossy().into_owned())
@@ -352,7 +327,6 @@ impl App {
         self.view = View::Grid;
     }
 
-    /// Refresh memory figures in the background.
     pub fn refresh_mem(&mut self) {
         let mut pids = vec![(std::process::id(), usize::MAX, usize::MAX, String::new())];
         for (si, s) in self.panes.iter().enumerate() {
@@ -388,8 +362,7 @@ impl App {
 
     pub fn on_settings_key(&mut self, k: KeyEvent) {
         let n = self.settings_rows().len();
-        // Searching: typing goes to the filter; arrows, Enter and Left /
-        // Right still work on the rows.
+
         if let Some(q) = self.settings_query.as_mut() {
             match k.code {
                 KeyCode::Esc => {
@@ -459,8 +432,6 @@ impl App {
 }
 
 impl App {
-    /// The usage of a Grok login: an account's last reply, or for the main
-    /// ~/.grok the one the picker fetched.
     pub fn grok_usage(&self, id: &str) -> Option<&crate::usage::Usage> {
         match self.cfg.accounts.iter().position(|c| c.name == id) {
             Some(a) => self.accounts.get(a)?.usage.as_ref(),
@@ -469,7 +440,6 @@ impl App {
         }
     }
 
-    /// Why a login's usage is not there: its last error.
     pub fn grok_usage_error(&self, id: &str) -> Option<String> {
         match self.cfg.accounts.iter().position(|c| c.name == id) {
             Some(a) => self.accounts.get(a)?.usage_err.as_ref().map(|e| e.short()),
@@ -478,8 +448,6 @@ impl App {
         }
     }
 
-    /// What a login has left for voice: (percent, whether it is the Voice
-    /// figure (else the weekly credits), when it resets).
     pub fn grok_left(
         &self,
         id: &str,
@@ -501,8 +469,6 @@ impl App {
         }
     }
 
-    /// The login with the most voice (or weekly credits) left; never one
-    /// with nothing left or one xAI refused.
     pub fn grok_best(&self) -> Option<String> {
         let refused = crate::voice::grok_tts::refused_ids();
         let mut best: Option<(String, f64)> = None;
@@ -510,7 +476,7 @@ impl App {
             if !s.logged_in || refused.contains(&s.id) {
                 continue;
             }
-            // Effective: the voice figure, and never more than the weekly.
+
             let Some((left, _, _)) = self.grok_left(&s.id) else {
                 continue;
             };
@@ -530,8 +496,6 @@ impl App {
         best.map(|b| b.0)
     }
 
-    /// One login, compact: "demo8 (d…@…) · Voice 82% · weekly 37%", or
-    /// why it cannot be used, or its usage error.
     pub fn grok_source_line(&self, id: &str) -> String {
         use crate::voice::grok_tts;
         let all = grok_tts::sources(&self.cfg);
@@ -588,16 +552,12 @@ impl App {
         out
     }
 
-    /// Every login of the picker on one line.
     pub fn grok_sources_hint(&self) -> String {
         let all = crate::voice::grok_tts::sources(&self.cfg);
         let lines: Vec<String> = all.iter().map(|s| self.grok_source_line(&s.id)).collect();
         format!("Change… picks a login. {}", lines.join("  |  "))
     }
 
-    /// Fetch the usage of every Grok login that has none (Settings, the
-    /// picker): the accounts, and the main ~/.grok when it is logged in
-    /// (its token is read, nothing written).
     pub fn want_grok_usage(&mut self) {
         let ids: Vec<usize> = self
             .cfg
@@ -616,7 +576,6 @@ impl App {
         self.fetch_main_grok_usage(false);
     }
 
-    /// The main ~/.grok's usage, in the background.
     pub fn fetch_main_grok_usage(&mut self, again: bool) {
         if cfg!(test) || (self.main_grok_usage.is_some() && !again) {
             return;

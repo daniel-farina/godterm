@@ -1,29 +1,20 @@
-//! Usage aware failover: when a tab's account runs out (its binding usage
-//! bucket under usage.failover_pct, or the tab says it hit its limit), a
-//! calm notice offers to move the session to the account of the same
-//! provider with the most left. One yes moves it (Ctrl-a F, a click on
-//! the notice, or "move it" to the assistant); "auto" moves idle tabs by
-//! itself and says so. Nothing moves without one of those.
-
 use std::time::Instant;
 
 use crate::app::App;
 use crate::pane::LaunchKind;
 
-/// A move on offer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Offer {
     pub uid: u64,
     pub from: usize,
     pub to: usize,
-    /// "Account 3 is out for the week (resets Fri 1 PM)".
+
     pub why: String,
-    /// The tab said it hit its limit (not only the numbers).
+
     pub from_output: bool,
     pub at: Instant,
 }
 
-/// What claude, grok and friends print when a limit stops them.
 const LIMIT_SIGNS: &[&str] = &[
     "usage limit reached",
     "hit your limit",
@@ -34,7 +25,6 @@ const LIMIT_SIGNS: &[&str] = &[
     "limit will reset",
 ];
 
-/// Whether a tab's screen says it hit a usage limit (its last lines).
 pub fn limit_error(screen: &str) -> bool {
     let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
     let tail = lines[lines.len().saturating_sub(12)..]
@@ -44,19 +34,15 @@ pub fn limit_error(screen: &str) -> bool {
 }
 
 impl App {
-    /// Percent left of the account's binding bucket, when known.
     pub(crate) fn account_binding_left(&self, a: usize) -> Option<f64> {
         self.binding_left(a).map(|k| k.left_pct)
     }
 
-    /// The account's binding bucket, by its provider (generic).
     fn binding_left(&self, a: usize) -> Option<crate::providers::Bucket> {
         let b = self.account_buckets(a)?;
         crate::providers::binding(&b).cloned()
     }
 
-    /// The account of the same provider with the most left (over the
-    /// threshold), to move a tab of `slot` to.
     pub fn failover_target(&self, slot: usize) -> Option<(usize, f64)> {
         let min = self.cfg.usage.failover_pct;
         self.move_targets(slot)
@@ -69,7 +55,6 @@ impl App {
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
     }
 
-    /// Why account `a` counts as out, if it does.
     fn out_reason(&self, a: usize, from_output: bool) -> Option<String> {
         let name = self.cfg.accounts[a].display().to_string();
         let k = self.binding_left(a);
@@ -102,11 +87,7 @@ impl App {
         }
     }
 
-    /// Look at every tab (from tick): make, keep or drop offers, and in
-    /// auto mode move the idle ones.
     pub fn failover_scan(&mut self) {
-        // Which tabs say they hit a limit (their row's "limit" label), in
-        // every failover mode.
         self.limit_hit = self
             .all_tabs()
             .into_iter()
@@ -176,14 +157,13 @@ impl App {
                 }
             }
         }
-        // Gone or fine again: no offer.
+
         self.failover.retain(|o| seen.contains(&o.uid));
         if mode == "auto" {
             let idle: Vec<u64> = self
                 .failover
                 .iter()
                 .filter(|o| {
-                    // Busy includes background work (a move would stop it).
                     self.find_tab(o.uid)
                         .is_some_and(|(s, t)| !self.tab_busy(s, t))
                 })
@@ -195,7 +175,6 @@ impl App {
         }
     }
 
-    /// The offer the notice shows: the focused tab's, else the oldest.
     pub fn failover_offer(&self) -> Option<&Offer> {
         let focused = self.panes.get(self.focus).map(|p| p.cur().uid);
         self.failover
@@ -204,8 +183,6 @@ impl App {
             .or_else(|| self.failover.first())
     }
 
-    /// "Account 3 is out for the week (resets Fri 13:00). Move this
-    /// session to Account 4 (100% left)?"
     pub fn failover_text(&self, o: &Offer) -> String {
         let left = self
             .binding_left(o.to)
@@ -218,8 +195,6 @@ impl App {
         )
     }
 
-    /// The yes: move the offered tab (`uid`, else the shown offer).
-    /// `auto`: moved by usage.auto_failover, so it says so.
     pub fn accept_failover(&mut self, uid: Option<u64>, auto: bool) -> Option<String> {
         let o = match uid {
             Some(u) => self.failover.iter().find(|o| o.uid == u)?.clone(),
@@ -230,7 +205,6 @@ impl App {
         let name = self.spoken_tab_name(o.uid);
         let to = self.cfg.accounts[o.to].display().to_string();
         if self.tab_has_running_work(s, t) {
-            // Busy (its turn or background work): it moves once that ends.
             self.queue_move(crate::app_tabmove::QueuedMove {
                 uid: o.uid,
                 target: o.to,
@@ -267,7 +241,6 @@ impl App {
         Some(msg)
     }
 
-    /// Not now: no more offers for this tab while it stays on that account.
     pub fn decline_failover(&mut self) {
         if let Some(o) = self.failover_offer().cloned() {
             self.failover_declined.push((o.uid, o.from));
@@ -275,7 +248,6 @@ impl App {
         }
     }
 
-    /// The state block's line: offers the user can take by voice.
     pub fn failover_state_line(&self) -> String {
         if self.failover.is_empty() {
             return String::new();

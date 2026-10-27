@@ -1,8 +1,3 @@
-//! Organizing an account's tab list: named groups (collapsible, with a
-//! color that is the default accent of their tabs), pinned tabs (always
-//! first) and a sort per account. The tabs keep their manual order in
-//! `Slot::tabs`; what the list shows is computed here.
-
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
@@ -21,18 +16,17 @@ pub struct TabGroup {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TabSort {
-    /// Drag order.
     #[default]
     Manual,
-    /// Working first, then by the latest output.
+
     Active,
-    /// Last output, input or state change first.
+
     Recent,
-    /// Most recently opened first.
+
     Opened,
     Name,
     Folder,
-    /// Blocked or waiting for a confirmation, then working, then the rest.
+
     State,
 }
 
@@ -71,7 +65,6 @@ impl TabSort {
         }
     }
 
-    /// From a tool or spoken word: "most recent", "activity", "newest"...
     pub fn parse(s: &str) -> Option<TabSort> {
         let s = s.trim().to_lowercase();
         let has = |w: &[&str]| w.iter().any(|x| s.contains(x));
@@ -97,18 +90,15 @@ impl TabSort {
     }
 }
 
-/// A row of the tab list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Tab(usize),
     Group(usize),
-    /// The Archived group's header, and entry `k` of the pane's archive.
+
     ArchHead,
     Arch(usize),
 }
 
-/// Re-sort by activity at most this often (rows do not jump while the
-/// user aims at one).
 pub const RESORT_EVERY: Duration = Duration::from_secs(3);
 
 fn state_rank(t: &Pane) -> u8 {
@@ -120,7 +110,6 @@ fn state_rank(t: &Pane) -> u8 {
 }
 
 impl Slot {
-    /// The group a tab is in (its index in `groups`).
     pub fn group_of(&self, t: usize) -> Option<usize> {
         let g = self.tabs.get(t)?.group.as_ref()?;
         self.groups.iter().position(|x| &x.name == g)
@@ -131,7 +120,6 @@ impl Slot {
         self.groups.iter().position(|g| g.name.to_lowercase() == n)
     }
 
-    /// The tab's color: its own accent, else its group's.
     pub fn accent_of(&self, t: usize) -> Option<String> {
         let tab = self.tabs.get(t)?;
         tab.accent
@@ -159,15 +147,10 @@ impl Slot {
         ix
     }
 
-    /// Every tab in list order: pinned, then (ungrouped first when
-    /// `ungrouped_top`) each group, then the ungrouped ones; sorted within
-    /// each. `hold` (the mouse is over the list) keeps the last order.
     pub fn tab_order(&self, ungrouped_top: bool, hold: bool) -> Vec<usize> {
         self.tab_order_by(ungrouped_top, hold, &|i| state_rank(&self.tabs[i]))
     }
 
-    /// The same with the Status sort's rank of each tab given (the app
-    /// knows which wait for a confirmation).
     pub fn tab_order_by(
         &self,
         ungrouped_top: bool,
@@ -213,14 +196,10 @@ impl Slot {
         out
     }
 
-    /// The list's rows: tabs and group headers; a collapsed group shows
-    /// only its header.
     pub fn rows(&self, ungrouped_top: bool, hold: bool) -> Vec<Row> {
         self.rows_by(ungrouped_top, hold, &|i| state_rank(&self.tabs[i]), None)
     }
 
-    /// Rows in the Status rank given; `only`: the tabs a search matched
-    /// (groups with a match show it, folded or not; the others go).
     pub fn rows_by(
         &self,
         ungrouped_top: bool,
@@ -234,8 +213,7 @@ impl Slot {
         }
         let mut rows = vec![];
         let mut shown = vec![false; self.groups.len()];
-        // Headers go where their first member is; empty groups after the
-        // grouped ones.
+
         for &i in &order {
             let g = (!self.tabs[i].pinned).then(|| self.group_of(i)).flatten();
             if let Some(g) = g {
@@ -259,14 +237,12 @@ impl Slot {
         rows
     }
 
-    /// Members of group `g` (pinned ones too), in tab order.
     pub fn members(&self, g: usize) -> Vec<usize> {
         (0..self.tabs.len())
             .filter(|&i| self.group_of(i) == Some(g))
             .collect()
     }
 
-    /// The state dot of a group: needs approval, working, or idle.
     pub fn group_state(&self, g: usize) -> Activity {
         let m = self.members(g);
         if m.iter()
@@ -283,7 +259,6 @@ impl Slot {
         }
     }
 
-    /// Put tabs in a group, creating it (with `color`) when new.
     pub fn group_tabs(&mut self, tabs: &[usize], name: &str, color: Option<String>) -> usize {
         let g = match self.find_group(name) {
             Some(g) => g,
@@ -308,7 +283,6 @@ impl Slot {
         g
     }
 
-    /// Dissolve a group: its tabs become ungrouped.
     pub fn ungroup(&mut self, g: usize) {
         if g >= self.groups.len() {
             return;
@@ -334,8 +308,6 @@ impl Slot {
         self.groups[g].name = to;
     }
 
-    /// Next and previous follow the list's order (the tabs a search
-    /// matched, while one is typed).
     pub fn step_tab(&mut self, ungrouped_top: bool, dir: isize, only: Option<&[bool]>) {
         let mut order = self.tab_order(ungrouped_top, true);
         if let Some(m) = only {
@@ -350,8 +322,6 @@ impl Slot {
         self.sidebar_scroll = crate::slot::FOLLOW;
     }
 
-    /// Drop groups whose name no tab and no header uses... (kept: empty
-    /// groups stay until ungrouped). Tabs naming a missing group get one.
     pub fn repair_groups(&mut self) {
         let names: Vec<String> = self.tabs.iter().filter_map(|t| t.group.clone()).collect();
         for n in names {
@@ -387,7 +357,7 @@ mod tests {
         let mut s = slot();
         s.group_tabs(&[3, 4], "experiments", Some("sage".into()));
         s.tabs[2].pinned = true;
-        // Pinned first, then groups, then the ungrouped (bottom).
+
         assert_eq!(
             names(&s, &s.tab_order(false, false)),
             ["docs", "exp1", "exp2", "api", "web"]
@@ -407,7 +377,7 @@ mod tests {
                 Row::Tab(1)
             ]
         );
-        // Collapsed: the header alone, with the members' state.
+
         s.groups[0].collapsed = true;
         s.tabs[4].activity = Activity::Working;
         assert_eq!(
@@ -417,17 +387,17 @@ mod tests {
         assert_eq!(s.group_state(0), Activity::Working);
         s.tabs[3].activity = Activity::Permission;
         assert_eq!(s.group_state(0), Activity::Permission);
-        // The group color is the default accent; the tab's own wins.
+
         assert_eq!(s.accent_of(3).as_deref(), Some("sage"));
         s.tabs[3].accent = Some("clay".into());
         assert_eq!(s.accent_of(3).as_deref(), Some("clay"));
         assert_eq!(s.accent_of(0), None);
-        // Rename and ungroup.
+
         s.rename_group(0, "lab");
         assert_eq!(s.tabs[4].group.as_deref(), Some("lab"));
         s.ungroup(0);
         assert!(s.groups.is_empty() && s.tabs[4].group.is_none());
-        // Next and previous follow the list.
+
         s.active = 2;
         s.step_tab(false, 1, None);
         assert_eq!(s.active, 0);
@@ -454,7 +424,7 @@ mod tests {
         assert_eq!(order(&s), ["exp2", "exp1", "docs", "web", "zeta"]);
         s.sort = TabSort::Manual;
         assert_eq!(order(&s), ["zeta", "web", "docs", "exp1", "exp2"]);
-        // Most recent: re-sorted at most every 3 s, never under the mouse.
+
         s.sort = TabSort::Recent;
         let base = Instant::now();
         for (k, t) in s.tabs.iter_mut().enumerate() {

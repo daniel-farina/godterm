@@ -1,10 +1,3 @@
-//! system_check: read-only looks at the machine for the assistant, so it
-//! can verify what it is about to say ("the server is gone", "nothing
-//! runs there"). Only allowlisted commands, run directly with their argv
-//! (no shell, no pipes, no redirection), with checked arguments: no write
-//! flags, the file guard on every path, a 5 s timeout and 8 KB of output.
-//! Anything else is refused: a tab agent does it, or the user.
-
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -14,8 +7,6 @@ pub const MAX_OUT: usize = 8 * 1024;
 
 const REFUSE: &str = "not a read-only check; ask a tab agent to do it, or ask the user";
 
-/// Characters a shell would act on: never part of an argument here. On
-/// Windows a backslash is a path, but cmd's ^ and % are refused too.
 fn has_shell_syntax(s: &str) -> bool {
     if WINDOWS.with(|w| w.get()) {
         return s.chars().any(|c| {
@@ -64,7 +55,6 @@ fn has_shell_syntax(s: &str) -> bool {
     })
 }
 
-/// A checked command: (program, args, working folder).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cmd {
     pub prog: String,
@@ -72,7 +62,6 @@ pub struct Cmd {
     pub cwd: Option<PathBuf>,
 }
 
-/// Arguments that are paths must be readable by the guard rules.
 fn path_ok(a: &str, allowed: &[PathBuf]) -> Result<(), String> {
     let p = crate::config::expand_tilde(a);
     if let Some(why) = crate::guard::denied(&p, allowed) {
@@ -82,13 +71,10 @@ fn path_ok(a: &str, allowed: &[PathBuf]) -> Result<(), String> {
 }
 
 thread_local! {
-    /// Check as Windows does (tests flip it to check the Windows rules on
-    /// any machine).
+
     static WINDOWS: std::cell::Cell<bool> = const { std::cell::Cell::new(cfg!(windows)) };
 }
 
-/// The Windows allowlist: tasklist, netstat -ano, where, hostname, read
-/// only git, and dir / type (done here, not by cmd: there is no shell).
 fn check_windows(argv: &[String], cwd: Option<&Path>, allowed: &[PathBuf]) -> Result<Cmd, String> {
     let name = crate::procs::program_name(&argv[0]).to_lowercase();
     let args: Vec<String> = argv[1..].to_vec();
@@ -109,7 +95,6 @@ fn check_windows(argv: &[String], cwd: Option<&Path>, allowed: &[PathBuf]) -> Re
     };
     match name.as_str() {
         "tasklist" => {
-            // Filters and formats only: never /S /U /P (another machine).
             let mut i = 0;
             while i < up.len() {
                 match up[i].as_str() {
@@ -186,7 +171,6 @@ fn check_windows(argv: &[String], cwd: Option<&Path>, allowed: &[PathBuf]) -> Re
                 .collect(),
         ),
         "git" => {
-            // The same read only subcommands as elsewhere.
             let mut unix: Vec<String> = vec!["git".into()];
             unix.extend(args);
             WINDOWS.with(|w| w.set(false));
@@ -198,8 +182,6 @@ fn check_windows(argv: &[String], cwd: Option<&Path>, allowed: &[PathBuf]) -> Re
     }
 }
 
-/// Check `argv` against the allowlist. `cwd` is where git runs (a tab's
-/// folder); `allowed` are the workspaces the guard lets through.
 pub fn check(argv: &[String], cwd: Option<&Path>, allowed: &[PathBuf]) -> Result<Cmd, String> {
     let Some(prog) = argv.first() else {
         return Err("give a command, e.g. [\"ps\", \"-p\", \"123\"]".into());
@@ -304,14 +286,14 @@ pub fn check(argv: &[String], cwd: Option<&Path>, allowed: &[PathBuf]) -> Result
     if !ok {
         return Err(format!("refused: {} ({REFUSE})", argv.join(" ")));
     }
-    // Paths read by the file commands go through the guard.
+
     if matches!(
         name.as_str(),
         "ls" | "stat" | "file" | "wc" | "head" | "tail" | "du"
     ) {
         for p in &paths {
             if p.parse::<u64>().is_ok() && matches!(name.as_str(), "head" | "tail") {
-                continue; // the -n count
+                continue;
             }
             path_ok(p, allowed)?;
         }
@@ -330,10 +312,9 @@ pub fn check(argv: &[String], cwd: Option<&Path>, allowed: &[PathBuf]) -> Result
     })
 }
 
-/// Run a checked command: at most TIMEOUT, at most MAX_OUT of output.
 pub fn run(c: &Cmd) -> Value {
     use std::io::Read;
-    // dir and type (Windows): done here, never by cmd.
+
     if c.prog == "dir" || c.prog == "type" {
         let mut out = String::new();
         for a in &c.args {
@@ -391,8 +372,7 @@ pub fn run(c: &Cmd) -> Value {
     let Ok(mut child) = cmd.spawn() else {
         return json!({"error": format!("{} is not available here", c.prog)});
     };
-    // Read both streams as they come (a full pipe would stall the
-    // command), keeping the first MAX_OUT bytes.
+
     let reader = |r: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
             let mut kept = Vec::new();
@@ -446,15 +426,13 @@ pub fn run(c: &Cmd) -> Value {
     })
 }
 
-/// A process, its parents and everything below it.
 pub fn process_tree(pid: u32) -> Value {
     let table = crate::activity::process_table();
     let Some(me) = table.iter().find(|p| p.pid == pid) else {
         return json!({"pid": pid, "running": false});
     };
     let mut parents = vec![];
-    // Windows reuses pids and keeps a dead parent's id, so parent links can
-    // form a cycle: stop at any pid already seen.
+
     let mut seen = std::collections::HashSet::from([pid]);
     let mut cur = me.ppid;
     while let Some(p) = table.iter().find(|p| p.pid == cur) {
@@ -471,7 +449,6 @@ pub fn process_tree(pid: u32) -> Value {
     json!({"pid": pid, "running": true, "cmd": crate::sessions::snippet(&me.cmd, 120), "parents": parents, "children": kids})
 }
 
-/// What listens on a TCP port (lsof; netstat -ano on Windows).
 pub fn port_owner(port: u16) -> Value {
     let owners: Vec<Value> = crate::procs::listeners(port)
         .into_iter()
@@ -524,7 +501,7 @@ mod tests {
         ] {
             assert!(check(&bad, Some(&tmp), &[]).is_err(), "{bad:?}");
         }
-        // dir and type go through the guard and run here, not in cmd.
+
         let ssh = crate::config::home_dir().join(".ssh").join("id_ed25519");
         assert!(check(&a(&["type", &ssh.to_string_lossy()]), None, &[]).is_err());
         let d = tmp.join(format!("godterm-dir-{}", std::process::id()));
@@ -544,7 +521,7 @@ mod tests {
         let _g = crate::config::testing::LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        // The Unix rules (on any machine).
+
         WINDOWS.with(|w| w.set(false));
         let tmp = std::env::temp_dir();
         for ok in [
@@ -587,7 +564,7 @@ mod tests {
             };
             assert!(check(&a, Some(&tmp), &[]).is_err(), "{bad}");
         }
-        // The file guard on path arguments.
+
         let h = crate::config::home_dir();
         for p in [
             h.join(".ssh"),
@@ -615,7 +592,6 @@ mod tests {
 
     #[test]
     fn runs_with_caps() {
-        // Portable programs: the test stub printing or sleeping.
         let d = std::env::temp_dir().join(format!("godterm-caps-{}", std::process::id()));
         let stub = |tag: &str, opts: &[(&str, String)]| {
             crate::test_stub::claude(&d.join(tag), opts)

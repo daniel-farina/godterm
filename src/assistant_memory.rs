@@ -1,29 +1,20 @@
-//! The assistant's memory across restarts: a compact block, built from the
-//! conversations saved in the last `assistant.memory_days`, that a new
-//! brain gets in its first message. Each conversation is a few lines (the
-//! summary the brain saved with remember_summary, or one made from what
-//! was asked and which tools ran); the most recent one also has its last
-//! turns word for word. About 1.5k tokens at most.
-
 use serde_json::Value;
 use std::path::Path;
 
 use crate::assistant_history::{dir, read};
 
-/// Most characters of the block (about 1.5k tokens).
 pub const MAX_CHARS: usize = 6000;
 
-/// One saved conversation, remembered.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Remembered {
     pub id: String,
-    /// "today 7:37 PM".
+
     pub started: String,
-    /// "7:48 PM".
+
     pub ended: String,
-    /// One to three lines.
+
     pub summary: String,
-    /// Its last turns, "user: ..." / "you: ...".
+
     pub last_turns: Vec<String>,
     pub turns: usize,
 }
@@ -38,8 +29,6 @@ fn clip(s: &str, n: usize) -> String {
     crate::sessions::snippet(&s.replace('\n', " "), n)
 }
 
-/// What a tool call touched, briefly: "sessions project=code/fotmesh",
-/// "open_tab t12 ~/godterm-tabs/calc".
 fn tool_line(e: &Value) -> Option<String> {
     let name = e["name"].as_str()?;
     if matches!(
@@ -73,7 +62,7 @@ fn tool_line(e: &Value) -> Option<String> {
             _ => {}
         }
     }
-    // Tab ids and folders from the result, when it opened something.
+
     let r = e["result"].as_str().unwrap_or("");
     for key in ["\"tab\":\"t", "\"folder\":\""] {
         if let Some(i) = r.find(key) {
@@ -93,16 +82,13 @@ fn tool_line(e: &Value) -> Option<String> {
     })
 }
 
-/// A tab a remembered conversation named, with what it was then.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TabRef {
-    /// "t19".
     pub tab: String,
     pub session: Option<String>,
     pub folder: Option<String>,
 }
 
-/// The string value after `"key":"` in a (possibly cut off) JSON text.
 fn json_str(text: &str, key: &str) -> Option<String> {
     let pat = format!("\"{key}\":\"");
     let i = text.find(&pat)? + pat.len();
@@ -110,8 +96,6 @@ fn json_str(text: &str, key: &str) -> Option<String> {
     (!v.is_empty()).then_some(v)
 }
 
-/// Every tab id the conversation's tools named, with the session and
-/// folder it had then (from the tool's arguments and result).
 pub fn tab_refs(evs: &[Value]) -> Vec<TabRef> {
     let mut out: Vec<TabRef> = vec![];
     for e in evs.iter().filter(|e| e["kind"] == "tool") {
@@ -146,7 +130,6 @@ pub fn tab_refs(evs: &[Value]) -> Vec<TabRef> {
     out
 }
 
-/// Tab refs of the conversations the memory block holds.
 pub fn recent_tab_refs(days: u32) -> Vec<TabRef> {
     let Ok(rd) = std::fs::read_dir(dir()) else {
         return vec![];
@@ -164,7 +147,7 @@ pub fn recent_tab_refs(days: u32) -> Vec<TabRef> {
         .map(|e| e.path())
         .collect();
     paths.sort();
-    // Later conversations win for the same id.
+
     let mut out: Vec<TabRef> = vec![];
     for p in paths {
         for r in tab_refs(&read(&p)) {
@@ -175,9 +158,6 @@ pub fn recent_tab_refs(days: u32) -> Vec<TabRef> {
     out
 }
 
-/// "today 7:37 PM", "yesterday 3:52 PM", "Mon Oct 5 9:10 AM": spoken
-/// times, so the model never converts a 24 hour clock (it said "two
-/// fifty-five" for 19:41).
 fn when(t: chrono::DateTime<chrono::FixedOffset>) -> String {
     let local = t.with_timezone(&chrono::Local);
     let today = chrono::Local::now().date_naive();
@@ -192,7 +172,6 @@ fn when(t: chrono::DateTime<chrono::FixedOffset>) -> String {
     format!("{d} {}", local.format("%-I:%M %p"))
 }
 
-/// The saved summary, or one made from the events.
 pub fn remember(path: &Path) -> Option<Remembered> {
     let evs = read(path);
     let id = path.file_stem()?.to_string_lossy().into_owned();
@@ -249,13 +228,10 @@ pub fn remember(path: &Path) -> Option<Remembered> {
                 }
             ));
         }
-        // Left open: a question asked without a later yes, or the last
-        // request never answered.
+
         let last_user_i = evs.iter().rposition(|e| e["kind"] == "user").unwrap_or(0);
         let answered = evs[last_user_i..].iter().any(|e| e["kind"] == "reply");
-        // Left open in that chat: said as of then. A yes/no question that
-        // came from a confirmation has expired by now (two minutes), so
-        // it is not carried at all; the state says what waits now.
+
         let ended = evs.last().and_then(time_of);
         let old = ended.is_none_or(|t| {
             chrono::Local::now().signed_duration_since(t) > chrono::Duration::minutes(2)
@@ -289,7 +265,7 @@ pub fn remember(path: &Path) -> Option<Remembered> {
         }
         lines.join("\n")
     });
-    // Pause talk would read as if listening were still paused.
+
     let turns: Vec<String> = evs
         .iter()
         .filter(|e| !crate::assistant_history::about_pause(e["text"].as_str().unwrap_or("")))
@@ -319,7 +295,6 @@ pub fn remember(path: &Path) -> Option<Remembered> {
     })
 }
 
-/// Conversations of the last `days` days, oldest first.
 pub fn recent(days: u32) -> Vec<Remembered> {
     let Ok(rd) = std::fs::read_dir(dir()) else {
         return vec![];
@@ -340,9 +315,6 @@ pub fn recent(days: u32) -> Vec<Remembered> {
     paths.iter().filter_map(|p| remember(p)).collect()
 }
 
-/// The block a new brain gets: every recent conversation in a few lines,
-/// the last one's turns word for word, within MAX_CHARS (older
-/// conversations go first when it is too long).
 pub fn block(days: u32) -> Option<String> {
     let mut convs = recent(days);
     if convs.is_empty() {
@@ -380,7 +352,6 @@ pub fn block(days: u32) -> Option<String> {
     Some(text.chars().take(MAX_CHARS).collect())
 }
 
-/// How many conversations the memory holds (for the panel).
 pub fn count(days: u32) -> usize {
     recent(days).len()
 }
@@ -424,7 +395,7 @@ mod tests {
                 && b.contains("you: Two sessions in code/fotmesh"),
             "{b}"
         );
-        // A saved summary wins.
+
         c.write(
             "summary",
             serde_json::json!({"text": "Looked at code/fotmesh sessions; offered to open one."}),

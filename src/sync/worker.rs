@@ -1,12 +1,3 @@
-//! The background sync (docs/SYNC.md 5): two threads, never the UI
-//! thread. A watcher looks at what the sync covers every two seconds
-//! (GodTerm's state files, the transcripts of open tabs, project .env
-//! files every minute) and, after `debounce_s` of quiet following a
-//! change (a turn ending is its transcript going quiet), hands a sync to
-//! the runner. The runner syncs; it retries with backoff from 30 s up to
-//! 10 min while offline or failing, and fetches every two minutes
-//! anyway. Only GodTerm's own state and conversation repos are touched.
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -16,14 +7,13 @@ use std::time::{Duration, Instant, SystemTime};
 use super::state_repo::Report;
 use super::Ctx;
 
-/// What the app and the tools see.
 #[derive(Debug, Clone, Default)]
 pub struct Shared {
     pub running: bool,
     pub last: Option<Report>,
-    /// Bumped when a sync wrote into GodTerm's home (the app reloads).
+
     pub applied: u64,
-    /// Seconds until the next retry, when failing.
+
     pub retry_in: Option<u64>,
     pub last_reason: String,
     pub changes_seen: u64,
@@ -36,8 +26,6 @@ pub struct Worker {
 }
 
 impl Worker {
-    /// Start both threads. `make` builds a fresh context per sync (the
-    /// config may have changed).
     pub fn start(make: Arc<dyn Fn() -> anyhow::Result<Ctx> + Send + Sync>) -> Worker {
         let (tx, rx) = channel::<&'static str>();
         let shared = Arc::new(Mutex::new(Shared {
@@ -60,7 +48,6 @@ impl Worker {
         w
     }
 
-    /// Sync soon (a turn ended, a change, the user asked).
     pub fn poke(&self, why: &'static str) {
         let _ = self.tx.send(why);
     }
@@ -103,8 +90,7 @@ fn run_loop(
         if stop.load(Ordering::Relaxed) {
             return;
         }
-        // Pokes that piled up while syncing count once (as the user's ask
-        // when one of them was).
+
         let mut why = why;
         while let Ok(w) = rx.try_recv() {
             if w == "quit" {
@@ -118,7 +104,7 @@ fn run_loop(
             next_periodic = Instant::now() + Duration::from_secs(60);
             continue;
         };
-        // Paused: only a sync the user asked for runs.
+
         if !ctx.sync().enabled || (ctx.sync().paused && why != "asked") {
             next_periodic = Instant::now() + Duration::from_secs(60);
             continue;
@@ -168,7 +154,6 @@ fn run_loop(
     }
 }
 
-/// (path, len, mtime) of everything watched.
 fn signature(ctx: &Ctx, env_roots: &[PathBuf]) -> Vec<(PathBuf, u64, SystemTime)> {
     let mut v = vec![];
     let mut add = |p: PathBuf| {
@@ -187,7 +172,7 @@ fn signature(ctx: &Ctx, env_roots: &[PathBuf]) -> Vec<(PathBuf, u64, SystemTime)
     ] {
         add(ctx.app_home.join(f));
     }
-    // The transcripts of open tabs.
+
     let st: serde_json::Value = std::fs::read(ctx.app_home.join("state.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())

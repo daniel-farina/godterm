@@ -1,13 +1,3 @@
-//! The Git section of a tab in the terminal UI (tab options "Git..."),
-//! the web sheet's `git` frames, the badges in the tab list, and the
-//! assistant's git tools: read only (git_log, git_diff, git_branches,
-//! git_bindings) or preparing something for the user to confirm
-//! (git_draft_commit, git_propose_binding). No tool commits, pushes,
-//! pulls, switches, binds or creates a repo: only the user's own press in
-//! this section does, after its confirmation.
-//!
-//! Git work runs on background threads; the UI thread only polls slots.
-
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -28,17 +18,15 @@ fn take<T>(s: &Slot<T>) -> Option<T> {
     s.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
-/// What the section is doing.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GitStep {
     Main,
-    /// The commit box: message, everything (true) or staged only.
+
     Commit {
         text: String,
         all: bool,
     },
-    /// Owner, repo name and account (field 0, 1, 2); `create` makes the
-    /// repo after (else only the binding is saved).
+
     Define {
         owner: usize,
         repo: String,
@@ -50,9 +38,9 @@ pub enum GitStep {
         sel: usize,
     },
     NewBranch(String),
-    /// Look at what will happen; Enter is the user's yes.
+
     Confirm(Box<Plan>),
-    /// Secret findings: the user types "push anyway".
+
     Typing(Box<Plan>, String),
 }
 
@@ -62,11 +50,11 @@ pub struct GitDlg {
     pub dir: PathBuf,
     pub sel: usize,
     pub step: GitStep,
-    /// The last result: (text, good).
+
     pub note: Option<(String, bool)>,
-    /// Working on it: what.
+
     pub busy: Option<String>,
-    /// The last failure was a diverged branch (offer push as a branch).
+
     pub diverged: bool,
 }
 
@@ -80,11 +68,11 @@ pub struct GitState {
     pub known_accounts: Vec<String>,
     asked_accounts: bool,
     last_fetch: Option<Instant>,
-    /// When the shown view was asked for (read again every few seconds).
+
     view_at: Option<Instant>,
-    /// Folder badges from the cache: (when looked, badge).
+
     badges: RefCell<HashMap<PathBuf, (Instant, Option<String>)>>,
-    /// Settings > GitHub accounts and repos (app_gitcfg).
+
     pub cfg_ui: crate::app_gitcfg::CfgUi,
 }
 
@@ -96,8 +84,6 @@ fn dl(text: impl Into<String>, tone: Tone) -> DlgLine {
     }
 }
 
-/// A heuristic first message from the change list (the assistant's draft
-/// wins when there is one).
 fn first_message(v: &View) -> String {
     let names: Vec<String> = v
         .changes
@@ -119,7 +105,6 @@ impl App {
         Env::new(&self.cfg.git)
     }
 
-    /// Open the Git section for tab (s, t).
     pub fn open_git(&mut self, s: usize, t: usize) {
         let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
             return;
@@ -141,7 +126,6 @@ impl App {
         self.git_refresh_view();
     }
 
-    /// The gh accounts (once per run, in the background; no tokens).
     fn git_ask_accounts(&mut self) {
         if self.git.asked_accounts || cfg!(test) {
             return;
@@ -206,7 +190,6 @@ impl App {
         }
     }
 
-    /// The user's yes (Enter in Confirm, or the typed override).
     fn git_execute(&mut self, plan: Plan, typed: Option<String>) {
         let Some(mut d) = self.git_dlg() else { return };
         d.busy = Some(format!("{}...", plan.title));
@@ -226,8 +209,6 @@ impl App {
         }
     }
 
-    /// Per tick: results of the section's background work; the read only
-    /// fetch the user turned on (`[git] fetch_every_min`).
     pub fn git_tick(&mut self) {
         self.gitcfg_tick();
         if let Some(a) = take(&self.git.accounts) {
@@ -263,7 +244,7 @@ impl App {
                 project_index_stale(self, &d.dir);
             }
         }
-        // The main list stays true while it is open (a tab may commit).
+
         if let Some(d) = self.git_dlg() {
             if d.step == GitStep::Main
                 && d.busy.is_none()
@@ -339,8 +320,6 @@ impl App {
         });
     }
 
-    /// The badge for a folder in the tab list (from the cache, looked at
-    /// most every 5 s per folder; never runs git).
     pub fn git_badge(&self, dir: &Path) -> Option<String> {
         if let Some((t, b)) = self.git.badges.borrow().get(dir) {
             if t.elapsed() < Duration::from_secs(5) {
@@ -358,8 +337,6 @@ impl App {
         b
     }
 
-    // ---- keys and clicks ----
-
     fn git_action_rows(&self) -> Vec<crate::git_panel::ActionRow> {
         self.git
             .view
@@ -368,7 +345,6 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// A press of action `id` in the main list.
     pub fn git_activate(&mut self, id: &str) {
         let Some(mut d) = self.git_dlg() else { return };
         let Some(v) = self.git.view.clone() else {
@@ -436,7 +412,6 @@ impl App {
         }
     }
 
-    /// A click on row `i` (an action, or a branch in Branches).
     pub fn git_click_row(&mut self, i: usize) {
         let Some(mut d) = self.git_dlg() else { return };
         match &d.step {
@@ -675,8 +650,6 @@ impl App {
         }
     }
 
-    // ---- what the dialog shows ----
-
     pub fn git_dialog_view(&self, d: &GitDlg) -> DlgView {
         let name = self
             .find_tab(d.uid)
@@ -709,7 +682,7 @@ impl App {
                 buttons,
             };
         }
-        // Header.
+
         let top = v.top.clone().unwrap_or_else(|| v.dir.clone());
         if v.is_repo {
             lines.push(dl(
@@ -980,9 +953,6 @@ impl App {
         }
     }
 
-    // ---- the web sheet ----
-
-    /// A `git` frame from a signed in browser: answered from a thread.
     pub fn web_git(&mut self, client: u64, v: Value) {
         if crate::app_gitcfg::is_cfg_frame(&v) {
             return self.web_gitcfg(client, &v);
@@ -1010,9 +980,6 @@ impl App {
         }
     }
 
-    // ---- the assistant's git tools ----
-
-    /// Run a git tool; None when `tool` is not one of them.
     pub fn git_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         if !GIT_TOOLS.contains(&tool) {
             return None;
@@ -1070,7 +1037,7 @@ impl App {
                 }
                 let ch = crate::git_ops::changes(&ctx);
                 let mut text = crate::git_ops::diff_text(&ctx, staged, file, 40_000);
-                // Secret files' hunks are dropped, values redacted.
+
                 text = drop_secret_hunks(&text);
                 text = crate::git_scan::redact_text(&text);
                 ok(
@@ -1135,7 +1102,6 @@ impl App {
         }
     }
 
-    /// A project name or path to its folder.
     fn git_project_dir(&mut self, q: &str) -> Result<PathBuf, String> {
         let p = crate::config::expand_tilde(q);
         if p.is_absolute() {
@@ -1153,7 +1119,6 @@ impl App {
     }
 }
 
-/// Answer one `git` frame to its browser: {t: "git", id, tab, ok, ...}.
 pub fn git_reply(
     out: &crate::web::tap::Outbox,
     v: &Value,
@@ -1177,7 +1142,6 @@ fn source_word(r: &crate::git_map::Resolved) -> String {
     }
 }
 
-/// Drop the hunks of files whose names say they hold secrets.
 fn drop_secret_hunks(diff: &str) -> String {
     let mut out = String::new();
     let mut skip = false;
@@ -1200,8 +1164,6 @@ fn project_index_stale(app: &mut App, dir: &Path) {
     app.git_tab_finished(dir);
 }
 
-/// The assistant's git tools: read, or prepare for the user. None of them
-/// changes a repo or a binding.
 pub const GIT_TOOLS: &[&str] = &[
     "git_log",
     "git_diff",
@@ -1211,8 +1173,6 @@ pub const GIT_TOOLS: &[&str] = &[
     "git_propose_binding",
 ];
 
-/// Names a model might try that do not exist on purpose: changes happen
-/// only in the Git section (tested).
 #[cfg_attr(not(test), allow(dead_code))]
 pub const NEVER_TOOLS: &[&str] = &[
     "git_commit",

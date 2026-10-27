@@ -1,19 +1,8 @@
-// GodTerm Web service worker. Files asked for with ?v=<build> (the page
-// names every file that way) never change: they are precached at install
-// and served from the cache first, so a reload needs only the page itself
-// from the network. The page (index.html) is network first, the cache its
-// offline fallback, then the offline page. A new worker (a new build)
-// waits until the page asks it to take over (the "Update available"
-// banner). Photos shared to the installed app (Share > GodTerm) arrive
-// here as a POST to /share: kept in a cache for the page, which asks
-// where they go. A push from GodTerm (Web Push) shows a notification;
-// tapping it focuses the open app (telling it which tab or sheet to
-// show) or opens the app at that address.
 const BUILD = '__BUILD__';
 const CACHE = 'gt-' + BUILD;
 const FILES = ['vendor/xterm.js', 'vendor/xterm.css', 'vendor/addon-fit.js', 'vendor/addon-webgl.js', 'vendor/addon-unicode11.js', 'vendor/addon-web-links.js',
   'app.css', 'js/main.js', 'js/debuglog.js', 'js/util.js', 'js/conn.js', 'js/state.js', 'js/term.js', 'js/textinput.js', 'js/tabs.js', 'js/keybar.js', 'js/chat.js', 'js/md.js', 'js/sheet.js',
-  'js/voice.js', 'js/images.js', 'js/install.js', 'js/manage.js', 'js/settings.js', 'js/sessions.js', 'js/git.js', 'js/bview.js', 'js/accounts.js', 'js/mic-worklet.js', 'js/mic.js', 'js/theme.js', 'js/push.js', 'offline.html', 'icon-192.png'].map((f) => f + '?v=' + BUILD);
+  'js/voice.js', 'js/images.js', 'js/drop.js','js/install.js', 'js/manage.js', 'js/settings.js', 'js/sessions.js', 'js/git.js', 'js/bview.js', 'js/accounts.js', 'js/mic-worklet.js', 'js/mic.js', 'js/theme.js', 'js/push.js', 'offline.html', 'icon-192.png'].map((f) => f + '?v=' + BUILD);
 const OFFLINE = 'offline.html?v=' + BUILD;
 FILES.push('js/gitcfg.js?v=' + BUILD);
 FILES.push('js/statusbar.js?v=' + BUILD);
@@ -75,9 +64,6 @@ self.addEventListener('fetch', (e) => {
   );
 });
 
-// GodTerm's payload: {title, body, tag, url, kind, tab}. A notification is
-// always shown (iOS drops a subscription whose pushes show nothing); one
-// with the same tag (a tab and a kind) replaces the last.
 self.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { body: e.data ? e.data.text() : '' }; }
@@ -94,7 +80,7 @@ self.addEventListener('notificationclick', (e) => {
     for (const c of cs) {
       if (new URL(c.url).origin !== location.origin) continue;
       c.postMessage({ gt: 'open', url });
-      try { return await c.focus(); } catch { /* not allowed: open below */ }
+      try { return await c.focus(); } catch {  }
     }
     return self.clients.openWindow(url);
   }));

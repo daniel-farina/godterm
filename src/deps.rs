@@ -1,11 +1,3 @@
-//! What GodTerm needs, what is there, and how to get the rest: Claude Code
-//! (required), Grok Build (optional) and the local voice pack (ffmpeg,
-//! whisper.cpp and a model, espeak-ng and the Kokoro files, the speaker
-//! model). Each item has a status and a plan per platform: the package
-//! manager there (brew, apt, dnf, pacman, winget), an official installer,
-//! a pinned and checksummed download, or plain words when nothing fits.
-//! `godterm doctor`, the Setup screen and the assistant all read this.
-
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -45,8 +37,6 @@ impl Status {
     }
 }
 
-/// A pinned file: fetched over HTTPS from a known host, checked against
-/// its SHA-256 before it is moved into place.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Download {
     pub url: String,
@@ -57,24 +47,22 @@ pub struct Download {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Step {
-    /// A program and its arguments (a package manager).
     Run {
         program: String,
         args: Vec<String>,
         sudo: bool,
     },
-    /// An official install script, through the shell.
+
     Script {
         shell: String,
         line: String,
     },
     Download(Download),
-    /// Plain instructions.
+
     Manual(String),
 }
 
 impl Step {
-    /// As it reads in a confirmation.
     pub fn shown(&self) -> String {
         match self {
             Step::Run {
@@ -130,13 +118,12 @@ impl Dep {
             })
             .sum()
     }
-    /// Steps GodTerm can run (not just words or a link).
+
     pub fn installable(&self) -> bool {
         !self.steps.is_empty() && self.steps.iter().all(|s| !matches!(s, Step::Manual(_)))
     }
 }
 
-/// The package manager here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pm {
     Brew,
@@ -147,7 +134,6 @@ pub enum Pm {
     None,
 }
 
-/// The operating system a plan is for (the host, or one a test picks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
     Mac,
@@ -167,12 +153,10 @@ impl Os {
     }
 }
 
-/// What the status checks look at: programs (`which`), the platform and
-/// the cache folder for the models. The host's, or a test's.
 pub struct Probe<'a> {
     pub which: &'a dyn Fn(&str) -> Option<PathBuf>,
     pub os: Os,
-    /// ~/.cache (whisper-models, kokoro-onnx, godterm-models live here).
+
     pub cache: PathBuf,
 }
 
@@ -201,7 +185,6 @@ pub fn package_manager(which: &dyn Fn(&str) -> Option<PathBuf>, os: Os) -> Pm {
         ("pacman", Pm::Pacman),
     ] {
         if which(b).is_some() {
-            // Linux with Homebrew too: the system manager is preferred.
             if p == Pm::Brew
                 && os == Os::Linux
                 && which("apt-get").or_else(|| which("dnf")).is_some()
@@ -214,7 +197,6 @@ pub fn package_manager(which: &dyn Fn(&str) -> Option<PathBuf>, os: Os) -> Pm {
     Pm::None
 }
 
-/// `program` on PATH (or a path), honoring .exe on Windows.
 pub fn which(bin: &str) -> Option<PathBuf> {
     let p = crate::config::expand_tilde(bin);
     if p.components().count() > 1 {
@@ -231,7 +213,6 @@ pub fn which(bin: &str) -> Option<PathBuf> {
     })
 }
 
-/// A package by manager: (brew, apt, dnf, pacman, winget) names.
 fn pkg(pm: Pm, names: [Option<&str>; 5]) -> Option<Step> {
     let (program, args, sudo, name) = match pm {
         Pm::Brew => ("brew", vec!["install"], false, names[0]?),
@@ -264,7 +245,6 @@ fn script(os: Os, unix: &str, windows: &str) -> Step {
     }
 }
 
-/// Whisper models offered (the first is recommended).
 pub const WHISPER_MODELS: &[(&str, &str, &str, u64, &str)] = &[
     (
         "large-v3-turbo",
@@ -298,8 +278,6 @@ pub const KOKORO_FILES: &[(&str, &str, u64)] = &[
     ),
 ];
 
-/// Everything, with its status and plan. `whisper_choice` picks the
-/// model to offer (default: the recommended one).
 pub fn all(cfg: &crate::config::Config, whisper_choice: Option<&str>, probe: &Probe) -> Vec<Dep> {
     let which = probe.which;
     let os = probe.os;
@@ -308,7 +286,7 @@ pub fn all(cfg: &crate::config::Config, whisper_choice: Option<&str>, probe: &Pr
     let have = |b: &str| which(b).map(|p| p.display().to_string());
     let mut v = vec![];
     let manual = |t: &str| Step::Manual(t.to_string());
-    // Claude Code: the official installer only.
+
     let claude = cfg.claude_bin();
     v.push(Dep {
         id: "claude",
@@ -325,7 +303,7 @@ pub fn all(cfg: &crate::config::Config, whisper_choice: Option<&str>, probe: &Pr
         )],
         why: "Claude accounts and the default assistant",
     });
-    // Grok Build: its documented installer.
+
     let grok = crate::harness::Harness::Grok.bin(cfg.grok_bin.as_deref());
     v.push(Dep {
         id: "grok",
@@ -522,7 +500,6 @@ pub fn all(cfg: &crate::config::Config, whisper_choice: Option<&str>, probe: &Pr
     v
 }
 
-/// Targets as said: "voice pack", "claude", "grok", or an item id.
 pub fn resolve(targets: &str, deps: &[Dep]) -> Vec<&'static str> {
     let t = targets.to_lowercase();
     let t = t.trim();
@@ -553,8 +530,6 @@ pub fn resolve(targets: &str, deps: &[Dep]) -> Vec<&'static str> {
         .collect()
 }
 
-// ---------- downloads ----------
-
 const HOSTS: &[&str] = &[
     "github.com",
     "objects.githubusercontent.com",
@@ -581,7 +556,6 @@ fn host_ok(url: &str, local_ok: bool) -> bool {
             || host.ends_with(".xethub.hf.co"))
 }
 
-/// Free bytes where `dir` is (None when unknown).
 pub fn free_bytes(dir: &Path) -> Option<u64> {
     let mut d = dir.to_path_buf();
     while !d.exists() {
@@ -604,8 +578,6 @@ pub fn sha256_file(p: &Path) -> Result<String> {
     crate::voice::speaker::sha256_file(p)
 }
 
-/// Fetch `d` (resuming a `.part`, every redirect checked), check its
-/// hash, then move it into place. A mismatch deletes it and refuses.
 pub fn download(d: &Download, local_ok: bool, progress: &dyn Fn(u64, u64)) -> Result<()> {
     if d.dest.is_file() && sha256_file(&d.dest)? == d.sha256 {
         return Ok(());
@@ -725,8 +697,6 @@ pub fn download(d: &Download, local_ok: bool, progress: &dyn Fn(u64, u64)) -> Re
 mod tests {
     use super::*;
 
-    /// Every plan from what a test sets: the platform, the programs on
-    /// its PATH and its cache folder; nothing of the host's.
     fn hermetic(os: Os, tools: &'static [&'static str], tag: &str) -> Vec<Dep> {
         let home = std::env::temp_dir().join(format!("godterm-deps-{tag}-{}", std::process::id()));
         let mut cfg = crate::config::Config::default();
@@ -828,7 +798,7 @@ mod tests {
             .map(Dep::download_bytes)
             .sum();
         assert_eq!(size(voice), "868 MB");
-        // A tool on the injected PATH is found, nothing else.
+
         let ok = hermetic(Os::Mac, &["brew", "ffmpeg", "claude"], "mac2");
         assert!(ok.iter().find(|x| x.id == "ffmpeg").unwrap().status.ok());
         assert!(ok.iter().find(|x| x.id == "claude").unwrap().status.ok());

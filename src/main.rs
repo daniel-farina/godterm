@@ -1,5 +1,3 @@
-//! godterm: up to four Claude Code sessions side by side, one account each.
-
 mod acct_tokens;
 mod activity;
 mod add_account;
@@ -151,6 +149,9 @@ mod menus;
 mod mic_badge_tests;
 mod migrate;
 mod migrate_accounts;
+mod model_list;
+#[cfg(test)]
+mod model_list_tests;
 #[cfg(test)]
 mod newfolder_tests;
 mod notify;
@@ -180,7 +181,7 @@ mod ui_lease;
 mod ui_sync;
 #[cfg(test)]
 mod wheel_mode_tests;
-// A real PTY and a shell script stub: Unix only.
+
 mod app_git;
 mod app_gitcfg;
 mod app_gitpanel;
@@ -411,20 +412,17 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 }
 
 fn main() -> Result<()> {
-    // Started as "claude" or "grok" by a test process: never run (a test
-    // that launched this binary as an agent must not start a chain).
     if std::env::var_os(test_guard::ENV).is_some() {
         let a0 = std::env::args().next().unwrap_or_default();
         if matches!(procs::program_name(&a0).as_str(), "claude" | "grok") {
             std::process::exit(99);
         }
     }
-    // `godterm --demo` links this binary as its demo claude and grok.
+
     if let Some(flavor) = demo_agent::invoked_as() {
         return demo_agent::run(flavor);
     }
-    // --test-control (read by control::test_control) works with any mode.
-    // --web and --web-port N (read by web::wanted and web::port) too.
+
     let mut args: Vec<String> = std::env::args()
         .skip(1)
         .filter(|a| a != "--test-control" && a != "--control-rw" && a != "--web")
@@ -432,24 +430,24 @@ fn main() -> Result<()> {
     if let Some(i) = args.iter().position(|a| a == "--web-port") {
         args.drain(i..(i + 2).min(args.len()));
     }
-    // --onboarding (any mode, --demo too): the voice onboarding at start.
+
     let args: Vec<String> = if args.iter().any(|a| a == "--onboarding") {
         FORCE_ONBOARDING.store(true, std::sync::atomic::Ordering::Relaxed);
         args.into_iter().filter(|a| a != "--onboarding").collect()
     } else {
         args
     };
-    // The demo's sign in links (its app home, nothing seeded or started).
+
     if args.iter().any(|a| a == "--demo") && args.iter().any(|a| a == "web-url") {
         std::env::set_var("GODTERM_HOME", demo::home().join("app"));
         return web::url_command();
     }
-    // The demo's web client log, likewise.
+
     if args.iter().any(|a| a == "--demo") && args.iter().any(|a| a == "web-log") {
         std::env::set_var("GODTERM_HOME", demo::home().join("app"));
         return web::clientlog::command(&args);
     }
-    // Demo mode: its own home with made up accounts (see demo.rs).
+
     if args.iter().any(|a| a == "--demo") {
         demo::enter(&args)?;
         let r = run_tui(TuiOpts::default());
@@ -457,12 +455,11 @@ fn main() -> Result<()> {
         return r;
     }
     let arg = args.first().cloned();
-    // git's credential helper for a project repo (git_cred.rs): stdin to
-    // stdout, nothing else runs, nothing is logged.
+
     if arg.as_deref() == Some("git-credential") {
         return git_cred::helper_main(&args[1..]);
     }
-    // The Windows Ctrl-C helper (see procs::interrupt): nothing else runs.
+
     if arg.as_deref() == Some("__ctrl-c") {
         let pid: u32 = args.get(1).and_then(|p| p.parse().ok()).unwrap_or(0);
         #[cfg(windows)]
@@ -475,12 +472,11 @@ fn main() -> Result<()> {
         };
         std::process::exit(code);
     }
-    // The first launch splash on its own, to preview it (hidden).
+
     if arg.as_deref() == Some("splash") {
         return splash::run(&args[1..]);
     }
-    // claudego -> GodTerm, once, only when the app itself starts (the TUI
-    // or setup). Every other command leaves it alone and says it is due.
+
     let launches = match arg.as_deref() {
         None | Some("setup") => true,
         Some(a) => a.starts_with("--voice") || a == "--wake",
@@ -511,7 +507,6 @@ fn main() -> Result<()> {
             args.iter().any(|a| a == "--echo"),
         ),
         Some("tts-test") if args.iter().any(|a| a == "--phonemes") => {
-            // One line of text in, one line of Kokoro phonemes out.
             let cfg = Config::load_or_init()?.voice;
             let e = voice::kokoro::Espeak {
                 bin: cfg.espeak.clone(),
@@ -524,8 +519,6 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("tts-test") if flag_value(&args, "--grok").is_some() => {
-            // One sentence through Grok, timed, written to a WAV (never
-            // played). The credential's source is printed, never the token.
             let cfg = Config::load_or_init()?;
             let mut g = cfg.voice.grok.clone();
             if let Some(v) = flag_value(&args, "--voice") {
@@ -565,8 +558,6 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("tts-test") if flag_value(&args, "--say").is_some() => {
-            // Speak through the real pipeline (sentence streaming, output
-            // device, pronunciation fixes). --volume 0 checks it silently.
             let mut cfg = Config::load_or_init()?.voice;
             if let Some(v) = flag_value(&args, "--volume").and_then(|v| v.parse().ok()) {
                 cfg.tts_volume = v;
@@ -612,7 +603,6 @@ fn main() -> Result<()> {
         Some("mcp") => mcp::run(),
         Some("migrate") => migrate::command(args.iter().any(|a| a == "--dry-run")),
         Some("grok-compat") => {
-            // Write the compat switches into every grok slot's config.toml.
             let cfg = Config::load_or_init()?;
             for a in cfg
                 .accounts
@@ -629,7 +619,6 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("index") => {
-            // Build the session index once and say how long it took.
             let (tx, _rx) = std::sync::mpsc::channel();
             let app = app::App::new(Config::load_or_init()?, tx);
             let shared = std::sync::Arc::clone(&app.session_index);
@@ -691,9 +680,6 @@ fn main() -> Result<()> {
     }
 }
 
-/// `godterm window place`: where the launcher should put the window, as
-/// "left top right bottom" (nothing when remember_window is off).
-/// `godterm window reset`: forget the saved window.
 fn window_cmd(sub: Option<&str>) -> Result<()> {
     let cfg = Config::load_or_init().unwrap_or_default();
     let mut st = state::AppState::load().unwrap_or_default();
@@ -713,8 +699,7 @@ fn window_cmd(sub: Option<&str>) -> Result<()> {
                 println!("{} {} {} {}", b[0], b[1], b[2], b[3]);
             }
         }
-        // The launcher: bring a running GodTerm forward instead of
-        // starting another (exit 0 when it did).
+
         Some("focus") => match instance::running() {
             Some(h) if instance::focus(&h) => println!("focused pid {}", h.pid),
             Some(h) => {
@@ -847,7 +832,7 @@ fn voice_test(
     }
     let instant = instant::table(&vc.instant);
     whisper.prompt = vc.wake_words.join(", ");
-    // Partials run on the small model when there is one.
+
     let mut small = None;
     if partials {
         if let Some(m) = voice::wake_model_path(vc) {
@@ -890,7 +875,7 @@ fn voice_test(
     let mut utts = vec![];
     let frames_max = (seconds as usize * voice::audio::RATE as usize) / voice::audio::FRAME;
     let mut n = 0;
-    // Live meter for the mic (or with --levels for a file).
+
     let show_levels = file.is_none() || levels;
     let mut peak = 0f32;
     while cap.frame(&mut frame).is_some() {
@@ -898,8 +883,7 @@ fn voice_test(
         voice::audio::apply_gain(&mut frame, vc.gain_db);
         let level = voice::audio::rms(&frame);
         peak = peak.max(level);
-        // --echo: the file plays as if it were our own talk back coming
-        // through the speakers, so nothing may get through.
+
         if echo {
             match gate.push(
                 voice::audio::db(level),
@@ -1025,12 +1009,9 @@ fn voice_test(
     Ok(())
 }
 
-/// The TUI, then (after a restart to update) the new version in its place.
 fn run_tui(opts: TuiOpts) -> Result<()> {
     let r = run_tui_inner(opts);
     if TTY_STUCK.load(std::sync::atomic::Ordering::Relaxed) {
-        // A new version started into a terminal that is not reading would
-        // freeze on its first write; and any error message would block.
         if update::restart_pending() {
             log::error("update: not restarting, the terminal is not reading");
         }
@@ -1046,8 +1027,6 @@ fn run_tui(opts: TuiOpts) -> Result<()> {
 }
 
 fn run_tui_inner(opts: TuiOpts) -> Result<()> {
-    // One GodTerm per home: a second one would resume the same sessions
-    // twice and take the control socket.
     let _instance = match instance::acquire() {
         Ok(l) => Some(l),
         Err(h) if h.pid != 0 => {
@@ -1067,28 +1046,20 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         Err(_) => None,
     };
     config::secure_home();
-    // Running: until a quit says otherwise, an exit is unclean.
+
     if _instance.is_some() {
         supervisor::mark_running();
     }
-    // `godterm setup` asks its questions on the plain terminal, then walks
-    // through the logins. A first run (or a home with no accounts) goes
-    // straight into the app: the welcome, voice or not, then the first
-    // account picker (first_run.rs).
+
     let first_run = !Config::path().exists();
     let mut cfg = if first_run && opts.setup {
-        // Written only once setup completes, so an interrupted setup
-        // (Ctrl-C) is offered again next time.
         Config::default()
     } else if first_run && setup::stdin_is_tty() {
-        // No made up accounts: the first account picker adds a real one.
         crate::first_run::new_home_config()?
     } else {
         Config::load_or_recover()?
     };
-    // A damaged config.toml was moved aside: with a terminal, start over as
-    // on a new home (the first account picker); without one, keep the
-    // defaults written down.
+
     let recovered = !first_run && !Config::path().exists();
     if recovered {
         if setup::stdin_is_tty() && !opts.setup {
@@ -1097,7 +1068,7 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             let _ = cfg.save();
         }
     }
-    // The splash, once on a new home and once per update.
+
     if !opts.setup {
         splash::at_start(&cfg);
     }
@@ -1106,15 +1077,13 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         cfg = setup::interactive_setup(cfg)?;
         onboarding = true;
     }
-    // A home with no accounts yet counts as new (an interrupted first run
-    // too); the voice welcome's marker keeps it to once.
+
     let fresh_home = crate::first_run::fresh_home(first_run, &cfg);
     let (tx, rx) = mpsc::channel::<AppEvent>();
     theme::detect_truecolor();
 
     enable_raw_mode()?;
-    // Everything for the terminal goes through one writer thread: a
-    // terminal that stops reading stalls that thread, never the UI.
+
     let out = tty_out::Out::spawn("tty-out", io::stdout())?;
     tty_out::install(out.clone());
     let mut setup_bytes = Vec::new();
@@ -1125,23 +1094,20 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         EnableBracketedPaste,
         crossterm::event::EnableFocusChange
     );
-    // iTerm2's cursor guide paints the whole terminal row under the cursor,
-    // which draws a band across every pane; turn it off for this session.
+
     if std::env::var("TERM_PROGRAM").is_ok_and(|v| v == "iTerm.app")
         || std::env::var("LC_TERMINAL").is_ok_and(|v| v == "iTerm2")
     {
         setup_bytes.extend_from_slice(b"\x1b]1337;HighlightCursorLine=false\x07");
     }
     out.send(setup_bytes);
-    // Lets Shift+Enter and friends be told apart, where the terminal allows.
-    // The query writes to stdout itself, so only once the writer is through.
+
     let enhanced = out.wait_idle(Duration::from_secs(2))
         && matches!(supports_keyboard_enhancement(), Ok(true));
     if enhanced {
         let mut v = Vec::new();
         let _ = crossterm::queue!(
             v,
-            // Event types give key release, which makes hold to talk work.
             PushKeyboardEnhancementFlags(
                 KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                     | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
@@ -1149,7 +1115,7 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         );
         out.send(v);
     }
-    // Restoring the terminal waits at most this long on a stuck writer.
+
     const RESTORE_BOUND: Duration = Duration::from_millis(1500);
     let restore_out = out.clone();
     let restore = move || -> bool {
@@ -1177,11 +1143,6 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     let panic_restore = std::sync::Arc::clone(&restore);
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        // A panic on another thread ends only that thread and the app goes
-        // on drawing (the input thread shuts the app down itself), so the
-        // terminal is left as it is and the message goes to the log, not
-        // over the screen. Restoring it here used to leave a running app
-        // on a cooked terminal that echoed every key and read none.
         let me = std::thread::current();
         if me.name() != Some("main") {
             log::error(&format!(
@@ -1194,7 +1155,6 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         voice::kill_helpers();
         log::error(&format!("panic: {info}"));
         if !restored {
-            // The message would go to a terminal that is not reading.
             std::process::exit(101);
         }
         default_hook(info);
@@ -1202,27 +1162,22 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
 
     let mut screen = tty_out::Screen::new(out.clone())?;
 
-    // Input thread feeds the same channel as PTY readers.
     let itx = tx.clone();
     std::thread::Builder::new()
         .name("input".into())
         .spawn(move || {
-            // A panic while reading (crossterm parsing odd input) would
-            // leave the app with no keys at all: shut it down instead, as
-            // an unclean exit (the supervisor brings it back).
             let read = std::panic::AssertUnwindSafe(|| read_input(&itx));
             if std::panic::catch_unwind(read).is_err() {
                 log::error("the input thread panicked; shutting down");
             }
-            // The terminal went away (window closed): shut down cleanly.
+
             let _ = itx.send(AppEvent::InputClosed);
         })?;
-    /// Read terminal events into the app's channel until the terminal
-    /// closes or the app is gone.
+
     fn read_input(itx: &mpsc::Sender<AppEvent>) {
         {
             let mut last_key: Option<Instant> = None;
-            // An event read past a burst of wheel events, handled next.
+
             let mut held: Option<event::Event> = None;
             loop {
                 let ev = match held.take() {
@@ -1239,7 +1194,7 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
                         last_key = Some(Instant::now());
                         AppEvent::KeyRead(k, burst)
                     }
-                    // A burst of wheel events already waiting: one event.
+
                     event::Event::Mouse(m) if app_mouse::is_wheel(&m) => {
                         let (n, next) = app_mouse::coalesce_wheel(&m, &mut || match event::poll(
                             Duration::ZERO,
@@ -1258,8 +1213,7 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             }
         }
     }
-    // SIGTERM, SIGHUP (window closed), SIGINT and SIGQUIT end the loop so
-    // every child (claude, whisper-server, ffmpeg) is stopped on the way out.
+
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     for &sig in crate::platform::EXIT_SIGNALS {
         let _ = signal_hook::flag::register(sig, std::sync::Arc::clone(&stop));
@@ -1269,7 +1223,7 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     let ctl_tx = tx.clone();
     let mut app = App::new(cfg, tx);
     app.apply_buffers();
-    // The control API for the assistant (and godterm mcp).
+
     let ctl_token = match control::serve(ctl_tx) {
         Ok(t) => Some(t),
         Err(e) => {
@@ -1280,38 +1234,33 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             None
         }
     };
-    // The web app, when it is on (config or --web).
+
     app.start_web();
-    // Size the panes before the first spawn so claude starts at the right size.
+
     screen.draw(|f| ui::draw(f, &mut app), |_| ())?;
-    // Restarted into a new version: every tab comes back at once.
+
     if std::env::var_os(update::EAGER_ENV).is_some() {
         std::env::remove_var(update::EAGER_ENV);
         app.force_eager = true;
     }
-    // Opened again by the supervisor after a crash: the same.
+
     if supervisor::take_relaunched() {
         log::info("supervisor: started after an unclean exit; every tab comes back");
         app.force_eager = true;
     }
     let first_run = !crate::state::AppState::path().exists();
     app.autostart();
-    // Damaged state files moved aside at this start (jobs.json, state.json,
-    // config.toml): one line on the status bar; the log has the paths.
+
     let notes = recover::take_notes();
     if !notes.is_empty() {
         app.flash(notes.join("; "));
     }
     app.start_update_checker();
-    // The voice onboarding: once on a brand new home (no config.toml at
-    // this start), or with --onboarding. It comes first, before the grid;
-    // the account logins and the tour wait for it.
+
     let forced = FORCE_ONBOARDING.load(std::sync::atomic::Ordering::Relaxed);
     if app.voice_onboarding_due(fresh_home, forced) {
         app.start_voice_onboarding(onboarding);
     } else if app.cfg.accounts.is_empty() && setup::stdin_is_tty() {
-        // No accounts: the picker comes first (it shows what is installed
-        // and installs what is missing).
         app.open_first_account();
     } else {
         app.maybe_show_setup(first_run);
@@ -1327,14 +1276,12 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         demo::tune(&mut app);
     }
     log::info(&format!("keyboard enhancement (hold to talk): {enhanced}"));
-    // The panel is open at every start; the mic is off unless it was on
-    // when GodTerm last quit (or --voice).
+
     if !demo::active() {
         app.open_panel_at_start();
     }
     let start_voice = app.startup_voice(opts.voice);
     if app.cfg.voice.mute_on_start {
-        // Muted, remembering the mode it would have started in.
         app.voice.muted = true;
         app.voice.muted_prev = match start_voice.as_deref() {
             Some("open") => 3,
@@ -1362,8 +1309,6 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     let mut dirty = true;
     let mut mouse_on = true;
     let result = loop {
-        // The voice level meter animates at 25 fps while the mic is open.
-        // The voice meter (25 fps) and the live map (30 fps) animate.
         let anim = app.anim_interval();
         if anim.is_some_and(|d| last_draw.elapsed() >= d) {
             dirty = true;
@@ -1375,19 +1320,17 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         } else {
             Duration::from_millis(200)
         };
-        // A frame waiting on the writer: look again shortly (more slowly
-        // once it is stuck), instead of spinning.
+
         if dirty && !screen.ready() {
             let wait = if screen.stalled() { 50 } else { 4 };
             timeout = timeout.max(Duration::from_millis(wait));
         }
-        // Headphone tap: the remote command handlers run on this (the
-        // main) thread when it pumps, so do not sleep long.
+
         if app.media.claimed() {
             timeout = timeout.min(Duration::from_millis(100));
         }
         app.media_pump();
-        // A state push for browsers that waits out its 100 ms.
+
         if let Some(d) = app.web_due() {
             timeout = timeout.min(d);
         }
@@ -1398,9 +1341,7 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             Ok(ev) => {
                 app.handle(ev);
                 dirty = true;
-                // Drain what is queued, but never for longer than a frame:
-                // under a flood of output the UI must still draw, tick and
-                // notice quit.
+
                 let budget = Instant::now();
                 while budget.elapsed() < frame_budget {
                     match rx.try_recv() {
@@ -1431,7 +1372,7 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             log::info("signal received, shutting down");
             break Ok(());
         }
-        // Ctrl-a m releases the mouse so the terminal can select text.
+
         if app.mouse_capture != mouse_on {
             mouse_on = app.mouse_capture;
             if mouse_on {
@@ -1439,16 +1380,13 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             } else {
                 screen.command(DisableMouseCapture);
             }
-            // Back from select mode: a full redraw drops the terminal's
-            // own selection highlight (a full width band otherwise stays
-            // over everything, the assistant panel included).
+
             if mouse_on {
                 screen.clear_next();
             }
             dirty = true;
         }
-        // Under a steady stream of output 30 frames a second are plenty;
-        // typing and other events still draw at 60.
+
         let budget = if app.streaming() {
             Duration::from_millis(33)
         } else {
@@ -1468,8 +1406,7 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
             }
             None => {}
         }
-        // While the writer still has a frame out, hold the next one back
-        // (dirty stays set): the latest state is drawn once it is free.
+
         if dirty && last_draw.elapsed() >= budget && screen.ready() {
             let drawn = screen.draw(
                 |f| ui::draw(f, &mut app),
@@ -1490,8 +1427,6 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
         }
     };
 
-    // State saved and children stopped before any terminal write that
-    // could wait on a stuck terminal.
     app.shutdown();
     if app.exit_clean {
         supervisor::mark_clean();
@@ -1505,8 +1440,6 @@ fn run_tui_inner(opts: TuiOpts) -> Result<()> {
     result
 }
 
-/// `--onboarding`: the voice onboarding at this start, whatever was before.
 static FORCE_ONBOARDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The terminal stopped reading and was left as it was at exit.
 static TTY_STUCK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

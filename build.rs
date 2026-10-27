@@ -1,7 +1,3 @@
-//! Build metadata for `godterm --version`: the git commit and the build date.
-//! Set GODTERM_GIT_SHA or SOURCE_DATE_EPOCH to override (reproducible builds,
-//! tarballs without .git).
-
 use std::process::Command;
 
 fn main() {
@@ -35,7 +31,7 @@ fn main() {
     );
     println!("cargo:rerun-if-env-changed=GODTERM_GIT_SHA");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
-    // Rerun when HEAD moves: the HEAD file itself and the branch it names.
+
     if let Ok(head) = std::fs::read_to_string(".git/HEAD") {
         println!("cargo:rerun-if-changed=.git/HEAD");
         if let Some(r) = head.trim().strip_prefix("ref: ") {
@@ -52,11 +48,6 @@ fn main() {
 #[path = "src/web/pack.rs"]
 mod pack;
 
-/// Every file under web/ embedded for the web app (src/web/assets.rs):
-/// `$OUT_DIR/web_assets.rs` lists (path, bytes, gzipped bytes or empty),
-/// and WEB_BUILD is a short hash of them all, so a browser can tell it
-/// runs an older copy of the app. src/web/pack.rs does the work, the same
-/// code a folder served from disk goes through.
 fn web_assets() {
     use std::path::{Path, PathBuf};
     println!("cargo:rerun-if-changed=web");
@@ -93,7 +84,6 @@ fn web_assets() {
     println!("cargo:rustc-env=GODTERM_WEB_BUILD={}", p.id);
 }
 
-/// The icon and version info in godterm.exe (Windows targets, built on Windows).
 #[cfg(windows)]
 fn windows_resources() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
@@ -117,7 +107,6 @@ fn windows_resources() {
 #[cfg(not(windows))]
 fn windows_resources() {}
 
-/// UTC "YYYY-MM-DD" for unix seconds (days-to-civil, no dependencies).
 fn civil_date(secs: i64) -> String {
     let z = secs.div_euclid(86_400) + 719_468;
     let era = z.div_euclid(146_097);

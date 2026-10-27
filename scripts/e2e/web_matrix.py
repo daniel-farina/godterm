@@ -59,8 +59,6 @@ from lib import Tmux  # noqa: E402
 from wsclient import WS, login  # noqa: E402
 
 LIVE_PORTS = {7878, 7880}
-# A CLI's login or sign in screen (no keys go to it: a key could start a
-# login). Its ready composer, by harness (as scripts/e2e/accounts.py).
 LOGIN_SCREEN = re.compile(r"(?i)press any key to log ?in|select login method|sign in with (chatgpt|google)|log ?in with (google|chatgpt)|choose (a|your) (login|sign.?in)|please (log|sign) ?in|login required|enter your api key")
 READY = {
     "claude": r"\? for shortcuts|❯",
@@ -115,7 +113,6 @@ class Instance:
         self.pid = None
         self.extra_root_dirs = []
 
-    # -- starting -------------------------------------------------------
     def start(self):
         getattr(self, "start_" + self.kind)()
         if self.kind == "mock":
@@ -155,7 +152,6 @@ class Instance:
         if not out:
             return None
         pid = int(out.split()[0])
-        # The pane runs env / sandbox-exec, which exec godterm: same pid.
         return pid
 
     def start_demofull(self):
@@ -302,7 +298,6 @@ class Instance:
         self.app_home = sb["home"]
         self.tm.start(self.session, sb["argv"] + ["--web"], env, cwd=sb["root"])
 
-    # -- talking to it --------------------------------------------------
     def ws(self):
         return WS("127.0.0.1", self.port, self.cookie)
 
@@ -370,8 +365,6 @@ class Instance:
             composer = bool(re.search(READY.get(hn, "$^"), txt, re.M))
             ok = t.get("running", True) and composer and not login_screen and t["state"] not in ("starting", "not started", "ended")
             if self.kind == "unauth" and hn != "opencode":
-                # Signed out: anything but OpenCode's composer is a login,
-                # onboarding or setup screen; no keys.
                 ok = False
             info[t["uid"]] = {"harness": hn, "typing": ok, "state": t["state"], "login": login_screen}
             if login_screen:
@@ -413,8 +406,6 @@ class Instance:
                 shutil.rmtree(r, ignore_errors=True)
 
 
-# ---------------------------------------------------------------------
-# Browser runs
 
 def run_browser(inst, engine, device, info, groups, out_dir, extra=None):
     if mem_free_gb() < 6:
@@ -456,8 +447,6 @@ def run_browser(inst, engine, device, info, groups, out_dir, extra=None):
     return rows
 
 
-# ---------------------------------------------------------------------
-# WebSocket level: streaming tabs, a flood, a slow client, two clients
 
 def rec(results, inst, group, check, status, detail="", harness=""):
     r = {"instance": inst.kind, "engine": "ws", "device": "-", "group": group, "check": check, "harness": harness, "status": status, "detail": detail}
@@ -506,7 +495,6 @@ def ws_stress(inst, results, info):
     w = inst.ws()
     h = w.recv_json("hello")
     accts = [a["account"] for a in h["state"]["accounts"]]
-    # More tabs, all streaming: two extra per account in the demo.
     if inst.kind == "demo":
         for a in accts[:3]:
             inst.tool(w, "open_tab", {"account": a, "prompt": "refactor the module and run the tests"}, {"user_says": "open a tab"})
@@ -517,13 +505,10 @@ def ws_stress(inst, results, info):
         pass
     tabs = w.last_state["tabs"]
     uids = [t["uid"] for t in tabs]
-    # The stand-in CLI streams on request (a line every 100 ms).
     if inst.kind == "fake":
         for t in tabs:
             w.send_input(t["uid"], b"stream 20\r")
             time.sleep(0.2)
-    # Every idle demo tab gets a task, and approvals are answered while
-    # it runs, so they all stream at once.
     if inst.kind == "demo":
         for t in tabs:
             if t["state"] == "ready":
@@ -540,15 +525,12 @@ def ws_stress(inst, results, info):
     med, mx = ui_rtt(inst, w)
     rec(results, inst, "stress", f"{len(uids)} tabs subscribed", "pass" if streaming >= min(6, len(uids)) and med < 100 else "fail",
         f"{streaming} streaming, {sum(got.values()) / 8 / 1024:.0f} KB/s, UI thread get_state median {med:.1f} ms, max {mx:.1f} ms")
-    # A client that reads nothing holds nothing up.
     lazy = inst.ws()
     lazy.send_json({"t": "subscribe", "tabs": uids})
     time.sleep(3)
     med2, mx2 = ui_rtt(inst, w)
     rec(results, inst, "stress", "slow client (reads nothing)", "pass" if med2 < 150 else "fail", f"get_state median {med2:.1f} ms, max {mx2:.1f} ms with it connected")
     lazy.sock.close()
-    # Two clients on one tab: the same stream, and a resize from one
-    # reaches the other.
     a, b = inst.ws(), inst.ws()
     a.recv_json("hello"), b.recv_json("hello")
     u = uids[0]
@@ -574,7 +556,6 @@ def ws_stress(inst, results, info):
     rec(results, inst, "stress", "resize seen by the other browser", "pass" if seen and seen["cols"] == 70 and seen["rows"] == 30 else "fail", json.dumps(seen)[:120] if seen else "no resized frame")
     a.send_json({"t": "resize", "tab": u, "release": True})
     a.close(), b.close()
-    # Reconnect storm: 20 sockets opened and closed fast.
     t0 = time.time()
     for _ in range(20):
         c = inst.ws()
@@ -650,7 +631,6 @@ def flood(inst, results):
     if rss0 and rss1:
         rec(results, inst, "flood", "server memory", "pass" if rss1["rss_mb"] < rss0["rss_mb"] + 150 else "fail",
             f"RSS {rss0['rss_mb']:.0f} MB before, {peak:.0f} MB peak, {rss1['rss_mb']:.0f} MB after")
-    # The browser's own copy after the flood: a fresh snapshot ends where the CLI is.
     v = inst.snapshot(side, u)
     txt = screen_text(v["data"])
     rec(results, inst, "flood", "snapshot after the flood", "pass" if "flood done" in txt else "fail", f"{len(v['data']) / 1024:.0f} KB, history {v['data'].split(chr(27) + '[?1049h')[0].count(chr(10))} lines")
@@ -713,8 +693,6 @@ def soak(inst, results, args, out_dir, info):
             f"RSS {a:.0f} -> {b:.0f} MB (first and last quarter), mean CPU {cpu:.1f}%, {len(samples)} samples")
 
 
-# ---------------------------------------------------------------------
-# Report
 
 def report(results, out_dir, title):
     rows = [r for r in results if r.get("status") in ("pass", "fail", "skip")]
@@ -780,7 +758,6 @@ def main():
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--serve", action="store_true", help="start the first instance, print its link and wait (debugging)")
     a = ap.parse_args()
-    # A kill still stops the instances and writes the report.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     if a.port_base in LIVE_PORTS:
         raise SystemExit("never the live GodTerm's ports")
@@ -808,12 +785,9 @@ def main():
                 print(f"[{kind}] tabs: " + ", ".join(f"t{u} {i['harness']} {i['state']}{'' if i['typing'] else ' (no keys)'}" for u, i in info.items()), flush=True)
                 g = groups if kind in ("demo", "fake") else [x for x in groups if x not in ("chat", "voice", "stress", "shared", "retry", "move")]
                 if kind == "demofull":
-                    # The full demo world (16 Claude and Grok tabs): their
-                    # approvals, which the one-tab-per-harness world rarely shows.
                     g = [x for x in groups if x in ("tabs", "approval")]
                 if kind == "fake":
                     g = [x for x in g if x not in ("approval", "options", "chat", "voice", "layout", "keyboard", "keybar", "sheet")]
-                # The speech clips need the mock's /dev/clip; the mock gets nothing else.
                 if kind == "mock":
                     g = [x for x in groups if x in ("clip", "move")]
                 else:
@@ -828,7 +802,6 @@ def main():
                         bytes_reach_cli(inst, results)
                         flood(inst, results)
                 if kind == "real" and not a.no_turns:
-                    # One tiny turn per CLI through the web app's Prompt box.
                     results.extend(run_browser(inst, a.engines.split(",")[-1], "phone", info, ["turn"], out, {"safe": False}))
                 if a.soak and kind == a.instance.split(",")[0]:
                     soak(inst, results, a, out, info)

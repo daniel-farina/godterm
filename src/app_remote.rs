@@ -1,17 +1,3 @@
-//! Claude Code Remote Control for the assistant itself: one control
-//! request to the running brain turns it on (claude.ai/code and the
-//! Claude app can then talk to it), another turns it off. It lives and
-//! dies with the brain process. Providers declare support
-//! (`caps.remote_control`).
-//!
-//! Turning it on is a flow with an honest end: each attempt waits up to
-//! 20 s for claude's answer; a failure is tried again once after a short
-//! pause, then once more after restarting the brain (its conversation
-//! kept), which covers a claude binary updated or replaced under it. The
-//! tool call that asked waits for the outcome (the link on success).
-//! With assistant.remote_control on it is turned on whenever the brain
-//! starts and again when the bridge drops.
-
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -20,13 +6,12 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::app_assistant::{Entry, Who};
 
-/// How long one attempt waits for claude's answer.
 pub const ANSWER_WAIT: Duration = Duration::from_secs(20);
-/// The pause before the second attempt.
+
 pub const RETRY_DELAY: Duration = Duration::from_secs(2);
-/// Kept on: the pause after a flow failed for good.
+
 pub const AUTO_BACKOFF: Duration = Duration::from_secs(300);
-/// Kept on: the pause after the bridge dropped.
+
 pub const DROP_DELAY: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,10 +19,9 @@ pub struct Remote {
     pub name: String,
     pub url: Option<String>,
     pub account: Option<usize>,
-    /// The brain process it belongs to.
+
     pub gen: u64,
-    /// The bridge to claude.ai: "on" until claude reports it, then
-    /// "connected", "reconnecting", ...
+
     pub bridge: String,
 }
 
@@ -56,24 +40,22 @@ pub struct RemotePending {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FlowStage {
-    /// The request is out (since).
     Sent(Instant),
-    /// The next attempt goes out at this time.
+
     RetryAt(Instant),
-    /// The brain restarts (once it is between turns), then the last try.
+
     Restart,
 }
 
-/// Turning Remote Control on.
 #[derive(Debug)]
 pub struct RemoteFlow {
     pub name: String,
-    /// Started by assistant.remote_control (not by a request).
+
     pub auto: bool,
-    /// Attempts made (1 to 3).
+
     pub attempt: u8,
     pub stage: FlowStage,
-    /// The tool call waiting for the outcome.
+
     pub reply: Option<Sender<Value>>,
     pub last_error: String,
 }
@@ -90,8 +72,6 @@ impl App {
         Ok(())
     }
 
-    /// assistant.remote_control is set and can act now (Claude, the
-    /// assistant on, not turned off by the user this run).
     pub fn remote_kept_on(&self) -> bool {
         self.cfg.assistant.remote_control
             && self.assistant_on()
@@ -99,7 +79,6 @@ impl App {
             && !self.assistant.remote_off_by_user
     }
 
-    /// The default session name: "GodTerm assistant (Account 2)".
     pub fn remote_default_name(&self) -> String {
         let a = self
             .assistant_account()
@@ -115,7 +94,6 @@ impl App {
         )
     }
 
-    /// Start turning it on: `reply` (a waiting tool call) gets the outcome.
     pub(crate) fn remote_start(
         &mut self,
         name: &str,
@@ -142,7 +120,6 @@ impl App {
         Ok(())
     }
 
-    /// Send the current attempt's request.
     fn remote_send(&mut self) {
         let Some(name) = self.assistant.remote_flow.as_ref().map(|f| f.name.clone()) else {
             return;
@@ -175,8 +152,6 @@ impl App {
         }
     }
 
-    /// Ask the brain to turn Remote Control on (the menu, after its second
-    /// pick): the outcome comes as a progress line.
     pub fn enable_remote(&mut self, name: &str) -> Result<String, String> {
         self.remote_start(name, false, None)?;
         Ok(format!(
@@ -184,7 +159,6 @@ impl App {
         ))
     }
 
-    /// The tool (after the user's yes): its reply waits for the outcome.
     pub fn enable_remote_tool(&mut self, name: &str) -> Result<Value, String> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.remote_start(name, false, Some(tx))?;
@@ -227,7 +201,6 @@ impl App {
         })
     }
 
-    /// A control response from the brain.
     pub fn on_remote_response(&mut self, id: &str, r: Result<Value, String>) {
         let Some(p) = self
             .assistant
@@ -306,8 +279,6 @@ impl App {
         }
     }
 
-    /// An attempt failed (refused, no answer in time, or not sent): try
-    /// again, restart the brain, or give up and say so.
     fn remote_attempt_failed(&mut self, e: &str) {
         self.assistant.remote_pending = None;
         let Some(mut f) = self.assistant.remote_flow.take() else {
@@ -358,8 +329,6 @@ impl App {
         }
     }
 
-    /// Restart the brain for the last try, keeping the conversation: its
-    /// session is resumed (assistant.resume), or a summary carried.
     fn remote_restart_brain(&mut self) {
         crate::log::info("remote control: restarting the assistant's claude for the last try");
         if !self.cfg.assistant.resume {
@@ -376,8 +345,6 @@ impl App {
         self.remote_send();
     }
 
-    /// Every tick: attempts that took too long, retries and the restart,
-    /// a Remote Control whose brain is gone, and keeping it on.
     pub fn remote_tick(&mut self) {
         let gen = self.assistant.brain.as_ref().map(|b| b.gen);
         if self
@@ -411,7 +378,7 @@ impl App {
                 crate::log::info(&format!("assistant: could not start after a crash: {e}"));
             }
         }
-        // Kept on: turn it on when it is not (a new brain, a drop).
+
         if self.remote_kept_on()
             && self.assistant.remote.is_none()
             && self.assistant.remote_flow.is_none()
@@ -429,7 +396,6 @@ impl App {
         }
     }
 
-    /// claude's bridge to claude.ai changed state.
     pub fn on_bridge_state(&mut self, state: &str) {
         crate::log::info(&format!("remote control: bridge {state}"));
         let Some(r) = self.assistant.remote.as_mut() else {
@@ -456,7 +422,6 @@ impl App {
         }
     }
 
-    /// The brain was replaced: Remote Control went with it.
     pub fn remote_lost(&mut self, why: &str) {
         if let Some(r) = self.assistant.remote.take() {
             crate::log::info(&format!("remote control: ended ({why})"));
@@ -475,8 +440,6 @@ impl App {
         self.assistant.remote_pending = None;
     }
 
-    /// A user message in the brain's stream: our own echo, or one that
-    /// came through Remote Control (it starts a turn of its own).
     pub fn on_user_text(&mut self, text: &str) {
         if let Some(i) = self
             .assistant
@@ -510,8 +473,6 @@ impl App {
         }
     }
 
-    /// The menu item: the first pick explains, a second within 15 s turns
-    /// it on.
     pub fn remote_click_armed(&mut self) -> bool {
         let now = std::time::Instant::now();
         let armed = self
@@ -522,7 +483,6 @@ impl App {
         armed
     }
 
-    /// The panel's Remote indicator: open the link (and copy it).
     pub fn open_remote_link(&mut self) {
         let url = self
             .assistant
@@ -542,8 +502,6 @@ impl App {
         }
     }
 
-    /// The indicator in the panel title: "Remote" while connected,
-    /// "Remote…" while connecting or reconnecting; None when off.
     pub fn remote_indicator(&self) -> Option<String> {
         match &self.assistant.remote {
             Some(r) if r.connected() => Some("Remote".into()),

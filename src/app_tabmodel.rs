@@ -1,18 +1,3 @@
-//! The model bar: one row in each pane, between its tab and the usage,
-//! with the harness's top models (providers::Provider::tab_models, or
-//! `[tab_models]` in config.toml). The current one is highlighted; a
-//! click switches the tab with the harness's own in-session command,
-//! `/model <arg>` (Claude Code and Grok Build both have it), typed through
-//! the paste then Enter path, only while the tab is idle at its prompt
-//! with an empty input box. A busy tab gets it after its turn: never an
-//! interrupt.
-//!
-//! The current model comes from the tab itself: for Claude Code its
-//! transcript (the latest assistant message's model, or a newer "Set
-//! model to" from /model, the user's own included), else its screen's
-//! banner, else the account's settings.json; for Grok its status line or
-//! header, else the session's summary.json.
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -22,23 +7,20 @@ use crate::app::App;
 use crate::harness::Harness;
 use crate::pane::{Activity, LaunchKind};
 
-/// At most this many models in a bar.
 pub const MAX_MODELS: usize = 4;
-/// Panes with fewer interior rows get no bar.
+
 pub const MIN_ROWS: u16 = 12;
-/// How often a shown tab's model is looked up.
+
 const POLL: Duration = Duration::from_secs(3);
-/// A /model just sent shows as current this long, unless the tab names a
-/// model (its own word wins once it does).
+
 const TRUST_SENT: Duration = Duration::from_secs(20);
-/// A queued switch is given up after this long.
+
 const QUEUE_MAX: Duration = Duration::from_secs(6 * 3600);
-/// The transcript tail read for the model.
+
 const TAIL: u64 = 1 << 20;
 
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
-/// A model in a pane's bar.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BarModel {
     pub arg: String,
@@ -47,7 +29,6 @@ pub struct BarModel {
     pub matches: Vec<String>,
 }
 
-/// A switch waiting for its tab to be idle.
 #[derive(Debug, Clone)]
 pub struct ModelSwitch {
     pub uid: u64,
@@ -56,14 +37,12 @@ pub struct ModelSwitch {
     pub at: Instant,
 }
 
-/// What a switch did.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Switched {
-    /// Typed in now.
     Sent,
-    /// Waits; the reason ("after this turn").
+
     Queued(&'static str),
-    /// It already runs that model.
+
     Already,
 }
 
@@ -77,8 +56,6 @@ impl Switched {
     }
 }
 
-/// The bar's models for harness `h`: the config's list when it has one
-/// ("haiku", "fable=Fable"), else the registry's; at most MAX_MODELS.
 pub fn models_for(h: Harness, cfg: &crate::config::Config) -> Vec<BarModel> {
     let reg = crate::providers::tab_models(h);
     let of = |m: &crate::providers::TabModel| BarModel {
@@ -94,8 +71,10 @@ pub fn models_for(h: Harness, cfg: &crate::config::Config) -> Vec<BarModel> {
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .collect();
+
+    let live = crate::model_list::bar(h, cfg);
     let v: Vec<BarModel> = if over.is_empty() {
-        reg.iter().map(of).collect()
+        live.unwrap_or_else(|| reg.iter().map(of).collect())
     } else {
         over.into_iter()
             .filter_map(|e| {
@@ -106,12 +85,19 @@ pub fn models_for(h: Harness, cfg: &crate::config::Config) -> Vec<BarModel> {
                 if arg.is_empty() {
                     return None;
                 }
+                let same = |m: &BarModel| {
+                    m.arg.eq_ignore_ascii_case(arg) || m.label.eq_ignore_ascii_case(arg)
+                };
                 let known = reg
                     .iter()
                     .find(|m| m.arg.eq_ignore_ascii_case(arg) || m.label.eq_ignore_ascii_case(arg));
-                let mut b = match known {
-                    Some(m) => of(m),
-                    None => BarModel {
+                let mut b = match (
+                    live.as_ref().and_then(|l| l.iter().find(|m| same(m))),
+                    known,
+                ) {
+                    (Some(m), _) => m.clone(),
+                    (None, Some(m)) => of(m),
+                    (None, None) => BarModel {
                         arg: arg.to_string(),
                         label: arg.to_string(),
                         desc: String::new(),
@@ -128,8 +114,6 @@ pub fn models_for(h: Harness, cfg: &crate::config::Config) -> Vec<BarModel> {
     v.into_iter().take(MAX_MODELS).collect()
 }
 
-/// Which of `models` a model id or display name is ("claude-opus-5-5",
-/// "Sonnet 5.5", "grok-4.7-build-fast"): the longest piece found wins.
 pub fn index_of(models: &[BarModel], model: &str) -> Option<usize> {
     let m = model.to_lowercase();
     let mut best: Option<(usize, usize)> = None;
@@ -159,9 +143,6 @@ fn words(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// A model named loosely ("haiku", "use opus", "claude sonnet 5.5", "the
-/// fast one", "grok 4.7", "2"): its index, or None when nothing or more
-/// than one fits.
 pub fn resolve(models: &[BarModel], name: &str) -> Option<usize> {
     let n = name.trim().to_lowercase();
     if n.is_empty() {
@@ -176,8 +157,7 @@ pub fn resolve(models: &[BarModel], name: &str) -> Option<usize> {
     {
         return Some(i);
     }
-    // Every piece of the name counts; a tie goes to the plainer model
-    // ("grok 4.7" is 4.7, not 4.7 fast), a real tie to nobody.
+
     const STOP: &[&str] = &[
         "the", "a", "an", "one", "to", "use", "model", "on", "that", "this", "tab", "please",
         "switch", "it", "claude", "most",
@@ -194,8 +174,7 @@ pub fn resolve(models: &[BarModel], name: &str) -> Option<usize> {
             let mut all = own.clone();
             all.extend(words(&m.desc));
             all.extend(m.matches.iter().flat_map(|k| words(k)));
-            // A name word outweighs version numbers ("opus 5 5" is Opus,
-            // not a model whose id happens to hold two 5s).
+
             let score = said
                 .iter()
                 .filter(|w| all.contains(w))
@@ -220,7 +199,6 @@ pub fn resolve(models: &[BarModel], name: &str) -> Option<usize> {
     }
 }
 
-/// Text without ANSI color codes.
 fn plain(s: &str) -> String {
     let mut out = String::new();
     let mut it = s.chars().peekable();
@@ -241,8 +219,6 @@ fn plain(s: &str) -> String {
     out
 }
 
-/// "Set model to `Sonnet 5.5` and saved ..." (Claude Code's /model): the
-/// model it names.
 pub fn set_model_text(s: &str) -> Option<String> {
     let s = plain(s);
     for pre in ["Set model to ", "Kept model as "] {
@@ -266,9 +242,6 @@ pub fn set_model_text(s: &str) -> Option<String> {
     None
 }
 
-/// The model a Claude Code transcript names last: the newest assistant
-/// message's model, or a newer "Set model to" from /model (subagents'
-/// and synthetic messages left out).
 pub fn claude_transcript_model(path: &Path) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).ok()?;
@@ -324,7 +297,6 @@ pub fn claude_transcript_model(path: &Path) -> Option<String> {
     None
 }
 
-/// A Grok session's model (summary.json's current_model_id).
 pub fn grok_session_model(dir: &Path) -> Option<String> {
     let v: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("summary.json")).ok()?).ok()?;
@@ -334,7 +306,6 @@ pub fn grok_session_model(dir: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The model the account's settings.json starts sessions with.
 fn settings_model(home: &Path) -> Option<String> {
     let v: Value =
         serde_json::from_str(&std::fs::read_to_string(home.join("settings.json")).ok()?).ok()?;
@@ -344,7 +315,6 @@ fn settings_model(home: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Grok's status line segment "Grok 4.7 (high)".
 fn grok_status_segment(screen: &str) -> Option<String> {
     screen.lines().find_map(|l| {
         if !l.contains('·') {
@@ -357,8 +327,6 @@ fn grok_status_segment(screen: &str) -> Option<String> {
     })
 }
 
-/// The model a tab's screen shows: Claude Code's banner ("Opus 5.5 ·
-/// Claude Max" under "Claude Code v..."), Grok's status line or header.
 pub fn screen_model(h: Harness, screen: &str) -> Option<String> {
     let lines: Vec<&str> = screen.lines().collect();
     match h {
@@ -384,13 +352,11 @@ pub fn screen_model(h: Harness, screen: &str) -> Option<String> {
                     .map(str::to_string)
             })
         }
-        // No model line is read from the other CLIs' screens.
+
         _ => None,
     }
 }
 
-/// The effort a tab's screen shows ("◐ medium · /effort"; "Grok 4.7
-/// (high)").
 pub fn screen_effort(h: Harness, screen: &str) -> Option<String> {
     let known = |w: &str| EFFORTS.contains(&w).then(|| w.to_string());
     match h {
@@ -413,12 +379,10 @@ pub fn screen_effort(h: Harness, screen: &str) -> Option<String> {
     }
 }
 
-/// Whether the tab's input box is empty (None: no box found). Dim text
-/// is a placeholder, not a draft.
 pub fn input_empty(h: Harness, screen: &vt100::Screen) -> Option<bool> {
     let (rows, cols) = screen.size();
     let row_text = |r: u16| -> String { screen.contents_between(r, 0, r, cols) };
-    // Whether row r has text that is not dim from column c on.
+
     let typed = |r: u16, from: u16, to: u16| -> bool {
         (from..to).any(|c| {
             screen.cell(r, c).is_some_and(|cell| {
@@ -462,19 +426,17 @@ pub fn input_empty(h: Harness, screen: &vt100::Screen) -> Option<bool> {
             }
             None
         }
-        // Their input boxes are not read.
+
         _ => None,
     }
 }
 
 impl App {
-    /// The harness of a pane's account.
     pub fn pane_harness(&self, s: usize) -> Option<Harness> {
         let a = self.panes.get(s)?.account?;
         Some(self.cfg.accounts.get(a)?.harness())
     }
 
-    /// The model bar's models for pane `s` (empty: no bar).
     pub fn bar_models(&self, s: usize) -> Vec<BarModel> {
         match self.pane_harness(s) {
             Some(h) => models_for(h, &self.cfg),
@@ -482,7 +444,6 @@ impl App {
         }
     }
 
-    /// Whether pane `i` (interior `inner_h` rows) shows the bar now.
     pub fn model_bar_on(&self, i: usize, inner_h: u16) -> bool {
         if !self.cfg.tab_model_bar || inner_h < MIN_ROWS {
             return false;
@@ -490,16 +451,13 @@ impl App {
         let Some(slot) = self.panes.get(i) else {
             return false;
         };
-        // A CLI without a model picker still gets the bar, for the loops
-        // and Browser buttons (the model is chosen inside the CLI).
+
         slot.account.is_some()
             && slot.cur().kind != LaunchKind::Login
             && (!self.bar_models(i).is_empty()
                 || self.pane_harness(i).is_some_and(|h| !h.has_model_picker()))
     }
 
-    /// Which bar model tab (s, t) runs (a switch just sent counts until
-    /// the tab names one).
     pub fn tab_model_index(&self, s: usize, t: usize, models: &[BarModel]) -> Option<usize> {
         let tab = &self.panes[s].tabs[t];
         if let Some((arg, at)) = &tab.model_set {
@@ -512,8 +470,6 @@ impl App {
         index_of(models, tab.model.as_deref()?)
     }
 
-    /// The model's short name for the state and get_state ("Haiku", or
-    /// what the tab says when it is not in the bar).
     pub fn tab_model_label(&self, s: usize, t: usize) -> Option<String> {
         let models = self.bar_models(s);
         match self.tab_model_index(s, t, &models) {
@@ -522,12 +478,10 @@ impl App {
         }
     }
 
-    /// The switch waiting for tab `uid`.
     pub fn queued_model(&self, uid: u64) -> Option<&ModelSwitch> {
         self.model_switches.iter().find(|m| m.uid == uid)
     }
 
-    /// Why tab (s, t) cannot take a /model now (None: it can).
     fn not_ready_for_model(&self, s: usize, t: usize) -> Option<&'static str> {
         let tab = &self.panes[s].tabs[t];
         if !tab.is_running() {
@@ -555,7 +509,6 @@ impl App {
         None
     }
 
-    /// Type `/model <arg>` into tab (s, t) (paste, then Enter once it shows).
     fn send_model(&mut self, s: usize, t: usize, arg: &str, label: &str) {
         let text = format!("/model {arg}");
         crate::log::info(&format!(
@@ -570,8 +523,6 @@ impl App {
         self.state_dirty = true;
     }
 
-    /// Switch tab (s, t) to bar model `k`: now when it is idle, else
-    /// queued (a newer pick replaces a queued one).
     pub fn switch_tab_model(&mut self, s: usize, t: usize, k: usize) -> Result<Switched, String> {
         let models = self.bar_models(s);
         let m = models
@@ -607,7 +558,6 @@ impl App {
         }
     }
 
-    /// What a switch says (flash, tool result).
     pub fn switch_say(&self, s: usize, t: usize, k: usize, r: &Switched) -> String {
         let models = self.bar_models(s);
         let label = models.get(k).map(|m| m.label.as_str()).unwrap_or("?");
@@ -623,7 +573,6 @@ impl App {
         }
     }
 
-    /// A click on bar button `k` of pane `i`.
     pub fn click_tab_model(&mut self, i: usize, k: usize) {
         self.focus = i;
         self.view = crate::app::View::Grid;
@@ -638,7 +587,6 @@ impl App {
         }
     }
 
-    /// Ctrl-a #: pick the focused tab's model with a number next.
     pub fn start_model_entry(&mut self) {
         let p = self.focus;
         let models = self.bar_models(p);
@@ -664,7 +612,6 @@ impl App {
         ));
     }
 
-    /// The key after Ctrl-a #: true when it was taken.
     pub fn model_entry_key(&mut self, k: &crossterm::event::KeyEvent) -> bool {
         use crossterm::event::KeyCode;
         let Some(p) = self.model_entry.take() else {
@@ -699,7 +646,6 @@ impl App {
         true
     }
 
-    /// A Grok tab's session folder.
     pub(crate) fn grok_session_dir(&self, s: usize, t: usize) -> Option<PathBuf> {
         let a = self.panes[s].account?;
         let id = self.panes[s].tabs[t].session_id.clone()?;
@@ -711,8 +657,6 @@ impl App {
             .find(|p| p.join("summary.json").is_file())
     }
 
-    /// Look up tab (s, t)'s model and effort (at most every POLL unless
-    /// `now`).
     pub fn refresh_tab_model(&mut self, s: usize, t: usize, now: bool) {
         let Some(h) = self.pane_harness(s) else {
             return;
@@ -744,21 +688,19 @@ impl App {
         };
         let tab_model = self.panes[s].tabs[t].model.clone();
         let found = match h {
-            // A new transcript line wins; else what was found, else the
-            // screen, else the account's default.
             Harness::Claude => from_file.clone().or(tab_model).or_else(|| {
                 screen_model(h, &screen).or_else(|| {
                     let a = self.panes[s].account?;
                     settings_model(&self.cfg.accounts.get(a)?.config_dir())
                 })
             }),
-            // Its status line is live; the session file is written later.
+
             Harness::Grok => screen_model(h, &screen).or_else(|| {
                 self.grok_session_dir(s, t)
                     .and_then(|d| grok_session_model(&d))
                     .or(tab_model)
             }),
-            // No model is read from the other CLIs.
+
             _ => tab_model,
         };
         let models = self.bar_models(s);
@@ -771,7 +713,6 @@ impl App {
             if says == Some(true) || at.elapsed() >= TRUST_SENT {
                 tab.model_set = None;
             } else if from_file.is_none() && h == Harness::Claude {
-                // Not written yet: look again soon.
                 tab.model_stamp = None;
             }
         }
@@ -784,8 +725,6 @@ impl App {
         }
     }
 
-    /// Queued switches go in once their tab is idle; shown tabs' models
-    /// are looked up.
     pub fn tab_model_tick(&mut self) {
         let sw = std::mem::take(&mut self.model_switches);
         for x in sw {
@@ -820,7 +759,6 @@ impl App {
         }
     }
 
-    /// The set_tab_model tool: {tab, model}; at once, no confirmation.
     pub fn set_tab_model_tool(&mut self, args: &Value) -> Result<Value, String> {
         let (s, t) = self.one_tab(args)?;
         let name = args["model"]

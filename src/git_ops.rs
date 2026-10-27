@@ -1,32 +1,15 @@
-//! Git calls that change a project repo, for the Git section only: commit,
-//! push, pull (fast forward only), sync, fetch, branch create and switch,
-//! and the diverged fallback (push the local commits as a branch of their
-//! own). Each runs only after the user pressed the button and confirmed;
-//! no assistant tool reaches this module's writing functions.
-//!
-//! Every argument list goes through `forbidden` before it runs: a closed
-//! set of subcommands, and never `--force`, `--force-with-lease`, a `+`
-//! refspec, a delete, `--amend`, a rebase or a reset. History is never
-//! rewritten.
-//!
-//! Credentials: for an https GitHub remote the call carries GodTerm's own
-//! credential helper for the bound gh account
-//! (`godterm git-credential --account <acct>`, git_cred.rs); the token
-//! itself never appears on a command line.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-/// Where and as whom a git call runs.
 #[derive(Debug, Clone)]
 pub struct Ctx {
     pub top: PathBuf,
-    /// The gh account whose token git gets for https GitHub remotes.
+
     pub account: Option<String>,
-    /// The godterm binary (the credential helper).
+
     pub helper: Option<PathBuf>,
-    /// The gh binary the helper asks.
+
     pub gh: Option<PathBuf>,
     pub limit: Duration,
 }
@@ -43,15 +26,11 @@ impl Ctx {
     }
 }
 
-/// Why an operation did not happen.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Fail {
     Msg(String),
-    /// Local and remote both have commits the other lacks.
-    Diverged {
-        ahead: u32,
-        behind: u32,
-    },
+
+    Diverged { ahead: u32, behind: u32 },
 }
 
 impl std::fmt::Display for Fail {
@@ -74,9 +53,6 @@ impl From<String> for Fail {
 
 pub type Res<T> = Result<T, Fail>;
 
-// ---- what may run ----
-
-/// The subcommands GodTerm runs at all.
 const ALLOWED: &[&str] = &[
     "status",
     "log",
@@ -104,20 +80,17 @@ const ALLOWED: &[&str] = &[
     "branch",
 ];
 
-/// Options that take a value (skipped while looking at the rest).
 const WITH_VALUE: &[&str] = &["-m", "--message", "--format", "-n", "-b", "-C", "-c"];
 
-/// Why this argument list must never run, if so. Checked on every call.
 #[allow(clippy::collapsible_match)]
 pub fn forbidden(args: &[String]) -> Option<String> {
-    // Global options first: -c k=v, -C dir and --flags.
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
         if a == "-c" || a == "-C" {
             if let Some(v) = args.get(i + 1) {
                 let low = v.to_ascii_lowercase();
-                // No alias may hide a forced push.
+
                 if a == "-c" && (low.starts_with("alias.") || low.contains("force")) {
                     return Some(format!("config {v} is not allowed"));
                 }
@@ -163,7 +136,7 @@ pub fn forbidden(args: &[String]) -> Option<String> {
         if low.starts_with("--force") || low == "--mirror" || low.starts_with("--delete") {
             return Some(format!("{o} is never used: history is never rewritten"));
         }
-        // A short cluster with f (-f, -fu): force.
+
         if !o.starts_with("--") && o.len() > 1 && o[1..].contains('f') {
             return Some(format!("{o} is never used (force)"));
         }
@@ -259,9 +232,6 @@ pub fn forbidden(args: &[String]) -> Option<String> {
     None
 }
 
-// ---- names ----
-
-/// A branch name GodTerm will pass to git.
 pub fn valid_branch(b: &str) -> bool {
     !b.is_empty()
         && b.len() <= 200
@@ -276,7 +246,6 @@ pub fn valid_branch(b: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | '.'))
 }
 
-/// A remote's name.
 pub fn valid_remote(r: &str) -> bool {
     !r.is_empty()
         && r.len() <= 100
@@ -285,7 +254,6 @@ pub fn valid_remote(r: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-/// This machine's short name for diverged branches ("macbook").
 pub fn machine_name() -> String {
     machine_slug(&host_name())
 }
@@ -293,7 +261,7 @@ pub fn machine_name() -> String {
 #[cfg(unix)]
 fn host_name() -> String {
     let mut buf = [0u8; 256];
-    // SAFETY: gethostname writes at most buf.len() bytes into buf.
+
     let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
     if ok {
         let n = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
@@ -323,12 +291,9 @@ pub fn machine_slug(raw: &str) -> String {
     }
 }
 
-/// `godterm/<machine>/<branch>-<yyyymmdd>`.
 pub fn diverged_branch(machine: &str, branch: &str, date: &str) -> String {
     format!("godterm/{}/{branch}-{date}", machine_slug(machine))
 }
-
-// ---- argument lists (pure: the no force test runs over all of them) ----
 
 fn v(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
@@ -447,14 +412,10 @@ pub fn init_args() -> Vec<String> {
     v(&["init", "-q", "-b", "main"])
 }
 
-// ---- running ----
-
-/// Single quote for git's `!` helper (run by a shell).
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// The full argument list a call runs with (credential options first).
 pub fn full_args(ctx: &Ctx, args: &[String]) -> Vec<String> {
     let mut a: Vec<String> = vec![];
     if cfg!(test) {
@@ -490,12 +451,10 @@ pub fn full_args(ctx: &Ctx, args: &[String]) -> Vec<String> {
     a
 }
 
-/// Run git with `args` (checked by `forbidden` first). Ok(stdout).
 pub fn run(ctx: &Ctx, args: &[String]) -> Res<String> {
     run_in(ctx, args, None).map(|(o, _)| o)
 }
 
-/// Run git; Ok((stdout, stderr)) on success.
 pub fn run_in(ctx: &Ctx, args: &[String], input: Option<&[u8]>) -> Res<(String, String)> {
     let (ok, out, err) = run_any(ctx, args, input)?;
     if ok {
@@ -505,8 +464,6 @@ pub fn run_in(ctx: &Ctx, args: &[String], input: Option<&[u8]>) -> Res<(String, 
     }
 }
 
-/// Run git (checked by `forbidden`); Ok((success, stdout, stderr)) for
-/// commands whose exit code is an answer (check-ignore).
 pub fn run_any(ctx: &Ctx, args: &[String], input: Option<&[u8]>) -> Res<(bool, String, String)> {
     let full = full_args(ctx, args);
     if let Some(why) = forbidden(&full) {
@@ -519,12 +476,11 @@ pub fn run_any(ctx: &Ctx, args: &[String], input: Option<&[u8]>) -> Res<(bool, S
     if let Some(gh) = &ctx.gh {
         c.env("GODTERM_GH_BIN", gh);
     }
-    // A token in the parent's env must not reach git or its hooks.
+
     c.env_remove("GH_TOKEN").env_remove("GITHUB_TOKEN");
     crate::project_git::exec(c, ctx.limit, input).map_err(Fail::Msg)
 }
 
-/// The lines of a git failure worth showing (hints dropped).
 fn git_error(err: &str, out: &str) -> String {
     let lines: Vec<&str> = err
         .lines()
@@ -549,8 +505,6 @@ fn read(ctx: &Ctx, a: &[&str]) -> Option<String> {
     run(ctx, &v(a)).ok().map(|s| s.trim().to_string())
 }
 
-// ---- facts a writing step needs ----
-
 pub fn head(ctx: &Ctx) -> Option<String> {
     read(ctx, &["rev-parse", "-q", "--verify", "HEAD"]).filter(|s| !s.is_empty())
 }
@@ -559,7 +513,6 @@ pub fn branch(ctx: &Ctx) -> Option<String> {
     read(ctx, &["symbolic-ref", "--short", "-q", "HEAD"]).filter(|s| !s.is_empty())
 }
 
-/// "origin/main".
 pub fn upstream(ctx: &Ctx) -> Option<String> {
     read(
         ctx,
@@ -581,8 +534,6 @@ pub fn remotes(ctx: &Ctx) -> Vec<String> {
         })
 }
 
-/// The remote a push goes to: the upstream's, else origin, else the only
-/// one.
 pub fn push_remote(ctx: &Ctx) -> Option<String> {
     if let Some(u) = upstream(ctx) {
         if let Some((r, _)) = u.split_once('/') {
@@ -596,22 +547,16 @@ pub fn push_remote(ctx: &Ctx) -> Option<String> {
     (rs.len() == 1).then(|| rs[0].clone())
 }
 
-/// (ahead, behind) of the upstream, from local refs.
 pub fn counts(ctx: &Ctx) -> Option<(u32, u32)> {
     let t = read(ctx, &["rev-list", "--left-right", "--count", "HEAD...@{u}"])?;
     let mut it = t.split_whitespace();
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
 }
 
-/// Tracked changes (staged or not); untracked files do not count.
 pub fn tracked_dirty(ctx: &Ctx) -> bool {
     read(ctx, &["status", "--porcelain=v1", "--untracked-files=no"]).is_some_and(|s| !s.is_empty())
 }
 
-// ---- the operations ----
-
-/// Commit: `all` stages everything first (new files too), else only what
-/// is staged.
 pub fn commit(ctx: &Ctx, message: &str, all: bool) -> Res<String> {
     let args = commit_args(message)?;
     if all {
@@ -639,7 +584,6 @@ fn rejected(e: &str) -> bool {
         || l.contains("rejected")
 }
 
-/// Push the current branch (`-u` when it has no upstream yet).
 pub fn push(ctx: &Ctx) -> Res<String> {
     let b = branch(ctx).ok_or_else(|| Fail::Msg("not on a branch (detached)".into()))?;
     let remote = push_remote(ctx).ok_or_else(|| Fail::Msg("no remote to push to".into()))?;
@@ -659,7 +603,6 @@ pub fn push(ctx: &Ctx) -> Res<String> {
     }
 }
 
-/// Fast forward only: a diverged branch is reported, never merged.
 pub fn pull(ctx: &Ctx) -> Res<String> {
     if upstream(ctx).is_none() {
         return Err(Fail::Msg(
@@ -688,11 +631,9 @@ pub fn fetch(ctx: &Ctx) -> Res<String> {
     Ok(format!("Fetched {remote}."))
 }
 
-/// Fetch, fast forward if behind, push if ahead. Diverged: reported.
 pub fn sync(ctx: &Ctx) -> Res<String> {
     fetch(ctx)?;
     let Some((a, b)) = counts(ctx) else {
-        // No upstream yet: the first push sets it.
         return push(ctx);
     };
     if a > 0 && b > 0 {
@@ -717,8 +658,6 @@ pub fn sync(ctx: &Ctx) -> Res<String> {
     }
 }
 
-/// Diverged: push the local branch as `godterm/<machine>/<branch>-<date>`
-/// (with -2, -3... when that name is taken). Nothing is rewritten.
 pub fn push_as_branch(ctx: &Ctx, machine: &str, date: &str) -> Res<String> {
     let b = branch(ctx).ok_or_else(|| Fail::Msg("not on a branch (detached)".into()))?;
     let remote = push_remote(ctx).ok_or_else(|| Fail::Msg("no remote to push to".into()))?;
@@ -743,7 +682,6 @@ pub fn push_as_branch(ctx: &Ctx, machine: &str, date: &str) -> Res<String> {
     Err(Fail::Msg(format!("every branch name was taken: {last}")))
 }
 
-/// Switch branch: a clean tree, or with `stash` the changes stashed first.
 pub fn switch(ctx: &Ctx, to: &str, stash: bool) -> Res<String> {
     let args = switch_args(to)?;
     let mut note = String::new();
@@ -784,8 +722,6 @@ pub fn untrack(ctx: &Ctx, files: &[String]) -> Res<String> {
     ))
 }
 
-// ---- reading for the Git section ----
-
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct LogRow {
     pub hash: String,
@@ -795,7 +731,6 @@ pub struct LogRow {
     pub unpushed: bool,
 }
 
-/// The last `n` commits, unpushed ones marked (when there is a remote).
 pub fn log(ctx: &Ctx, n: usize) -> Vec<LogRow> {
     let cap = format!("-n{}", n.clamp(1, 200));
     let Some(t) = read(
@@ -875,7 +810,6 @@ fn numstat(t: &str, staged: bool) -> Vec<FileChange> {
         .collect()
 }
 
-/// What changed: staged and unstaged files with line counts, untracked.
 pub fn changes(ctx: &Ctx) -> Changes {
     let st = numstat(
         &read(ctx, &["diff", "--cached", "--numstat", "--no-renames"]).unwrap_or_default(),
@@ -937,8 +871,6 @@ pub fn branches(ctx: &Ctx) -> Vec<BranchRow> {
     .collect()
 }
 
-/// The commits a push would send: `@{u}..HEAD`, or with no upstream every
-/// commit no remote has.
 pub fn outgoing_range(ctx: &Ctx) -> Vec<String> {
     match upstream(ctx) {
         Some(u) => vec![format!("{u}..HEAD")],
@@ -946,8 +878,6 @@ pub fn outgoing_range(ctx: &Ctx) -> Vec<String> {
     }
 }
 
-/// The patch the user's changes make (for the assistant to read and draft
-/// a message from): staged, or staged and unstaged; capped.
 pub fn diff_text(ctx: &Ctx, staged_only: bool, file: Option<&str>, cap: usize) -> String {
     let mut a = vec!["diff", "--no-color", "--no-ext-diff", "-U3"];
     let head_ok = head(ctx).is_some();

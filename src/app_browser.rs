@@ -1,8 +1,3 @@
-//! BrowserSkill in the app: a passive, rate limited status poll on a
-//! background thread, the `list_browsers` / `browser_status` tools, and
-//! `install_browser_skill` (the skill folder copied into chosen accounts,
-//! `Bash(bsk:*)` allowed in their settings.json, both after one yes).
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,10 +10,8 @@ use crate::browser::{self, AccountRef, Env, Snapshot};
 use crate::browser_skill::{self as skill, Merge, BSK_RULE};
 use crate::harness::Harness;
 
-/// A poll is not started again sooner than this (the screen being open or
-/// the assistant asking over and over does not matter).
 const MIN_GAP: Duration = Duration::from_secs(30);
-/// A cached answer older than this is refreshed in the background.
+
 const STALE: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
@@ -26,22 +19,19 @@ pub struct BrowserState {
     snap: Arc<Mutex<Option<Snapshot>>>,
     inflight: Arc<AtomicBool>,
     last_start: Option<Instant>,
-    /// Settings: the first click of "Install the browser skill" waits for
-    /// its second.
+
     pub confirm: Option<Instant>,
-    /// Tests (and only tests) say where things are; the real machine's
-    /// folders are never looked at in a test.
+
     pub env: Option<Env>,
-    /// The Browser dialog's quick look (tab_browser) and when it started.
+
     pub quick: Arc<Mutex<Option<crate::tab_browser::Quick>>>,
     pub quick_busy: Arc<AtomicBool>,
     pub quick_at: Option<Instant>,
-    /// Tabs waiting for the user to add or turn on the extension: (tab
-    /// id, since).
+
     pub pending: Vec<(u64, Instant)>,
-    /// A line the Browser dialog shows under the profiles.
+
     pub note: Option<String>,
-    /// Each bound tab's last bsk call, and when it was looked at.
+
     pub activity: std::cell::RefCell<
         std::collections::HashMap<u64, (Instant, Option<crate::tab_browser::BskAction>)>,
     >,
@@ -92,7 +82,6 @@ impl App {
             .collect()
     }
 
-    /// Start a background look unless one runs or the last one was lately.
     pub fn browser_refresh(&mut self, force: bool) {
         let Some(env) = self.browser_env() else {
             return;
@@ -121,8 +110,6 @@ impl App {
         });
     }
 
-    /// Per tick: while the Browser section of Settings is on screen, keep
-    /// the picture fresh (at most one look per 30 s).
     pub fn browser_tick(&mut self) {
         if self.view == crate::app::View::Settings
             && self.settings_section_kind() == crate::settings::Section::Browser
@@ -139,13 +126,10 @@ impl App {
         self.browser_poll_tick();
     }
 
-    /// Whether a look is running now.
     pub fn browser_busy(&self) -> bool {
         self.browser.inflight.load(Ordering::SeqCst)
     }
 
-    /// `list_browsers` and `browser_status`: the last look (never waits for
-    /// a new one); a stale or missing one starts a refresh.
     pub fn browser_tool(&mut self, tool: &str) -> Result<Value, String> {
         if self.browser_env().is_none() {
             return Err("browser status is not available here".into());
@@ -168,8 +152,7 @@ impl App {
         } else {
             s.to_json()
         };
-        // Whose each browser is, when the user linked it or its label
-        // names one profile.
+
         let who =
             crate::tab_browser::assign_browsers(&s.browsers, &s.profiles, &self.cfg.browser.links);
         if let Some(arr) = v["browsers"].as_array_mut() {
@@ -184,8 +167,6 @@ impl App {
         Ok(json!({"ok": true, "result": v}))
     }
 
-    // ---------- install_browser_skill ----------
-
     fn browser_source(env: &Env) -> Option<PathBuf> {
         env.skill_sources
             .iter()
@@ -193,8 +174,6 @@ impl App {
             .cloned()
     }
 
-    /// (plan, question, needs a yes). Without an `account` argument: every
-    /// account.
     pub(crate) fn browser_plan(&mut self, args: &Value) -> Result<(Value, String, bool), String> {
         let env = self
             .browser_env()
@@ -220,10 +199,7 @@ impl App {
             let dir = acfg.config_dir();
             let label = acfg.display().to_string();
             let claude = acfg.harness() == Harness::Claude;
-            // GodTerm copies the skill into the home its own account dir
-            // stands for: only Claude's and Grok's. The other CLIs read
-            // their native stores (bsk install-skill lists the ones it
-            // knows: Codex, Cursor), so they get the tab tools only.
+
             let why = acfg.harness().no_tab_tools_reason().or_else(|| {
                 (!acfg.harness().integrated()).then(|| {
                     format!(
@@ -387,8 +363,6 @@ impl App {
         Ok(json!({"ok": failed == 0, "result": {"accounts": rows, "say": say}}))
     }
 
-    /// Settings > Browser, "Install the browser skill": the first click
-    /// shows what it will do, the second (within 15 s) does it.
     pub fn browser_skill_click(&mut self) {
         let (plan, q, needs) = match self.browser_plan(&json!({})) {
             Ok(x) => x,

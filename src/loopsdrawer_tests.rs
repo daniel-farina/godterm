@@ -1,9 +1,3 @@
-//! The loops drawer (app_loopsdrawer, ui_loopsdrawer): the button and
-//! its count, opening and closing (the PTY resized once each way), the
-//! list with next runs, the buttons, Claude's and Grok's jobs parsed from
-//! fixtures, the empty states and a small terminal. No real claude or
-//! grok runs; homes are test homes.
-
 use crate::app_loops::LoopRow;
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::hits::UiAction;
@@ -63,7 +57,6 @@ fn cron(id: &str, expr: &str, prompt: &str) -> Loop {
     }
 }
 
-/// Two loops on pane 1's tab.
 fn with_loops(app: &mut crate::app::App) -> u64 {
     let uid = app.panes[0].tabs[0].uid;
     app.loops = vec![
@@ -106,13 +99,13 @@ fn the_button_counts_the_tabs_loops() {
     let text = draw(&mut app, &mut term);
     assert!(text.contains("⟳ loops (2)"), "{text}");
     assert!(text.contains("⟳ loops (0)"), "the other panes: {text}");
-    // At 0 it is dim.
+
     let r = region(&app, &UiAction::LoopsDrawer(1)).expect("pane 2's button");
     let buf = term.backend().buffer();
     assert_eq!(buf[(r.x + 3, r.y)].fg, crate::theme::FAINT);
     let r0 = region(&app, &UiAction::LoopsDrawer(0)).unwrap();
     assert_eq!(buf[(r0.x + 3, r0.y)].fg, crate::theme::FG);
-    // It sits on the model bar's row, at its right end.
+
     let m = region(&app, &UiAction::TabModel(0, 0)).unwrap();
     assert_eq!(r0.y, m.y);
     assert!(r0.x > m.x);
@@ -128,7 +121,7 @@ fn the_drawer_opens_and_closes_with_one_resize_each_way() {
     draw(&mut app, &mut term);
     let closed = app.panes[0].tabs[0].pty_size();
     let term0 = app.term_rects[0];
-    // A click on the button opens it: the terminal shrinks by its rows.
+
     let b = region(&app, &UiAction::LoopsDrawer(0)).unwrap();
     app.click(
         UiAction::LoopsDrawer(0),
@@ -153,12 +146,11 @@ fn the_drawer_opens_and_closes_with_one_resize_each_way() {
         term0.height - crate::app_loopsdrawer::DEFAULT_ROWS
     );
     assert!(text.contains("⟳ loops on"), "{text}");
-    // Frames after that leave the PTY alone.
+
     draw(&mut app, &mut term);
     draw(&mut app, &mut term);
     assert_eq!(app.panes[0].tabs[0].pty_size(), open);
-    // Esc closes it (it has the keys right after opening), and the
-    // terminal gets its rows back.
+
     let esc = crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Esc,
         crossterm::event::KeyModifiers::NONE,
@@ -167,8 +159,7 @@ fn the_drawer_opens_and_closes_with_one_resize_each_way() {
     assert!(!app.loops_drawer_open(0));
     draw(&mut app, &mut term);
     assert_eq!(app.panes[0].tabs[0].pty_size(), closed);
-    // Ctrl-a ; toggles it; a key for the tab gives the keys back, so Esc
-    // then goes to the tab, not the drawer.
+
     app.focus = 0;
     app.on_command(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char(';'),
@@ -182,7 +173,7 @@ fn the_drawer_opens_and_closes_with_one_resize_each_way() {
     assert_eq!(app.loops_drawer_focus, None);
     app.on_key(esc);
     assert!(app.loops_drawer_open(0), "Esc went to the tab");
-    // The × closes it.
+
     draw(&mut app, &mut term);
     let rows = app
         .last_hits
@@ -191,7 +182,7 @@ fn the_drawer_opens_and_closes_with_one_resize_each_way() {
         .filter(|r| r.action == UiAction::LoopsDrawer(0))
         .count();
     assert_eq!(rows, 2, "the row's button and the drawer's ×");
-    // Dragging its top edge up makes it taller.
+
     let edge = region(&app, &UiAction::LoopsDrawerEdge(0)).unwrap();
     app.drag_loops_drawer(0, edge.y - 3);
     assert_eq!(
@@ -223,13 +214,13 @@ fn it_lists_the_loops_with_their_next_run_and_the_buttons_work() {
     assert!(facts.contains("last 3m ago, 4 runs"), "{facts}");
     assert!(facts.contains("armed"), "{facts}");
     assert!(text.contains("daily at 09:00"), "{text}");
-    // The countdown: "in m:ss" under an hour.
+
     let now = chrono::Utc::now();
     assert_eq!(
         crate::app_loopsdrawer::countdown(now + chrono::Duration::seconds(192), now),
         "in 3:12"
     );
-    // Run now: the prompt goes to the tab as a request (once it is idle).
+
     assert!(region(
         &app,
         &UiAction::LoopAction(0, 0, crate::app_loopsdrawer::OP_RUN)
@@ -242,7 +233,7 @@ fn it_lists_the_loops_with_their_next_run_and_the_buttons_work() {
             .any(|d| d.uid == uid && d.text == "check the deploy"),
         "run now"
     );
-    // Cancel asks first, then asks the tab (typed in once it is idle).
+
     app.loop_action(0, 0, crate::app_loopsdrawer::OP_CANCEL);
     assert!(app.stop_reqs.is_empty());
     let text = draw(&mut app, &mut term);
@@ -254,14 +245,14 @@ fn it_lists_the_loops_with_their_next_run_and_the_buttons_work() {
         .any(|q| q.uid == uid && q.ids == ["a1b2c3d4"]));
     let text = draw(&mut app, &mut term);
     assert!(text.contains("cancel asked"), "{text}");
-    // Copy: its details.
+
     app.loop_action(0, 1, crate::app_loopsdrawer::OP_COPY);
     let c = app.last_copied.clone().unwrap_or_default();
     assert!(
         c.contains("e5f6a7b8") && c.contains("summarize the night"),
         "{c}"
     );
-    // The assistant opens it on a tab.
+
     app.toggle_loops_drawer(0);
     let v = app.control_call(
         "show_tab_loops",
@@ -279,7 +270,6 @@ fn it_lists_the_loops_with_their_next_run_and_the_buttons_work() {
 
 #[test]
 fn claude_and_grok_jobs_are_read_from_their_sessions() {
-    // Claude Code: CronCreate and its result in the transcript, a fire.
     let mut sc = Scanner::default();
     for l in include_str!("../tests/fixtures/claude_loops.jsonl").lines() {
         sc.entry(&serde_json::from_str(l).unwrap());
@@ -290,8 +280,7 @@ fn claude_and_grok_jobs_are_read_from_their_sessions() {
         ("a1b2c3d4", Some("*/5 * * * *"), 1)
     );
     assert_eq!(l.cadence(), "every 5 minutes");
-    // Grok Build: scheduler_create (and an update) and scheduler_delete
-    // in its chat history.
+
     let mut sc = Scanner::default();
     for l in include_str!("../tests/fixtures/grok_scheduler.jsonl").lines() {
         sc.entry(&serde_json::from_str(l).unwrap());
@@ -306,7 +295,7 @@ fn claude_and_grok_jobs_are_read_from_their_sessions() {
         .loops()
         .iter()
         .any(|l| l.id == "019ff7d0ffff" && l.deleted));
-    // Grok's cancel uses its own tool.
+
     assert!(
         crate::app_loops::grok_stop_prompt(&["019ff7d0a2b4".into()]).contains("scheduler_delete")
     );
@@ -323,7 +312,7 @@ fn empty_states_say_what_was_looked_at() {
     assert!(text.contains("The tab is not running"), "{text}");
     assert!(text.contains("Claude: no /loop or cron jobs"), "{text}");
     assert!(text.contains("Grok: no scheduled tasks"), "{text}");
-    // A Grok row in the drawer is marked Grok, with Grok's interval.
+
     let uid = app.panes[1].tabs[0].uid;
     let mut l = cron("019ff7d0a2b4", "", "look at the build");
     l.cron = None;
@@ -380,7 +369,7 @@ fn a_small_terminal_caps_the_drawer() {
     );
     assert_eq!(d.y, t.y + t.height, "right under the terminal");
     assert!(text.contains("check the deploy"), "{text}");
-    // Too small for both: no drawer, the terminal keeps its rows.
+
     let mut tiny = Terminal::new(TestBackend::new(80, 12)).unwrap();
     draw(&mut app, &mut tiny);
     assert!(app.loops_drawer_geo.borrow().get(&0).is_none());

@@ -1,11 +1,3 @@
-//! The Loops & schedules detail card and the section's layout
-//! (app_sched.rs, ui_schedcard.rs, ui_schedules.rs): the cron in words,
-//! what the card says for a session loop and a managed job, its buttons
-//! routing (Manage with GodTerm adopts and cancels the session copy,
-//! delete and stop ask twice), duplicate loops, grouping by tab, the
-//! height based row count and scrolling. Nothing real runs: tabs are
-//! stubs, homes are test homes, no speaker.
-
 use crate::app::{App, Modal};
 use crate::app_jobs::{OP_ADOPT, OP_DELETE, OP_OPEN, OP_PAUSE, OP_RUN, OP_STOP};
 use crate::app_sched::{
@@ -30,7 +22,6 @@ fn flash(app: &App) -> String {
 
 const LONG: &str = "Freebots team quick check: read the overnight logs, list every failing bot with its last error, and post a short summary for the morning standup";
 
-/// A panel with one tab ("hacker sim") running a 7 2,4,6 * * * cron.
 fn card_setup(tag: &str) -> (App, std::path::PathBuf, usize, String) {
     let (mut app, home) = setup(tag);
     app.assistant.show = true;
@@ -108,7 +99,7 @@ fn a_session_loop_card_says_what_it_is_who_runs_it_and_when() {
     );
     assert_eq!(c.note.as_deref(), Some(MANAGE_NOTE));
     assert!(!txt.contains('\u{2014}'), "no em dashes");
-    // Drawn: a click on the row opens it, the whole prompt wraps.
+
     let mut tm = term();
     draw(&mut app, &mut tm);
     assert!(find(&app, &UiAction::SchedRow(key.clone())).is_some());
@@ -139,7 +130,7 @@ fn a_session_loop_card_says_what_it_is_who_runs_it_and_when() {
             "button {op}"
         );
     }
-    // Esc closes it.
+
     app.on_key(key_esc());
     assert_eq!(app.modal, Modal::None);
     let _ = std::fs::remove_dir_all(home);
@@ -164,7 +155,7 @@ fn manage_with_godterm_adopts_and_stops_the_session_copy() {
     assert_eq!(j.prompt, LONG);
     assert_eq!(j.cron.as_deref(), Some("7 2,4,6 * * *"));
     assert_eq!(j.adopted_from.as_deref(), Some("ab12cd34"));
-    // cancel=true: the tab is asked to CronDelete its own copy.
+
     assert!(
         app.stop_reqs
             .iter()
@@ -175,7 +166,7 @@ fn manage_with_godterm_adopts_and_stops_the_session_copy() {
     let f = flash(&app);
     assert!(f.starts_with("Now managed by GodTerm: "), "{f}");
     assert!(f.ends_with("The session's own copy was stopped."), "{f}");
-    // The card now shows the managed job.
+
     assert_eq!(app.modal, Modal::SchedCard(j.id.clone()));
     let txt = app.sched_card(&j.id).unwrap().text();
     assert!(txt.contains("Managed by GodTerm"), "{txt}");
@@ -212,16 +203,16 @@ fn a_managed_job_card_runs_pauses_and_deletes_after_a_confirm() {
     }
     draw(&mut app, &mut tm);
     assert!(screen(&tm).contains("job details"));
-    // Run now.
+
     click(&mut app, &UiAction::SchedCardAct(OP_RUN));
     assert_eq!(deliveries_for(&app, "status of billing?").len(), 1);
-    // Pause (by key), then the card offers Resume and a paused badge.
+
     app.on_key(kev(KeyCode::Char('p')));
     assert!(!app.jobs.find(&id).unwrap().enabled);
     let c = app.sched_card(&id).unwrap();
     assert!(c.buttons.iter().any(|b| b.label == "Resume"));
     assert!(c.badges.iter().any(|b| b.0 == "paused"));
-    // Delete asks first: the label changes and the job stays.
+
     draw(&mut app, &mut tm);
     click(&mut app, &UiAction::SchedCardAct(OP_DELETE));
     assert!(app.jobs.find(&id).is_some());
@@ -272,7 +263,7 @@ fn stop_and_run_now_on_a_session_loop() {
         1,
         "run now sends its prompt"
     );
-    // Stop asks twice.
+
     app.sched_card_act(OP_STOP);
     assert!(app.stop_reqs.is_empty());
     assert!(app
@@ -310,14 +301,14 @@ fn a_dynamic_loop_has_no_manage_button_and_says_why() {
 #[test]
 fn the_same_loop_found_twice_is_one_row_and_twins_show_their_ids() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // A transcript that repeats its CronCreate (a resumed session).
+
     let mut sc = Scanner::default();
     for _ in 0..2 {
         sc.entry(&serde_json::json!({"type":"assistant","timestamp":"2026-10-14T10:00:00Z","message":{"content":[{"type":"tool_use","id":"t1","name":"CronCreate","input":{"cron":"7 2,4,6 * * *","prompt":"Freebots team q","recurring":true}}]}}));
         sc.entry(&serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Scheduled recurring job ab12cd34 (7 2,4,6 * * *). Session-only."}]}}));
     }
     assert_eq!(sc.loops().len(), 1);
-    // Rows found twice (two scans) are deduped by (tab, id).
+
     let (mut app, home) = setup("card-dupes");
     app.assistant.show = true;
     let t = running(&mut app, 0, "hacker sim", "sess-h");
@@ -331,7 +322,7 @@ fn the_same_loop_found_twice_is_one_row_and_twins_show_their_ids() {
     assert_eq!(v.len(), 1);
     app.on_loops(vec![a.clone(), a.clone()]);
     assert_eq!(app.loops.len(), 1);
-    // Two real crons with the same schedule and prompt: ids tell them apart.
+
     let b = loop_row(
         &app,
         0,
@@ -365,7 +356,7 @@ fn rows_group_by_tab_and_a_group_folds() {
         loop_row(&app, 0, a, session_loop("aa000002", "0 9 * * *", "two")),
         loop_row(&app, 0, b, session_loop("bb000001", "0 9 * * *", "lonely")),
     ];
-    // A job with no tab at all goes under GodTerm.
+
     let mut lone = crate::jobs_tests::job_for(&app, 0, a, "orphan", "x", 30);
     lone.target = crate::jobs::Target::default();
     app.jobs.add(lone);
@@ -390,7 +381,7 @@ fn rows_group_by_tab_and_a_group_folds() {
         }
         l => panic!("a group header: {l:?}"),
     }
-    // Its job first, then its loops, indented.
+
     let members: Vec<(&str, bool)> = lines[g0 + 1..g0 + 4]
         .iter()
         .map(|l| match l {
@@ -402,7 +393,7 @@ fn rows_group_by_tab_and_a_group_folds() {
         members,
         [(id.as_str(), true), ("aa000001", true), ("aa000002", true)]
     );
-    // The others are plain rows (one each).
+
     assert_eq!(lines.len(), 6, "{lines:?}");
     let plain: Vec<&str> = lines
         .iter()
@@ -415,7 +406,7 @@ fn rows_group_by_tab_and_a_group_folds() {
         })
         .collect();
     assert!(plain.contains(&"godterm"), "{plain:?}");
-    // Drawn with aligned columns: the tab column and the header.
+
     let mut tm = term();
     draw(&mut app, &mut tm);
     let s = screen(&tm);
@@ -423,7 +414,7 @@ fn rows_group_by_tab_and_a_group_folds() {
         s.contains(&format!("t{ua} hacker sim · 1 job · 2 loops")),
         "{s}"
     );
-    // Folding by a click.
+
     click(&mut app, &UiAction::SchedGroup(group.clone()));
     let lines = sched_lines(&app.sched_rows(), &app.sched_ui.folded);
     assert_eq!(lines.len(), 3);
@@ -438,7 +429,6 @@ fn rows_group_by_tab_and_a_group_folds() {
 
 #[test]
 fn the_row_count_follows_the_panel_height() {
-    // 40% of the panel, at least 3, within the room left.
     assert_eq!(plan(true, 30, 50, 40), (20, 21));
     assert_eq!(plan(true, 30, 10, 40), (4, 5));
     assert_eq!(plan(true, 30, 5, 40), (3, 4), "at least 3");
@@ -472,7 +462,7 @@ fn the_section_scrolls_within_bounds_by_wheel_and_keys() {
     assert!((3..14).contains(&shown), "{shown}");
     let s = screen(&tm);
     assert!(s.contains(&format!("1 to {shown} of 14")), "{s}");
-    // The wheel over a row scrolls, never past the end.
+
     let first = app.sched_rows()[0].key.clone();
     let r = find(&app, &UiAction::SchedRow(first)).unwrap();
     for _ in 0..30 {
@@ -490,8 +480,7 @@ fn the_section_scrolls_within_bounds_by_wheel_and_keys() {
         app.sched_scroll_by(-1);
     }
     assert_eq!(app.sched_ui.scroll, 0);
-    // Keys after a click in the section: Down moves and scrolls along,
-    // Enter opens the card.
+
     draw(&mut app, &mut tm);
     let first = app.sched_rows()[0].key.clone();
     click(&mut app, &UiAction::SchedRow(first));

@@ -1,10 +1,3 @@
-//! Remembering the terminal window's size and position across launches,
-//! including when the monitor it was on is gone.
-//!
-//! Coordinates are AppleScript style: origin at the top left of the main
-//! screen, y growing down, other monitors possibly negative. NSScreen frames
-//! (bottom left origin, y up) are flipped into that space.
-
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use std::time::Duration;
@@ -40,7 +33,7 @@ impl Rect {
                 .iter()
                 .all(|v| v.is_finite())
     }
-    /// AppleScript bounds: left, top, right, bottom.
+
     pub fn bounds(&self) -> [i64; 4] {
         [
             self.x.round() as i64,
@@ -53,10 +46,9 @@ impl Rect {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Screen {
-    /// NSScreenNumber, stable while the display stays connected.
     pub id: Option<String>,
     pub frame: Rect,
-    /// Frame minus menu bar and dock.
+
     pub visible: Rect,
 }
 
@@ -78,8 +70,6 @@ impl SavedWindow {
     }
 }
 
-/// Flip an NSScreen rect (bottom left origin) into top left coordinates,
-/// given the height of the main screen.
 pub fn flip(ns: Rect, main_h: f64) -> Rect {
     Rect::new(ns.x, main_h - (ns.y + ns.h), ns.w, ns.h)
 }
@@ -95,7 +85,6 @@ fn centered_in(size: (f64, f64), area: &Rect) -> Rect {
     )
 }
 
-/// About 80% of the main screen, centered.
 pub fn default_rect(screens: &[Screen]) -> Option<Rect> {
     let main = screens.first()?;
     Some(centered_in(
@@ -104,7 +93,6 @@ pub fn default_rect(screens: &[Screen]) -> Option<Rect> {
     ))
 }
 
-/// Where the window should go. `screens[0]` is the main screen.
 pub fn place(saved: Option<&SavedWindow>, screens: &[Screen]) -> Option<Rect> {
     let main = screens.first()?;
     let Some(s) = saved else {
@@ -118,7 +106,7 @@ pub fn place(saved: Option<&SavedWindow>, screens: &[Screen]) -> Option<Rect> {
     {
         return default_rect(screens);
     }
-    // The display it was on: by id, else by an identical frame.
+
     let same = screens.iter().find(|sc| {
         (s.screen_id.is_some() && sc.id == s.screen_id)
             || s.screen_frame.is_some_and(|f| f == sc.frame)
@@ -128,7 +116,7 @@ pub fn place(saved: Option<&SavedWindow>, screens: &[Screen]) -> Option<Rect> {
     if same.is_some() && mostly_visible {
         return Some(r);
     }
-    // Moved, gone, or mostly off screen: same size on the main screen.
+
     let size = (r.w.min(main.visible.w), r.h.min(main.visible.h));
     Some(centered_in(size, &main.visible))
 }
@@ -145,7 +133,6 @@ pub(crate) fn osascript(lang_js: bool, script: &str, timeout: Duration) -> Optio
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Current screens, main first, in top left coordinates.
 pub fn query_screens() -> Vec<Screen> {
     let js = r#"ObjC.import('AppKit');
 var s = $.NSScreen.screens; var out = [];
@@ -161,8 +148,6 @@ out.join('\n')"#;
     parse_screens(&text)
 }
 
-/// Parse the JXA output: `id fx fy fw fh vx vy vw vh` per line (NSScreen
-/// coordinates), main screen first.
 pub fn parse_screens(text: &str) -> Vec<Screen> {
     let rows: Vec<Vec<f64>> = text
         .lines()
@@ -185,7 +170,6 @@ pub fn parse_screens(text: &str) -> Vec<Screen> {
         .collect()
 }
 
-/// The terminal app hosting this process, when it is one we can script.
 pub fn terminal_app() -> Option<&'static str> {
     if std::env::var_os("TMUX").is_some() {
         return None;
@@ -197,12 +181,10 @@ pub fn terminal_app() -> Option<&'static str> {
     }
 }
 
-/// Our controlling terminal, e.g. /dev/ttys012.
 pub fn own_tty() -> Option<String> {
     crate::platform::own_tty()
 }
 
-/// Bounds of the window whose session uses `tty`.
 pub fn query_window(app: &str, tty: &str) -> Option<Rect> {
     let script = match app {
         "iTerm" => format!(
@@ -230,14 +212,12 @@ end tell"#
     parse_bounds(&out)
 }
 
-/// "left, top, right, bottom" into a rect.
 pub fn parse_bounds(s: &str) -> Option<Rect> {
     let v: Vec<f64> = s.split(',').filter_map(|n| n.trim().parse().ok()).collect();
     (v.len() == 4 && v[2] > v[0] && v[3] > v[1])
         .then(|| Rect::new(v[0], v[1], v[2] - v[0], v[3] - v[1]))
 }
 
-/// The window now, with the screen it is mostly on.
 pub fn capture() -> Option<SavedWindow> {
     let app = terminal_app()?;
     let tty = own_tty()?;
@@ -292,7 +272,7 @@ mod tests {
             place(Some(&s), &scr),
             Some(Rect::new(1900.0, 0.0, 1400.0, 900.0))
         );
-        // Matched by an identical frame when the id changed.
+
         let s2 = saved(
             1900.0,
             0.0,
@@ -317,14 +297,14 @@ mod tests {
                 && r.x + r.w <= vis.x + vis.w + 0.1
                 && r.y + r.h <= vis.y + vis.h + 0.1
         );
-        // Centered.
+
         assert!(((r.x + r.w / 2.0) - (vis.x + vis.w / 2.0)).abs() < 1.0);
     }
 
     #[test]
     fn mostly_offscreen_is_recentered() {
         let scr = vec![screen("1", 0.0, 0.0, 1440.0, 900.0)];
-        // Same display, but 80% hangs off the right edge.
+
         let s = saved(1300.0, 100.0, 700.0, 500.0, Some("1"), None);
         let r = place(Some(&s), &scr).unwrap();
         assert_eq!((r.w, r.h), (700.0, 500.0));
@@ -333,15 +313,13 @@ mod tests {
 
     #[test]
     fn arrangement_change_and_negative_left_monitor() {
-        // A monitor on the left has negative x; the window was there.
         let scr = vec![
             screen("1", 0.0, 0.0, 1728.0, 1117.0),
             screen("3", -1920.0, 0.0, 1920.0, 1080.0),
         ];
         let s = saved(-1700.0, 100.0, 1200.0, 800.0, Some("3"), None);
         assert_eq!(place(Some(&s), &scr), Some(s.rect()));
-        // The same monitor moved to the right: id matches but the old rect
-        // is now off screen, so it is recentered on the main screen.
+
         let moved = vec![
             screen("1", 0.0, 0.0, 1728.0, 1117.0),
             screen("3", 1728.0, 0.0, 1920.0, 1080.0),
@@ -377,7 +355,6 @@ mod tests {
 
     #[test]
     fn flips_and_parses() {
-        // A 1000 tall main screen; a window 100 from the bottom, 200 tall.
         assert_eq!(
             flip(Rect::new(10.0, 100.0, 300.0, 200.0), 1000.0),
             Rect::new(10.0, 700.0, 300.0, 200.0)

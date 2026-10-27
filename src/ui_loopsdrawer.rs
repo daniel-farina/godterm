@@ -1,6 +1,3 @@
-//! Drawing the loops drawer (app_loopsdrawer): a top edge to drag with
-//! its title and buttons, then one line per loop of the active tab.
-
 use chrono::Utc;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -14,9 +11,6 @@ use crate::harness::Harness;
 use crate::hits::{button, text, UiAction};
 use crate::theme;
 
-/// Take pane `i`'s open drawer off the bottom of its terminal area: the
-/// terminal keeps at least MIN_TERM rows, the drawer gets at least
-/// MIN_ROWS or is not shown. (terminal, drawer; zero sized when closed).
 pub fn split(app: &App, i: usize, term: Rect) -> (Rect, Rect) {
     let none = (term, Rect::new(term.x, term.y + term.height, term.width, 0));
     let Some(want) = app.loops_drawer.get(&i).copied() else {
@@ -56,7 +50,7 @@ pub fn draw(buf: &mut Buffer, app: &App, i: usize, r: Rect) {
     let grok = app.pane_harness(i) == Some(Harness::Grok);
     let source = if grok { "Grok" } else { "Claude" };
     let mut hits = app.hits.borrow_mut();
-    // The top edge: drag it to resize.
+
     let edge = if focused { theme::SLATE } else { theme::FAINT };
     for x in r.x..end {
         if let Some(c) = buf.cell_mut((x, r.y)) {
@@ -143,11 +137,10 @@ pub fn draw(buf: &mut Buffer, app: &App, i: usize, r: Rect) {
         return;
     }
     let now = Utc::now();
-    // Two lines a loop: what it is and its buttons, then when it runs.
+
     let fits = (body / 2) as usize;
     let more = rows.len().saturating_sub(fits);
     let shown = if more > 0 {
-        // The last line says how many more.
         (body.saturating_sub(1) / 2) as usize
     } else {
         rows.len()
@@ -172,7 +165,7 @@ pub fn draw(buf: &mut Buffer, app: &App, i: usize, r: Rect) {
             UiAction::LoopRow(i, k),
             format!("Loop {} ({source})", row.lp.id),
         );
-        // The buttons at the right: Run now, Cancel, Copy.
+
         let armed = app.loop_cancel_armed(row.uid, &row.lp.id);
         let asked = app.loop_cancel_asked(row.uid, &row.lp.id);
         let btns: [(&str, u8, &str, ratatui::style::Color); 3] = [
@@ -214,7 +207,7 @@ pub fn draw(buf: &mut Buffer, app: &App, i: usize, r: Rect) {
             Style::default().fg(theme::FG).bg(rbg),
         );
         let avail = text_end.saturating_sub(x) as usize;
-        // Narrow: the prompt starts the second line instead.
+
         let inline = avail >= 16;
         if inline {
             text(

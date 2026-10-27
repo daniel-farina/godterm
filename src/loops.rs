@@ -1,20 +1,3 @@
-//! Loops: scheduled prompts in running claude sessions.
-//!
-//! claude 2.1.29x keeps `CronCreate` jobs in memory by default
-//! ("Session-only (not written to disk, dies when Claude exits)"); only
-//! `durable: true` ones go to `<project>/.claude/scheduled_tasks.json`.
-//! So loops are rebuilt from each running tab's transcript:
-//! - `CronCreate {cron, prompt, recurring}` with the result "Scheduled
-//!   recurring job <id> (...)" or "Scheduled one-shot task <id> (...)";
-//! - `CronDelete {id}` with "Cancelled job <id>.";
-//! - fires: user entries with `"turnOrigin":"scheduled"` and
-//!   `"scheduledTaskId":"<id>"`;
-//! - `ScheduleWakeup {delaySeconds, prompt}` (a dynamic `/loop`), stopped
-//!   by `ScheduleWakeup {stop: true}`.
-//!
-//! Recurring session jobs auto-expire 7 days after creation; one-shots
-//! delete themselves after firing.
-
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Timelike, Utc};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -26,16 +9,14 @@ pub const EXPIRY_DAYS: i64 = 7;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
     Cron,
-    /// A dynamic `/loop` driven by ScheduleWakeup.
+
     Wakeup,
 }
 
-/// How sure we are the loop is still armed.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum Confidence {
-    /// From the job's own scheduling result or the durable file.
     High,
-    /// Inferred (dynamic loops: armed until stopped or the session ends).
+
     Medium,
 }
 
@@ -50,17 +31,15 @@ pub struct Loop {
     pub created: Option<DateTime<Utc>>,
     pub last_fire: Option<DateTime<Utc>>,
     pub fires: usize,
-    /// Wakeup loops: when the next wakeup is due.
+
     pub wake_at: Option<DateTime<Utc>>,
     pub deleted: bool,
     pub confidence: Confidence,
-    /// Grok Build's interval as it says it ("every 5 minutes"), for its
-    /// scheduler_create tasks (they have no cron).
+
     pub every: Option<String>,
 }
 
 impl Loop {
-    /// Still armed at `now` (in a session that is running).
     pub fn active(&self, now: DateTime<Utc>) -> bool {
         if self.deleted {
             return false;
@@ -122,13 +101,11 @@ fn parse_ts(o: &Value) -> Option<DateTime<Utc>> {
     o.get("timestamp")?.as_str()?.parse().ok()
 }
 
-/// Incremental transcript scanner: keeps its place so each refresh reads
-/// only what was appended.
 #[derive(Debug, Default)]
 pub struct Scanner {
     offset: u64,
     loops: Vec<Loop>,
-    /// tool_use id -> (name, input, timestamp)
+
     pending: HashMap<String, (String, Value, Option<DateTime<Utc>>)>,
 }
 
@@ -137,14 +114,13 @@ impl Scanner {
         &self.loops
     }
 
-    /// Read new lines from `path`.
     pub fn update(&mut self, path: &Path) {
         let Ok(mut f) = std::fs::File::open(path) else {
             return;
         };
         let len = f.metadata().map(|m| m.len()).unwrap_or(0);
         if len < self.offset {
-            *self = Scanner::default(); // rewritten: start over
+            *self = Scanner::default();
         }
         if f.seek(SeekFrom::Start(self.offset)).is_err() {
             return;
@@ -157,7 +133,7 @@ impl Scanner {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     if !line.ends_with('\n') {
-                        break; // half written: read it next time
+                        break;
                     }
                     self.offset += n as u64;
                     if line.len() > 8 << 20 {
@@ -184,14 +160,12 @@ impl Scanner {
                     .rev()
                     .find(|l| l.kind == Kind::Wakeup && !l.deleted)
                 {
-                    // Wakeup fires carry their own task id.
                     l.fires += 1;
                     l.last_fire = ts.or(l.last_fire);
                 }
             }
         }
-        // Grok Build's chat_history.jsonl: tool calls on the assistant
-        // line, results on lines of their own.
+
         if let Some(calls) = o.get("tool_calls").and_then(Value::as_array) {
             for c in calls {
                 let name = c.get("name").and_then(Value::as_str).unwrap_or("");
@@ -261,15 +235,13 @@ impl Scanner {
         let s = |k: &str| input.get(k).and_then(Value::as_str).map(str::to_string);
         match name {
             "CronCreate" => {
-                // "Scheduled recurring job e0e3839a (Every 15 minutes)..."
                 let id = text
                     .strip_prefix("Scheduled ")
                     .and_then(|t| t.split_whitespace().nth(2))
                     .filter(|id| id.chars().all(|c| c.is_ascii_hexdigit()) && id.len() >= 6);
-                // None: denied or failed.
+
                 let Some(id) = id else { return };
-                // The same job seen twice (a resumed or copied session
-                // repeats its history): one loop.
+
                 if self.loops.iter().any(|l| l.id == id) {
                     return;
                 }
@@ -297,8 +269,6 @@ impl Scanner {
                 });
             }
             "scheduler_create" => {
-                // "Scheduled task created (ID: 019ff7d0a2b4, every 2 minutes)."
-                // ("updated" for one it changed).
                 let Some(rest) = text
                     .strip_prefix("Scheduled task created (ID: ")
                     .or_else(|| text.strip_prefix("Scheduled task updated (ID: "))
@@ -347,7 +317,6 @@ impl Scanner {
                 }
             }
             "scheduler_delete" => {
-                // "Scheduled task <id> cancelled."
                 let id = s("id").or_else(|| s("task_id"));
                 if let Some(id) = id {
                     if text.contains("cancelled") {
@@ -415,7 +384,6 @@ impl Scanner {
     }
 }
 
-/// Durable jobs of a project: `<cwd>/.claude/scheduled_tasks.json`.
 pub fn durable(cwd: &Path) -> Vec<Loop> {
     let Ok(text) = std::fs::read_to_string(cwd.join(".claude").join("scheduled_tasks.json")) else {
         return vec![];
@@ -458,7 +426,6 @@ pub fn durable(cwd: &Path) -> Vec<Loop> {
         .collect()
 }
 
-/// One cron field: does `v` match it?
 pub(crate) fn field_matches(f: &str, v: u32, min: u32) -> bool {
     f.split(',').any(|part| {
         let (range, step) = match part.split_once('/') {
@@ -481,8 +448,6 @@ pub(crate) fn field_matches(f: &str, v: u32, min: u32) -> bool {
     })
 }
 
-/// The next time a 5 field cron expression fires after `after` (local
-/// time), searching up to 8 days ahead.
 pub fn next_fire(expr: &str, after: DateTime<Local>) -> Option<DateTime<Local>> {
     let f: Vec<&str> = expr.split_whitespace().collect();
     if f.len() != 5 {
@@ -504,7 +469,6 @@ pub fn next_fire(expr: &str, after: DateTime<Local>) -> Option<DateTime<Local>> 
     None
 }
 
-/// "*/15 * * * *" -> "every 15 minutes".
 pub fn human_cron(expr: &str) -> String {
     let f: Vec<&str> = expr.split_whitespace().collect();
     if f.len() != 5 {
@@ -556,7 +520,6 @@ pub fn human_cron(expr: &str) -> String {
     }
 }
 
-/// "a", "a and b", "a, b and c".
 pub fn join_and(v: &[String]) -> String {
     match v.len() {
         0 => String::new(),
@@ -565,8 +528,6 @@ pub fn join_and(v: &[String]) -> String {
     }
 }
 
-/// A cron field of plain numbers, lists and ranges ("2,4,6", "1-5"),
-/// expanded; None for "*", steps or anything else.
 fn plain_nums(f: &str, lo: u32, hi: u32) -> Option<Vec<u32>> {
     let mut v = vec![];
     for part in f.split(',') {
@@ -602,8 +563,6 @@ const DAYS: [&str; 7] = [
     "Saturdays",
 ];
 
-/// The days part of a cron: "every day", "on weekdays", "on Mondays",
-/// "on day 1 of every month", "on Oct 1".
 fn cron_days(dom: &str, mon: &str, dow: &str) -> Option<String> {
     match (dom, mon, dow) {
         ("*", "*", "*") => Some("every day".into()),
@@ -644,9 +603,6 @@ fn cron_days(dom: &str, mon: &str, dow: &str) -> Option<String> {
     }
 }
 
-/// A cron in plain words, for people: "7 2,4,6 * * *" is "at 2:07, 4:07
-/// and 6:07 every day", "*/15 * * * *" "every 15 minutes", "0 9 * * 1-5"
-/// "at 9:00 on weekdays". Falls back to `human_cron`.
 pub fn describe_cron(expr: &str) -> String {
     let f: Vec<&str> = expr.split_whitespace().collect();
     if f.len() != 5 {
@@ -702,7 +658,6 @@ pub fn describe_cron(expr: &str) -> String {
     human_cron(expr)
 }
 
-/// "in 4m", "3h ago".
 pub fn rel(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let d = t - now;
     let (s, fut) = if d.num_seconds() >= 0 {
@@ -726,7 +681,6 @@ pub fn rel(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// Scanners per transcript path.
 #[derive(Default)]
 pub struct LoopCache {
     pub scanners: HashMap<PathBuf, Scanner>,
@@ -754,7 +708,7 @@ mod tests {
         s += &line(
             serde_json::json!({"type":"user","timestamp":"2026-10-01T10:01:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Scheduled one-shot task 05e59cec (12 6 30 9 *). Session-only."}]}}),
         );
-        // A denied one is not a loop.
+
         s += &line(
             serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"CronCreate","input":{"cron":"* * * * *","prompt":"x"}}]}}),
         );
@@ -802,7 +756,7 @@ mod tests {
             "{}",
             b.cadence()
         );
-        // Deleting.
+
         sc.entry(&serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t9","name":"CronDelete","input":{"id":"e0e3839a"}}]}}));
         sc.entry(&serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t9","content":"Cancelled job e0e3839a."}]}}));
         assert!(!sc.loops()[0].active(now));

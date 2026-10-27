@@ -1,32 +1,9 @@
-//! `godterm migrate-accounts`: move account slots that still live outside
-//! `~/.godterm` (in `~/.claudego/accounts`) to `~/.godterm/accounts/<name>`,
-//! carrying each login over.
-//!
-//! claude names a slot's keychain item from the exact CLAUDE_CONFIG_DIR
-//! string (`Claude Code-credentials-<sha256(path)[..8]>`), so a moved slot
-//! needs its item under the new name. Per account, with nothing running
-//! on that slot:
-//!
-//! 1. note who is logged in (`claude auth status --json`, read only);
-//! 2. read the old item's secret into memory (never logged, printed or
-//!    written to disk);
-//! 3. rename the folder (same volume);
-//! 4. write the new item the way claude itself does (`security -i`, hex on
-//!    stdin, so the secret is never on a command line);
-//! 5. point config.toml's config_dir at the new path (comments kept);
-//! 6. check `claude auth status` on the new path: logged in, same email;
-//! 7. only then delete the old item.
-//!
-//! Any failure rolls back: the folder moves back, config_dir is restored,
-//! and only the new item (if made) is deleted.
-
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::creds::keychain_service;
 
-/// Keychain operations, behind a trait so tests never touch the real one.
 pub trait Keychain {
     fn read(&self, service: &str) -> Result<Option<String>>;
     fn write(&self, service: &str, secret: &str) -> Result<()>;
@@ -34,7 +11,6 @@ pub trait Keychain {
     fn exists(&self, service: &str) -> bool;
 }
 
-/// The login keychain through `/usr/bin/security`.
 pub struct SystemKeychain;
 
 fn user() -> String {
@@ -44,8 +20,6 @@ fn user() -> String {
         .unwrap_or_else(|| "claude-code-user".into())
 }
 
-/// Longest `security -i` line claude itself sends (it falls back to argv
-/// beyond; we refuse instead, so the secret never reaches a command line).
 const STDIN_LIMIT: usize = 4000;
 
 impl Keychain for SystemKeychain {
@@ -61,7 +35,7 @@ impl Keychain for SystemKeychain {
         }
         let s = String::from_utf8(out.stdout).context("keychain item is not text")?;
         let s = s.trim_end_matches('\n');
-        // `-w` prints binary data as hex; claude stores JSON text.
+
         if s.starts_with('{') {
             return Ok(Some(s.to_string()));
         }
@@ -138,12 +112,10 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Who is logged in on a config dir: (logged in, email).
 pub type AuthCheck<'a> = &'a dyn Fn(&str) -> Result<(bool, Option<String>)>;
-/// What is using a slot right now (a process description), if anything.
+
 pub type InUse<'a> = &'a dyn Fn(&str) -> Option<String>;
 
-/// `claude auth status --json` with CLAUDE_CONFIG_DIR set (read only).
 pub fn claude_auth(claude: &str) -> impl Fn(&str) -> Result<(bool, Option<String>)> + '_ {
     move |dir: &str| {
         let mut cmd = Command::new(claude);
@@ -162,8 +134,6 @@ pub fn claude_auth(claude: &str) -> impl Fn(&str) -> Result<(bool, Option<String
     }
 }
 
-/// A godterm, or a claude on this slot, that is running (from `ps` with
-/// environments, so CLAUDE_CONFIG_DIR shows).
 pub fn system_in_use(dir: &str) -> Option<String> {
     let me = std::process::id();
     let out = Command::new("ps")
@@ -191,7 +161,6 @@ pub fn system_in_use(dir: &str) -> Option<String> {
     None
 }
 
-/// One slot to move.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlotMove {
     pub name: String,
@@ -201,7 +170,6 @@ pub struct SlotMove {
     pub new_service: String,
 }
 
-/// Slots outside `home` (the GodTerm home), from config.toml.
 pub fn plan(cfg: &crate::config::Config, home: &Path) -> Vec<SlotMove> {
     cfg.accounts
         .iter()
@@ -223,7 +191,6 @@ pub fn plan(cfg: &crate::config::Config, home: &Path) -> Vec<SlotMove> {
         .collect()
 }
 
-/// Set (or with None remove) an account's config_dir in config.toml.
 fn set_config_dir(config: &Path, name: &str, dir: Option<&str>) -> Result<()> {
     let text = std::fs::read_to_string(config)?;
     let mut doc: toml_edit::DocumentMut = text.parse().context("config.toml does not parse")?;
@@ -251,15 +218,12 @@ fn set_config_dir(config: &Path, name: &str, dir: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// In `<slot>/.claude.json`, absolute references to the slot itself.
 fn patch_claude_json(slot: &Path, from: &str, to: &str) -> Result<bool> {
     let p = slot.join(".claude.json");
     let Ok(text) = std::fs::read_to_string(&p) else {
         return Ok(false);
     };
-    // As JSON writes them: an opening quote and the escaped path (Windows
-    // paths have their backslashes doubled), then a closing quote or a
-    // separator (/, or an escaped backslash).
+
     let quoted = |s: &str| {
         let mut q = serde_json::to_string(s).unwrap_or_else(|_| format!("\"{s}\""));
         q.pop();
@@ -281,7 +245,6 @@ fn patch_claude_json(slot: &Path, from: &str, to: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Move one slot. On error everything is put back.
 pub fn move_slot(
     m: &SlotMove,
     config: &Path,
@@ -318,7 +281,7 @@ pub fn move_slot(
     if let Some(parent) = Path::new(&m.to).parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // From here on, undo on failure.
+
     std::fs::rename(&m.from, &m.to).with_context(|| format!("moving {} to {}", m.from, m.to))?;
     say(format!("{}: moved {} -> {}", m.name, m.from, m.to));
     let mut made_item = false;
@@ -366,7 +329,6 @@ pub fn move_slot(
             Ok(())
         }
         Err(e) => {
-            // Roll back: folder, config_dir, and only the item we made.
             let _ = patch_claude_json(Path::new(&m.to), &m.to, &m.from);
             let back = std::fs::rename(&m.to, &m.from);
             let cfg = set_config_dir(config, &m.name, Some(&m.from));
@@ -387,7 +349,6 @@ pub fn move_slot(
     }
 }
 
-/// The command.
 pub fn command(dry: bool) -> Result<()> {
     let home = crate::config::app_home();
     let config = crate::config::Config::path();
@@ -428,7 +389,7 @@ pub fn command(dry: bool) -> Result<()> {
             );
         }
     }
-    // The old accounts folder, if empty now.
+
     let old = crate::migrate::old_home().join("accounts");
     if old.is_dir()
         && std::fs::read_dir(&old)
@@ -484,8 +445,7 @@ mod tests {
         let home = root.join("home");
         std::fs::create_dir_all(old.join("projects")).unwrap();
         std::fs::create_dir_all(&home).unwrap();
-        // Built with the JSON and TOML writers, so Windows paths (with
-        // backslashes) are escaped as the real files have them.
+
         let cj = serde_json::json!({"installMethod": "native", "cache": format!("{}/cache", old.display()), "projects": {"/Users/x/code": {}}});
         std::fs::write(old.join(".claude.json"), cj.to_string()).unwrap();
         let config = home.join("config.toml");
@@ -494,8 +454,6 @@ mod tests {
         (root, home, config, cfg)
     }
 
-    /// Windows paths go into config.toml and .claude.json escaped, and
-    /// come back as they were.
     #[test]
     fn windows_paths_are_escaped_in_toml_and_json() {
         let d = std::env::temp_dir().join(format!("godterm-macct-esc-{}", std::process::id()));
@@ -534,7 +492,7 @@ mod tests {
         kc.items
             .borrow_mut()
             .insert(m.old_service.clone(), "{\"claudeAiOauth\":{}}".into());
-        // The fake "claude auth status": logged in only where the item is.
+
         let auth = |d: &str| {
             Ok((
                 kc.exists(&keychain_service(d)),
@@ -579,7 +537,7 @@ mod tests {
         kc.items
             .borrow_mut()
             .insert(m.old_service.clone(), "{}".into());
-        // Logged in before, a different email after: refuse.
+
         let n = RefCell::new(0);
         let auth = |_: &str| {
             *n.borrow_mut() += 1;
@@ -613,7 +571,7 @@ mod tests {
             kc.exists(&m.old_service) && !kc.exists(&m.new_service),
             "old item kept, new one removed"
         );
-        // A keychain that refuses the write: same.
+
         let kc = FakeKc {
             fail_write: true,
             ..Default::default()

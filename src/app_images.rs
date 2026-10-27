@@ -1,8 +1,3 @@
-//! Images in the assistant panel: attaching them to the input (clipboard
-//! or pasted paths) as chips, sending them with the turn, and finding the
-//! ones a tool call names (send_prompt and open_tab `images`). See
-//! `assistant_images`.
-
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -12,8 +7,6 @@ use crate::app::App;
 use crate::assistant_images::{self as img, Attachment, ClipImage, Clipboard};
 
 impl App {
-    /// The clipboard's image. Tests never read the real clipboard: only
-    /// a fake one they set.
     fn clipboard_image(&self) -> anyhow::Result<Option<ClipImage>> {
         match &self.assistant.clipboard {
             Some(c) => c.image(),
@@ -22,9 +15,6 @@ impl App {
         }
     }
 
-    /// Ctrl-V (or an empty paste) in the input: the clipboard's image
-    /// becomes an attachment. True when one was attached. `quiet`: say
-    /// nothing when it holds no image.
     pub fn paste_clipboard_image(&mut self, quiet: bool) -> bool {
         let got = match self.clipboard_image() {
             Ok(Some(ClipImage::Png(b))) => img::save_png(&b),
@@ -49,8 +39,6 @@ impl App {
         }
     }
 
-    /// Pasted text that is only image file paths: each file attached.
-    /// True when it was (the text is then not pasted).
     pub fn paste_image_paths(&mut self, text: &str) -> bool {
         let Some(paths) = img::pasted_images(text) else {
             return false;
@@ -68,7 +56,6 @@ impl App {
         n > 0
     }
 
-    /// A saved image joins the input as a chip.
     pub fn attach_image(&mut self, path: PathBuf, w: u32, h: u32) {
         if !std::mem::replace(&mut self.assistant.images_pruned, true) {
             let n = img::prune();
@@ -84,7 +71,7 @@ impl App {
             h,
             at: Instant::now(),
         };
-        // At the caret (over the selection), set off by spaces.
+
         let mut ed = self.assistant.ed();
         ed.delete_selection();
         let p = ed.pos();
@@ -112,7 +99,6 @@ impl App {
         self.assistant.pending_images.push(a);
     }
 
-    /// The chips in the input: (byte start, end, index in pending_images).
     pub fn chip_spans(&self) -> Vec<(usize, usize, usize)> {
         let input = &self.assistant.input;
         let mut v = vec![];
@@ -125,9 +111,6 @@ impl App {
         v
     }
 
-    /// Backspace at a chip (or the space after it), or Delete just before
-    /// one: the whole chip goes (with that space), and its attachment with
-    /// it. True when one went.
     fn chip_delete(&mut self, forward: bool) -> bool {
         let p = self.assistant.ed().pos();
         let input = &self.assistant.input;
@@ -158,8 +141,6 @@ impl App {
         self.chip_delete(true)
     }
 
-    /// The attachments whose chips are in the text being sent (the input
-    /// then holds none).
     pub fn take_input_images(&mut self, text: &str) -> Vec<Attachment> {
         let all = std::mem::take(&mut self.assistant.pending_images);
         all.into_iter()
@@ -167,8 +148,6 @@ impl App {
             .collect()
     }
 
-    /// What the brain gets for this turn's images: a note naming each one
-    /// (number, size, file) and the image blocks its model sees.
     pub(crate) fn turn_images(&mut self, imgs: &[Attachment]) -> (String, Vec<img::ModelImage>) {
         if imgs.is_empty() {
             return (String::new(), vec![]);
@@ -210,14 +189,12 @@ impl App {
             if imgs.len() == 1 { "an image" } else { "images" },
             lines.join("; ")
         );
-        // Referable by number from now on.
+
         self.assistant.images.retain(Attachment::fresh);
         self.assistant.images.extend(imgs.iter().cloned());
         (note, blocks)
     }
 
-    /// The image files a tool call names: attachment numbers ("1",
-    /// "image 1", 1) from the last 30 minutes, or image file paths.
     pub fn resolve_images(&self, v: Option<&Value>) -> Result<Vec<PathBuf>, String> {
         let items: Vec<&Value> = match v {
             None | Some(Value::Null) => return Ok(vec![]),

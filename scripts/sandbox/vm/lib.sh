@@ -1,8 +1,3 @@
-# shellcheck shell=bash
-# Shared helpers for the GodTerm clean-machine VM tests (tart).
-#
-# Sourced by mac-e2e.sh and linux-e2e.sh. Every VM this creates is named
-# godterm-e2e-*; nothing here touches any other tart VM.
 
 set -u
 
@@ -12,9 +7,6 @@ SSHPASS_BIN="${SSHPASS_BIN:-$(command -v sshpass || echo /opt/homebrew/bin/sshpa
 SSH_BASE=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
   -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=6
   -o LogLevel=ERROR)
-# Password auth is used once, to install a per run key (made in the results
-# dir, never the host's own keys); everything after uses that key, because
-# sshpass alone fails now and then under load.
 SSH_PW=("${SSH_BASE[@]}" -o PubkeyAuthentication=no -o PreferredAuthentications=password)
 SSH_OPTS=("${SSH_PW[@]}")
 
@@ -31,8 +23,6 @@ ts() { date '+%H:%M:%S'; }
 log() { printf '[%s] %s\n' "$(ts)" "$*" | tee -a "$RESULTS/run.log" >&2; }
 die() { log "FATAL: $*"; exit 1; }
 
-# --- guards --------------------------------------------------------------
-
 assert_own_vm() {
   case "$1" in
     godterm-e2e-*) ;;
@@ -40,11 +30,9 @@ assert_own_vm() {
   esac
 }
 
-# Free RAM in MB, from top's PhysMem line ("... 45G unused.").
 free_ram_mb() {
   local line n unit
   line=$(top -l 1 -n 0 | grep PhysMem)
-  # Take the "<num><unit> unused" field.
   n=$(echo "$line" | sed -E 's/.* ([0-9]+)([KMG]) unused.*/\1/')
   unit=$(echo "$line" | sed -E 's/.* ([0-9]+)([KMG]) unused.*/\2/')
   case "$unit" in
@@ -55,10 +43,6 @@ free_ram_mb() {
   esac
 }
 
-# Available RAM in MB: what the kernel can hand out without pressure
-# (memory_pressure's free percentage counts reclaimable file cache, which
-# top's "unused" does not; with a busy file cache "unused" can be 2 GB
-# while 100 GB are reclaimable).
 avail_ram_mb() {
   local pct total
   pct=$(memory_pressure -Q 2>/dev/null | sed -nE 's/.*free percentage: ([0-9]+)%.*/\1/p')
@@ -66,7 +50,6 @@ avail_ram_mb() {
   if [ -n "$pct" ]; then echo $((total * pct / 100)); else free_ram_mb; fi
 }
 
-# MIN_AVAIL_MARGIN_MB: headroom left for the host beyond the VM (default 8 GB).
 check_resources() {
   local need_mb="$1" free avail margin="${MIN_AVAIL_MARGIN_MB:-8192}"
   free=$(free_ram_mb)
@@ -77,7 +60,6 @@ check_resources() {
   if [ "$avail" -lt $((need_mb + margin)) ]; then
     die "not enough available RAM (${avail} MB, unused ${free} MB) to boot a ${need_mb} MB VM safely"
   fi
-  # 1 normal, 2 warn, 4 critical.
   if [ "$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || echo 1)" -gt 1 ]; then
     die "host is under memory pressure; not booting a VM"
   fi
@@ -87,8 +69,6 @@ check_resources() {
     die "another godterm-e2e VM is running ($running); one VM at a time"
   fi
 }
-
-# --- VM lifecycle --------------------------------------------------------
 
 vm_create() { # base name cpu mem_mb
   local base="$1" name="$2" cpu="$3" mem="$4"
@@ -123,7 +103,6 @@ vm_boot() { # extra tart run args...
   install_run_key
 }
 
-# A throwaway ed25519 key for this run only, in the results dir.
 install_run_key() {
   local k="$RESULTS/.ssh/id_ed25519" i
   mkdir -p "$RESULTS/.ssh" && chmod 700 "$RESULTS/.ssh"
@@ -162,15 +141,10 @@ vm_teardown() {
   VM_NAME=""
 }
 
-# --- remote exec / copy --------------------------------------------------
-
 vssh() { # [ssh opts] cmd...
   "$SSHPASS_BIN" -p "$VM_PASS" ssh "${SSH_OPTS[@]}" "$VM_USER@$VM_IP" "$@"
 }
 
-# Run a remote bash script (from stdin) with a timeout; output to stdout.
-# The script is saved to a temp file first and run with stdin from
-# /dev/null, so commands in it (brew, apt) cannot eat the rest of it.
 vrun() { # timeout_s  (script on stdin)
   local t="$1"
   perl -e 'alarm shift; exec @ARGV' "$t" \
@@ -188,17 +162,10 @@ vcopy_from() { # remote_path local_path
   "$SSHPASS_BIN" -p "$VM_PASS" scp -q -r "${SSH_OPTS[@]}" "$VM_USER@$VM_IP:$1" "$2"
 }
 
-# --- tmux inside the VM ----------------------------------------------------
-# A dedicated socket name inside the VM too, so nothing is shared.
 TMUX_SOCK="godterm-e2e"
 
-# PATH used for every command in the VM (the scripts may change it, e.g.
-# to put Homebrew's bin first for the brew scenario).
 VM_PATH='$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
 
-# Start a command in a fresh tmux session in the VM. The command runs from
-# a small script; its exit code lands in /tmp/e2e-<session>.rc and the
-# pane stays open after it exits so the last screen can be captured.
 tmux_start() { # session cols rows env_and_command
   local s="$1" c="$2" r="$3" cmd="$4" b64
   b64=$(printf '%s\n' "$cmd" | base64 | tr -d '\n')
@@ -216,8 +183,6 @@ tmux -L $TMUX_SOCK new-session -d -s $s -x $c -y $r "bash /tmp/e2e-$s.sh" \; \
 EOF
 }
 
-# Exit code of the command in <session>, or empty while it still runs.
-# A Ctrl-C ends the wrapper too; then the dead pane's status is used.
 tmux_rc() {
   vrun 15 <<EOF 2>/dev/null
 export PATH="$VM_PATH"
@@ -232,7 +197,6 @@ fi
 EOF
 }
 
-# wait_exit <session> <timeout_s>: prints the rc; returns 1 on timeout.
 wait_exit() {
   local s="$1" t="$2" end rc
   end=$(($(date +%s) + t))
@@ -262,8 +226,6 @@ tmux -L $TMUX_SOCK send-keys -t $s -l '$txt'
 EOF
 }
 
-# capture <session> <name>: saves screens/NN-<name>.txt (plain) and
-# NN-<name>.ansi.txt (with colors); NN keeps them in order.
 CAP_N=0
 LAST_CAP=""
 capture() {
@@ -290,7 +252,6 @@ tmux -L $TMUX_SOCK capture-pane -p -t $1
 EOF
 }
 
-# wait_screen <session> <timeout_s> <extended regex>: 0 when the pane matches.
 wait_screen() {
   local s="$1" t="$2" re="$3" end
   end=$(($(date +%s) + t))
@@ -308,8 +269,6 @@ tmux -L $TMUX_SOCK kill-session -t $1
 EOF
 }
 
-# expect_screen <session> <timeout_s> <regex> <capture name>: waits for the
-# regex, then captures the pane either way; returns the wait's status.
 expect_screen() {
   local s="$1" t="$2" re="$3" name="$4" rc=0
   wait_screen "$s" "$t" "$re" || rc=1
@@ -318,8 +277,6 @@ expect_screen() {
   return "$rc"
 }
 
-# --- results --------------------------------------------------------------
-
 results_init() { # dir
   RESULTS="$1"
   mkdir -p "$RESULTS/screens" "$RESULTS/logs"
@@ -327,8 +284,6 @@ results_init() { # dir
   : >>"$RESULTS/run.log"
 }
 
-# step <PASS|FAIL|WARN|SKIP> <id> <description> [note]
-# WARN: it works, but a new user would trip over something (see the note).
 STEP_WARN=0
 step() {
   local st="$1" id="$2" desc="$3" note="${4:-}"
@@ -342,9 +297,6 @@ step() {
   log "$st $id $desc${note:+ [$note]}"
 }
 
-# vstep <id> <timeout_s> <desc>  (remote script on stdin): runs it in the VM,
-# output to logs/<id>.log, PASS when it exits 0. Lines "NOTE: ..." in the
-# output are attached to the step; exit code 3 means WARN.
 vstep() {
   local id="$1" t="$2" desc="$3" rc note
   vrun "$t" >"$RESULTS/logs/$id.log" 2>&1
@@ -380,4 +332,3 @@ write_report() { # title started_epoch
   } >"$RESULTS/report.md"
   log "report: $RESULTS/report.md ($STEP_PASS pass, $STEP_FAIL fail, $STEP_WARN warn, $STEP_SKIP skip, ${dur}s)"
 }
-

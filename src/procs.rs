@@ -1,24 +1,18 @@
-//! Processes on every OS: the list (pid, parent, name, exe, command line,
-//! folder where the OS tells), who listens on a port, and stopping one
-//! gracefully. Unix asks `ps` and `lsof`; Windows asks the system through
-//! sysinfo, `netstat -ano`, and the console (Ctrl-C) for a graceful stop.
-
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ProcInfo {
     pub pid: u32,
     pub ppid: u32,
-    /// The program's file name ("claude", "node.exe").
+
     pub name: String,
     pub exe: Option<PathBuf>,
     pub cmd: Vec<String>,
-    /// Its working folder, when the OS lets us read it.
+
     pub cwd: Option<PathBuf>,
 }
 
 impl ProcInfo {
-    /// The command line as one string (the name when it is not readable).
     pub fn command_line(&self) -> String {
         if self.cmd.is_empty() {
             self.name.clone()
@@ -28,9 +22,6 @@ impl ProcInfo {
     }
 }
 
-/// A program's base name, compared the same on every OS: no folder, no
-/// ".exe", lower case on Windows ("C:\\x\\Claude.exe" and "/x/claude" are
-/// both "claude").
 pub fn program_name(s: &str) -> String {
     let base = s.rsplit(['/', '\\']).next().unwrap_or(s);
     let base = if cfg!(windows) {
@@ -104,7 +95,6 @@ pub fn processes() -> Vec<ProcInfo> {
     sys.processes().values().map(from_sysinfo).collect()
 }
 
-/// One process, if it runs.
 #[cfg(windows)]
 pub fn process(pid: u32) -> Option<ProcInfo> {
     let mut sys = sysinfo::System::new();
@@ -114,7 +104,7 @@ pub fn process(pid: u32) -> Option<ProcInfo> {
 }
 
 #[cfg(unix)]
-#[allow(dead_code)] // Unix asks ps per field where it needs one (takeover)
+#[allow(dead_code)]
 pub fn process(pid: u32) -> Option<ProcInfo> {
     let field = |f: &str| {
         let o = std::process::Command::new("ps")
@@ -138,13 +128,12 @@ pub fn process(pid: u32) -> Option<ProcInfo> {
     })
 }
 
-/// The pids listening on a TCP port in `netstat -ano` output (Windows).
 #[cfg_attr(unix, allow(dead_code))]
 pub fn parse_netstat(text: &str, port: u16) -> Vec<u32> {
     let mut out = vec![];
     for l in text.lines() {
         let w: Vec<&str> = l.split_whitespace().collect();
-        // Proto, local, foreign, state, pid.
+
         if w.len() < 5 || !w[0].eq_ignore_ascii_case("tcp") {
             continue;
         }
@@ -163,7 +152,6 @@ pub fn parse_netstat(text: &str, port: u16) -> Vec<u32> {
     out
 }
 
-/// Who listens on a TCP port: (pid, program).
 pub fn listeners(port: u16) -> Vec<(u32, String)> {
     #[cfg(windows)]
     {
@@ -209,11 +197,6 @@ pub fn listeners(port: u16) -> Vec<(u32, String)> {
     }
 }
 
-/// Ask a process to stop the way a user would (Ctrl-C): SIGINT on Unix; on
-/// Windows a Ctrl-C (then a Ctrl-Break) into its console, sent by a short
-/// lived helper (only a process attached to a console can signal it).
-/// False when it could not be delivered (no console to attach to, as on
-/// a headless runner): the caller then stops it by force.
 pub fn interrupt(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -238,7 +221,6 @@ pub fn interrupt(pid: u32) -> bool {
         let t0 = std::time::Instant::now();
         loop {
             match c.try_wait() {
-                // 0: it exited; 2: delivered, still running; 1: no console.
                 Ok(Some(st)) => return matches!(st.code(), Some(0) | Some(2)),
                 Ok(None) if t0.elapsed() > std::time::Duration::from_secs(8) => {
                     let _ = c.kill();
@@ -251,8 +233,6 @@ pub fn interrupt(pid: u32) -> bool {
     }
 }
 
-/// The helper process: `godterm __ctrl-c PID`; in unit tests the test
-/// binary itself, running only `ctrl_c_helper` (see the tests).
 #[cfg(windows)]
 fn helper(pid: u32) -> Option<std::process::Command> {
     let exe = std::env::current_exe().ok()?;
@@ -266,12 +246,6 @@ fn helper(pid: u32) -> Option<std::process::Command> {
     Some(c)
 }
 
-/// The helper's side (`godterm __ctrl-c PID`), its exit code: 0 the target
-/// exited, 2 delivered but it still runs, 1 no console to attach to.
-/// It leaves its own console, joins the target's, ignores the events
-/// itself, sends Ctrl-C to everyone there, and when that is ignored (a
-/// process can inherit "ignore Ctrl-C") a Ctrl-Break, which no process
-/// can ignore that way.
 #[cfg(windows)]
 pub fn send_ctrl_c(pid: u32) -> i32 {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
@@ -282,8 +256,7 @@ pub fn send_ctrl_c(pid: u32) -> i32 {
     use windows_sys::Win32::System::Threading::{
         OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
     };
-    // SAFETY: console and process calls on handles we own; no pointers
-    // beyond the null handler.
+
     unsafe {
         let h = OpenProcess(
             PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
@@ -319,18 +292,12 @@ pub fn send_ctrl_c(pid: u32) -> i32 {
     }
 }
 
-/// Stop a process that did not answer Ctrl-C: SIGTERM on Unix (it can
-/// still clean up); on Windows there is no polite second step, so this
-/// terminates it (callers say it was forced).
 pub fn terminate(pid: u32) -> bool {
     crate::platform::kill(pid as i32, crate::platform::SIGTERM) == 0
 }
 
-/// Whether `terminate` is forced on this OS (no cleanup in the process).
 pub const TERMINATE_IS_FORCED: bool = cfg!(windows);
 
-/// The clipboard programs to try, in order: pbcopy on macOS, clip on
-/// Windows, wl-copy (Wayland), xclip or xsel (X11) elsewhere.
 fn clipboard_cmds() -> Vec<(&'static str, &'static [&'static str])> {
     if cfg!(target_os = "macos") {
         vec![("pbcopy", &[])]
@@ -349,7 +316,6 @@ fn clipboard_cmds() -> Vec<(&'static str, &'static [&'static str])> {
     }
 }
 
-/// Whether `name` is a program on PATH.
 fn on_path(name: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
@@ -359,16 +325,12 @@ fn on_path(name: &str) -> bool {
     })
 }
 
-/// Also copy with OSC 52 (the terminal sets its own clipboard): over SSH,
-/// where the programs above reach the wrong machine, or without them.
 pub fn osc52_wanted() -> bool {
     std::env::var_os("SSH_TTY").is_some()
         || std::env::var_os("SSH_CONNECTION").is_some()
         || !clipboard_cmds().iter().any(|(c, _)| on_path(c))
 }
 
-/// Put text on the clipboard in the background, at most 2 s: the screen
-/// never waits on it.
 pub fn copy_to_clipboard(text: String) {
     std::thread::spawn(move || {
         use std::io::Write;
@@ -402,9 +364,6 @@ pub fn copy_to_clipboard(text: String) {
     });
 }
 
-/// Run a command for its output, but never longer than `limit`: then it
-/// is killed and reaped, and the result says it timed out. Output is read
-/// as it comes, so a full pipe cannot stall it.
 pub fn output_timeout(
     cmd: &mut std::process::Command,
     limit: std::time::Duration,
@@ -475,8 +434,6 @@ mod tests {
         assert!(parse_netstat(text, 1).is_empty());
     }
 
-    /// The helper process of `interrupt` in tests (Windows): only when
-    /// started for that, it sends the Ctrl-C and exits with the result.
     #[test]
     fn ctrl_c_helper() {
         #[cfg(windows)]
@@ -488,10 +445,6 @@ mod tests {
         }
     }
 
-    /// A stub agent in a console of its own stops on a graceful interrupt
-    /// (SIGINT; on Windows Ctrl-C, then Ctrl-Break, into its console). With
-    /// no console to reach (a headless Windows runner), interrupt says so,
-    /// and the force stop the take-over falls back to ends it.
     #[test]
     fn interrupt_stops_an_agent_gracefully() {
         let d = std::env::temp_dir().join(format!("godterm-ctrlc-{}", std::process::id()));
@@ -514,7 +467,6 @@ mod tests {
         if interrupt(c.id()) {
             assert!(gone_within(&mut c, 8), "a delivered interrupt stops it");
         } else {
-            // Only Windows can lack a console to signal.
             assert!(cfg!(windows), "SIGINT is always deliverable");
             assert_eq!(
                 crate::takeover::after_interrupt(0, false),

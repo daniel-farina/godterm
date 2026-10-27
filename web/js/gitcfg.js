@@ -1,9 +1,3 @@
-// Settings > GitHub accounts and repos: the [git] owners (GitHub owner ->
-// gh account), the ordered folder rules, and each project's saved
-// binding. Edits stay here until Save: GodTerm checks the draft
-// (`git` frame op cfg_check), this shows what changes, and only the
-// user's Confirm saves it (cfg_save with the id that check returned).
-// The assistant has no way to send these frames.
 import { h, on, toast, skeleton, failRow } from './util.js';
 import { send } from './conn.js';
 
@@ -79,7 +73,6 @@ const ib = (label, title, fn, disabled) => h('button.gc-ib', { type: 'button', t
 const btn = (label, fn, cls = '') => h('button.btn.sm' + cls, { type: 'button', onclick: (e) => { e.preventDefault(); fn(); } }, label);
 const put = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
 
-// The section's element (filled when GodTerm answers).
 export function gitcfgSection() {
   style();
   const root = h('div.gc', { 'data-q': 'github git owner owners account accounts gh rule rules folder glob repo binding bindings placeholder state' }, skeleton(3));
@@ -99,15 +92,14 @@ async function load(root, st, keep) {
     st.draft.binds = [];
   }
   render(root, st);
-  // gh is asked in the background: look again for the accounts.
+
   if (!r.view.accounts && st.tries++ < 5) setTimeout(() => refreshAccounts(root, st), 1500);
 }
 
 async function refreshAccounts(root, st) {
   const r = await ask({ op: 'cfg_view' });
   if (!r.ok) return;
-  // The suggestions are built from the gh accounts once they are known:
-  // swap them in while the starter set is still untouched.
+
   const same = (a, b) => JSON.stringify({ o: a.owners, r: a.rules }) === JSON.stringify({ o: b.owners, r: b.rules });
   if (st.starter && r.view.placeholders && same(st.draft, st.view.placeholders)) {
     st.draft = clone(r.view.placeholders);
@@ -134,7 +126,7 @@ function render(root, st) {
       h('span', {}, h('b', {}, 'Placeholders. '), '[git] in config.toml is empty, so these are a suggested start. Edit anything, then Use these to save them (it shows what it writes first).'),
       btn('Use these', () => save(root, st), '.pri')));
   }
-  // gh accounts.
+
   const acc = v.accounts;
   parts.push(h('div.gc-accts', {}, h('span', {}, 'gh accounts:'),
     acc == null ? h('span', {}, 'asking gh...') : acc.length === 0 ? h('span.gc-chip.off', {}, 'none logged in (gh auth login)')
@@ -145,14 +137,13 @@ function render(root, st) {
   const pl = h('datalist', { id: 'gc-folders' }, (v.projects || []).map((p) => h('option', { value: p + '/**' })));
   parts.push(dl, pl);
 
-  // Owners.
   parts.push(h('div.st-sub', {}, 'Owners: GitHub owner (user or org) -> gh account that pushes for it'));
   const owners = h('div.list', {}, d.owners.map((o, i) => {
     const on = accountState(v, o.account.trim());
     const ph = isPh(o.owner, v);
     return h('div.gc-row', {},
       h('input.gc-o', { type: 'text', value: o.owner, placeholder: 'GitHub owner', 'aria-label': 'GitHub owner', spellcheck: 'false', autocapitalize: 'off', onfocus: (e) => { e.target.dataset.was = o.owner; }, oninput: (e) => { o.owner = e.target.value; changed(root, st); },
-        // A renamed owner is renamed in the rules that name it too.
+
         onchange: (e) => { const was = e.target.dataset.was, now = o.owner.trim(); if (was && now && was !== now) { for (const r of d.rules) { if (r.owner === was) r.owner = now; r.choices = (r.choices || []).map((c) => (c === was ? now : c)); } e.target.dataset.was = now; } render(root, st); changed(root, st); } }),
       h('span.dim', {}, '->'),
       h('input.gc-a', { type: 'text', value: o.account, list: 'gc-accts', placeholder: 'gh account', 'aria-label': 'gh account for ' + o.owner, spellcheck: 'false', autocapitalize: 'off', oninput: (e) => { o.account = e.target.value; changed(root, st); }, onchange: () => render(root, st) }),
@@ -162,7 +153,6 @@ function render(root, st) {
   }), h('div.gc-row', {}, btn('+ Add owner', () => { d.owners.push({ owner: '', account: names[0] || '' }); render(root, st); })));
   parts.push(owners);
 
-  // Rules.
   parts.push(h('div.st-sub', {}, 'Folder rules, in order: the most specific glob wins, ties go to the higher rule'));
   const ownerNames = d.owners.map((o) => o.owner).filter(Boolean);
   let dragFrom = -1;
@@ -202,7 +192,6 @@ function render(root, st) {
   }), h('div.gc-row', {}, btn('+ Add rule', () => { d.rules.push({ match: '', owner: ownerNames[0] || '', choices: [], state: null }); render(root, st); })));
   parts.push(rules);
 
-  // Checks, the live preview and the test box.
   st.msgs = h('div.gc-msgs');
   st.pv = h('div.list');
   st.testOut = h('div', {}, '');
@@ -210,17 +199,15 @@ function render(root, st) {
   parts.push(st.msgs);
   parts.push(h('div.st-sub', {}, 'Preview'), h('div.list', {}, h('div.gc-test', {}, h('span.dim', {}, 'Test a folder'), test, st.testOut)), st.pv);
 
-  // Bindings.
   parts.push(h('div.st-sub', {}, 'Per project bindings'));
   st.binds = h('div.list');
   parts.push(st.binds);
 
-  // Save.
   parts.push(h('div.gc-acts', {},
     btn(st.starter ? 'Use these...' : 'Save...', () => save(root, st), '.pri'),
     btn('Discard changes', () => load(root, st)),
     h('span.mnote', {}, 'Saved to ' + (v.config || 'config.toml') + ' (comments kept) and the bindings file, after you confirm.')));
-  // Keep the field being typed in focused across a redraw.
+
   const fa = document.activeElement;
   const lab = root.contains(fa) ? fa.getAttribute('aria-label') : null;
   put(root, parts);
@@ -267,7 +254,6 @@ function paintPreview(st, rows) {
   }).flat(2));
 }
 
-// Saved bindings (edit, unbind) and the projects still to define.
 function paintBinds(root, st) {
   if (!st.binds) return;
   const v = st.view, d = st.draft;
@@ -314,7 +300,6 @@ function editBind(root, st, key, b) {
   repo.focus();
 }
 
-// Save: GodTerm checks it and says what changes; Confirm saves.
 async function save(root, st) {
   clearTimeout(timer);
   const r = await ask({ op: 'cfg_check', draft: st.draft, test: st.test });

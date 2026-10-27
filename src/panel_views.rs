@@ -1,9 +1,3 @@
-//! Which view the assistant panel shows, and the way back: every view
-//! other than the conversation (History, Admin, and the Rules and Prompt
-//! screens it opens) gets "‹ Conversation" as the first toolbar button,
-//! Esc goes back too, and the button counts replies that came while the
-//! conversation was out of sight.
-
 use crate::app::{App, View};
 use crate::app_assistant::Who;
 
@@ -43,7 +37,6 @@ impl App {
         }
     }
 
-    /// Back to the conversation going on, as it was.
     pub fn back_to_conversation(&mut self) {
         self.assistant.history = None;
         self.assistant.show_admin = false;
@@ -53,7 +46,6 @@ impl App {
         self.mark_replies_seen();
     }
 
-    /// Every reply of this conversation so far (trimmed ones included).
     pub fn replies_total(&self) -> usize {
         self.assistant.trimmed_replies
             + self
@@ -64,7 +56,6 @@ impl App {
                 .count()
     }
 
-    /// Replies that came while the conversation was out of sight.
     pub fn unread_replies(&self) -> usize {
         self.replies_total()
             .saturating_sub(self.assistant.seen_replies.get())
@@ -74,8 +65,6 @@ impl App {
         self.assistant.seen_replies.set(self.replies_total());
     }
 
-    /// The conversation going on, for History's pinned row: (turns, the
-    /// first thing the user said).
     pub fn current_conversation(&self) -> (usize, Option<String>) {
         let users: Vec<&str> = self
             .assistant

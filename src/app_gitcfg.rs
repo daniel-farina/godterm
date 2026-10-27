@@ -1,13 +1,3 @@
-//! Settings > GitHub accounts and repos in the app: the terminal UI's
-//! editor (a dialog opened from the Settings view), the web Settings
-//! section's `git` frames (`op`: `cfg_view`, `cfg_check`, `cfg_save`) and
-//! the gh account list with who is logged in.
-//!
-//! Saving is the user's own: a press of Save shows what changes (the
-//! diff) and only the user's yes writes config.toml and the bindings.
-//! `cfg_save` needs the id a `cfg_check` of that exact draft returned, and
-//! `git` frames come only from a browser, never from the assistant.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -22,25 +12,23 @@ use crate::git_map::{Binding, GitRule, Store};
 use crate::hits::UiAction;
 use crate::tab_browser::{DlgLine, DlgView, Tone};
 
-/// The accounts, the checked drafts waiting for a yes.
 #[derive(Default)]
 pub struct CfgUi {
     slot: Arc<Mutex<Option<Vec<Acct>>>>,
-    /// What gh listed last (None: not looked yet).
+
     pub accounts: Option<Vec<Acct>>,
     asked: Option<Instant>,
     pending: HashMap<String, (Draft, Instant)>,
-    /// The accounts were asked again after the last gh login finished.
+
     relisted: bool,
 }
 
-/// A form field: its text, and the values Left / Right cycle through.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
     pub label: &'static str,
     pub text: String,
     pub options: Vec<String>,
-    /// Shown, not typed in.
+
     pub fixed: bool,
 }
 
@@ -53,8 +41,6 @@ fn field(label: &'static str, text: &str, options: Vec<String>) -> Field {
     }
 }
 
-/// What a form edits: an owner row, a rule (None: a new one) or the
-/// binding of a folder.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
     Owner(Option<usize>),
@@ -70,7 +56,7 @@ pub enum CfgStep {
         fields: Vec<Field>,
         at: usize,
     },
-    /// What Save changes; Enter is the user's yes.
+
     Confirm {
         lines: Vec<String>,
         id: String,
@@ -80,18 +66,17 @@ pub enum CfgStep {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GitCfgDlg {
     pub draft: Draft,
-    /// What config.toml has now (the diff is against it).
+
     pub saved: Draft,
     pub sel: usize,
     pub step: CfgStep,
     pub note: Option<(String, bool)>,
-    /// The starter set is shown, not saved yet.
+
     pub starter: bool,
-    /// Esc once with unsaved changes: say so; twice: close.
+
     pub warned: bool,
 }
 
-/// A selectable row of the editor.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     Owner(usize),
@@ -137,10 +122,6 @@ fn rule_text(r: &GitRule) -> String {
 }
 
 impl App {
-    // ---- shared by both UIs ----
-
-    /// Ask gh which accounts there are (in the background, read only; at
-    /// most every 30 s).
     pub fn gitcfg_ask_accounts(&mut self) {
         let ui = &mut self.git.cfg_ui;
         if cfg!(test)
@@ -170,7 +151,7 @@ impl App {
         if let Some(a) = got {
             let was = git_cfg::suggested(self.gitcfg_accounts());
             self.git.cfg_ui.accounts = Some(a);
-            // An untouched starter set is rebuilt from the accounts now known.
+
             let now = git_cfg::suggested(self.gitcfg_accounts());
             if let Modal::GitCfg(d) = &mut self.modal {
                 if d.starter && d.draft == was {
@@ -188,8 +169,6 @@ impl App {
         self.git.cfg_ui.accounts.as_deref()
     }
 
-    /// The known projects: open tabs, the project index's repos, saved
-    /// bindings. Never a private folder, never the home folder itself.
     pub fn gitcfg_projects(&self) -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = vec![];
         for (s, p) in self.panes.iter().enumerate() {
@@ -236,8 +215,6 @@ impl App {
         out
     }
 
-    /// Check a draft and keep it for the user's yes: (check, diff, id).
-    /// No id when there are errors or nothing to save.
     fn gitcfg_prepare(&mut self, d: &Draft) -> (git_cfg::Check, Vec<String>, Option<String>) {
         let c = git_cfg::check(d, self.gitcfg_accounts());
         let saved = Draft::from_cfg(&self.cfg.git);
@@ -254,7 +231,6 @@ impl App {
         (c, lines, id)
     }
 
-    /// Save the draft the user confirmed (by the id its check returned).
     fn gitcfg_commit(&mut self, id: &str) -> Result<String, String> {
         let Some((d, _)) = self.git.cfg_ui.pending.remove(id) else {
             return Err("that confirmation expired; press Save again".into());
@@ -265,7 +241,6 @@ impl App {
         Ok(said)
     }
 
-    /// Everything the web section shows.
     pub fn gitcfg_view(&self) -> Value {
         let cur = Draft::from_cfg(&self.cfg.git);
         let store = Store::load();
@@ -295,7 +270,6 @@ impl App {
         })
     }
 
-    /// One `cfg_*` git frame from the web section, answered.
     pub fn gitcfg_frame(&mut self, v: &Value) -> Value {
         let mut r = match v["op"].as_str().unwrap_or("") {
             "cfg_view" => {
@@ -308,7 +282,7 @@ impl App {
                         let (c, lines, id) = self.gitcfg_prepare(&d);
                         let projects = self.gitcfg_projects();
                         let pv = git_cfg::preview(&d, &self.cfg.git, &projects, &Store::load());
-                        // "Test a folder": how the draft decides any path typed.
+
                         let test = v["test"]
                         .as_str()
                         .map(str::trim)
@@ -332,7 +306,7 @@ impl App {
                     Err(e) => json!({"ok": false, "error": e}),
                 }
             }
-            // "Add account...": the user's gh login of one more account.
+
             "cfg_gh_login" => {
                 let gh = crate::git_cred::gh_bin(Some(&self.cfg.git));
                 json!({"ok": true, "login": crate::gh_login::start(&gh)})
@@ -340,7 +314,6 @@ impl App {
             "cfg_gh_login_poll" => {
                 let l = crate::gh_login::poll();
                 if l.state == "done" && !self.git.cfg_ui.relisted {
-                    // Ask gh again, so the new account is in the list.
                     self.git.cfg_ui.relisted = true;
                     self.git.cfg_ui.asked = None;
                     self.gitcfg_ask_accounts();
@@ -360,7 +333,6 @@ impl App {
         r
     }
 
-    /// Answer a browser's `cfg_*` frame on its socket.
     pub fn web_gitcfg(&mut self, client: u64, v: &Value) {
         let Some(c) = self.web.as_ref().and_then(|w| w.hub.client(client)) else {
             return;
@@ -368,8 +340,6 @@ impl App {
         let r = self.gitcfg_frame(v);
         c.out.text(r.to_string());
     }
-
-    // ---- the terminal UI's editor ----
 
     pub fn open_gitcfg(&mut self) {
         let saved = Draft::from_cfg(&self.cfg.git);
@@ -403,7 +373,6 @@ impl App {
         }
     }
 
-    /// The rows that can be selected, in order.
     pub fn gitcfg_items(&self, d: &GitCfgDlg) -> Vec<Item> {
         let mut v: Vec<Item> = (0..d.draft.owners.len()).map(Item::Owner).collect();
         v.push(Item::AddOwner);
@@ -518,7 +487,6 @@ impl App {
         CfgStep::Edit { target, fields, at }
     }
 
-    /// Put a form's values into the draft.
     fn gitcfg_apply_form(d: &mut GitCfgDlg, target: &Target, f: &[Field]) {
         let t = |i: usize| {
             f.get(i)
@@ -965,7 +933,7 @@ impl App {
             );
         }
         row(&mut lines, &Item::AddRule, "+ Add rule".into(), Tone::Dim);
-        // Known projects grouped by the rule that decides them.
+
         let store = git_cfg::with_binds(&Store::load(), &d.draft);
         let pv = git_cfg::preview(&d.draft, &self.cfg.git, &self.gitcfg_projects(), &store);
         lines.push(dl(
@@ -1055,7 +1023,6 @@ impl App {
         }
     }
 
-    /// Settings > GitHub, before the editor opens: what is set now.
     pub fn gitcfg_summary(&self) -> Vec<(String, Tone)> {
         let cur = Draft::from_cfg(&self.cfg.git);
         let mut v = vec![];
@@ -1104,7 +1071,6 @@ impl App {
     }
 }
 
-/// Is this a frame for the accounts and rules editor?
 pub fn is_cfg_frame(v: &Value) -> bool {
     v["op"].as_str().is_some_and(|o| o.starts_with("cfg_"))
 }

@@ -1,9 +1,3 @@
-//! One index of every session on this Mac, for the assistant's `sessions`
-//! tool: every GodTerm account (Claude Code, Grok and Codex), the shared
-//! Cursor store, the main `~/.claude` and the main `~/.grok`. Built in the background and refreshed by file
-//! mtimes, so a query is a filter over memory. Only metadata and short
-//! snippets ever leave it; `detail` reads one transcript on request.
-
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,15 +22,13 @@ pub struct Index {
     pub built: Option<Instant>,
     pub building: bool,
     pub took_ms: u128,
-    /// Parsed files by path, with (mtime ns, size): kept across builds and
-    /// on disk, so only new or changed transcripts are read again.
+
     files: HashMap<PathBuf, (u128, u64, SessionInfo)>,
     loaded: bool,
 }
 
 pub type Shared = Arc<Mutex<Index>>;
 
-/// Where sessions live: (source, harness, home, label).
 pub type Source = (Src, Harness, PathBuf, String);
 
 pub fn disk_path() -> PathBuf {
@@ -62,19 +54,11 @@ fn stamp(p: &Path) -> Option<(u128, u64)> {
     Some((t, m.len()))
 }
 
-/// What one source holds: main transcripts with their subagent files.
 enum Item {
-    Claude {
-        main: PathBuf,
-        subs: Vec<PathBuf>,
-    },
-    Grok {
-        summary: PathBuf,
-    },
-    /// A Codex rollout or a Cursor agent transcript.
-    Other {
-        path: PathBuf,
-    },
+    Claude { main: PathBuf, subs: Vec<PathBuf> },
+    Grok { summary: PathBuf },
+
+    Other { path: PathBuf },
 }
 
 fn list(h: Harness, home: &Path) -> Vec<Item> {
@@ -154,9 +138,6 @@ fn parse_one(p: &Path) -> Option<SessionInfo> {
     }
 }
 
-/// Scan every source (in the caller's thread) into the index: list files,
-/// keep what has not changed since the last build (in memory or on disk),
-/// parse the rest in parallel, then save.
 pub fn rebuild(shared: &Shared, sources: &[Source]) {
     let t0 = Instant::now();
     let (mut files, loaded) = {
@@ -178,7 +159,7 @@ pub fn rebuild(shared: &Shared, sources: &[Source]) {
         .enumerate()
         .map(|(k, (_, h, home, _))| (k, list(*h, home)))
         .collect();
-    // Every file with its stamp; the changed ones get parsed.
+
     let mut all: Vec<(PathBuf, (u128, u64))> = vec![];
     for (_, items) in &listed {
         for it in items {
@@ -205,8 +186,7 @@ pub fn rebuild(shared: &Shared, sources: &[Source]) {
             .map(|n| n.get())
             .unwrap_or(4)
             .clamp(2, 16);
-        // Biggest first, handed out one at a time: no worker is left
-        // holding a pile of large transcripts.
+
         let mut todo = todo.clone();
         todo.sort_by_key(|(_, st)| std::cmp::Reverse(st.1));
         let next = std::sync::atomic::AtomicUsize::new(0);
@@ -238,7 +218,7 @@ pub fn rebuild(shared: &Shared, sources: &[Source]) {
     let before = files.len();
     files.retain(|p, _| live.contains(p));
     let removed = files.len() != before;
-    // Rows: main sessions with subagents rolled in, subagents marked.
+
     let mut rows = vec![];
     for (k, items) in &listed {
         let (src, h, _, label) = &sources[*k];
@@ -274,7 +254,6 @@ pub fn rebuild(shared: &Shared, sources: &[Source]) {
                     });
                 }
                 Item::Grok { summary: path } | Item::Other { path } => {
-                    // A Codex or Cursor session nobody typed into is not one.
                     let empty = |i: &SessionInfo| {
                         matches!(it, Item::Other { .. }) && i.first_prompt.is_none()
                     };
@@ -322,8 +301,6 @@ pub fn rebuild(shared: &Shared, sources: &[Source]) {
     ));
 }
 
-/// "today", "yesterday", "this week", "last week", "3 days", "2 hours",
-/// "2026-10-01" or an RFC 3339 time, as a point in time.
 pub fn parse_when(s: &str, now: chrono::DateTime<chrono::Local>) -> Option<SystemTime> {
     use chrono::{Duration as D, TimeZone};
     let s = s.trim().to_lowercase();
@@ -360,11 +337,6 @@ pub fn parse_when(s: &str, now: chrono::DateTime<chrono::Local>) -> Option<Syste
     Some(SystemTime::from(t))
 }
 
-/// Every query word somewhere in the text (case insensitive); more
-/// matches score higher. None when a word is missing.
-/// How well a spoken query names a session, 0 to 1: its name or title,
-/// the folder's name, and runs of words in the title and first prompt,
-/// compared by spelling and sound ("varion refactor" -> VARIUM REFACTOR).
 pub fn fuzzy_score(
     query: &str,
     info: &crate::sessions::SessionInfo,
@@ -415,7 +387,6 @@ pub fn score(query: &str, hay: &str) -> Option<usize> {
     for w in &words {
         let n = h.matches(w.as_str()).count();
         if n == 0 {
-            // A near miss: the word's first 5 letters.
             let stem: String = w.chars().take(5).collect();
             if stem.len() < 4 || !h.contains(&stem) {
                 return None;
@@ -440,11 +411,9 @@ pub fn rel(t: Option<SystemTime>) -> String {
     }
 }
 
-/// What a session row says to the assistant.
 pub fn row_json(r: &Row, open_tab: Option<String>, live: bool) -> Value {
     let i = &r.info;
-    // grok records its cost; Claude Code does not (and estimating it from
-    // cache reads would be wrong), so there is none.
+
     let cost = i
         .title
         .as_deref()
@@ -469,8 +438,6 @@ pub fn row_json(r: &Row, open_tab: Option<String>, live: bool) -> Value {
     })
 }
 
-/// A short account of one Claude Code session: first prompt, the last few
-/// exchanges, files touched, how it ended.
 pub fn detail_claude(path: &Path) -> Value {
     use std::io::BufReader;
     let Ok(f) = std::fs::File::open(path) else {
@@ -545,7 +512,6 @@ pub fn detail_grok(dir: &Path) -> Value {
     })
 }
 
-/// Refresh at most this often in the background.
 pub const STALE: Duration = Duration::from_secs(45);
 
 #[cfg(test)]

@@ -1,12 +1,3 @@
-//! Markdown in the assistant's replies: parsed into blocks (paragraphs
-//! with their line breaks, headings, lists, code, pipe tables, quotes),
-//! drawn for the panel at a given width (tables as an aligned grid, or a
-//! card per row when the panel is too narrow), and turned into plain
-//! sentences for speech (a table is "a table of N rows", list items are
-//! sentences, no markup is ever read). The conversation and History
-//! both draw replies with `view` / `reply_view`, cached per text and
-//! width.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -17,7 +8,6 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::theme::{DIM, FAINT, FG, SEL_BG, SLATE};
 
-/// One drawn line: styled pieces, at most the width it was drawn for.
 pub type Line = Vec<(String, Style)>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -30,7 +20,6 @@ pub enum Align {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Block {
-    /// Its lines joined by '\n' (each line break is kept).
     Para(String),
     Heading(usize, String),
     Item {
@@ -47,8 +36,6 @@ pub enum Block {
     Quote(String),
     Rule,
 }
-
-// ---------------------------------------------------------------- parse
 
 fn fence(t: &str) -> Option<&'static str> {
     if t.starts_with("```") {
@@ -78,8 +65,6 @@ fn is_rule(t: &str) -> bool {
     s.len() >= 3 && matches!(s[0], '-' | '*' | '_') && s.iter().all(|c| *c == s[0])
 }
 
-/// The cells of a table line: outer pipes dropped, split on pipes that
-/// are not escaped or inside `code`.
 fn cells(line: &str) -> Vec<String> {
     let t = line.trim();
     let t = t.strip_prefix('|').unwrap_or(t);
@@ -140,7 +125,6 @@ fn table_sep(line: &str) -> Option<Vec<Align>> {
     Some(v)
 }
 
-/// A list item: (depth, marker, text).
 fn item(l: &str) -> Option<(usize, String, String)> {
     let spaces: usize = l
         .chars()
@@ -260,7 +244,7 @@ pub fn parse(md: &str) -> Vec<Block> {
             i += 1;
             continue;
         }
-        // An indented line right after an item continues it.
+
         if item_open && l.starts_with([' ', '\t']) {
             if let Some(Block::Item { text, .. }) = out.last_mut() {
                 text.push('\n');
@@ -277,7 +261,6 @@ pub fn parse(md: &str) -> Vec<Block> {
     out
 }
 
-/// Blocks back to markdown (for a reply with its narration taken out).
 pub fn to_md(blocks: &[Block]) -> String {
     let mut out = String::new();
     let mut prev_item = false;
@@ -342,8 +325,6 @@ pub fn to_md(blocks: &[Block]) -> String {
     out
 }
 
-// ---------------------------------------------------------------- inline
-
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Text,
@@ -360,13 +341,11 @@ struct Piece {
     strike: bool,
 }
 
-/// Whether a closing `delim` follows (after a non-space).
 fn closes_later(chars: &[char], from: usize, delim: &[char]) -> bool {
     let n = delim.len();
     let mut j = from;
     while j + n <= chars.len() {
         if chars[j..j + n] == *delim && j > 0 && !chars[j - 1].is_whitespace() {
-            // A single '*' that is half of "**" is not a closer for '*'.
             let next_same = chars.get(j + n) == Some(&delim[0]);
             let prev_same = j > from && chars[j - 1] == delim[0];
             if n > 1 || !(next_same || prev_same) {
@@ -571,7 +550,6 @@ fn inline(s: &str) -> Vec<Piece> {
     out
 }
 
-/// Inline markdown as styled pieces on `base`.
 pub fn styled(s: &str, base: Style) -> Line {
     inline(s)
         .into_iter()
@@ -596,7 +574,6 @@ pub fn styled(s: &str, base: Style) -> Line {
         .collect()
 }
 
-/// Inline markdown as plain words: no markers, links as their text.
 pub fn plain(s: &str) -> String {
     let t: String = inline(s)
         .into_iter()
@@ -610,9 +587,6 @@ pub fn plain(s: &str) -> String {
         .join(" ")
 }
 
-// ---------------------------------------------------------------- speech
-
-/// What a block says out loud, sentence by sentence.
 fn units(b: &Block) -> Vec<String> {
     match b {
         Block::Para(t) | Block::Quote(t) => crate::assistant::sentence_spans(t)
@@ -640,7 +614,6 @@ fn units(b: &Block) -> Vec<String> {
     }
 }
 
-/// Markdown as plain spoken sentences.
 pub fn speech(md: &str) -> String {
     parse(md)
         .iter()
@@ -649,15 +622,13 @@ pub fn speech(md: &str) -> String {
         .join(" ")
 }
 
-/// A reply split for speech: narration out, the first `max` sentences
-/// spoken (0: all), the rest shown below "more ›" and said on "more".
 pub struct Reply {
     pub narration: Vec<String>,
     pub spoken: Vec<Block>,
     pub rest: Vec<Block>,
     pub say: String,
     pub rest_say: Option<String>,
-    /// The reply as shown and saved: narration out, markdown kept.
+
     pub shown: String,
 }
 
@@ -719,7 +690,7 @@ pub fn reply(text: &str, max: usize) -> Reply {
             spoken.push(b);
             continue;
         }
-        // The limit falls inside this paragraph: cut it at a sentence.
+
         let k = max - said.len();
         let (t, quote) = match &b {
             Block::Para(t) => (t.clone(), false),
@@ -748,7 +719,7 @@ pub fn reply(text: &str, max: usize) -> Reply {
         said.extend(u[..k].iter().cloned());
         later.extend(u[k..].iter().cloned());
     }
-    // Nothing left to say (only code after it): shown whole, no "more".
+
     if later.is_empty() {
         spoken.append(&mut rest);
     }
@@ -762,8 +733,6 @@ pub fn reply(text: &str, max: usize) -> Reply {
     }
 }
 
-// ---------------------------------------------------------------- render
-
 fn cw(c: char) -> usize {
     c.width().unwrap_or(0)
 }
@@ -774,8 +743,6 @@ pub fn width(l: &Line) -> usize {
         .sum()
 }
 
-/// Styled chars, drawable ones only (zero width marks and controls go,
-/// a tab is a space), as the panel draws one cell run per char.
 fn flat(parts: &[(String, Style)]) -> Vec<(char, Style)> {
     let mut v = vec![];
     for (s, st) in parts {
@@ -800,9 +767,6 @@ fn join(chars: &[(char, Style)]) -> Line {
     out
 }
 
-/// Word wrap to `w` cells: the first line starts with `first`, the
-/// others with `rest` (a hanging indent). Words longer than a line are
-/// cut.
 fn wrap(parts: &[(String, Style)], w: usize, first: &Line, rest: &Line) -> Vec<Line> {
     let (first, rest) = if width(first).max(width(rest)) + 2 > w {
         (vec![], vec![])
@@ -865,7 +829,6 @@ fn wrap(parts: &[(String, Style)], w: usize, first: &Line, rest: &Line) -> Vec<L
     lines
 }
 
-/// A line cut to `w` cells, with … when cut.
 fn truncate(l: &Line, w: usize) -> Line {
     if width(l) <= w {
         return l.clone();
@@ -887,7 +850,6 @@ fn truncate(l: &Line, w: usize) -> Line {
     join(&out)
 }
 
-/// A cell fitted to exactly `w` cells.
 fn fit(l: &Line, w: usize, align: Align, base: Style) -> Line {
     let mut v = truncate(l, w);
     let pad = w.saturating_sub(width(&v));
@@ -913,8 +875,6 @@ fn numeric(s: &str) -> bool {
         .is_some_and(|c| c.is_ascii_digit())
 }
 
-/// Column widths for `avail` cells: the natural ones when they fit, else
-/// shrunk in proportion; None when that leaves too little to read.
 fn shrink(nat: &[usize], avail: usize) -> Option<Vec<usize>> {
     let sum: usize = nat.iter().sum();
     if sum <= avail {
@@ -977,7 +937,7 @@ fn table(
                 .max(1)
         })
         .collect();
-    // A column of numbers (after the first, the labels) aligns right.
+
     let aligns: Vec<Align> = (0..n)
         .map(|c| {
             if align[c] != Align::None || c == 0 {
@@ -1009,7 +969,7 @@ fn table(
             }
             l.extend(fit(cell, cols[c], aligns[c], base));
         }
-        // No trailing pad.
+
         while let Some((s, _)) = l.last_mut() {
             let t = s.trim_end().to_string();
             if t.is_empty() {
@@ -1030,8 +990,6 @@ fn table(
     out
 }
 
-/// Too narrow for a grid: each row as a card, its first cell the title
-/// and the others "header: value".
 fn cards(head: &[Line], rows: &[Vec<Line>], w: usize, base: Style) -> Vec<Line> {
     let mut out = vec![];
     for (k, r) in rows.iter().enumerate() {
@@ -1055,7 +1013,6 @@ fn cards(head: &[Line], rows: &[Vec<Line>], w: usize, base: Style) -> Vec<Line> 
     out
 }
 
-/// Blocks drawn at `w` cells.
 pub fn render(blocks: &[Block], w: usize, base: Style) -> Vec<Line> {
     let w = w.max(4);
     let mut out: Vec<Line> = vec![];
@@ -1131,9 +1088,6 @@ pub fn render(blocks: &[Block], w: usize, base: Style) -> Vec<Line> {
     out
 }
 
-// ---------------------------------------------------------------- cache
-
-/// (text hash, spoken sentences, width, kind) to the drawn lines.
 type Cache = HashMap<(u64, usize, usize, u8), Rc<Vec<Line>>>;
 
 thread_local! {
@@ -1165,15 +1119,12 @@ fn cached(
     v
 }
 
-/// A whole reply drawn at `w` cells (History), cached.
 pub fn view(text: &str, w: usize) -> Rc<Vec<Line>> {
     cached(text, 0, w, 0, || {
         render(&parse(text), w, Style::default().fg(FG))
     })
 }
 
-/// A reply in the conversation: what was spoken, then "more ›" on its own
-/// line and the rest, all in normal text. Cached per text and width.
 pub fn reply_view(text: &str, max: usize, w: usize) -> Rc<Vec<Line>> {
     cached(text, max, w, 1, || {
         let base = Style::default().fg(FG);
@@ -1187,7 +1138,6 @@ pub fn reply_view(text: &str, max: usize, w: usize) -> Rc<Vec<Line>> {
     })
 }
 
-/// Lines as plain text (tests and selection).
 #[cfg(test)]
 pub fn text_of(lines: &[Line]) -> String {
     lines
@@ -1202,7 +1152,6 @@ pub mod tests {
     use super::*;
     use unicode_width::UnicodeWidthStr;
 
-    /// The reply from the bug report: a summary line, then a pipe table.
     pub const USAGE: &str = "Here is usage per account. Weekly is the binding limit on each.
 
 | Account | 5 hour left | Weekly left | Weekly resets |
@@ -1221,7 +1170,6 @@ pub mod tests {
             .collect()
     }
 
-    /// The display column where `pat` starts in `line`.
     pub fn col(line: &str, pat: &str) -> usize {
         let at = line
             .find(pat)
@@ -1239,7 +1187,7 @@ pub mod tests {
             assert!(v[h + 1].chars().all(|c| c == '─'), "{}", v[h + 1]);
             assert_eq!(v[h + 1].width(), head.width());
             let rows = &v[h + 2..h + 8];
-            // Left aligned: the label column and the resets.
+
             let resets = col(head, "Weekly resets");
             for (r, val) in rows.iter().zip([
                 "Sat 12:00",
@@ -1253,7 +1201,7 @@ pub mod tests {
                 assert_eq!(r[..at].width(), resets, "{r}");
                 assert!(r.width() <= w);
             }
-            // Numbers align right: their ends line up with the header's.
+
             let wk_end = col(head, "Weekly left") + "Weekly left".len();
             for (r, val) in rows
                 .iter()
@@ -1266,7 +1214,7 @@ pub mod tests {
             assert_eq!(col(&rows[1], "100%") + 4, h5_end, "{}", rows[1]);
             assert!(rows[5].starts_with("6 (demo8, Grok)"));
         }
-        // The header is bold.
+
         let l = render(&parse(USAGE), 60, Style::default());
         let h = l
             .iter()
@@ -1280,13 +1228,12 @@ pub mod tests {
 
     #[test]
     fn narrow_tables_shrink_then_become_cards() {
-        // A little narrower than the table: columns cut with …
         let v = lines_at(USAGE, 50);
         println!("{}", v.join("\n"));
         assert!(v.iter().all(|l| l.width() <= 50), "{v:#?}");
         assert!(v.iter().any(|l| l.contains('…')), "{v:#?}");
         assert!(v.iter().any(|l| l.starts_with('─')));
-        // Very narrow: a card per row.
+
         let v = lines_at(USAGE, 26);
         println!("{}", v.join("\n"));
         assert!(v.iter().all(|l| l.width() <= 26), "{v:#?}");
@@ -1305,7 +1252,7 @@ pub mod tests {
         let c = col(&v[0], "Note");
         assert_eq!(col(&v[2], "晴れ"), c, "{v:#?}");
         assert_eq!(col(&v[3], "🙂"), c, "{v:#?}");
-        // Never past the width, however narrow.
+
         for w in 4..30 {
             assert!(lines_at(t, w).iter().all(|l| l.width() <= w), "{w}");
             assert!(lines_at(USAGE, w).iter().all(|l| l.width() <= w), "{w}");
@@ -1327,12 +1274,12 @@ pub mod tests {
         assert_eq!(v[6], "  ◦ nested");
         assert_eq!(v[7], "1. one");
         assert_eq!(v[8], "2. two");
-        // Bold, code on a subtle background.
+
         let bold = l[2].iter().find(|(s, _)| s == "Build").unwrap();
         assert!(bold.1.add_modifier.contains(Modifier::BOLD));
         let code = l[4].iter().find(|(s, _)| s == "cargo test").unwrap();
         assert_eq!(code.1.bg, Some(SEL_BG));
-        // The code block: one line, cut with …, on the background.
+
         let ci = v.iter().position(|s| s.contains("fn main")).unwrap();
         assert!(v[ci].ends_with("… ") && v[ci].width() == 40, "{:?}", v[ci]);
         assert!(l[ci].iter().all(|(_, st)| st.bg == Some(SEL_BG)));
@@ -1351,7 +1298,7 @@ pub mod tests {
     fn line_breaks_are_kept() {
         let v = lines_at("Line one\nLine two\n\nPara two", 40);
         assert_eq!(v, vec!["Line one", "Line two", "", "Para two"]);
-        // snake_case and 5 * 3 stay as they are.
+
         assert_eq!(
             lines_at("a snake_case_name and 5 * 3", 40),
             vec!["a snake_case_name and 5 * 3"]
@@ -1377,7 +1324,7 @@ pub mod tests {
             "{all}"
         );
         assert!(all.ends_with("Bold item. code item."), "{all}");
-        // The view: the spoken line, "more ›" on its own line, the table.
+
         let v = text_of(&reply_view(USAGE, 2, 70));
         let v: Vec<&str> = v.lines().collect();
         assert_eq!(
@@ -1386,7 +1333,7 @@ pub mod tests {
         );
         assert_eq!(v[1], "more ›");
         assert!(v[2].starts_with("Account"));
-        // A paragraph cut at the limit keeps its own lines.
+
         let r = reply("Let me check. One.\nTwo. Three.\nFour.", 2);
         assert_eq!(r.narration, vec!["Let me check."]);
         assert_eq!(r.say, "One. Two.");

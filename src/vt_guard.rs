@@ -1,32 +1,13 @@
-//! PTY output on its way to the vt100 parser: counts in the CSI sequences
-//! that vt100 runs once per unit are capped at the screen's size.
-//!
-//! vt100 0.16 inserts characters one at a time, so `ESC [ 65535 @` (ICH;
-//! any count above 65535 is read as 65535) takes over a second, and
-//! inserting or scrolling lines (IL, SD) by thousands takes milliseconds
-//! each. A tab that prints a binary file, or a program that sends such
-//! counts, held the parser lock for that long per sequence and the UI,
-//! which draws from the same parser, froze with it. Counts larger than the
-//! screen do nothing more than the screen size does (the rest falls off the
-//! edge), so capping them changes nothing on screen.
-
-/// Sequences whose first parameter is a repeat count: ICH, IL, DL, DCH,
-/// SU, SD, ECH (`ESC [ n @` and friends).
 const COUNTED: &[u8] = b"@LMPSTX";
 
-/// A CSI longer than this is passed on as it is (vt100 drops it).
 const MAX_SEQ: usize = 256;
 
 #[derive(Default)]
 pub struct CsiCap {
-    /// A sequence started in an earlier read: ESC, or ESC [ and what
-    /// followed so far.
     pending: Vec<u8>,
 }
 
 impl CsiCap {
-    /// Copy `input` to `out`, capping counts at `cap`. A sequence cut by the
-    /// end of `input` is held back until the next call.
     pub fn filter(&mut self, input: &[u8], cap: u16, out: &mut Vec<u8>) {
         let cap = cap.max(1);
         for &b in input {
@@ -39,7 +20,6 @@ impl CsiCap {
                 continue;
             }
             if self.pending.len() == 1 {
-                // After ESC: a CSI starts, or it was another escape.
                 if b == b'[' {
                     self.pending.push(b);
                 } else {
@@ -54,7 +34,6 @@ impl CsiCap {
                 continue;
             }
             if b == 0x1b {
-                // A new escape cuts the sequence short (vt100 does the same).
                 out.append(&mut self.pending);
                 self.pending.push(b);
                 continue;
@@ -70,11 +49,10 @@ impl CsiCap {
     }
 }
 
-/// Emit the whole sequence `seq` (ESC [ ... final), its counts capped.
 fn rewrite(seq: &[u8], cap: u16, out: &mut Vec<u8>) {
     let fin = seq[seq.len() - 1];
     let params = &seq[2..seq.len() - 1];
-    // Only plain counts: no private marker, intermediate or sub-parameter.
+
     if !COUNTED.contains(&fin) || !params.iter().all(|c| c.is_ascii_digit() || *c == b';') {
         out.extend_from_slice(seq);
         return;
@@ -117,7 +95,7 @@ mod tests {
         assert_eq!(run(&[b"a\x1b[65535Lb"], 24), b"a\x1b[24Lb");
         assert_eq!(run(&[b"\x1b[999999999999999999999T"], 50), b"\x1b[50T");
         assert_eq!(run(&[b"\x1b[30@\x1b[81M"], 80), b"\x1b[30@\x1b[80M");
-        // Not a count: positions, colours, modes, OSC, private sequences.
+
         for s in [
             &b"\x1b[65535;65535H"[..],
             b"\x1b[38;2;255;0;0m",
@@ -139,17 +117,17 @@ mod tests {
     #[test]
     fn a_sequence_cut_across_reads_is_held_then_capped() {
         assert_eq!(run(&[b"x\x1b", b"[9999", b"9@y"], 100), b"x\x1b[100@y");
-        // Held, nothing lost, until the rest comes.
+
         let mut f = CsiCap::default();
         let mut out = Vec::new();
         f.filter(b"ab\x1b[12", 80, &mut out);
         assert_eq!(out, b"ab");
         f.filter(b"3;4H", 80, &mut out);
         assert_eq!(out, b"ab\x1b[123;4H");
-        // An escape that cuts a CSI short passes both on.
+
         assert_eq!(run(&[b"\x1b[12\x1b[3@"], 80), b"\x1b[12\x1b[3@");
         assert_eq!(run(&[b"\x1b\x1b[5@"], 80), b"\x1b\x1b[5@");
-        // An endless one is let through once it is too long.
+
         let long = [b"\x1b[".to_vec(), vec![b'1'; 300]].concat();
         assert_eq!(run(&[&long], 80), long);
     }

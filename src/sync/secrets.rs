@@ -1,7 +1,3 @@
-//! A transcript secret scan: warning only (docs/SYNC.md 2.5). Built-in
-//! patterns (the ones of section 1.5) over the bytes about to be pushed;
-//! the count shows on the Sync screen. Matches are never shown or kept.
-
 fn run_of(b: &[u8], i: usize, ok: impl Fn(u8) -> bool) -> usize {
     b[i..].iter().take_while(|&&c| ok(c)).count()
 }
@@ -10,7 +6,6 @@ fn word(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'-'
 }
 
-/// How many likely secrets some bytes hold.
 pub fn count(b: &[u8]) -> usize {
     let mut n = 0;
     let mut i = 0;
@@ -46,7 +41,7 @@ pub fn count(b: &[u8]) -> usize {
                 line.windows(16).any(|w| w == b"PRIVATE KEY-----")
             }
         };
-        // Only at a word start, so "taskAKIA..." inside a word is not one.
+
         let start = i == 0 || !b[i - 1].is_ascii_alphanumeric();
         if hit && start {
             n += 1;

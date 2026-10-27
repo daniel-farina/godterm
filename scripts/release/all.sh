@@ -1,32 +1,8 @@
 #!/usr/bin/env bash
-# Full local release: macOS (universal, arm64, x86_64; signed, notarized),
-# Linux (x86_64, aarch64) and Windows (x86_64, built on the Windows machine
-# over ssh) artifacts, then SHA256SUMS, all into dist/. Builds from a clean git worktree of REF, so
-# uncommitted work in this checkout never ends up in a release.
-#
-#   scripts/release/all.sh                    REF=HEAD
-#   REF=v0.2.0-rc1 scripts/release/all.sh
-#   DRAFT=1 REF=v0.2.0-rc1 scripts/release/all.sh   also a draft GitHub release
-#   ONLY=macos | ONLY=linux | ONLY=windows    one platform
-#   NO_WINDOWS=1                              skip Windows (machine offline)
-#
-# LINUX_FROM_CI=1: build Linux on GitHub's native runners (build-linux.yml)
-# instead of local Docker, and download the artifacts into dist/. Needs REF
-# pushed. Use it on Macs whose Docker cannot emulate x86_64.
-#
-# WINDOWS_FROM_CI=1: build Windows on a GitHub hosted runner
-# (build-windows.yml) instead of the Windows machine over ssh, and download
-# the zip and installer into dist/. Needs REF pushed. Unsigned, like the ssh
-# build today. Unset keeps the ssh path; NO_WINDOWS=1 still skips Windows.
-#
-# SHA256SUMS is signed with the self update key (UPDATE_KEY, default
-# ~/.config/godterm-release/minisign.key) into SHA256SUMS.minisig.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 REF="${REF:-HEAD}"
-# Release output has its own folder: other tools keep files in dist/ (the
-# video renders in dist/video), and this script must never touch them.
 export DIST="${DIST:-$ROOT/dist/release}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target-release-eng}"
 
@@ -41,9 +17,6 @@ if [[ "$REF" == v* && ( -n "${DRAFT:-}" || -n "${LINUX_FROM_CI:-}" || -n "${WIND
   git -C "$ROOT" push -q origin "refs/tags/$REF"
 fi
 
-# KEEP_DIST=1 adds to the previous artifacts (for example ONLY=linux after
-# a macOS run). Otherwise only this script's own artifacts are removed,
-# never the folder itself.
 if [[ -z "${KEEP_DIST:-}" && -d "$DIST" ]]; then
   rm -rf "$DIST/stage" "$DIST/ci" "$DIST/ci-linux" "$DIST/ci-windows"
   find "$DIST" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.tar.gz' \
@@ -51,9 +24,6 @@ if [[ -z "${KEEP_DIST:-}" && -d "$DIST" ]]; then
     -o -name 'SHA256SUMS*' -o -name '.linux.log' -o -name '.windows.log' \) -delete
 fi
 mkdir -p "$DIST"
-# Dispatch workflow $1 for $sha, wait, download its artifacts into
-# $DIST/ci-$2 and move the files matching the find tests in the rest of the
-# arguments into $DIST.
 from_ci() {
   local wf="$1" tag="$2" before id
   shift 2
@@ -88,7 +58,6 @@ case "${ONLY:-all}" in
   linux) linux ;;
   windows) windows ;;
   all)
-    # Linux (CI) and Windows (remote) build while macOS builds and notarizes.
     pids=()
     if [[ -n "${LINUX_FROM_CI:-}" ]]; then linux_from_ci > "$DIST/.linux.log" 2>&1 & pids+=($!); fi
     if [[ -z "${NO_WINDOWS:-}" ]]; then windows > "$DIST/.windows.log" 2>&1 & pids+=($!); fi
@@ -104,14 +73,8 @@ esac
 "$WT/scripts/release/aliases.sh"
 "$WT/scripts/release/checksums.sh"
 
-# SHA256SUMS.minisig: the self updater refuses a release without it. The
-# secret key stays outside the repo (default ~/.config/godterm-release/
-# minisign.key, made by scripts/update-signing/minisign.py keygen); the
-# public key is UPDATE_PUBKEY in src/update.rs. Verified right away.
 UPDATE_KEY="${UPDATE_KEY:-$HOME/.config/godterm-release/minisign.key}"
 if [[ -f "$UPDATE_KEY" ]]; then
-  # minisign.py needs the `cryptography` package: use the system python when
-  # it has it, else a private venv made once (so a bare machine still signs).
   SIGN_PY=python3
   if ! "$SIGN_PY" -c 'import cryptography' 2>/dev/null; then
     SIGN_VENV="${SIGN_VENV:-$HOME/.cache/godterm-release/venv}"
@@ -122,8 +85,6 @@ if [[ -f "$UPDATE_KEY" ]]; then
     fi
     SIGN_PY="$SIGN_VENV/bin/python"
   fi
-  # The version goes into the signed comment: the updater refuses a
-  # release without it, or one offered under another version's tag.
   REL_VERSION="$(sed -nE 's/^version = "([^"]+)"/\1/p' "$WT/Cargo.toml" | head -1)"
   [[ -n "$REL_VERSION" ]] || { echo "no version in $WT/Cargo.toml" >&2; exit 1; }
   "$SIGN_PY" "$WT/scripts/update-signing/minisign.py" sign "$UPDATE_KEY" "$DIST/SHA256SUMS" "$REL_VERSION" >/dev/null
@@ -145,8 +106,6 @@ if [[ -n "${DRAFT:-}" ]]; then
   notes="$(mktemp)"
   "$WT/scripts/release/notes.sh" "${tag#v}" > "$notes"
   pre=(); [[ "$tag" == *-* ]] && pre=(--prerelease)
-  # Create the draft with notes only, then upload each asset on its own
-  # with retries: large multi file uploads tend to stall.
   gh release create "$tag" --repo daniel-farina/godterm --draft ${pre[@]+"${pre[@]}"} --verify-tag \
     --title "GodTerm ${tag#v}" --notes-file "$notes"
   for f in "$DIST"/*.dmg "$DIST"/*.zip "$DIST"/*.tar.gz "$DIST"/*.deb "$DIST"/*.rpm \

@@ -1,11 +1,9 @@
-// Small helpers shared by every module.
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
 
-// Element builder: h('button.btn', {onclick}, 'text', child)
 export function h(sel, props, ...kids) {
   const [tag, ...cls] = sel.split('.');
   const el = document.createElement(tag || 'div');
@@ -70,26 +68,18 @@ export function paintIcons(root = document) {
   }
 }
 
-// A tiny event bus.
 const subs = {};
 export const on = (ev, fn) => ((subs[ev] ||= []).push(fn), () => (subs[ev] = subs[ev].filter((f) => f !== fn)));
 export const emit = (ev, ...a) => (subs[ev] || []).forEach((f) => { try { f(...a); } catch (e) { console.error(e); } });
 
-// localStorage that never throws.
 export const store = {
   get(k, d) { try { const v = localStorage.getItem('gt.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { if (v == null) localStorage.removeItem('gt.' + k); else localStorage.setItem('gt.' + k, JSON.stringify(v)); } catch {} },
 };
 
-// A toast: tap or swipe it sideways to dismiss. On a desktop it sits in
-// the layout (see #toasts); on a phone it floats above the key bar.
-// `action`: {label, fn} or a list of them (buttons in a row). `ms`: how
-// long it stays (0: until tapped, swiped or removed).
 export function toast(text, level = 'info', action, ms) {
   const box = $('#toasts');
-  // The same message again (copied twice): the shown one stays, no stack.
-  // (An action toast keeps its own life: asked again it does not stay
-  // longer, else a tip asked on every paint never goes.)
+
   for (const o of box.children) if (o.dataset.t === level + '|' + text && !o.classList.contains('gone')) { if (!action) { clearTimeout(o._life); o._life = setTimeout(() => o.remove(), ms ?? 4000); } return o; }
   const el = h('div.toast.' + level, { role: 'status', 'data-t': level + '|' + text }, h('span', {}, text));
   const gone = (dx = 0) => {
@@ -99,7 +89,7 @@ export function toast(text, level = 'info', action, ms) {
     setTimeout(() => el.remove(), 160);
   };
   for (const a of [action].flat().filter(Boolean)) el.append(h('button' + (a.cls ? '.' + a.cls : ''), { onclick: (e) => { e.stopPropagation(); a.fn(); gone(); } }, a.label));
-  // With an action there is a plain x too (a tap elsewhere on it dismisses as well).
+
   if (action) el.append(h('button.tx', { type: 'button', 'aria-label': 'Dismiss', onclick: (e) => { e.stopPropagation(); gone(); }, html: icon('x') }));
   let x0 = null, dx = 0;
   el.addEventListener('pointerdown', (e) => { if (e.target.tagName !== 'BUTTON') { x0 = e.clientX; dx = 0; } });
@@ -126,13 +116,9 @@ export function toast(text, level = 'info', action, ms) {
 
 export const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
-// "t3763" -> 3763 and back.
 export const uidOf = (id) => (typeof id === 'number' ? id : parseInt(String(id).replace(/^t/, ''), 10) || 0);
 export const idOf = (uid) => (typeof uid === 'string' && uid.startsWith('t') ? uid : 't' + uid);
 
-// A strip that scrolls sideways (the tab list's chips): edge fades say
-// there is more. A finger scrolls it natively; on a desktop a mouse drag
-// or the wheel scrolls it too, and a drag is never taken as a click.
 export function hscroll(el) {
   const paint = () => {
     const max = el.scrollWidth - el.clientWidth;
@@ -168,14 +154,10 @@ export function hscroll(el) {
 }
 
 export const isTouch = () => matchMedia('(pointer:coarse)').matches;
-// Wide and tall enough for the side list and split panes; a phone on its
-// side (932 x 430) keeps the phone layout, the terminal using the width.
+
 export const DESK = '(min-width:760px) and (min-height:560px)';
 export const isDesk = () => matchMedia(DESK).matches;
 
-// A tab's accent color (its own, else its group's: `color` in the tab's
-// state), one of the muted swatches the terminal UI uses. tcStyle gives
-// the inline `--tc` for an element; the CSS draws the stripe or the dot.
 export const SWATCHES = ['sage', 'sand', 'slate', 'clay', 'mauve', 'stone', 'moss', 'teal', 'rose', 'dusk'];
 export const tcOf = (t) => { const c = String(t?.color || '').toLowerCase(); return SWATCHES.includes(c) ? c : ''; };
 export const tcStyle = (t) => tcOf(t) ? `--tc:var(--sw-${tcOf(t)})` : '';
@@ -187,11 +169,6 @@ export function tcPaint(el, t) {
 
 export function pctClass(p) { return p == null ? '' : p < 5 ? 'out' : p < 25 ? 'lo' : ''; }
 
-// Raw values in words, the same everywhere: a state key
-// ("not_logged_in" -> "not logged in"), a tab's state as what the agent
-// is doing ("approval" -> "waiting for an approval"), a cron line
-// ("0 8 * * 1-5" -> "weekdays at 08:00"; '' when it is not one, so the
-// caller falls back to the raw text).
 export const words = (s) => String(s ?? '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
 const DOING = { approval: 'waiting for an approval', waiting: 'waiting', working: 'working', busy: 'busy', background: 'working in the background', starting: 'starting', ready: 'ready', ended: 'ended', error: 'stopped on an error', limit: 'out of usage' };
 export const stateWords = (s) => DOING[String(s || '').split(' ')[0]] || words(s) || 'busy';
@@ -229,14 +206,11 @@ export function cronWords(c) {
   return (day ? day + ' ' : 'every day ' ) + when;
 }
 
-// A list that is loading: grey bars in the rows' shape (no words). `n`
-// rows; '.sm' for the compact rows of the tab panel and popovers.
 export function skeleton(n = 3, cls = '') {
   return h('div.skel' + cls, { 'aria-busy': 'true', 'aria-label': 'Loading' },
     Array.from({ length: n }, (_, i) => h('div.sk-r', {}, h('span.sk-b', { style: `width:${[58, 44, 66, 50][i % 4]}%` }), h('span.sk-b.sk-s', { style: `width:${[30, 38, 24, 34][i % 4]}%` }))));
 }
-// A request that failed: why, and Retry. A GodTerm older than the page
-// ("unknown frame type", "unknown tool") says so instead of the raw error.
+
 export function failRow(error, retry, what = 'This') {
   const e = String(error || 'It did not work');
   const old = /unknown (frame type|tool|git op)/i.test(e);
@@ -244,14 +218,12 @@ export function failRow(error, retry, what = 'This') {
     h('span.ft', {}, old ? `${what} needs a newer GodTerm: restart it to update.` : e),
     retry && !old ? h('button.btn.sm', { type: 'button', onclick: retry }, 'Retry') : null);
 }
-// An empty list: one line, a hint, and one thing to do about it.
+
 export function emptyState(text, hint, action) {
   return h('div.empty', {}, h('div', {}, text), hint ? h('div.eh', {}, hint) : null,
     action ? h('button.btn.sm', { type: 'button', onclick: action.fn }, action.label) : null);
 }
 
-// Menus and sheets share one look: grouped lists with hairline rows
-// (icon, label, a trailing value), small section labels.
 export function li(ic, label, o = {}) {
   return h('button.li' + (o.bad ? '.bad' : '') + (o.on ? '.on' : ''), { type: 'button', role: 'menuitem', disabled: !!o.off, title: o.off || o.tip || '', onclick: o.fn },
     h('span', { html: icon(ic) }), h('span.ll', {}, label), o.hint ? h('span.lh', {}, o.hint) : null, o.chev ? h('span.lc', { html: icon('chev') }) : null);

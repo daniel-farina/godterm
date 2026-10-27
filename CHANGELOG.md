@@ -7,6 +7,79 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-27
+
+Platforms: macOS (Apple silicon and Intel, universal), Linux (x86_64 and aarch64) and Windows (x64; built on GitHub Actions). The Windows installer and zip are not code signed, so SmartScreen will warn: click More info, then Run anyway.
+
+A polish release on 0.3.0: a calmer, clearer web app, an assistant that defaults to Sonnet and knows which tab you are looking at, model lists that come from the harness itself, and the Windows port finished.
+
+### Added
+- Web app: Loops and Scheduled in the toolbar, each with a live count; a
+  job can be edited from the web app.
+- Web app tab list and panes: a small harness mark before each tab's
+  name, green working dots, compact dots for background loops and jobs,
+  muted colored pills in the pane header and bottom bar, and the
+  account email as a pill (a tap hides or shows it; shown only where
+  GodTerm's privacy settings allow). The tab state now says which
+  harness each tab runs.
+- Web tab list: sort by Recent activity or Least recent, with "active 5
+  min ago" on each row, and a pending move is shown in the list and the
+  status bar, with Move now in the move picker.
+- Assistant (web and terminal): the model can be chosen from a dropdown
+  and defaults to Sonnet 5.5 at low effort. Every message carries the
+  tab in view as a small tag (not in the words), and "All tabs" sends
+  the words as they are. Tapping the current tab context lists the
+  recent tabs. The sentence being read aloud is highlighted, a gear
+  opens the assistant's settings, and a TTS toggle sits beside the mic.
+- Web assistant: a resizable panel, a context selector (all tabs or
+  this tab), message timestamps, soft colored bubbles, a Talk button
+  with a drag handle that moves into the panel when it covers the
+  terminals.
+- Assistant: `work_status`, one cheap call behind every status
+  question, and log entries that carry when they were written.
+- Model lists: the model bar and the assistant dropdown show the models
+  the harness really offers (Anthropic `/v1/models`, Grok models and so
+  on) instead of a fixed list.
+- Dropping files onto a terminal pane uploads them and types their
+  paths; file drags no longer navigate the page away.
+- Reopen on a tab that is in the list but not running starts it again
+  in place, resuming its conversation.
+- Settings: sections have group headers (the first open, the rest
+  closed; a search opens the matches), and the voice engines are named
+  Voice engine and the assistant's own.
+- GodTerm Sync tools: `sync_plan`, `sync_init`, `sync_clone`,
+  `sync_pause` and a richer `sync_status`; Codex and Cursor sessions are
+  in the session index.
+- `scripts/e2e/gate.sh`: a fast web gate that checks every screen at
+  five sizes, combinations and flows against the dev mock.
+
+### Changed
+- Focus, mouse and cursor reports from a viewer no longer count as tab
+  activity, and a prompt gets 25 seconds to start before a delivery
+  fails.
+- Deliveries to a tab wait while you have text in its input box.
+- A tab stopped at its usage limit is not busy, and stale subagents no
+  longer hold a move.
+
+### Fixed
+- A tab whose conversation file has no messages starts a new
+  conversation instead of failing to resume it.
+- Web app: a pane that showed a moved tab follows it to its new id; a
+  kept terminal shown again is sized correctly; no NaN scroll positions
+  or WebGL errors after rapid tab switches; confirm sheet buttons wrap
+  instead of clipping; the assistant header fits narrow panels.
+- Windows: the assistant's 50 KB system prompt is passed by file instead
+  of the command line, web sign-in finds who holds the other end of a
+  connection, sync and git paths use portable separators and local
+  remotes, image paste handles drive paths and `file:///C:/` URLs, and a
+  tab's exit is reported when ConPTY keeps its output open.
+- The wheel tests no longer depend on mouse reports counting as typing.
+
+### Windows port and CI
+- The unit tests that were skipped on Windows (sync, git, assistant,
+  events, images, background locks) are ported and run on every push;
+  a dispatchable workflow runs chosen tests on a Windows runner.
+
 ## [0.3.0] - 2026-10-26
 
 Platforms: macOS (Apple silicon and Intel, universal), Linux (x86_64 and aarch64) and Windows (x64; built on GitHub Actions). The Windows installer and zip are not code signed, so SmartScreen will warn: click More info, then Run anyway.

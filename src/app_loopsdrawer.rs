@@ -1,16 +1,3 @@
-//! The loops drawer: a lower section inside a pane (between its terminal
-//! and the model bar) listing the active tab's scheduled prompts, opened
-//! with the `⟳ loops (N)` button on the model bar's row or Ctrl-a ;.
-//!
-//! GodTerm has no scheduler of its own: every loop is the tab's own
-//! (loops.rs reads them): Claude Code's CronCreate jobs and dynamic
-//! /loop wakeups from its transcript plus durable ones in
-//! `.claude/scheduled_tasks.json`; Grok Build's scheduler_create tasks
-//! from its chat history. Nothing here edits those files: "Run now"
-//! sends the loop's prompt to the tab as a turn, "Cancel" asks the tab to
-//! cancel it (typed in once it is idle), "Copy" copies its details, and
-//! "New loop…" types `/loop ` into the tab's input for the user to finish.
-
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, Utc};
@@ -21,22 +8,18 @@ use crate::app::App;
 use crate::app_loops::LoopRow;
 use crate::harness::Harness;
 
-/// Rows a new drawer gets (its top edge included).
 pub const DEFAULT_ROWS: u16 = 8;
 pub const MIN_ROWS: u16 = 4;
 pub const MAX_ROWS: u16 = 16;
-/// The terminal keeps at least this many rows.
+
 pub const MIN_TERM: u16 = 6;
-/// A second click on Cancel within this long asks the tab.
+
 const CONFIRM: Duration = Duration::from_secs(6);
 
-/// The per loop buttons.
 pub const OP_RUN: u8 = 0;
 pub const OP_CANCEL: u8 = 1;
 pub const OP_COPY: u8 = 2;
 
-/// "in 3:12" under an hour (it counts down each second), else "in 2h";
-/// past ones "4m ago".
 pub fn countdown(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let s = (t - now).num_seconds();
     if (0..3600).contains(&s) {
@@ -46,7 +29,6 @@ pub fn countdown(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// The wall clock time, with the day when it is not today.
 pub fn clock(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let l = t.with_timezone(&Local);
     if l.date_naive() == now.with_timezone(&Local).date_naive() {
@@ -56,7 +38,6 @@ pub fn clock(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// One loop's line parts: (when, last, status).
 pub fn loop_facts(r: &LoopRow, now: DateTime<Utc>) -> (String, String, String) {
     let l = &r.lp;
     let next = match l.next_fire(now) {
@@ -83,12 +64,10 @@ pub fn loop_facts(r: &LoopRow, now: DateTime<Utc>) -> (String, String, String) {
 }
 
 impl App {
-    /// Whether pane `i`'s drawer is open.
     pub fn loops_drawer_open(&self, i: usize) -> bool {
         self.loops_drawer.contains_key(&i)
     }
 
-    /// The loops of pane `i`'s active tab.
     pub fn drawer_loops(&self, i: usize) -> Vec<LoopRow> {
         let Some(slot) = self.panes.get(i) else {
             return vec![];
@@ -101,7 +80,6 @@ impl App {
             .collect()
     }
 
-    /// Open or close pane `i`'s drawer (the button, Ctrl-a ;).
     pub fn toggle_loops_drawer(&mut self, i: usize) {
         if i >= self.panes.len() {
             return;
@@ -120,7 +98,6 @@ impl App {
         self.refresh_loops(true);
     }
 
-    /// Its top edge dragged to `row`.
     pub fn drag_loops_drawer(&mut self, i: usize, row: u16) {
         let Some(r) = self.loops_drawer_geo.borrow().get(&i).copied() else {
             return;
@@ -130,8 +107,6 @@ impl App {
         self.loops_drawer.insert(i, h);
     }
 
-    /// Keys while a drawer has them: Esc closes it, Up and Down select;
-    /// anything else gives the keys back to the tab (false: not taken).
     pub fn loops_drawer_key(&mut self, k: &KeyEvent) -> bool {
         let Some(i) = self.loops_drawer_focus else {
             return false;
@@ -161,7 +136,6 @@ impl App {
         }
     }
 
-    /// The details copied for a loop.
     fn loop_details(&self, r: &LoopRow, source: &str) -> String {
         let now = Utc::now();
         let (next, last, status) = loop_facts(r, now);
@@ -175,7 +149,6 @@ impl App {
         )
     }
 
-    /// A drawer button: loop `k` of pane `i`, op OP_RUN / OP_CANCEL / OP_COPY.
     pub fn loop_action(&mut self, i: usize, k: usize, op: u8) {
         self.focus = i;
         self.loops_drawer_focus = Some(i);
@@ -226,22 +199,18 @@ impl App {
         }
     }
 
-    /// Whether Cancel on this loop waits for its second click.
     pub fn loop_cancel_armed(&self, uid: u64, id: &str) -> bool {
         self.loops_confirm
             .as_ref()
             .is_some_and(|(u, i, at)| *u == uid && i == id && at.elapsed() < CONFIRM)
     }
 
-    /// Whether a stop was asked of this loop and is not confirmed yet.
     pub fn loop_cancel_asked(&self, uid: u64, id: &str) -> bool {
         self.stop_reqs.iter().any(|q| {
             q.uid == uid && (q.ids.iter().any(|x| x == id) || (q.wakeup && id == "wakeup"))
         })
     }
 
-    /// "New loop…": `/loop ` typed into the tab's input (not sent), and
-    /// the keys go to the tab to finish it.
     pub fn new_loop_in(&mut self, i: usize) {
         let t = self.panes[i].active;
         let tab = &mut self.panes[i].tabs[t];
@@ -262,7 +231,6 @@ impl App {
         self.flash("Typed /loop into the tab: add the interval and the prompt, then Enter (e.g. 30m check the deploy)");
     }
 
-    /// The show_tab_loops tool: open the drawer on that tab and list them.
     pub fn show_tab_loops_tool(&mut self, args: &Value) -> Result<Value, String> {
         let (s, t) = self.one_tab(args)?;
         self.jump_to(s, t);

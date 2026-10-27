@@ -1,15 +1,3 @@
-//! Terminal output off the UI thread.
-//!
-//! The UI thread never writes to the terminal itself. Each frame is rendered
-//! into memory, as one self contained chunk (synchronized update begin, the
-//! cell diff, the cursor, synchronized update end), and handed to a writer
-//! thread that does the blocking writes. A terminal that stops reading (a
-//! full tty queue) then stalls only that thread: the event loop, voice,
-//! ticks and state saving go on, and frames wait until the writer is free.
-//!
-//! Chunks are never dropped once produced: ratatui diffs each frame against
-//! the previous one, so a lost chunk would leave the screen wrong.
-
 use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
@@ -21,13 +9,12 @@ use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Size};
 use ratatui::{Frame, Terminal};
 
-/// How long the writer may sit on one chunk before it counts as stalled.
 pub const STALL: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 struct St {
     queue: VecDeque<Vec<u8>>,
-    /// When the writer took the chunk it is writing now.
+
     inflight_since: Option<Instant>,
     closed: bool,
 }
@@ -43,14 +30,12 @@ impl Inner {
     }
 }
 
-/// A queue of byte chunks and the thread that writes them, in order.
 #[derive(Clone)]
 pub struct Out {
     inner: Arc<Inner>,
 }
 
 impl Out {
-    /// Start the writer thread on `sink`.
     pub fn spawn<W: Write + Send + 'static>(name: &str, mut sink: W) -> io::Result<Out> {
         let inner = Arc::new(Inner {
             st: Mutex::new(St::default()),
@@ -73,8 +58,7 @@ impl Out {
                         st = t.cv.wait(st).unwrap_or_else(|e| e.into_inner());
                     }
                 };
-                // write_all retries EINTR. Any other error (the terminal
-                // went away) loses only this chunk; the next one tries again.
+
                 let _ = sink.write_all(&chunk).and_then(|_| sink.flush());
                 let mut st = t.lock();
                 st.inflight_since = None;
@@ -83,7 +67,6 @@ impl Out {
         Ok(Out { inner })
     }
 
-    /// Queue bytes for the terminal. Never blocks, never drops.
     pub fn send(&self, bytes: Vec<u8>) {
         if bytes.is_empty() {
             return;
@@ -93,13 +76,11 @@ impl Out {
         self.inner.cv.notify_all();
     }
 
-    /// Nothing queued and nothing being written.
     pub fn idle(&self) -> bool {
         let st = self.inner.lock();
         st.queue.is_empty() && st.inflight_since.is_none()
     }
 
-    /// How long the writer has been on its current chunk (zero when free).
     pub fn stalled_for(&self) -> Duration {
         self.inner
             .lock()
@@ -108,7 +89,6 @@ impl Out {
             .unwrap_or_default()
     }
 
-    /// Wait at most `bound` for everything queued to be written.
     pub fn wait_idle(&self, bound: Duration) -> bool {
         let end = Instant::now() + bound;
         let mut st = self.inner.lock();
@@ -127,12 +107,8 @@ impl Out {
         true
     }
 
-    /// The last bytes (terminal restore): queued, then at most `bound` to
-    /// get them out. True when they were written. The writer thread is told
-    /// to end once its queue is empty; a stuck one is left behind.
     pub fn finish(&self, bytes: Vec<u8>, bound: Duration) -> bool {
         if self.inner.lock().closed {
-            // Finished before (a panic after the normal restore).
             return self.idle();
         }
         self.send(bytes);
@@ -145,7 +121,6 @@ impl Out {
 
 static GLOBAL: OnceLock<Out> = OnceLock::new();
 
-/// Make `out` the terminal's writer for code without a handle to it.
 pub fn install(out: Out) {
     let _ = GLOBAL.set(out);
 }
@@ -154,8 +129,6 @@ pub fn global() -> Option<&'static Out> {
     GLOBAL.get()
 }
 
-/// Bytes for the terminal from anywhere (OSC 52 and the like): through the
-/// writer when the TUI runs, else straight to stdout.
 pub fn write_raw(bytes: Vec<u8>) {
     match global() {
         Some(o) => o.send(bytes),
@@ -167,7 +140,6 @@ pub fn write_raw(bytes: Vec<u8>) {
     }
 }
 
-/// A writer into a shared in-memory buffer.
 #[derive(Clone, Default)]
 pub struct FrameBuf(Arc<Mutex<Vec<u8>>>);
 
@@ -190,10 +162,6 @@ impl Write for FrameBuf {
     }
 }
 
-/// The crossterm backend over a [`FrameBuf`], except that it never asks the
-/// terminal where the cursor is. Crossterm's query writes to stdout itself
-/// and waits up to 2 s for the answer, and ratatui asks on every clear and
-/// resize; the cursor is wherever the frame last put it.
 pub struct BufBackend {
     inner: CrosstermBackend<FrameBuf>,
     cursor: Position,
@@ -248,15 +216,12 @@ impl Backend for BufBackend {
     }
 }
 
-/// A change in the writer's health, for the caller to log.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Health {
     Stalled,
     Recovered(Duration),
 }
 
-/// The TUI's screen: a ratatui terminal drawing into memory, frames going
-/// out through an [`Out`].
 pub struct Screen<B: Backend = BufBackend> {
     pub term: Terminal<B>,
     buf: FrameBuf,
@@ -275,7 +240,6 @@ impl Screen<BufBackend> {
 }
 
 impl<B: Backend> Screen<B> {
-    /// A screen over any backend that writes into `buf`.
     pub fn with_terminal(term: Terminal<B>, buf: FrameBuf, out: Out) -> Self {
         Screen {
             term,
@@ -292,25 +256,20 @@ impl<B: Backend> Screen<B> {
         self.stall_after = d;
     }
 
-    /// The writer is free: a new frame may be drawn.
     pub fn ready(&self) -> bool {
         self.out.idle()
     }
 
-    /// The next frame starts from a cleared screen and redraws every cell.
     pub fn clear_next(&mut self) {
         self.need_clear = true;
     }
 
-    /// Queue a crossterm command (mouse capture and the like).
     pub fn command(&self, c: impl crossterm::Command) {
         let mut v = Vec::new();
         let _ = queue!(v, c);
         self.out.send(v);
     }
 
-    /// Notice the writer stalling or coming back. A writer back from a stall
-    /// gets a full redraw: what the terminal shows is uncertain by then.
     pub fn check(&mut self) -> Option<Health> {
         match self.stalled {
             None if self.out.stalled_for() >= self.stall_after => {
@@ -330,9 +289,6 @@ impl<B: Backend> Screen<B> {
         self.stalled.is_some()
     }
 
-    /// Draw one frame and queue it as one chunk. The caller holds frames
-    /// back while the writer is busy ([`Screen::ready`]); a frame drawn
-    /// anyway is queued behind, never dropped. `done` sees the drawn buffer.
     pub fn draw<B2>(
         &mut self,
         render: impl FnOnce(&mut Frame),
@@ -341,9 +297,6 @@ impl<B: Backend> Screen<B> {
     where
         B::Error: Into<io::Error>,
     {
-        // One frame at once (terminals that support it), with the cursor
-        // hidden while cells are written: no cursor flashing across the
-        // screen. The frame shows it again at the input.
         let mut head = Vec::new();
         let _ = queue!(head, terminal::BeginSynchronizedUpdate, cursor::Hide);
         let _ = self.buf.take();
@@ -370,8 +323,6 @@ impl<B: Backend> Screen<B> {
                 Ok(v)
             }
             Err(e) => {
-                // Nothing of a failed frame goes out, and the next one
-                // redraws everything, so the diff never builds on it.
                 self.need_clear = true;
                 Err(e)
             }
@@ -379,7 +330,6 @@ impl<B: Backend> Screen<B> {
     }
 }
 
-/// A draw error the loop rides out (try again next frame).
 pub fn transient(e: &io::Error) -> bool {
     matches!(
         e.kind(),
@@ -396,10 +346,8 @@ mod tests {
     const BEGIN: &[u8] = b"\x1b[?2026h";
     const END: &[u8] = b"\x1b[?2026l";
 
-    /// Open or not, and the chunks written.
     type GateState = Mutex<(bool, Vec<Vec<u8>>)>;
 
-    /// A sink that parks every write until opened, recording each chunk.
     #[derive(Clone, Default)]
     struct Gate {
         st: Arc<(GateState, Condvar)>,
@@ -433,8 +381,6 @@ mod tests {
         hay.windows(needle.len()).filter(|w| *w == needle).count()
     }
 
-    /// A screen over a test backend whose output lands in a FrameBuf, as
-    /// the real one does (the crossterm backend needs a tty for its size).
     struct TeeBackend {
         test: TestBackend,
         inner: CrosstermBackend<FrameBuf>,
@@ -500,8 +446,6 @@ mod tests {
         }
     }
 
-    /// The event loop's draw scheduling, as main runs it, for `run` long.
-    /// Returns (iterations, frames drawn, longest iteration).
     fn spin<B: Backend>(s: &mut Screen<B>, run: Duration) -> (u32, usize, Duration)
     where
         B::Error: Into<io::Error>,
@@ -511,8 +455,7 @@ mod tests {
         while start.elapsed() < run {
             let t = Instant::now();
             iters += 1;
-            // Every turn an event arrives and the screen is dirty; it stays
-            // dirty until the writer is free.
+
             let _ = s.check();
             if s.ready() {
                 s.draw(text(frames), |_| ()).unwrap();
@@ -531,10 +474,7 @@ mod tests {
         let mut s = screen(out.clone(), 80, 24);
         s.set_stall_after(Duration::from_millis(100));
         let (iters, frames, worst) = spin(&mut s, Duration::from_millis(400));
-        // The loop kept turning; one frame went to the writer and the rest
-        // waited (kept dirty) instead of piling up or being dropped.
-        // Loose bounds for slow CI runners (a 2 ms sleep can take 10 ms
-        // there); a loop blocked on the writer would turn once in 400 ms.
+
         assert!(iters > 10, "loop stalled: {iters} iterations");
         assert!(
             worst < Duration::from_millis(200),
@@ -545,7 +485,6 @@ mod tests {
         assert!(s.stalled(), "the stall is noticed");
         assert!(out.stalled_for() >= Duration::from_millis(100));
 
-        // The reader resumes: the frame lands, a full redraw follows.
         gate.open();
         assert!(out.wait_idle(Duration::from_secs(2)));
         assert!(matches!(s.check(), Some(Health::Recovered(_))));
@@ -560,7 +499,7 @@ mod tests {
             assert_eq!(count(c, BEGIN), 1);
             assert_eq!(count(c, END), 1);
         }
-        // The frame after recovery cleared the screen (full redraw).
+
         assert!(count(&chunks[1], b"\x1b[2J") == 1);
     }
 
@@ -570,7 +509,6 @@ mod tests {
         let out = Out::spawn("test-out", gate.clone()).unwrap();
         let mut s = screen(out.clone(), 40, 10);
         for n in 0..5 {
-            // Drawn regardless of ready(): queued, never dropped.
             s.draw(text(n), |_| ()).unwrap();
         }
         gate.open();
@@ -593,7 +531,7 @@ mod tests {
         let out = Out::spawn("test-out", wr).unwrap();
         let mut s = screen(out.clone(), 200, 60);
         s.set_stall_after(Duration::from_millis(100));
-        // Far more than a pipe holds: the writer blocks in write().
+
         let start = Instant::now();
         let mut produced = 0;
         while out.stalled_for() < Duration::from_millis(150) {
@@ -602,7 +540,6 @@ mod tests {
                 s.draw(text(produced), |_| ()).unwrap();
                 produced += 1;
             } else {
-                // A huge raw chunk too, so the pipe surely fills.
                 out.send(vec![b'x'; 256 * 1024]);
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -614,7 +551,6 @@ mod tests {
         produced += 1;
         assert!(t.elapsed() < Duration::from_millis(50), "draw blocked");
 
-        // The reader resumes.
         let reader = std::thread::spawn(move || {
             let mut all = Vec::new();
             let _ = std::io::Read::read_to_end(&mut rd, &mut all);
@@ -622,7 +558,7 @@ mod tests {
         });
         assert!(out.wait_idle(Duration::from_secs(5)), "writer recovered");
         assert!(matches!(s.check(), Some(Health::Recovered(_))));
-        // Close the write end so the reader sees EOF.
+
         assert!(out.finish(Vec::new(), Duration::from_secs(1)));
         drop(s);
         drop(out);
@@ -634,7 +570,7 @@ mod tests {
         let all = reader.join().unwrap();
         assert_eq!(count(&all, BEGIN), produced);
         assert_eq!(count(&all, END), produced);
-        // Never interleaved: every begin is closed before the next one.
+
         let mut open = false;
         for i in 0..all.len() {
             if all[i..].starts_with(BEGIN) {
@@ -664,7 +600,7 @@ mod tests {
             "shutdown hung: {took:?}"
         );
         gate.open();
-        // Once free, the writer still gets the restore out, then ends.
+
         assert!(out.wait_idle(Duration::from_secs(2)));
         assert_eq!(gate.chunks().last().unwrap(), b"restore");
     }
@@ -677,7 +613,7 @@ mod tests {
         out.send(b"hello".to_vec());
         assert!(out.finish(b"bye".to_vec(), Duration::from_secs(1)));
         assert_eq!(gate.chunks(), vec![b"hello".to_vec(), b"bye".to_vec()]);
-        // A second finish (the panic hook after the restore) is immediate.
+
         let t = Instant::now();
         assert!(out.finish(b"again".to_vec(), Duration::from_secs(1)));
         assert!(t.elapsed() < Duration::from_millis(100));

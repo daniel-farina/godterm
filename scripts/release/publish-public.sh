@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-# Publish the current tree of a local branch (default: master, whose full
-# history stays in the private repo) to the public repo as ONE new commit on
-# top of the public history. The private history never leaves this machine.
-#
-#   scripts/release/publish-public.sh "Summary of what changed"
-#   SRC=master PUBLIC_REMOTE=origin scripts/release/publish-public.sh "..."
-#
-# Before pushing it scans what changed for secrets, personal emails, personal
-# paths and private hosts (the patterns in ~/.config/godterm/public-deny.txt,
-# one extended regex per line, plus built in token formats) and refuses on a
-# hit. Commits use the GitHub noreply address.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"

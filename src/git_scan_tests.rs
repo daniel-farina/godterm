@@ -1,12 +1,6 @@
-//! Secret patterns (each one hits, redaction never shows the value), the
-//! built-in scan of an outgoing patch, a gitleaks report fixture, the
-//! size thresholds with sparse files, tracked secret files, symlinks into
-//! private places and .gitignore hygiene. Temp repos only.
-
 use super::*;
 use crate::git_ops::tests::{fixture, g};
 
-/// Fake secrets built at run time (no real looking key sits in the source).
 fn samples() -> Vec<(&'static str, String)> {
     let r = |c: char, n: usize| c.to_string().repeat(n);
     vec![
@@ -85,7 +79,7 @@ fn gitleaks_report_fixture() {
 fn builtin_scan_of_outgoing_commits() {
     let fx = fixture("scan");
     let ctx = Ctx::new(&fx.a);
-    // In tests gitleaks is never used: the built-in fallback runs.
+
     assert!(gitleaks_bin().is_none());
     assert!(scan_outgoing(&ctx, None).findings.is_empty());
     let key = format!("AKIA{}", "W".repeat(16));
@@ -100,7 +94,7 @@ fn builtin_scan_of_outgoing_commits() {
     let c = check_push(&ctx);
     assert_eq!(c.soft_blocks().len(), 1);
     assert!(c.hard_blocks().is_empty(), "{:?}", c.hard_blocks());
-    // A .gitleaksignore entry silences it.
+
     std::fs::write(
         fx.a.join(".gitleaksignore"),
         "abc123:cfg.txt:aws-access-key:1\n",
@@ -110,7 +104,6 @@ fn builtin_scan_of_outgoing_commits() {
     let _ = std::fs::remove_dir_all(&fx.root);
 }
 
-/// A sparse file of `n` bytes (no disk used).
 fn sparse(p: &Path, n: u64) {
     let f = std::fs::File::create(p).unwrap();
     f.set_len(n).unwrap();
@@ -131,7 +124,7 @@ fn size_thresholds() {
     assert!(s.too_big());
     let many: Vec<(String, u64)> = (0..17).map(|i| (format!("f{i}"), 94 * MB)).collect();
     assert!(classify(&many).total > TOTAL_BYTES && classify(&many).too_big());
-    // Real blobs from sparse files: one warns, one blocks.
+
     let fx = fixture("size");
     let ctx = Ctx::new(&fx.a);
     sparse(&fx.a.join("mid.bin"), 51 * MB);
@@ -174,7 +167,7 @@ fn secret_files_links_and_ignores() {
         assert!(!check_push(&ctx).hard_blocks().is_empty());
     }
     assert!(env_file(".env.local") && !env_file(".env.example") && !env_file("env.rs"));
-    // Hygiene: everything missing, then nothing after the user adds it.
+
     let miss = missing_ignores(&ctx);
     assert!(miss.contains(&".env".to_string()) && miss.contains(&"node_modules/".to_string()));
     add_ignores(&fx.a, &miss).unwrap();
@@ -186,7 +179,7 @@ fn secret_files_links_and_ignores() {
     let gi = std::fs::read_to_string(fx.a.join(".gitignore")).unwrap();
     assert!(gi.contains("!.env.example"));
     assert!(add_ignores(&fx.a, &["*".to_string()]).is_err());
-    // The fix: untrack, the files stay.
+
     crate::git_ops::untrack(&ctx, &s).unwrap();
     assert!(tracked_secret_files(&ctx).is_empty());
     assert!(fx.a.join(".env").exists());

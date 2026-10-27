@@ -1,16 +1,3 @@
-// The debug log: what happens on this device (console messages, errors,
-// the socket, the viewport and keyboard, taps and keys in summary) goes to
-// GodTerm in `log` frames, written to web-client.log on the Mac (read it
-// with `godterm web-log`). On by default; Settings > This browser > Debug log
-// turns it off on this device. Typed text, clipboard contents and audio
-// are never sent: keys only by name (Esc, Ctrl, arrows), text as a count.
-//
-// Other modules: import { dlog } from './debuglog.js'; dlog('voice', 'started').
-//
-// This module is the small core (the queue, the socket's lines, errors
-// from the first moment); the console copy, the viewport, taps and keys
-// and the report are debughooks.js, loaded after the first paint (and
-// only while the log is on), so they cost the first screen nothing.
 import { on, store } from './util.js';
 import { send, conn } from './conn.js';
 
@@ -26,12 +13,11 @@ export function setDebug(v) {
   if (!enabled) { queue = []; bytes = 0; dropped = 0; }
   else { dlog('log', 'debug log on'); hooks(); }
 }
-// The rest of the log (debughooks.js), once; after the first paint by default.
+
 let hooked = null;
 export const hooks = () => (hooked ||= import('./debughooks.js'));
 if (enabled) { const go = () => setTimeout(hooks, 1200); if (document.readyState === 'complete') go(); else addEventListener('load', go); }
 
-// One line for the log. `text` may be anything; objects become JSON.
 export function dlog(cat, text) {
   if (!enabled || busy) return;
   busy = true;
@@ -66,7 +52,6 @@ export function flush() {
   }
 }
 
-// "iPhone Safari standalone 402x874@3"
 export const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 export function device() {
   const ua = navigator.userAgent;
@@ -76,7 +61,6 @@ export function device() {
   return `${kind} ${br} ${standalone() ? 'standalone' : 'tab'} ${screen.width}x${screen.height}@${Math.round(devicePixelRatio * 100) / 100}`;
 }
 
-// Errors and rejections from the first moment (the rest of the hooks come later).
 addEventListener('error', (e) => {
   if (e.target && e.target !== window) { dlog('error', `failed to load ${e.target.tagName?.toLowerCase()} ${e.target.src || e.target.href || ''}`); return; }
   const st = e.error?.stack ? ' ' + String(e.error.stack).split('\n').slice(0, 4).join(' | ') : '';
@@ -87,7 +71,6 @@ addEventListener('unhandledrejection', (e) => {
   dlog('error', 'unhandled rejection: ' + (r instanceof Error ? `${r.name}: ${r.message}${r.stack ? ' ' + r.stack.split('\n').slice(0, 4).join(' | ') : ''}` : safeJson(r)));
 });
 
-// The socket: opens, closes (with the code), retries, ping round trips.
 let downAt = 0, tries = 0;
 on('conn', (s, x) => {
   if (s === 'live') {
@@ -101,9 +84,6 @@ on('msg:pong', (m) => { const ms = Date.now() - Number(m.id); if (ms >= 0 && ms 
 on('input-lost', (n) => dlog('conn', `${n} queued inputs dropped`));
 on('hello', (m) => dlog('conn', `hello client ${m.client} build ${m.build} version ${m.version}`));
 
-// The first line: who and what this is (the screen and viewport follow with the hooks).
 dlog('boot', `${device()} | ${navigator.userAgent}`);
 
-// A state dump, as one `report` block (no screenshot): in debughooks.js.
-// Resolves to whether it went out at once (the socket was open).
 export function report() { return hooks().then((m) => m.report()); }

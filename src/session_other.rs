@@ -1,17 +1,9 @@
-//! Sessions of the CLIs whose transcripts are plain JSON lines, for the
-//! session index: Codex (`<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-*.jsonl`)
-//! and Cursor (`~/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl`).
-//! Main sessions only: a Codex subagent's rollout (`source` names a
-//! subagent) and any Cursor file other than `<id>/<id>.jsonl` are skipped.
-//! Antigravity and OpenCode keep binary databases and are not read.
-
 use serde_json::Value;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use crate::sessions::{lossy_lines, snippet, SessionInfo};
 
-/// Every Codex rollout under a home's `sessions` (three date levels).
 pub fn list_codex(home: &Path) -> Vec<PathBuf> {
     let mut out = vec![];
     let mut dirs = vec![(home.join("sessions"), 0)];
@@ -33,7 +25,6 @@ pub fn list_codex(home: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Every Cursor agent transcript: `<id>/<id>.jsonl` only.
 pub fn list_cursor(home: &Path) -> Vec<PathBuf> {
     let mut out = vec![];
     let Ok(projects) = std::fs::read_dir(home.join("projects")) else {
@@ -103,7 +94,6 @@ fn when(s: &str) -> Option<std::time::SystemTime> {
         .map(std::time::SystemTime::from)
 }
 
-/// One Codex rollout; None for a subagent's.
 pub fn parse_codex(path: &Path) -> Option<SessionInfo> {
     let f = std::fs::File::open(path).ok()?;
     let mut info = base(path);
@@ -157,7 +147,6 @@ pub fn parse_codex(path: &Path) -> Option<SessionInfo> {
         }
     }
     if info.id.is_empty() {
-        // Older rollouts: the id is the file name's tail (a UUID).
         let stem = path.file_stem()?.to_string_lossy().into_owned();
         info.id = stem.get(stem.len().saturating_sub(36)..)?.to_string();
     }
@@ -169,14 +158,12 @@ pub fn parse_codex(path: &Path) -> Option<SessionInfo> {
     Some(info)
 }
 
-/// A Cursor project slug ("Users-alice-my-app") as the folder it names:
-/// the existing path it spells, else every dash read as a slash.
 pub fn cursor_folder(slug: &str) -> String {
     fn walk(at: &Path, rest: &[&str]) -> Option<PathBuf> {
         if rest.is_empty() {
             return Some(at.to_path_buf());
         }
-        // The longest run of words that names an existing entry first.
+
         for k in (1..=rest.len()).rev() {
             for sep in ["-", ".", "_", " "] {
                 let name = rest[..k].join(sep);
@@ -199,7 +186,6 @@ pub fn cursor_folder(slug: &str) -> String {
         .unwrap_or_else(|| format!("/{}", parts.join("/")))
 }
 
-/// One Cursor agent transcript.
 pub fn parse_cursor(path: &Path) -> Option<SessionInfo> {
     let f = std::fs::File::open(path).ok()?;
     let mut info = base(path);
@@ -284,7 +270,7 @@ mod tests {
         assert_eq!(i.model.as_deref(), Some("gpt-5-codex"));
         assert_eq!(i.messages, 2);
         assert!(parse_codex(&sub).is_none(), "a subagent rollout is skipped");
-        // Through the index: one row, the main session.
+
         let ix = crate::session_index::Shared::default();
         let src = (
             crate::app_sessions::Src::Account(0),
@@ -313,7 +299,7 @@ mod tests {
                 r#"{"role":"assistant","message":{"content":[{"type":"text","text":"Added."}]}}"#,
             ],
         );
-        // Another file in the folder (a subagent's) is not a session.
+
         write(
             &tr.with_file_name("sub-1.jsonl"),
             &[r#"{"role":"user","message":{"content":"x"}}"#],
@@ -332,7 +318,7 @@ mod tests {
             i.cwd, "/work/acme/web",
             "no such folder: dashes read as slashes"
         );
-        // An existing folder with a dash in its name is found.
+
         let real = t.join("acme-web");
         std::fs::create_dir_all(&real).unwrap();
         let slug = real.to_string_lossy().replace('/', "-");

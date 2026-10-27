@@ -1,11 +1,5 @@
-//! Canonical paths for the never list: every symlink on the way is
-//! resolved, also one whose target is not there (an unmounted vault), so
-//! a link into `/Volumes/Private` is caught whether or not it is mounted.
-
 use std::path::{Component, Path, PathBuf};
 
-/// `p` with every symlink resolved, component by component, as far as
-/// links go (at most 40 hops); parts that do not exist are kept as named.
 pub fn real(p: &Path) -> PathBuf {
     let mut hops = 0;
     resolve(p, &mut hops)
@@ -34,8 +28,7 @@ fn resolve(p: &Path, hops: &mut u32) -> PathBuf {
             }
         }
     }
-    // /var -> /private/var and the like, for the part that exists (the
-    // longest existing ancestor is canonical, the rest is kept as named).
+
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     let mut base = out.clone();
     loop {
@@ -56,9 +49,6 @@ fn resolve(p: &Path, hops: &mut u32) -> PathBuf {
     }
 }
 
-/// `\\?\C:\x` (what canonicalize gives on Windows) as `C:\x`, and
-/// `\\?\UNC\srv\share` as `\\srv\share`, so a canonical path and one
-/// typed by a person compare equal. Other paths are returned as they are.
 pub fn unverbatim(p: PathBuf) -> PathBuf {
     let s = p.to_string_lossy();
     if let Some(r) = s.strip_prefix(r"\\?\UNC\") {
@@ -73,8 +63,6 @@ pub fn unverbatim(p: PathBuf) -> PathBuf {
     p
 }
 
-/// Whether `p` is `d` or inside it, comparing component by component and,
-/// on Windows, ignoring case (and `/` against `\`).
 pub fn under(p: &Path, d: &Path) -> bool {
     if !cfg!(windows) {
         return p.starts_with(d);
@@ -91,8 +79,6 @@ pub fn under(p: &Path, d: &Path) -> bool {
     a.len() >= b.len() && a[..b.len()] == b[..]
 }
 
-/// Why `p` may not be synced, if it is inside (or links into) one of
-/// `never` (canonical folders).
 pub fn refused(p: &Path, never: &[PathBuf]) -> Option<String> {
     let r = real(p);
     for d in never {
@@ -106,7 +92,6 @@ pub fn refused(p: &Path, never: &[PathBuf]) -> Option<String> {
     None
 }
 
-/// A temp folder cwd: sessions there are left out.
 pub fn is_temp(cwd: &Path) -> bool {
     let s = cwd.to_string_lossy();
     [

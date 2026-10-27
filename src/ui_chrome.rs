@@ -1,7 +1,3 @@
-//! Clickable chrome: menu bar, pane headers and footers, approval strips,
-//! dialog buttons, the account menu and the tour. Everything drawn here
-//! registers a hit region with the action it performs.
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -16,7 +12,6 @@ use crate::prompt::Choice;
 use crate::sessions::snippet;
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 
-/// Text that reacts to the mouse: highlighted while hovered.
 #[allow(clippy::too_many_arguments)]
 fn link(
     buf: &mut Buffer,
@@ -76,26 +71,23 @@ fn btn(
     )
 }
 
-/// Room kept for the mouse hint at the right end of the menu bar.
 const MOUSE_HINT_W: u16 = 32;
 
-/// One menu bar button. Labels never change width with state.
 pub struct MenuItem {
     pub label: String,
     pub action: UiAction,
     pub hint: String,
     pub accent: Color,
-    /// A toggle that is on (a subtle background).
+
     pub on: bool,
-    /// The screen this button opens is showing.
+
     pub lit: bool,
-    /// A zero count.
+
     pub dim: bool,
-    /// Lower goes first when the bar is too narrow; 100 never goes.
+
     pub prio: u8,
 }
 
-/// A count in a fixed two character badge: " 0", " 7", "9+".
 pub fn badge(n: usize) -> String {
     if n > 9 {
         "9+".into()
@@ -154,7 +146,6 @@ pub fn menu_items(app: &App) -> Vec<MenuItem> {
     v
 }
 
-/// Top row: wordmark and a button for every main action.
 pub fn draw_menu_bar(f: &mut Frame, app: &App, area: Rect) {
     let buf = f.buffer_mut();
     for x in area.x..area.x + area.width {
@@ -195,15 +186,14 @@ pub fn draw_menu_bar(f: &mut Frame, app: &App, area: Rect) {
             .bg(BAR_BG)
             .add_modifier(Modifier::BOLD),
     );
-    // The wordmark is the Home button.
+
     app.hits.borrow_mut().add(
         Rect::new(area.x, y, x.saturating_sub(area.x), 1),
         UiAction::Home,
         "Home: back to all sessions (Esc, Ctrl-a g)",
     );
     x += 1;
-    // The new version chip: kept whole at the right end; buttons and the
-    // mouse hint make room for it.
+
     let badge = app.update_badge();
     let full_limit = limit;
     let limit = match &badge {
@@ -211,9 +201,7 @@ pub fn draw_menu_bar(f: &mut Frame, app: &App, area: Rect) {
         None => limit,
     };
     let items = menu_items(app);
-    // Fixed labels, so a button never moves when state changes. When the
-    // terminal is narrow, whole buttons go (lowest priority first) behind
-    // a » menu; Help and Quit always stay.
+
     let w = |l: &str| unicode_width::UnicodeWidthStr::width(l) as u16 + 3;
     let mut keep: Vec<bool> = vec![true; items.len()];
     let total = |keep: &[bool]| -> u16 {
@@ -225,7 +213,7 @@ pub fn draw_menu_bar(f: &mut Frame, app: &App, area: Rect) {
             .sum::<u16>()
             + if keep.iter().all(|k| *k) { 0 } else { 4 }
     };
-    // The mouse hint is the first thing to go.
+
     let show_hint = total(&keep) + MOUSE_HINT_W <= limit.saturating_sub(x);
     let room = limit
         .saturating_sub(x)
@@ -260,7 +248,7 @@ pub fn draw_menu_bar(f: &mut Frame, app: &App, area: Rect) {
             &it.hint,
             accent,
         );
-        // Muted is the one solid red thing on screen.
+
         if it.action == UiAction::MuteToggle && app.voice.muted {
             for cx in start..x.saturating_sub(1) {
                 if let Some(c) = buf.cell_mut((cx, y)) {
@@ -273,7 +261,7 @@ pub fn draw_menu_bar(f: &mut Frame, app: &App, area: Rect) {
                 }
             }
         }
-        // Something waits for approval: brick red, blinking slowly.
+
         if it.action == UiAction::Key('y') {
             if let Some(st) = crate::attention::approvals_style(app) {
                 for cx in start..x.saturating_sub(1) {
@@ -315,7 +303,7 @@ pub fn draw_menu_bar(f: &mut Frame, app: &App, area: Rect) {
         );
     }
     *app.menu_overflow.borrow_mut() = overflow;
-    // The same width either way.
+
     let m = if app.mouse_capture {
         "mouse on, C-a M to select text "
     } else {
@@ -349,12 +337,8 @@ fn tab_text(ti: usize, t: &Pane) -> String {
     format!(" {}:{}{mark} ", ti + 1, snippet(&t.name(), 16))
 }
 
-/// Width of the window controls group (three 3 cell buttons).
 pub const CONTROLS_W: u16 = 9;
 
-/// The window controls at the right end of a pane header or a row strip,
-/// ending before `right`: minimize (on a strip: restore), maximize (zoom;
-/// zoomed: restore) and close. Returns where the group starts.
 pub fn window_controls(
     buf: &mut Buffer,
     app: &App,
@@ -401,13 +385,8 @@ pub fn window_controls(
     start
 }
 
-/// Width of the width carets (" <  > "): three cells each, so either is
-/// as easy to hit as the window controls beside them.
 pub const CARETS_W: u16 = 6;
 
-/// The width carets left of the window controls, ending before `right`:
-/// "<" narrower, ">" wider, trading width with the neighbour. Only where
-/// the pane has one and the header has room. Returns the new right edge.
 fn width_carets(
     buf: &mut Buffer,
     app: &App,
@@ -420,8 +399,7 @@ fn width_carets(
     if width < 24 || app.pane_col(i).is_none() || right < CARETS_W + 1 {
         return right;
     }
-    // They give way to the account label and folder, unless the widths
-    // were changed (then they stay, to change them back).
+
     let resized = app
         .last_arranged
         .as_ref()
@@ -449,7 +427,7 @@ fn width_carets(
             ),
         }
     };
-    // " <  > ": three cells each.
+
     for (r, s, grow) in [
         (Rect::new(cx, y, 3, 1), " < ", false),
         (Rect::new(cx + 3, y, 3, 1), " > ", true),
@@ -471,13 +449,8 @@ fn width_carets(
     cx.saturating_sub(1)
 }
 
-/// Header row of a pane: number, account (opens the account menu), every
-/// tab with a close mark, a new tab mark, and zoom, restart and state on
-/// the right.
 #[allow(clippy::too_many_arguments)]
-/// A pane state's short form for a tight header, in the words used
-/// everywhere else: a tab at its prompt is "ready" (never "waiting", which
-/// reads as waiting for approval), one at a permission prompt "approval".
+
 pub fn short_state(state: &str) -> String {
     match state {
         "needs approval" => "approval".into(),
@@ -505,16 +478,15 @@ pub fn pane_header(
     if right <= left + 4 {
         return;
     }
-    // The header itself: a handle to drag the pane onto another (its
-    // links and buttons, added after, take their own clicks).
+
     app.hits.borrow_mut().add(
         Rect::new(left, y, right - left, 1),
         UiAction::PaneHeader(i),
         "Drag onto another pane to swap them",
     );
-    // Right cluster first, so tabs know where to stop.
+
     let (state_text, state_color) = state;
-    // (label, action, hint, color, keep: higher stays longer, short form)
+
     type Item<'a> = (String, Option<UiAction>, &'a str, Color, u8, Option<String>);
     let mut items: Vec<Item> = vec![];
     if scroll > 0 {
@@ -543,7 +515,7 @@ pub fn pane_header(
             None,
         ));
     }
-    // Low on quota: one click moves the tab to the account with the most left.
+
     if let Some((a, l)) = app.move_suggestion(i) {
         let name = app.account_cfg(a).display().to_string();
         items.push((
@@ -555,7 +527,7 @@ pub fn pane_header(
             Some(format!("→ {} ({l:.0}%)", crate::paths::middle(&name, 10))),
         ));
     }
-    // The mic: this pane holds the voice in direct mode.
+
     if let Some(d) = app
         .direct
         .on
@@ -568,8 +540,7 @@ pub fn pane_header(
         if !here {
             label.push_str(&format!(": {}", crate::paths::middle(&d.name, 14)));
         }
-        // Never dropped (the mic must be findable); roomy panes add the
-        // live state and the tab's name.
+
         let roomy = area.width >= 70;
         if !roomy {
             label = "● mic".into();
@@ -599,9 +570,7 @@ pub fn pane_header(
         1,
         None,
     ));
-    // Labels on tabs the list does not show (collapsed, folded groups):
-    // "2 finished · 1 blocked".
-    // (The strip on top shows every tab with its dot.)
+
     let counts = if app.tab_pos(i) == crate::slot::TabPos::Top && !show_tabs {
         vec![]
     } else {
@@ -626,15 +595,12 @@ pub fn pane_header(
         8,
         Some(format!(" {short_state} ")),
     ));
-    // Far right: the window controls (minimize, maximize, close). Always
-    // there; everything else fits to their left.
+
     let right = window_controls(buf, app, i, y, right, false).saturating_sub(1);
     if right <= left + 4 {
         return;
     }
-    // The account label and folder come first (QA-12): what they need on
-    // the left decides how much the right side may take. Long forms
-    // shorten, then the least needed items go, until it fits.
+
     let label_w = slot
         .account
         .map(|a| app.account_cfg(a).display().chars().count() + 2)
@@ -644,14 +610,14 @@ pub fn pane_header(
     } else {
         0
     };
-    // A shown email asks for some room too (it is cut before the folder).
+
     let email_w: u16 = slot
         .account
         .and_then(|a| app.email_label(a, 200))
         .map(|e| e.chars().count().min(18) as u16 + 3)
         .unwrap_or(0);
     let left_need = 6 + label_w + folder_w + email_w + 2 + if show_tabs { 12 } else { 10 };
-    // The width carets come before the right items but after the label.
+
     let right = width_carets(buf, app, i, y, area.width, right, left + left_need);
     let avail = (right - left).saturating_sub(left_need);
     let iw = |it: &Item| it.0.chars().count() as u16 + if it.1.is_some() { 3 } else { 0 };
@@ -660,7 +626,7 @@ pub fn pane_header(
         if width <= avail {
             break;
         }
-        // Shorten the least needed item that has a short form, else drop it.
+
         let mut order: Vec<usize> = (0..items.len()).filter(|&k| items[k].4 < 9).collect();
         order.sort_by_key(|&k| items[k].4);
         let Some(&k) = order.first() else { break };
@@ -683,7 +649,6 @@ pub fn pane_header(
     let mut x = rstart;
     for (t, a, hint, c) in &right_items {
         x = match a {
-            // The permission badge and × are colored text, not filled buttons.
             Some(UiAction::AccountMenu(_))
             | Some(UiAction::MicMenu(_))
             | Some(UiAction::CloseWindow(_)) => {
@@ -705,7 +670,7 @@ pub fn pane_header(
         };
     }
     let limit = rstart.saturating_sub(1);
-    // Left: the sideways collapse mark, number, account, tabs.
+
     let left = if slot.account.is_some() {
         link(
             buf,
@@ -753,7 +718,7 @@ pub fn pane_header(
         UiAction::AccountMenu(i),
         "Account menu: switch account, log in or out, tab position",
     );
-    // Which agent this account runs, when it is not Claude Code.
+
     if let Some(b) = slot
         .account
         .and_then(|a| app.account_cfg(a).harness().badge())
@@ -769,8 +734,7 @@ pub fn pane_header(
                 .add_modifier(Modifier::BOLD),
         );
     }
-    // A phone (or another browser) sized this tab to its screen: said, so
-    // a narrow tab here is not a surprise; typing here takes it back.
+
     if let Some(by) = slot
         .tabs
         .get(slot.active)
@@ -785,9 +749,7 @@ pub fn pane_header(
             Style::default().fg(theme::SAND),
         );
     }
-    // "label · ~/code/calculator · email": the folder of the shown tab,
-    // then the email. When tight the email is cut, then the folder from
-    // its middle (its last part stays), then the email goes.
+
     if let Some(a) = slot.account {
         let room = limit
             .saturating_sub(x)
@@ -884,7 +846,6 @@ pub fn pane_header(
             "New tab: pick a folder or resume a session (Ctrl-a t)",
         )
     } else {
-        // The tab list has its own place; name the active tab here.
         let t = slot.cur();
         text(
             buf,
@@ -898,7 +859,6 @@ pub fn pane_header(
     let _ = x;
 }
 
-/// Regions for a pane's body and footer, plus the approval strip.
 pub fn pane_regions(f: &mut Frame, app: &App, i: usize, area: Rect, term: Rect, foot: Rect) {
     let mut hits = app.hits.borrow_mut();
     hits.add(
@@ -928,7 +888,7 @@ pub fn pane_regions(f: &mut Frame, app: &App, i: usize, area: Rect, term: Rect, 
     }
     drop(hits);
     let _ = area;
-    // Permission prompt open in the visible tab: answer buttons.
+
     let t = slot.cur();
     if t.activity != Activity::Permission || foot.height == 0 {
         return;
@@ -991,7 +951,6 @@ pub fn pane_regions(f: &mut Frame, app: &App, i: usize, area: Rect, term: Rect, 
     }
 }
 
-/// Draw [x] in a popup's top right corner and buttons on its bottom edge.
 pub fn modal_chrome(buf: &mut Buffer, app: &App, r: Rect, buttons: &[(&str, UiAction, &str)]) {
     if r.width < 6 || r.height < 2 {
         return;
@@ -1013,8 +972,7 @@ pub fn modal_chrome(buf: &mut Buffer, app: &App, r: Rect, buttons: &[(&str, UiAc
         .map(|(l, _, _)| l.chars().count() as u16 + 3)
         .sum();
     let y = r.y + r.height - 1;
-    // Clear any title text on the bottom edge first, so hints never end up
-    // half hidden under the buttons.
+
     if !buttons.is_empty() {
         let border_style = buf.cell((r.x, y)).map(|c| c.style()).unwrap_or_default();
         for cx in r.x + 1..right {
@@ -1032,7 +990,7 @@ pub fn modal_chrome(buf: &mut Buffer, app: &App, r: Rect, buttons: &[(&str, UiAc
         };
         let start = x;
         x = btn(buf, app, x, y, right, label, action.clone(), hint, accent);
-        // The default (Enter) is the first: bold and underlined.
+
         if k == 0 && !matches!(action, UiAction::ModalCancel) {
             for cx in start + 1..x.saturating_sub(1) {
                 if let Some(c) = buf.cell_mut((cx, y)) {
@@ -1046,7 +1004,6 @@ pub fn modal_chrome(buf: &mut Buffer, app: &App, r: Rect, buttons: &[(&str, UiAc
     }
 }
 
-/// Register one clickable row per visible list item.
 #[allow(clippy::too_many_arguments)]
 pub fn list_rows(
     app: &App,
@@ -1077,7 +1034,7 @@ pub fn draw_account_menu(f: &mut Frame, area: Rect, app: &App, slot: usize, sel:
     let entries = app.account_menu_entries(slot);
     let h = (entries.len() as u16 + 4).min(area.height);
     let w = 54u16.min(area.width);
-    // Open under the pane header when there is room.
+
     let pr = app.pane_rects.get(slot).copied().unwrap_or(area);
     let x =
         pr.x.saturating_add(2)
@@ -1135,7 +1092,6 @@ pub fn draw_account_menu(f: &mut Frame, area: Rect, app: &App, slot: usize, sel:
     );
 }
 
-/// The tour: outline the area a step is about and explain it.
 pub fn draw_tour(f: &mut Frame, area: Rect, app: &App, step: usize, menu: Rect) {
     let steps = crate::app_mouse::TOUR;
     let step = step.min(steps.len() - 1);
@@ -1165,7 +1121,7 @@ pub fn draw_tour(f: &mut Frame, area: Rect, app: &App, step: usize, menu: Rect) 
         4 => find(&UiAction::Key('y')).unwrap_or(menu),
         _ => find(&UiAction::VoiceCycle).unwrap_or(menu),
     };
-    // Tint the target area so it stands out without covering it.
+
     {
         let buf = f.buffer_mut();
         let tint = Color::Rgb(66, 60, 46);
@@ -1239,7 +1195,6 @@ pub fn draw_tour(f: &mut Frame, area: Rect, app: &App, step: usize, menu: Rect) 
     );
 }
 
-/// Help rows map to the key they describe, so clicking runs it.
 pub fn help_action(keys: &str) -> Option<UiAction> {
     let k = keys.trim();
     let c = match k {
@@ -1277,15 +1232,11 @@ pub fn help_action(keys: &str) -> Option<UiAction> {
     Some(UiAction::Key(c))
 }
 
-/// Marker for a tab's state: a spinner while working, `!` waiting for
-/// approval, a dot when ready, `x` when ended.
-/// The last `n` characters (where typing happens).
 fn tail_chars(s: &str, n: usize) -> String {
     let c: Vec<char> = s.chars().collect();
     c[c.len().saturating_sub(n)..].iter().collect()
 }
 
-/// The frame of the state animations (8 a second).
 pub fn anim_frame() -> usize {
     (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1294,9 +1245,6 @@ pub fn anim_frame() -> usize {
         / 125) as usize
 }
 
-/// A tab's state glyph and color: a spinner in the accent while it works,
-/// an amber ! (pulsing) when it needs you, a dim ○ when idle (never
-/// green), × when it ended, zz when the memory saver paused it.
 pub fn tab_marker(t: &Pane) -> (String, Color) {
     if t.suspended && !t.is_running() {
         return ("z".into(), FAINT);
@@ -1322,20 +1270,16 @@ pub fn tab_marker(t: &Pane) -> (String, Color) {
     }
 }
 
-/// Background work (subagents, shells) under an idle tab: the hollow
-/// spinner and what runs, from the tab's activity (cached for 2 s).
 pub fn background_of(app: &App, s: usize, t: usize) -> Option<String> {
     background_work(app, s, t).map(|w| format!("background · {w}"))
 }
 
-/// What runs under a tab at its prompt ("2 subagents, 1 shell"), from its
-/// activity, cached for 2 s per tab (the cache holds this text).
 pub fn background_work(app: &App, s: usize, t: usize) -> Option<String> {
     let tab = app.panes.get(s)?.tabs.get(t)?;
     if !matches!(tab.activity, Activity::Ready | Activity::Idle) {
         return None;
     }
-    // Stopped at its usage limit: what it started waits for the reset.
+
     if app.tab_at_limit(s, t) {
         return None;
     }
@@ -1370,8 +1314,6 @@ pub fn background_work(app: &App, s: usize, t: usize) -> Option<String> {
     }
 }
 
-/// The look of a tab's row: glyph, glyph color, state text and its
-/// style, whether the name stands out, and the left bar's color.
 pub struct TabLook {
     pub glyph: String,
     pub color: Color,
@@ -1460,13 +1402,12 @@ fn since(t: &Pane) -> String {
     format!("{word} {age}")
 }
 
-/// The state in a few columns: the time for running tabs, "zz" when saved.
 fn since_short(t: &Pane) -> String {
     let long = since(t);
     if t.suspended && !t.is_running() {
         return "zz".into();
     }
-    // The time when there is one ("33m"), else the whole state.
+
     let last = long.rsplit(' ').next().unwrap_or("");
     if last.starts_with(|c: char| c.is_ascii_digit()) {
         last.to_string()
@@ -1475,8 +1416,6 @@ fn since_short(t: &Pane) -> String {
     }
 }
 
-/// A group's header row: "▾ api work (3) ●" (▸ when collapsed), in the
-/// group's color, the dot showing what its tabs are doing.
 #[allow(clippy::too_many_arguments)]
 fn group_header(
     buf: &mut ratatui::buffer::Buffer,
@@ -1534,8 +1473,6 @@ fn group_header(
     );
 }
 
-/// The Archived group's header: "▸ Archived (3)", folded by default; a
-/// click folds or unfolds it.
 fn archive_header(
     buf: &mut ratatui::buffer::Buffer,
     app: &App,
@@ -1577,7 +1514,6 @@ fn archive_header(
     );
 }
 
-/// One archived conversation: its name, and how long ago it was active.
 fn archived_row(
     buf: &mut ratatui::buffer::Buffer,
     app: &App,
@@ -1636,27 +1572,21 @@ fn archived_row(
     );
 }
 
-/// First tab to show so the active one is in view.
 pub fn window_start(scroll: usize, active: usize, n: usize, cap: usize) -> usize {
     if cap == 0 || n <= cap {
         return 0;
     }
     if scroll != crate::slot::FOLLOW {
-        // Scrolled by hand (wheel): show exactly that.
         return scroll.min(n - cap);
     }
     active.saturating_sub(cap - 1).min(n - cap)
 }
 
-/// The tab list of pane `i`: a vertical list (left or right, collapsible to
-/// a strip of numbers and markers) or a horizontal strip on top.
 pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::slot::TabPos) {
     if bar.width == 0 || bar.height == 0 {
         return;
     }
-    // The whole list first (under its rows): a click in the empty space
-    // focuses the pane as before, and every region from here to the end
-    // belongs to the list, for the wheel.
+
     let start = {
         let mut h = app.hits.borrow_mut();
         let start = h.regions.len();
@@ -1673,8 +1603,6 @@ pub fn draw_tab_list(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate::
     h.tab_lists.push((i, start, end));
 }
 
-/// The last first row of a side tab list: the rows from there to the end
-/// fill the `rows` lines (a group header takes one, a tab `per`).
 pub fn list_max_first(list: &[crate::tab_groups::Row], rows: usize, per: usize) -> usize {
     let mut used = 0;
     let mut k = list.len();
@@ -1701,7 +1629,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
     }
     let slot = &app.panes[i];
     let buf = f.buffer_mut();
-    // Separator between the list and the terminal.
+
     let sep_x = if pos == TabPos::Left {
         bar.x + bar.width - 1
     } else {
@@ -1721,8 +1649,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
     let w = bar.width - 1;
     let limit = x0 + w;
     let collapsed = w <= 3;
-    // Row 0: title and the collapse handle.
-    // The handle points the way the list will move.
+
     let (handle, hint) = match (pos, collapsed) {
         (TabPos::Left, false) | (TabPos::Right, true) => (
             "«",
@@ -1742,7 +1669,6 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
         ),
     };
     if !collapsed {
-        // Title beside the handle: handle right on the left list, left on the right one.
         let tx = if pos == TabPos::Right { x0 + 2 } else { x0 };
         let ex = text(
             buf,
@@ -1752,7 +1678,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
             &format!(" tabs {}", slot.tabs.len()),
             Style::default().fg(FAINT),
         );
-        // What runs: working in the accent, waiting in amber.
+
         let working = slot
             .tabs
             .iter()
@@ -1763,7 +1689,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
             .iter()
             .filter(|t| t.activity == Activity::Permission)
             .count();
-        // Short forms when the list is narrow ("·1 work ·1 wait").
+
         let room = limit.saturating_sub(ex + 3) as usize;
         let full = (if working > 0 { 12 } else { 0 }) + (if waiting > 0 { 12 } else { 0 });
         let mid = (if working > 0 { 7 } else { 0 }) + (if waiting > 0 { 7 } else { 0 });
@@ -1810,7 +1736,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
         } else {
             ex
         };
-        // The sort, when not the manual order, and the search has no row.
+
         let ex = if slot.sort != crate::tab_groups::TabSort::Manual && bar.height < 6 {
             text(
                 buf,
@@ -1837,7 +1763,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
             ),
             None => ex,
         };
-        // A dot in the color of what is really left (5 hour or weekly).
+
         if let Some(left) = slot.account.and_then(|a| app.accounts[a].effective_left()) {
             text(buf, ex + 1, bar.y, limit, "●", theme::remaining_style(left));
         }
@@ -1863,7 +1789,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
     if bar.height < 3 {
         return;
     }
-    // Last row: new tab.
+
     let last = bar.y + bar.height - 1;
     let plus = if collapsed { " +" } else { " + New tab" };
     link(
@@ -1877,27 +1803,25 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
         UiAction::NewTab(i),
         "New tab: pick a folder or resume a session (Ctrl-a t)",
     );
-    // Row 1: the search field and the Sort ▾ dropdown.
+
     let search_row = !collapsed && bar.height >= 6;
     let only = app.tab_filter(i);
     if search_row {
         draw_search_row(buf, app, i, x0, bar.y + 1, limit, only.as_deref());
     }
     let top = bar.y + 1 + u16::from(search_row);
-    // Rows between: the tabs, two lines each (name, then the live folder
-    // with the state and time on the right) when not collapsed.
+
     let rows = (bar.height - 2 - u16::from(search_row)) as usize;
     let two_line = !collapsed && rows >= 2;
-    // Wide: each tab's second line starts with its session's own title.
+
     let wide = two_line && bar.width >= crate::ui::SIDEBAR_WIDE_AT;
     let per = if two_line { 2 } else { 1 };
     let cap = rows / per;
     let labels = crate::slot::tab_labels(slot);
-    // Pinned, groups (headers; a collapsed one alone) and the rest, in the
-    // pane's sort; held still while the mouse is over the list.
+
     let hold = app.mouse_pos.is_some_and(|(c, r)| contains(bar, c, r));
     let mut list = app.list_rows(i, hold);
-    // The Archived group closes the list (not in the narrow strip).
+
     let archived = if collapsed {
         vec![]
     } else {
@@ -1971,8 +1895,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
         } else {
             Color::Reset
         };
-        // A label (finished, blocked...): the row takes a faint tint of
-        // its color, the pill goes at the end of the name line.
+
         let label = app.tab_label(i, ti);
         let bg = match label {
             Some(l) => crate::tab_labels::tint(bg, l.color(), 10),
@@ -1988,7 +1911,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
         }
         let look = tab_look(app, i, ti);
         let (mark, mc) = (look.glyph.clone(), look.color);
-        // Live work and a question stand out; idle stays quiet.
+
         let name_style = if look.loud {
             Style::default()
                 .fg(look.color)
@@ -1999,8 +1922,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
         } else {
             Style::default().fg(DIM).bg(bg)
         };
-        // Collapsed: the real number (two digits past 9, the strip widens),
-        // in the state's color when it works or waits.
+
         let num = if collapsed {
             if slot.tabs.len() > 9 {
                 format!("{:>2}", ti + 1)
@@ -2016,16 +1938,12 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
                 .bg(bg)
                 .add_modifier(Modifier::BOLD)
         } else if let Some(l) = label.filter(|_| collapsed) {
-            // Collapsed: the number in the label's color.
             Style::default().fg(l.color()).bg(bg)
         } else {
             Style::default().fg(FAINT).bg(bg)
         };
         let mut cx = text(buf, x0, y, limit, &num, num_style);
-        // The tab's color (its own, else its group's): a bar at the start
-        // of its row(s), and the marker in that color when collapsed.
-        // The left bar: the state's color while it works, waits or runs
-        // background jobs; else the tab's (or its group's) color.
+
         let accent = slot.accent_of(ti);
         let bar = look
             .bar
@@ -2047,7 +1965,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
         }
         cx = text(buf, cx, y, limit, &mark, Style::default().fg(mc).bg(bg));
         let dir = crate::paths::tilde(&app.tab_dir(i, ti));
-        // Hover shows the whole name and folder.
+
         app.hits.borrow_mut().add(
             row,
             UiAction::SelectTab(i, ti),
@@ -2057,7 +1975,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
             continue;
         }
         cx = text(buf, cx, y, limit, " ", Style::default().bg(bg));
-        // A loop badge: ⟳ and how many.
+
         let nl = app.loops_in(t.uid);
         if nl > 0 {
             let bx = cx;
@@ -2078,7 +1996,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
                 ),
             );
         }
-        // Not safe on GitHub yet (no repo, unpushed, uncommitted): ⚠.
+
         if let Some(w) = app.git_badge(&app.tab_dir(i, ti)) {
             let bx = cx;
             cx = text(
@@ -2095,8 +2013,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
                 format!("Git: {w} (click for the Git section)"),
             );
         }
-        // A prompt waiting to go in once the tab is ready (unless the
-        // label already says so).
+
         if app.queued_for(t.uid) > 0 && label != Some(crate::tab_labels::TabLabel::Queued) {
             cx = text(
                 buf,
@@ -2107,7 +2024,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
                 Style::default().fg(theme::SAND).bg(bg),
             );
         }
-        // A move waiting for the tab's work to end.
+
         if app.move_pending(t.uid).is_some() {
             cx = text(
                 buf,
@@ -2118,12 +2035,10 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
                 Style::default().fg(theme::SAND).bg(bg),
             );
         }
-        // ✎ and × only show on the active or hovered row, over the end of
-        // the name; otherwise the name has the whole row.
+
         let tools = active || hovered;
         let room = (limit.saturating_sub(cx) as usize).saturating_sub(if tools { 5 } else { 1 });
-        // The label's pill, right aligned before ✎ ×: shortened ("done",
-        // then a dot) so the name keeps a few columns.
+
         let pill = label.map(|l| {
             let fit = crate::tab_labels::fit(l, room, 6);
             (l, l.pill(fit), fit)
@@ -2132,7 +2047,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
             Some((_, p, _)) => room.saturating_sub(p.chars().count() + 1),
             None => room,
         };
-        // Renaming this tab: edit right here in the row.
+
         if let crate::app::Modal::Rename(rs, rt, b) = &app.modal {
             if *rs == i && *rt == ti {
                 let room = limit.saturating_sub(cx) as usize;
@@ -2212,8 +2127,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
             let lx = x0 + 5;
             let room = limit.saturating_sub(lx + 1) as usize;
             let full = dir.chars().count();
-            // The folder comes first; then the state and time, shortened to
-            // just the time ("3m", "zz") when tight, or left out.
+
             let show_dir = app.cfg.show_path;
             let want = full.min(10);
             let long = look.word.clone();
@@ -2225,8 +2139,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
                 since_short(t)
             };
             let stn = st.chars().count();
-            // Live work, a question or background jobs: the state always
-            // shows (the folder gives way); otherwise the folder first.
+
             let urgent = look.bar.is_some();
             let (pw, show_st) = if !show_dir {
                 (0, room >= stn)
@@ -2236,8 +2149,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
                 (room, false)
             };
             let fst = Style::default().fg(FAINT).bg(bg);
-            // Wide: the session's own title first (when it says more than
-            // our name), then the folder in what is left.
+
             let title = wide
                 .then(|| app.native_title(i, ti))
                 .flatten()
@@ -2246,7 +2158,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
                 Some(n) => {
                     let st_room = if show_st { stn + 1 } else { 0 };
                     let avail = room.saturating_sub(st_room);
-                    // The title first; the folder gets what is left.
+
                     let tw = n.chars().count().min(avail);
                     let end = text(
                         buf,
@@ -2289,7 +2201,7 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
             }
         }
     }
-    // The separator is the drag handle for the list's width.
+
     if !collapsed {
         app.hits.borrow_mut().add(
             Rect::new(sep_x, bar.y + 1, 1, bar.height.saturating_sub(2)),
@@ -2299,8 +2211,6 @@ fn draw_tab_list_body(f: &mut Frame, app: &App, i: usize, bar: Rect, pos: crate:
     }
 }
 
-/// The row atop a side tab list: "⌕ search" (typing filters; "3 of 27"
-/// and × while it does) and the Sort ▾ dropdown on the right.
 fn draw_search_row(
     buf: &mut ratatui::buffer::Buffer,
     app: &App,
@@ -2331,7 +2241,7 @@ fn draw_search_row(
         " ⌕ ",
         Style::default().fg(DIM).bg(bg),
     );
-    // "3 of 27" and × while filtering, right in the field.
+
     let count = only.map(|m| {
         format!(
             "{} of {}",
@@ -2398,7 +2308,6 @@ fn draw_search_row(
     );
 }
 
-/// Horizontal tab strip under the header, scrolling with ‹ › on overflow.
 fn draw_tab_strip(f: &mut Frame, app: &App, i: usize, bar: Rect) {
     let slot = &app.panes[i];
     let buf = f.buffer_mut();
@@ -2424,7 +2333,7 @@ fn draw_tab_strip(f: &mut Frame, app: &App, i: usize, bar: Rect) {
             crate::paths::middle(&names[ti], 18)
         )
     };
-    // In the list's order (pinned first, groups, the sort).
+
     let hold = app.mouse_pos.is_some_and(|(c, r)| contains(bar, c, r));
     let order = slot.tab_order_by(app.ungrouped_top(), hold, &|t| app.status_rank(i, t));
     let tags: Vec<Option<crate::tab_labels::TabLabel>> = (0..slot.tabs.len())
@@ -2436,8 +2345,7 @@ fn draw_tab_strip(f: &mut Frame, app: &App, i: usize, bar: Rect) {
         .collect();
     let pa = order.iter().position(|&t| t == slot.active).unwrap_or(0);
     let room = bar.width.saturating_sub(4 + 5);
-    // Start so that the active tab is visible.
-    // The last first tab: from there on every tab fits (after the ‹).
+
     let max_first = (0..order.len())
         .find(|&k| bar.x + if k > 0 { 2 } else { 0 } + widths[k..].iter().sum::<u16>() + 5 <= limit)
         .unwrap_or(order.len().saturating_sub(1));
@@ -2497,7 +2405,7 @@ fn draw_tab_strip(f: &mut Frame, app: &App, i: usize, bar: Rect) {
             st
         };
         let _ = mc;
-        // The tab's color (its own, else its group's): a bar before it.
+
         if let Some(a) = &slot.accent_of(ti) {
             x = text(
                 buf,
@@ -2523,7 +2431,7 @@ fn draw_tab_strip(f: &mut Frame, app: &App, i: usize, bar: Rect) {
                 crate::paths::tilde(&app.tab_dir(i, ti))
             ),
         );
-        // Its label as a dot in the label's color.
+
         if let Some(l) = tags[ti] {
             x = link(
                 buf,
@@ -2589,7 +2497,6 @@ fn draw_tab_strip(f: &mut Frame, app: &App, i: usize, bar: Rect) {
     );
 }
 
-/// Rename a tab: a one line input with Rename / Cancel.
 pub fn draw_rename(f: &mut Frame, area: Rect, app: &App, p: usize, t: usize, buf_text: &str) {
     let w = 56u16.min(area.width);
     let h = 5u16.min(area.height);
@@ -2637,7 +2544,6 @@ pub fn draw_rename(f: &mut Frame, area: Rect, app: &App, p: usize, t: usize, buf
     );
 }
 
-/// Left column of the overview: every pane's tabs as a clickable tree.
 pub fn draw_overview_tree(f: &mut Frame, app: &App, r: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2723,7 +2629,6 @@ pub fn draw_overview_tree(f: &mut Frame, app: &App, r: Rect) {
     }
 }
 
-/// A small centered dialog with text lines and buttons.
 pub fn draw_message(
     f: &mut Frame,
     area: Rect,

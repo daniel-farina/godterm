@@ -1,25 +1,18 @@
-//! Kaldi compatible log mel filterbank features (80 bins, 25 ms frames
-//! every 10 ms, povey window, pre-emphasis 0.97, no dither, frames
-//! centered like `snip_edges = false`), the input the WeSpeaker and
-//! 3D-Speaker embedding models were trained on. Matches kaldi-native-fbank
-//! as used by sherpa-onnx, so the published ONNX exports work unchanged.
-
 pub const NUM_BINS: usize = 80;
 const RATE: f32 = 16_000.0;
-const FRAME_LEN: usize = 400; // 25 ms
-const FRAME_SHIFT: usize = 160; // 10 ms
+const FRAME_LEN: usize = 400;
+const FRAME_SHIFT: usize = 160;
 const FFT: usize = 512;
 const LOW_HZ: f32 = 20.0;
-const HIGH_HZ: f32 = 7_600.0; // nyquist - 400
+const HIGH_HZ: f32 = 7_600.0;
 
 fn mel(f: f32) -> f32 {
     1127.0 * (1.0 + f / 700.0).ln()
 }
 
-/// Precomputed window, mel banks and FFT twiddles.
 pub struct Fbank {
     window: Vec<f32>,
-    /// Per bin: first FFT bin index and its weights.
+
     banks: Vec<(usize, Vec<f32>)>,
     cos: Vec<f32>,
     sin: Vec<f32>,
@@ -80,13 +73,10 @@ impl Fbank {
         }
     }
 
-    /// Number of frames for `n` samples (kaldi, snip_edges = false).
     pub fn num_frames(n: usize) -> usize {
         (n + FRAME_SHIFT / 2) / FRAME_SHIFT
     }
 
-    /// Features for 16 kHz samples already scaled as the model expects
-    /// (int16 range for WeSpeaker, -1..1 for others). Row major, frames x 80.
     pub fn compute(&self, samples: &[f32]) -> Vec<f32> {
         let n = samples.len();
         let frames = Self::num_frames(n);
@@ -101,7 +91,7 @@ impl Fbank {
             let start = (f * FRAME_SHIFT + FRAME_SHIFT / 2) as i64 - (FRAME_LEN / 2) as i64;
             for (i, slot) in w.iter_mut().enumerate() {
                 let mut s = start + i as i64;
-                // Reflect at the edges.
+
                 while s < 0 || s >= n as i64 {
                     s = if s < 0 { -s - 1 } else { 2 * n as i64 - 1 - s };
                 }
@@ -131,7 +121,6 @@ impl Fbank {
         out
     }
 
-    /// In place iterative radix-2 FFT of size FFT.
     fn fft(&self, re: &mut [f32], im: &mut [f32]) {
         let n = FFT;
         let mut j = 0;
@@ -167,7 +156,6 @@ impl Fbank {
     }
 }
 
-/// Subtract the per bin mean over frames (WeSpeaker's CMN).
 pub fn subtract_mean(feats: &mut [f32], dim: usize) {
     let frames = feats.len() / dim.max(1);
     if frames == 0 {
@@ -221,7 +209,7 @@ mod tests {
     #[test]
     fn tone_energy_lands_in_the_right_mel_bin() {
         let fb = Fbank::new();
-        // 1 kHz tone: mel(1000) = 1000 roughly; find the bin centers.
+
         let x: Vec<f32> = (0..16_000)
             .map(|i| 8000.0 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / RATE).sin())
             .collect();
@@ -238,7 +226,7 @@ mod tests {
         let delta = (hi - lo) / (NUM_BINS + 1) as f32;
         let center = lo + (best + 1) as f32 * delta;
         assert!((center - mel(1000.0)).abs() < delta * 1.5, "bin {best}");
-        // Silence floors at log(epsilon), no NaN.
+
         let z = fb.compute(&vec![0.0; 1600]);
         assert!(z.iter().all(|v| v.is_finite()));
     }

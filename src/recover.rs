@@ -1,16 +1,8 @@
-//! Damaged state files (state.json, jobs.json, config.toml cut short by a
-//! crash or a full disk, or edited by hand into something that does not
-//! parse): moved aside so GodTerm starts clean instead of failing, with a
-//! one-line note in the log and on the status bar.
-
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Move `path` aside as `<name>.corrupt-<stamp>` (never over an earlier
-/// backup), log why and keep a note for the UI. None when it could not be
-/// moved (it is then left where it is).
 pub fn quarantine(path: &Path, why: &str) -> Option<PathBuf> {
     let name = path.file_name()?.to_string_lossy().into_owned();
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
@@ -37,12 +29,10 @@ pub fn quarantine(path: &Path, why: &str) -> Option<PathBuf> {
     Some(bak)
 }
 
-/// The notes so far (each once).
 pub fn take_notes() -> Vec<String> {
     std::mem::take(&mut *NOTES.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// A parser's message on one short line.
 fn one_line(s: &str) -> String {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if s.chars().count() > 80 {
@@ -53,8 +43,6 @@ fn one_line(s: &str) -> String {
     }
 }
 
-/// Read a JSON state file. Missing: None. Present but not valid (empty,
-/// truncated, not JSON, the wrong shape): moved aside, None.
 pub fn load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     let bytes = std::fs::read(path).ok()?;
     match serde_json::from_slice(&bytes) {
@@ -117,7 +105,7 @@ mod tests {
             std::fs::write(&p, bad).unwrap();
             assert_eq!(load_json::<serde_json::Value>(&p), None, "{bad:?}");
             assert!(!p.exists(), "moved away");
-            // (Other tests may add notes of their own files meanwhile.)
+
             let notes: Vec<String> = take_notes()
                 .into_iter()
                 .filter(|n| n.starts_with("s.json "))
@@ -127,13 +115,13 @@ mod tests {
             assert!(notes[0].contains(why), "{notes:?}");
             assert!(!notes[0].contains('\n'));
         }
-        // Each damaged copy kept, none overwritten.
+
         let b = backups(&d, "s.json");
         assert_eq!(b.len(), 4, "{b:?}");
         assert!(b
             .iter()
             .any(|p| std::fs::read(p).unwrap() == b"{\"a\": [1, 2"));
-        // The wrong shape counts as damaged too.
+
         #[derive(serde::Deserialize, Debug)]
         #[allow(dead_code)]
         struct S {

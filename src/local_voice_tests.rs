@@ -1,8 +1,3 @@
-//! Local voices: config defaults, the engine chain and its fallback,
-//! install consent, Settings, and the voice phrases. Nothing here starts
-//! a real model, downloads anything, or touches ~/.godterm or the real
-//! Hugging Face cache (the dirs point at a temp folder).
-
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::config::{Config, VoiceCfg};
 use crate::settings::{self, Key, Section};
@@ -19,7 +14,6 @@ fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     (app, home)
 }
 
-/// Pretend `id` is installed (a marker and an empty venv python).
 fn fake_install(id: &str, vc: &VoiceCfg) {
     let py = local_tts::venv_python(&vc.local);
     std::fs::create_dir_all(py.parent().unwrap()).unwrap();
@@ -54,7 +48,7 @@ fn kokoro_stays_the_default_and_local_parses() {
     assert_eq!(d.tts_fallback, vec!["kokoro".to_string(), "say".into()]);
     assert_eq!(d.local.ming_voice, "US_Emma");
     assert!(d.local.chatterbox_ref.is_empty() && d.local.venv.is_empty());
-    // An old config without [voice.local] still loads, with the defaults.
+
     let c: Config = toml::from_str("[voice]\ntts_engine = \"grok\"\n").unwrap();
     assert_eq!(c.voice.tts_engine, "grok");
     assert_eq!(c.voice.local, d.local);
@@ -66,7 +60,7 @@ fn kokoro_stays_the_default_and_local_parses() {
     assert_eq!(c.voice.local.chatterbox_ref, "~/me.wav");
     assert_eq!(c.voice.local.ming_voice, "UK_George");
     assert_eq!(c.voice.local.timeout_ms, 8000);
-    // A voice or clip change is a talk back change only (the mic keeps running).
+
     let mut b = d.clone();
     b.local.chatterbox_ref = "x.wav".into();
     b.tts_engine = "ming".into();
@@ -84,7 +78,7 @@ fn chain_skips_a_local_voice_until_installed_and_falls_back() {
         kokoro_model: "/nonexistent/kokoro.onnx".into(),
         ..Default::default()
     };
-    // Not installed: what the fallback list says (Kokoro is missing here too).
+
     assert_eq!(engines::chain(&c), vec!["say"]);
     let (e, why) = tts::effective_engine(&c);
     assert_eq!(e, "say");
@@ -94,13 +88,12 @@ fn chain_skips_a_local_voice_until_installed_and_falls_back() {
     if local_tts::supported() {
         assert_eq!(engines::chain(&c), vec!["chatterbox", "say"]);
         assert_eq!(tts::effective_engine(&c), ("chatterbox", None));
-        // Ming in the fallbacks, not installed: passed over.
+
         c.tts_fallback = vec!["ming".into(), "kokoro".into(), "say".into()];
         assert_eq!(engines::chain(&c), vec!["chatterbox", "say"]);
         fake_install("ming", &c);
         assert_eq!(engines::chain(&c), vec!["chatterbox", "ming", "say"]);
     } else {
-        // Elsewhere they never speak.
         assert_eq!(engines::chain(&c), vec!["say"]);
     }
     let _ = std::fs::remove_dir_all(&home);
@@ -133,7 +126,7 @@ fn install_waits_for_a_yes() {
     let t = screen(&mut app, 200);
     assert!(t.contains("Chatterbox Turbo: install"), "{t}");
     assert!(t.contains("not installed") && t.contains("Install…"), "{t}");
-    // Enter asks first, with the size, memory, speed and license.
+
     app.setting_edit(row);
     assert_eq!(
         app.modal,
@@ -148,18 +141,18 @@ fn install_waits_for_a_yes() {
         local_tts::STARTED.lock().unwrap().is_empty(),
         "nothing before the yes"
     );
-    // No: nothing happens.
+
     app.on_key(key(KeyCode::Esc));
     assert_eq!(app.modal, crate::app::Modal::None);
     assert!(local_tts::STARTED.lock().unwrap().is_empty());
-    // Yes: it starts.
+
     app.setting_step(row, 1);
     app.on_key(key(KeyCode::Char('y')));
     assert_eq!(
         *local_tts::STARTED.lock().unwrap(),
         vec!["chatterbox".to_string()]
     );
-    // Installed: Enter offers Remove (asks too), and removes on yes.
+
     fake_install("chatterbox", &app.cfg.voice);
     let t = screen(&mut app, 200);
     assert!(t.contains("installed") && t.contains("Remove…"), "{t}");
@@ -216,7 +209,7 @@ fn settings_show_engines_and_kokoro_voices() {
         "{t}"
     );
     assert!(t.contains("Preview"), "{t}");
-    // Chatterbox and Ming panels only with that engine.
+
     let labels = |app: &crate::app::App| -> Vec<String> {
         settings::settings_for(Section::Voice, &app.cfg)
             .into_iter()
@@ -248,7 +241,7 @@ fn spoken_voice_choices_switch_and_explain() {
     let (mut app, home) = test_app("phrases");
     std::fs::write(Config::path(), "[voice]\ntts_engine = \"grok\"\n").unwrap();
     app.cfg.voice.tts_engine = "grok".into();
-    // "use the Bella voice": Kokoro with Bella, saved.
+
     assert!(app.voice_choice_intercept("use the Bella voice"));
     assert_eq!(app.cfg.voice.tts_engine, "kokoro");
     assert_eq!(app.cfg.voice.kokoro_voice, "af_bella");
@@ -258,12 +251,12 @@ fn spoken_voice_choices_switch_and_explain() {
         "{saved}"
     );
     assert!(app.voice.action.as_deref().unwrap().contains("Bella"));
-    // Grok again, then "use the local voice": back to Kokoro.
+
     assert!(app.voice_choice_intercept("use the grok voice"));
     assert_eq!(app.cfg.voice.tts_engine, "grok");
     assert!(app.voice_choice_intercept("use the local voice"));
     assert_eq!(app.cfg.voice.tts_engine, "kokoro");
-    // Chatterbox, not installed: it says so and nothing changes.
+
     let say = app.apply_voice_pick(&VoicePick::Engine("chatterbox"));
     assert!(
         say.contains("not installed") || say.contains("Apple Silicon"),
@@ -275,7 +268,7 @@ fn spoken_voice_choices_switch_and_explain() {
         assert!(app.voice_choice_intercept("use chatterbox"));
         assert_eq!(app.cfg.voice.tts_engine, "chatterbox");
     }
-    // Other speech is not a voice choice.
+
     assert!(!app.voice_choice_intercept("use the tests in the project"));
     let _ = std::fs::remove_dir_all(&home);
 }

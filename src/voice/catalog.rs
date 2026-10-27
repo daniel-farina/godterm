@@ -1,9 +1,3 @@
-//! What Settings and the voice phrases know about the talk back engines
-//! and voices: the English Kokoro voices with their official grades, and
-//! a line per engine (local or cloud, memory, speed, license).
-
-/// Kokoro v1.0's English voices with the grades from its VOICES.md,
-/// American then British, female then male, best first.
 pub const KOKORO_EN: &[(&str, &str, &str, &str)] = &[
     ("af_heart", "American", "female", "A"),
     ("af_bella", "American", "female", "A-"),
@@ -35,7 +29,6 @@ pub const KOKORO_EN: &[(&str, &str, &str, &str)] = &[
     ("bm_daniel", "British", "male", "D"),
 ];
 
-/// "American female, grade A" for a Kokoro voice id.
 pub fn kokoro_label(id: &str) -> Option<String> {
     KOKORO_EN
         .iter()
@@ -43,7 +36,6 @@ pub fn kokoro_label(id: &str) -> Option<String> {
         .map(|(_, a, g, grade)| format!("{a} {g}, grade {grade}"))
 }
 
-/// The voice's name as said aloud: af_heart -> "Heart".
 pub fn kokoro_name(id: &str) -> String {
     let n = id.split_once('_').map(|x| x.1).unwrap_or(id);
     let mut c = n.chars();
@@ -53,9 +45,6 @@ pub fn kokoro_name(id: &str) -> String {
     }
 }
 
-/// The English voices for the picker, in the table's order: those in the
-/// voices file (the whole table when it could not be read), then any
-/// other English voice the file has.
 pub fn kokoro_choices(in_file: &[String]) -> Vec<String> {
     let mut v: Vec<String> = KOKORO_EN
         .iter()
@@ -75,7 +64,6 @@ pub fn kokoro_choices(in_file: &[String]) -> Vec<String> {
     v
 }
 
-/// The engine choices: the local helper engines only where they run.
 pub fn engine_choices() -> &'static [&'static str] {
     if super::local_tts::supported() {
         &["kokoro", "chatterbox", "ming", "say", "grok", "off"]
@@ -84,7 +72,6 @@ pub fn engine_choices() -> &'static [&'static str] {
     }
 }
 
-/// One line per engine: where it runs, memory, speed, license.
 pub fn engine_line(id: &str) -> Option<&'static str> {
     Some(match id {
         "kokoro" => "built in, default, recommended · local · about 1 GB RAM · first audio 0.35 s · Apache 2.0",
@@ -97,7 +84,6 @@ pub fn engine_line(id: &str) -> Option<&'static str> {
     })
 }
 
-/// The Ming-3.0 voice picker: the built in voices and "design".
 pub fn ming_choices() -> Vec<String> {
     let mut v: Vec<String> = super::local_tts::MING_VOICES
         .iter()
@@ -107,7 +93,6 @@ pub fn ming_choices() -> Vec<String> {
     v
 }
 
-/// Ming's voices said aloud: US_Emma -> "Emma".
 pub fn ming_label(id: &str) -> Option<&'static str> {
     Some(match id {
         "US_Emma" => "American female",
@@ -135,7 +120,7 @@ mod tests {
         assert_eq!(kokoro_label("bm_george").unwrap(), "British male, grade C");
         assert!(kokoro_label("zf_xiaobei").is_none());
         assert_eq!(kokoro_name("af_heart"), "Heart");
-        // Grouped: every American voice before every British one.
+
         let first_b = KOKORO_EN.iter().position(|v| v.1 == "British").unwrap();
         assert!(KOKORO_EN[first_b..].iter().all(|v| v.1 == "British"));
         let names: std::collections::HashSet<String> =

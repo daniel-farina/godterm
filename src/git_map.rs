@@ -1,43 +1,20 @@
-//! Which GitHub owner and which gh account a project folder belongs to.
-//!
-//! `[git]` in config.toml maps folders to owners with glob rules (the
-//! most specific pattern wins, ties go to the first written) and owners to
-//! gh accounts (`[git.owners]`). A folder no rule covers is "undefined":
-//! GodTerm asks and never guesses. What the user decided is kept in
-//! `~/.godterm/git-bindings.json` with portable `~/...` keys.
-//!
-//! Resolution of a folder:
-//! 1. In the private vault or a private folder (logins, keys): refused.
-//! 2. An origin remote on GitHub: owner and repo from its URL; the account
-//!    from a saved binding, else `[git.owners]`; an unknown owner asks.
-//! 3. A saved binding (defined in the Git section).
-//! 4. The first matching rule proposes an owner (or a choice of owners).
-//! 5. Nothing: undefined ("No repo defined").
-//!
-//! Nothing here changes a repo; saving a binding happens only from the
-//! user's own button press in the Git section.
-
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// `[git]`: project repos (docs/SYNC.md).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GitCfg {
-    /// What happens to a folder no rule covers: "ask" (the only value).
     pub undefined: String,
-    /// How a new repo is named: "folder" (the folder's name, lowercased,
-    /// spaces to '-'). The name is always shown and editable first.
+
     pub repo_name: String,
-    /// GitHub owner (user or org) to the gh account that pushes for it.
+
     pub owners: BTreeMap<String, String>,
-    /// Folder rules: the most specific match wins.
+
     pub rules: Vec<GitRule>,
-    /// Fetch the open tabs' repos every this many minutes (read only:
-    /// remote refs only, never a merge). 0, the default: never on its own.
+
     pub fetch_every_min: u64,
-    /// The gh binary (default: `gh` on PATH).
+
     pub gh_bin: Option<String>,
 }
 
@@ -57,17 +34,15 @@ impl Default for GitCfg {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct GitRule {
-    /// A glob over folders: "~/work/**".
     #[serde(rename = "match")]
     pub pattern: String,
-    /// An owner, or "choose" (pick one of `choices` per project).
+
     pub owner: String,
     pub choices: Vec<String>,
-    /// "exclude": kept off the personal state repo (Phase 2).
+
     pub state: Option<String>,
 }
 
-/// GitHub user, org and gh account names (EMU accounts have a '_').
 pub fn valid_owner(s: &str) -> bool {
     let n = s.chars().count();
     (1..=39).contains(&n)
@@ -77,7 +52,6 @@ pub fn valid_owner(s: &str) -> bool {
         && !s.starts_with('_')
 }
 
-/// A GitHub repo name.
 pub fn valid_repo(s: &str) -> bool {
     let n = s.chars().count();
     (1..=100).contains(&n)
@@ -88,8 +62,6 @@ pub fn valid_repo(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-/// The proposed repo name for a folder: its name, lowercased, spaces to
-/// '-', anything GitHub refuses dropped.
 pub fn repo_name_for(dir: &Path) -> String {
     let n = dir
         .file_name()
@@ -110,8 +82,6 @@ pub fn repo_name_for(dir: &Path) -> String {
     }
 }
 
-/// How specific a pattern is: literal characters before the first
-/// wildcard (more is more specific).
 fn specificity(pat: &str) -> usize {
     pat.chars()
         .take_while(|c| !matches!(c, '*' | '?' | '['))
@@ -124,7 +94,6 @@ fn expand(pat: &str) -> String {
         .into_owned()
 }
 
-/// Does `pat` cover folder `p`? "x/**" also covers x itself.
 pub fn glob_matches(pat: &str, p: &Path) -> bool {
     let full = expand(pat);
     let opts = glob::MatchOptions {
@@ -142,7 +111,6 @@ pub fn glob_matches(pat: &str, p: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// The rule for `p`: the most specific match, ties to the first.
 pub fn rule_for<'a>(cfg: &'a GitCfg, p: &Path) -> Option<&'a GitRule> {
     let mut best: Option<(usize, &GitRule)> = None;
     for r in &cfg.rules {
@@ -157,7 +125,6 @@ pub fn rule_for<'a>(cfg: &'a GitCfg, p: &Path) -> Option<&'a GitRule> {
     best.map(|(_, r)| r)
 }
 
-/// The gh account for a GitHub owner, if `[git.owners]` names one.
 pub fn account_for(cfg: &GitCfg, owner: &str) -> Option<String> {
     cfg.owners
         .iter()
@@ -166,14 +133,12 @@ pub fn account_for(cfg: &GitCfg, owner: &str) -> Option<String> {
         .filter(|a| valid_owner(a))
 }
 
-// ---- the bindings store ----
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Binding {
     pub owner: String,
     pub repo: String,
     pub account: String,
-    /// remote, rule or manual: how it was decided.
+
     #[serde(default)]
     pub source: String,
     #[serde(default)]
@@ -199,7 +164,6 @@ pub fn store_path() -> PathBuf {
     crate::config::app_home().join("git-bindings.json")
 }
 
-/// The key for a folder: "~/x/y" under home, else the absolute path.
 pub fn key(p: &Path) -> String {
     let home = crate::config::home_dir();
     match p.strip_prefix(&home) {
@@ -226,8 +190,6 @@ impl Store {
         self.projects.get(&key(p))
     }
 
-    /// Save one binding (checked first). Only the Git section calls it,
-    /// on the user's own confirmed press.
     pub fn bind(&mut self, p: &Path, mut b: Binding) -> Result<(), String> {
         if let Some(why) = crate::guard::never_folder(p) {
             return Err(why);
@@ -249,36 +211,32 @@ impl Store {
     }
 }
 
-// ---- resolving a folder ----
-
-/// What GodTerm knows about where a folder's repo lives on GitHub.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Resolved {
-    /// The repo's top (or the folder, when it is in no repo).
     pub dir: PathBuf,
-    /// Refused: why (vault, private folder).
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refused: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
-    /// owner = "choose": the owners to pick from.
+
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
-    /// remote, saved, rule or none.
+
     pub source: String,
-    /// The rule's pattern, when a rule decided.
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule: Option<String>,
-    /// The repo exists on GitHub (from an origin remote there).
+
     pub on_github: bool,
-    /// What the user still has to decide, in words.
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ask: Option<String>,
-    /// Kept off the personal state repo (rule state = "exclude").
+
     pub state_exclude: bool,
 }
 
@@ -288,7 +246,6 @@ impl Resolved {
         self.refused.is_none() && self.source == "none"
     }
 
-    /// owner/repo and the account are all known.
     pub fn complete(&self) -> bool {
         self.refused.is_none()
             && self.owner.is_some()
@@ -301,7 +258,6 @@ impl Resolved {
     }
 }
 
-/// The GitHub owner/repo of an origin (or first GitHub) remote.
 pub fn github_remote(f: &crate::project_git::Facts) -> Option<(String, String, String)> {
     let r = f
         .remotes
@@ -314,7 +270,6 @@ pub fn github_remote(f: &crate::project_git::Facts) -> Option<(String, String, S
     (valid_owner(o) && valid_repo(n)).then(|| (o.to_string(), n.to_string(), r.name.clone()))
 }
 
-/// Resolve folder `dir` (a repo's top, or a plain folder).
 pub fn resolve(
     dir: &Path,
     facts: Option<&crate::project_git::Facts>,

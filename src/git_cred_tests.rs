@@ -1,7 +1,3 @@
-//! The credential helper and gh calls against a stub gh (a shell script
-//! that logs its arguments and whether GH_TOKEN reached it). No real gh,
-//! no keychain, no network.
-
 use super::*;
 
 struct Stub {
@@ -15,8 +11,6 @@ impl Stub {
     }
 }
 
-/// A stub gh in a temp folder. `vis` is what repo view reports after a
-/// create (PRIVATE, or PUBLIC to test the loud check).
 fn stub(tag: &str, vis: &str) -> Stub {
     let dir = std::env::temp_dir().join(format!("godterm-gh-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -62,11 +56,11 @@ fn helper_protocol() {
         out,
         "username=alice\npassword=gho_STUBalice00000000000000000000000000\n"
     );
-    // The account asked is the one in --user, never a switch.
+
     let log = s.log();
     assert!(log.contains("ARGS auth token --hostname github.com --user alice"));
     assert!(!log.contains("switch"));
-    // Another host, http, or store/erase: nothing said, gh not asked.
+
     let before = s.log();
     for (op, r) in [
         ("get", "protocol=https\nhost=gitlab.com\n"),
@@ -77,7 +71,7 @@ fn helper_protocol() {
         assert_eq!(respond(op, r, "alice", &s.gh).unwrap(), "");
     }
     assert_eq!(s.log(), before);
-    // An account gh does not have: an error without any token in it.
+
     let e = respond("get", req, "nobody", &s.gh).unwrap_err();
     assert!(e.contains("no token for nobody"), "{e}");
     assert!(respond("get", req, "bad name;", &s.gh).is_err());
@@ -111,7 +105,7 @@ fn gh_token_is_env_never_argv() {
         .iter()
         .any(|(k, v)| k == "GH_TOKEN"
             && v.as_deref() == Some("gho_STUBacme000000000000000000000000000")));
-    // The token lookup itself runs with no inherited token.
+
     assert!(env.iter().any(|(k, v)| k == "GITHUB_TOKEN" && v.is_none()));
     let _ = std::fs::remove_dir_all(&s.dir);
 }
@@ -126,7 +120,7 @@ fn create_is_always_private_and_checked() {
     }
     assert!(create_args("labs labs", "x", &dir, "origin").is_err());
     assert!(create_args("o", "--public", &dir, "origin").is_err());
-    // What gh may ever be asked.
+
     for bad in [
         &["auth", "switch", "--user", "x"][..],
         &["auth", "login"],
@@ -163,7 +157,6 @@ fn create_is_always_private_and_checked() {
     ])
     .is_ok());
 
-    // Against the stub: created, then seen PRIVATE.
     let s = stub("create", "PRIVATE");
     let src = s.dir.join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -183,7 +176,6 @@ fn create_is_always_private_and_checked() {
     assert!(log.contains("ENV GH_TOKEN=gho_STUBalice"), "{log}");
     let _ = std::fs::remove_dir_all(&s.dir);
 
-    // gh says it is public after all: a loud error.
     let s = stub("public", "PUBLIC");
     let src = s.dir.join("src");
     std::fs::create_dir_all(&src).unwrap();

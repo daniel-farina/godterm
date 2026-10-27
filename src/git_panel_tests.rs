@@ -1,8 +1,3 @@
-//! The Git section's core against temp repos, a local bare remote and a
-//! stub gh: warnings for projects that are not backed up, plans that
-//! check before anything changes, the typed override for secrets (by the
-//! human only), private repo creation, bindings, and the web frames.
-
 use super::*;
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::git_ops::tests::{fixture, g};
@@ -31,7 +26,7 @@ fn facts(dir: &Path) -> Option<Facts> {
 #[test]
 fn warnings_for_what_is_not_backed_up() {
     let fx = fixture("warn");
-    // A file:// remote is only a folder here.
+
     let w = warnings(facts(&fx.a).as_ref());
     assert!(
         w.contains(&"Not backed up: no GitHub repo".to_string()),
@@ -50,12 +45,12 @@ fn warnings_for_what_is_not_backed_up() {
     let w = warnings(facts(&fx.a).as_ref());
     assert!(w.contains(&"12 unpushed".to_string()), "{w:?}");
     assert!(w.contains(&"uncommitted changes".to_string()), "{w:?}");
-    // Not a repo at all.
+
     assert_eq!(
         warnings(None),
         vec!["Not backed up: not in git".to_string()]
     );
-    // No remote at all.
+
     let lonely = fx.root.join("lonely");
     std::fs::create_dir_all(&lonely).unwrap();
     g(&lonely, &["init", "-q", "-b", "main"]);
@@ -65,7 +60,7 @@ fn warnings_for_what_is_not_backed_up() {
         "{w:?}"
     );
     assert!(w.contains(&"no commits yet".to_string()), "{w:?}");
-    // A GitHub remote and nothing pending: no warning.
+
     let f = Facts {
         remotes: vec![project_git::Remote {
             name: "origin".into(),
@@ -103,12 +98,12 @@ fn view_lists_actions_and_undefined_asks() {
     let commit = v.actions.iter().find(|a| a.id == "commit").unwrap();
     assert_eq!(commit.disabled.as_deref(), Some("nothing to commit"));
     assert!(v.json()["warnings"].to_string().contains("no GitHub repo"));
-    // A plain folder offers git init.
+
     let plain = fx.root.join("plain");
     std::fs::create_dir_all(&plain).unwrap();
     let v = view(&plain, &env(), &[]);
     assert!(!v.is_repo && v.actions[0].id == "init");
-    // The vault: refused, nothing offered.
+
     let v = view(Path::new("/Volumes/Private/x"), &env(), &[]);
     assert!(v.refused.is_some() && v.actions.is_empty());
     let _ = std::fs::remove_dir_all(&fx.root);
@@ -123,7 +118,7 @@ fn commit_and_push_only_after_confirm_and_typed_override() {
     let e = env();
     let head0 = g(&fx.a, &["rev-parse", "HEAD"]);
     std::fs::write(fx.a.join("a.txt"), "hello\n").unwrap();
-    // Preparing changes nothing.
+
     let p = prepare(
         &fx.a,
         Action::Commit {
@@ -135,7 +130,7 @@ fn commit_and_push_only_after_confirm_and_typed_override() {
     assert!(p.can_run(), "{:?}", p.hard_blocks);
     assert_eq!(g(&fx.a, &["rev-parse", "HEAD"]), head0);
     assert!(execute(&p, None, &e).unwrap().starts_with("Committed"));
-    // A secret in the next commit: the push needs the typed phrase.
+
     let key = format!("ghp_{}", "Q".repeat(36));
     std::fs::write(fx.a.join("cfg.txt"), format!("token = {key}\n")).unwrap();
     let p = prepare(
@@ -162,7 +157,7 @@ fn commit_and_push_only_after_confirm_and_typed_override() {
         before,
         "nothing pushed"
     );
-    // A newer commit than the check: refused, check again.
+
     std::fs::write(fx.a.join("b.txt"), "b\n").unwrap();
     let pc = prepare(
         &fx.a,
@@ -183,7 +178,7 @@ fn commit_and_push_only_after_confirm_and_typed_override() {
         g(&fx.bare, &["rev-parse", "refs/heads/main"]),
         g(&fx.a, &["rev-parse", "HEAD"])
     );
-    // A secret file staged: the commit itself is refused.
+
     std::fs::write(fx.a.join(".env"), "X=1\n").unwrap();
     let p = prepare(
         &fx.a,
@@ -227,7 +222,6 @@ fn diverged_then_push_as_branch() {
     let _ = std::fs::remove_dir_all(&h);
 }
 
-/// A stub gh that knows alice and creates repos (logs argv/env).
 fn stub_gh(dir: &Path) -> PathBuf {
     let d = crate::test_sh::sh_path(dir);
     let script = format!(
@@ -253,7 +247,7 @@ fn define_then_create_private_repo() {
     let fx = fixture("create");
     let mut e = env();
     e.gh = stub_gh(&fx.root);
-    // Bind first (the user's Define): saved, nothing in the repo changes.
+
     let p = prepare(
         &fx.a,
         Action::Bind {
@@ -276,7 +270,7 @@ fn define_then_create_private_repo() {
         .unwrap()
         .disabled
         .is_none());
-    // Create: private, checked, bound; no push in this test.
+
     let p = prepare(
         &fx.a,
         Action::CreateRepo {
@@ -298,7 +292,7 @@ fn define_then_create_private_repo() {
     );
     assert!(log.contains("ENV GH_TOKEN"));
     assert!(!log.contains("auth switch"));
-    // Now it exists: a second create is refused (use existing instead).
+
     let p = prepare(
         &fx.a,
         Action::CreateRepo {
@@ -310,7 +304,7 @@ fn define_then_create_private_repo() {
         &e,
     );
     assert!(p.exists && !p.can_run());
-    // Bad names never get that far.
+
     let p = prepare(
         &fx.a,
         Action::CreateRepo {
@@ -352,7 +346,7 @@ fn web_frames_view_prepare_run() {
     let r = web_frame(&json!({"op": "run", "plan_id": id}), None, &e, &[]);
     assert_eq!(r["ok"], true, "{r}");
     assert!(r["said"].as_str().unwrap().starts_with("Committed"));
-    // A plan runs once; unknown ids and actions are refused.
+
     let r = web_frame(&json!({"op": "run", "plan_id": id}), None, &e, &[]);
     assert_eq!(r["ok"], false);
     let r = web_frame(

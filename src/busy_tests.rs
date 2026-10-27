@@ -1,8 +1,3 @@
-//! send_prompt to a busy tab: the side channel (/btw), a forked
-//! background session, queue, idle tabs and the fallbacks. Every claude
-//! here is the test stub; the /btw panel is drawn into the tab's screen by
-//! the test, so nothing here shows how a real claude 2.1.299 draws it.
-
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -79,7 +74,7 @@ fn setup(tag: &str, opts: &[(&str, &str)], activity: Activity) -> T {
         uid,
         slot,
     };
-    // The stub has been started (it records its own launch).
+
     let a = t.args.clone();
     assert!(t.pump(10, |_| std::fs::read_to_string(&a).is_ok()));
     t.app.panes[slot].tabs[0].activity = activity;
@@ -163,9 +158,6 @@ fn last_receipt(a: &App) -> Option<crate::receipts::Receipt> {
     a.external_receipt(a.deliveries.last()?)
 }
 
-/// A busy tab and a question: it goes through /btw, nothing is queued,
-/// the answer is read from the panel, the panel is dismissed and the
-/// answer is reported like any other.
 #[test]
 fn a_question_to_a_busy_tab_uses_the_side_channel() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -178,17 +170,17 @@ fn a_question_to_a_busy_tab_uses_the_side_channel() {
     let id = t.last_id();
     assert_eq!(t.delivery(id).rc.mode, Mode::Side);
     assert_eq!(t.app.queued_for(t.uid), 0, "nothing queued behind the work");
-    // Typed as /btw, not as a plain prompt.
+
     let stdin = t.stdin.clone();
     assert!(
         t.pump(5, |_| has(&stdin, &format!("/btw {q}"))),
         "{:?}",
         std::fs::read(&stdin)
     );
-    // The input box echoes it, then Enter follows.
+
     t.screen(&format!("> /btw {q}"));
     assert!(t.pump(5, |_| has(&stdin, "\n")));
-    // Thinking, then the answer with its dismiss line.
+
     t.screen(&format!("working hard\n  /btw {q}\n  Answering…"));
     assert!(t.pump(5, |a| last_receipt(a)
         == Some(crate::receipts::Receipt::Started)));
@@ -204,21 +196,18 @@ fn a_question_to_a_busy_tab_uses_the_side_channel() {
     };
     assert!(text.contains("I am fixing the build"), "{text}");
     assert!(text.contains("side answer"), "{text}");
-    // The panel was dismissed with one Escape, while its footer showed.
+
     assert!(t.pump(2, |_| has(&stdin, "\u{1b}")));
-    // Receipt and listing say the mode.
+
     t.pump(3, |a| a.deliveries_json()[0]["state"] == "done");
     let dj = t.app.deliveries_json();
     assert_eq!(dj[0]["mode"], "side", "{dj}");
     assert_eq!(dj[0]["state"], "done", "{dj}");
-    // No background session, no queue.
+
     assert_eq!(t.app.busy.fork_ids.len(), 0);
     assert!(!has(&t.args, "--bg"));
 }
 
-/// A busy tab and a work request: a background session forked from the
-/// tab's session, same folder and account; reported plainly; its result
-/// comes back; the fork is never adopted as the tab's session.
 #[test]
 fn work_for_a_busy_tab_forks_a_background_session() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -235,14 +224,14 @@ fn work_for_a_busy_tab_forks_a_background_session() {
     let id = t.last_id();
     assert_eq!(t.delivery(id).rc.mode, Mode::Background);
     assert_eq!(t.app.queued_for(t.uid), 0);
-    // `claude --bg --resume SID --fork-session --session-id NEW <task>`.
+
     let args = t.args.clone();
     assert!(t.pump(10, |_| T::lines(&args).iter().any(|l| l.contains("--bg"))));
     let line = T::lines(&t.args)
         .into_iter()
         .find(|l| l.contains("--bg"))
         .unwrap();
-    // The tab's own permission mode is mirrored (a background run cannot ask).
+
     assert!(
         line.starts_with("--bg ")
             && line.contains(&format!(" --resume {SID} --fork-session --session-id ")),
@@ -258,8 +247,7 @@ fn work_for_a_busy_tab_forks_a_background_session() {
         .unwrap()
         .to_string();
     assert_ne!(new_id, SID);
-    // Same folder, same account (a path may differ in form: Windows has
-    // 8.3 short names and the \\?\ prefix canonicalize adds).
+
     let canon = |p: &std::path::Path| {
         let c = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         c.to_string_lossy()
@@ -284,7 +272,7 @@ fn work_for_a_busy_tab_forks_a_background_session() {
         seen.iter().filter(|l| *l == &want).count() >= 2,
         "{want:?} in {seen:?}"
     );
-    // The launch is confirmed: received.
+
     assert!(t.pump(5, |a| last_receipt(a)
         == Some(crate::receipts::Receipt::Received)));
     let dj = t.app.deliveries_json();
@@ -300,7 +288,7 @@ fn work_for_a_busy_tab_forks_a_background_session() {
         tabs.contains("background_sessions") && tabs.contains(&new_id[..8]),
         "{tabs}"
     );
-    // The fork's transcript appears in the tab's folder: not adopted.
+
     let dir = t.app.cfg.accounts[2].config_dir();
     let cwd = t.app.panes[t.slot].tabs[0].cwd.clone();
     let proj = dir
@@ -323,7 +311,7 @@ fn work_for_a_busy_tab_forks_a_background_session() {
         Some(new_id.as_str()),
         "the fork is not the tab's session"
     );
-    // The job runs, then finishes: started, then done with its reply.
+
     let job = dir.join("jobs").join(&new_id[..8]);
     std::fs::create_dir_all(&job).unwrap();
     std::fs::write(
@@ -355,8 +343,6 @@ fn work_for_a_busy_tab_forks_a_background_session() {
     assert_eq!(t.app.deliveries_json()[0]["state"], "done");
 }
 
-/// mode queue keeps the old behaviour on a busy tab: queued in GodTerm, no
-/// side question, no background session.
 #[test]
 fn queue_mode_is_unchanged() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -373,7 +359,7 @@ fn queue_mode_is_unchanged() {
     t.pump(1, |_| false);
     assert!(!has(&t.stdin, "btw") && !has(&t.args, "--bg"));
     assert!(!has(&t.stdin, "What is the status"), "not typed while busy");
-    // It goes in once the tab is ready, as the prompt itself.
+
     t.app.panes[t.slot].tabs[0].activity = Activity::Ready;
     let stdin = t.stdin.clone();
     assert!(t.pump(5, |_| has(&stdin, "What is the status?")));
@@ -381,7 +367,6 @@ fn queue_mode_is_unchanged() {
     assert!(t.app.deliveries_state_lines().contains("[queue]"));
 }
 
-/// An idle tab gets the prompt typed in, whatever the text.
 #[test]
 fn an_idle_tab_is_unchanged() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -401,8 +386,6 @@ fn an_idle_tab_is_unchanged() {
     assert!(!has(&t.stdin, "/btw") && !has(&t.args, "--bg"));
 }
 
-/// Explicit modes: background on an idle tab forks; side on a tab waiting
-/// for an approval becomes background (typing would answer the prompt).
 #[test]
 fn explicit_modes_and_the_permission_case() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -423,8 +406,6 @@ fn explicit_modes_and_the_permission_case() {
     );
 }
 
-/// A background launch that fails is queued instead, with the reason, as
-/// the same delivery; the follow-up goes back to the tab's transcript.
 #[test]
 fn a_failed_background_launch_falls_back_to_queue() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -451,12 +432,10 @@ fn a_failed_background_launch_falls_back_to_queue() {
     assert!(t.pump(5, |_| has(&stdin, "Add a toggle to the page")));
 }
 
-/// A tab whose claude has no /btw (the command is refused, or no panel
-/// ever shows) gets the question queued instead, said in the result.
 #[test]
 fn the_side_channel_missing_falls_back_to_queue() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Unknown command: at once.
+
     let mut t = setup("nobtw", &[], Activity::Working);
     let q = "What are you doing right now?";
     let v = t.send(json!({"text": q}));
@@ -473,7 +452,7 @@ fn the_side_channel_missing_falls_back_to_queue() {
     assert!(t.delivery(id).rc.note.unwrap().contains("/btw"));
     assert_eq!(t.app.queued_for(t.uid), 1);
     drop(t);
-    // No panel at all: after a short wait.
+
     let mut t = setup("nopanel", &[], Activity::Working);
     let v = t.send(json!({"text": q}));
     assert!(v["error"].is_null(), "{v}");
@@ -486,7 +465,6 @@ fn the_side_channel_missing_falls_back_to_queue() {
     assert!(t.delivery(id).rc.note.unwrap().contains("did not show up"));
 }
 
-/// Grok tabs have neither channel: a busy one queues and says why.
 #[test]
 fn a_grok_tab_queues_with_a_reason() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

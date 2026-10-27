@@ -1,13 +1,3 @@
-//! Receipts for requests to tabs, end to end: a stub claude in a real PTY
-//! (ready or working from a `mode` file in its folder, records what is
-//! submitted, and on Escape may put text back into its input box) while
-//! the test writes the transcript records claude would. Idle tab: queued,
-//! received, started, done; busy tab: enqueue then absorbed; drops from
-//! the queue; an interrupted turn; typed in but never seen; a restart
-//! with pending requests; Escape on a tab with pending requests; the
-//! deliveries in get_state; the quiet gate for received and started,
-//! dropped and interrupted said at once; resend. Nothing real is touched.
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -93,7 +83,6 @@ impl Drop for Rig {
     }
 }
 
-/// An app whose one tab ("claudego") runs the stub, with a transcript.
 fn rig(tag: &str, mode: &str) -> Option<Rig> {
     use crate::creds::CredSource;
     if !have_python() {
@@ -260,9 +249,6 @@ impl Rig {
     }
 }
 
-/// An idle tab (busy when asked, so the receipts are said): queued while
-/// it works, then received and started with its own turn, then done;
-/// get_state lists it with its id and state.
 #[test]
 fn idle_tab_goes_queued_started_done() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -278,7 +264,7 @@ fn idle_tab_goes_queued_started_done() {
     assert_eq!(ds[0]["id"], json!(id));
     assert_eq!(ds[0]["state"], "queued");
     assert!(ds[0]["request"].as_str().unwrap().contains("changelog"));
-    // The turn ends: GodTerm types it in, claude starts a turn with it.
+
     r.mode("ready");
     r.until(20, "the paste", |r| r.submitted().contains("changelog"));
     r.mode("working");
@@ -295,9 +281,6 @@ fn idle_tab_goes_queued_started_done() {
     assert!(!r.said().contains("dropped"), "{}", r.said());
 }
 
-/// A busy tab: claude queues it (received, said briefly at a quiet
-/// moment), then takes it into the running turn (started, no new turn),
-/// then the turn ends (done). While the user talks, neither is said.
 #[test]
 fn busy_tab_enqueue_then_absorbed() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -308,7 +291,7 @@ fn busy_tab_enqueue_then_absorbed() {
     let id = r.app.deliver_request(r.uid, text);
     r.until(20, "the paste", |r| r.submitted().contains("windows build"));
     r.mode("working");
-    // The user is talking: the brief receipts wait.
+
     r.app.assistant.quiet.spoke_at = Some(Instant::now());
     r.queue_op("enqueue", text, None);
     r.until(10, "received", |r| r.state(id) == "received");
@@ -327,10 +310,10 @@ fn busy_tab_enqueue_then_absorbed() {
     r.record(json!({"type": "attachment", "timestamp": now_ts(), "attachment": {"type": "queued_command", "prompt": text}}));
     r.until(10, "started", |r| r.state(id) == "started");
     r.step();
-    // Started replaces the received line that was not said yet.
+
     assert!(r.queued_updates().contains("claudego started on it"));
     assert!(!r.queued_updates().contains("got your request"));
-    // Quiet again: said.
+
     r.app.assistant.quiet.spoke_at = None;
     r.until(5, "said", |r| r.said().contains("claudego started on it"));
     r.reply_and_end("Windows is green too.");
@@ -338,9 +321,6 @@ fn busy_tab_enqueue_then_absorbed() {
     r.until(10, "done", |r| r.state(id) == "done");
 }
 
-/// Taken off claude's queue unrun (popAll: back into the input box):
-/// dropped, said at once even while the user just spoke, and resend
-/// sends the exact text again (the tool, and by voice).
 #[test]
 fn queue_drop_is_said_and_resent() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -364,7 +344,7 @@ fn queue_drop_is_said_and_resent() {
     assert_eq!(d["state"], "dropped");
     assert_eq!(d["resend"], json!(true));
     assert!(d["reason"].as_str().unwrap().contains("input box"));
-    // resend: the exact text, again.
+
     r.mode("ready");
     let v = r.app.control_call("resend", &json!({}));
     assert_eq!(v["resent"]["from"], json!(id), "{v}");
@@ -374,9 +354,9 @@ fn queue_drop_is_said_and_resent() {
     });
     let old = r.app.deliveries.iter().find(|d| d.id == id).unwrap();
     assert_eq!(old.rc.resent_as, Some(new));
-    // Nothing lost any more: a spoken "resend" goes to the brain.
+
     assert!(!r.app.resend_said("resend"));
-    // Lost again (never seen), and resent by voice.
+
     {
         let d = r.app.deliveries.iter_mut().find(|d| d.id == new).unwrap();
         d.rc.sent_at = Some(Instant::now() - Duration::from_secs(60));
@@ -388,7 +368,6 @@ fn queue_drop_is_said_and_resent() {
     });
 }
 
-/// The turn that held it is interrupted: interrupted, said at once.
 #[test]
 fn interrupted_turn() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -413,7 +392,6 @@ fn interrupted_turn() {
     });
 }
 
-/// Typed in, taken, but never in the transcript: dropped after the wait.
 #[test]
 fn pasted_but_never_seen_is_dropped() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -433,7 +411,7 @@ fn pasted_but_never_seen_is_dropped() {
     });
     r.step();
     assert_eq!(r.state(id), "sent");
-    // Past the wait (30 s) with nothing in the transcript.
+
     {
         let d = r.app.deliveries.iter_mut().find(|d| d.id == id).unwrap();
         d.rc.sent_at = Some(Instant::now() - crate::app_receipts::NOT_SEEN);
@@ -446,9 +424,6 @@ fn pasted_but_never_seen_is_dropped() {
     });
 }
 
-/// Escape on a tab with a request in claude's queue: the tool result
-/// warns; claude puts the text back into its input box unsent, and that
-/// is reported as dropped.
 #[test]
 fn escape_warns_and_reports_the_drop() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -461,9 +436,9 @@ fn escape_warns_and_reports_the_drop() {
     r.mode("working");
     r.queue_op("enqueue", text, None);
     r.until(10, "received", |r| r.state(id) == "received");
-    // On Escape the stub shows the text back in its input box.
+
     std::fs::write(r.work.join("restore.txt"), text).unwrap();
-    // The user asked to stop it (an interrupt unasked needs a yes first).
+
     r.app.assistant.last_user = "interrupt it".into();
     let v = r.app.control_call(
         "press_key",
@@ -491,9 +466,6 @@ fn escape_warns_and_reports_the_drop() {
     });
 }
 
-/// A restart with pending requests: the one whose tab is here is queued
-/// again (and typed in once the tab is ready), one that had started is
-/// followed and not sent twice, one whose tab is gone is dropped and said.
 #[test]
 fn restart_requeues_or_reports() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -517,13 +489,13 @@ fn restart_requeues_or_reports() {
     r.app.save_state();
     let mut st = crate::state::AppState::load().unwrap();
     assert_eq!(st.deliveries.len(), 3, "{:?}", st.deliveries);
-    // The third one's tab is gone after the restart.
+
     for sd in &mut st.deliveries {
         if sd.id == lost {
             sd.tab = 99_999;
         }
     }
-    // The old GodTerm is gone (crash): a new one restores.
+
     for t in &mut r.app.panes[0].tabs {
         t.kill();
     }
@@ -555,7 +527,7 @@ fn restart_requeues_or_reports() {
     );
     assert!(notices.contains("queued again"), "{notices}");
     assert!(next.delivery_seq >= lost, "ids are not handed out twice");
-    // The tab comes up: the re-queued request is typed in.
+
     r.app = next;
     r.mode("ready");
     let (s, t) = r.app.find_tab(r.uid).unwrap();
@@ -566,9 +538,6 @@ fn restart_requeues_or_reports() {
     assert!(!r.submitted().contains("tag the release"));
 }
 
-/// A request with an image: the tab gets the image path on its own line
-/// (Claude Code attaches it as [Image #1]), and the receipts still follow
-/// it through the transcript, where the text has the image's placeholder.
 #[test]
 fn request_with_image_keeps_receipts() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -608,8 +577,6 @@ fn request_with_image_keeps_receipts() {
     r.until(10, "done", |r| r.state(id) == "done");
 }
 
-/// Which typed texts are slash commands, and claude's screen showing one
-/// run (its line with the answer under it).
 #[test]
 fn slash_commands_are_told_from_text_and_screen() {
     use crate::app_receipts::{is_slash, slash_echoed};
@@ -633,14 +600,12 @@ fn slash_commands_are_told_from_text_and_screen() {
     }
     let run = "● Done.\n\n> /effort max\n  ⎿  Set effort level to max\n\n╭────╮\n│ >  │\n╰────╯\n";
     assert!(slash_echoed(run, "/effort max"));
-    // Only in the input box, nothing under it: not run.
+
     let unsent =
         "● Done.\n\n╭──────────────╮\n│ > /effort max │\n╰──────────────╯\n  ? for shortcuts\n";
     assert!(!slash_echoed(unsent, "/effort max"));
 }
 
-/// A slash command leaves no transcript record: the tab's effort changing
-/// makes it done, not dropped.
 #[test]
 fn slash_command_applied_is_done() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -656,7 +621,7 @@ fn slash_command_applied_is_done() {
             .iter()
             .any(|d| d.id == id && d.stage == crate::control::Stage::Delivered)
     });
-    // The screen read sees the new effort.
+
     r.app.panes[0].tabs[0].effort = Some("max".into());
     {
         let d = r.app.deliveries.iter_mut().find(|d| d.id == id).unwrap();
@@ -666,8 +631,6 @@ fn slash_command_applied_is_done() {
     assert!(!r.said().contains("dropped"), "{}", r.said());
 }
 
-/// A slash command that left the input box but shows nothing: unconfirmed
-/// after the wait, never dropped.
 #[test]
 fn slash_command_without_trace_is_unconfirmed_not_dropped() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -720,7 +683,7 @@ fn a_slash_command_counts_as_run_when_its_line_has_an_answer_under_it() {
     use crate::app_receipts::slash_echoed;
     let screen = "some output\n\n> /effort  max\n  ⎿  Set effort level to max\n\n> \n";
     assert!(slash_echoed(screen, "/effort max"));
-    // Typed but not answered (still in the box, or no ⎿ line under it).
+
     assert!(!slash_echoed("> /effort max\n", "/effort max"));
     assert!(!slash_echoed("> /effort max\nnext line\n", "/effort max"));
     assert!(!slash_echoed(screen, "/model opus"));

@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Write the Homebrew formula (CLI) and cask (app) for a release into
-# packaging/homebrew/, from the release's assets on GitHub (draft or
-# published), and push them to the tap daniel-farina/homebrew-godterm.
-#
-#   scripts/release/homebrew.sh v0.2.0          write and push
-#   NO_PUSH=1 scripts/release/homebrew.sh v0.2.0  write only
-#
-# The URLs are the release's public download links (no token needed).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REPO="${REPO:-daniel-farina/godterm}"
@@ -123,7 +115,6 @@ cp "$OUT/Casks/godterm.rb" "$work/Casks/"
 cp "$OUT/TAP_README.md" "$work/README.md"
 git -C "$work" add Formula/godterm.rb Casks/godterm.rb README.md
 if git -C "$work" diff --cached --quiet; then echo "tap already up to date"; exit 0; fi
-# The public tap's commits carry the GitHub noreply address, not a personal one.
 email="${TAP_EMAIL:-$(gh api user --jq '"\(.id)+\(.login)@users.noreply.github.com"')}"
 git -C "$work" -c user.name="${TAP_NAME:-$(gh api user --jq '.name // .login')}" -c user.email="$email" commit -q -m "godterm $v"
 git -C "$work" push -q origin HEAD

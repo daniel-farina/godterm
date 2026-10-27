@@ -1,7 +1,3 @@
-//! The GitHub accounts and repos editor: config.toml written with its
-//! comments and other keys kept, the starter set, rule order deciding
-//! ties, bad globs and the vault refused, gh account states.
-
 use super::*;
 
 fn h(p: &str) -> PathBuf {
@@ -42,10 +38,9 @@ enabled = false   # after the rules
 fn toml_round_trip_keeps_comments_and_other_keys() {
     let cfg = crate::config::Config::parse(CONFIG).unwrap();
     let mut d = Draft::from_cfg(&cfg.git);
-    // Nothing changed: the text is the same, byte for byte.
+
     assert_eq!(write_toml(CONFIG, &d).unwrap(), CONFIG);
-    // Edit: drop an owner, add one, change an account, reorder the rules
-    // and add one.
+
     d.owners.retain(|r| r.owner != "old-org");
     d.owners.push(OwnerRow {
         owner: "alice-labs".into(),
@@ -80,10 +75,10 @@ fn toml_round_trip_keeps_comments_and_other_keys() {
     assert_eq!(pats, ["~/**", "~/labs/**", "~/acme/**"], "{out}");
     assert_eq!(back.git.rules[2].state.as_deref(), Some("exclude"));
     assert_eq!(back.git.owners["alice-labs"], "alice");
-    // The rules stay where they were in the file, before [web].
+
     let web = out.find("[web]").unwrap();
     assert!(out.rfind("[[git.rules]]").unwrap() < web, "{out}");
-    // Writing the same again changes nothing.
+
     assert_eq!(write_toml(&out, &d).unwrap(), out);
 }
 
@@ -106,7 +101,7 @@ fn placeholders_apply_to_an_empty_config() {
     assert_eq!(back.git.rules.len(), 3);
     assert_eq!(back.git.rules[1].owner, "choose");
     assert_eq!(back.git.rules[1].state.as_deref(), Some("exclude"));
-    // It resolves as the user described.
+
     let r = preview_one(&back.git, &h("labs/team-hub"));
     assert_eq!(r.line, "~/labs/team-hub -> alice-labs (alice)");
     let r = preview_one(&back.git, &h("acme/grid"));
@@ -116,7 +111,7 @@ fn placeholders_apply_to_an_empty_config() {
         preview_one(&back.git, &h("notes")).owner.as_deref(),
         Some("alice")
     );
-    // The placeholder owner warns until it is renamed.
+
     let c = check(&d, None);
     assert!(c.ok(), "{c:?}");
     assert!(c
@@ -146,7 +141,6 @@ fn placeholders_apply_to_an_empty_config() {
 
 #[test]
 fn reordering_rules_changes_which_one_decides() {
-    // Two rules as specific as each other: the higher one wins the tie.
     let mut d = Draft {
         owners: vec![
             OwnerRow {
@@ -182,7 +176,7 @@ fn reordering_rules_changes_which_one_decides() {
     assert_eq!(p[0].owner.as_deref(), Some("bob"));
     assert_eq!(p[0].line, "~/labs/team-hub -> bob (bob)");
     assert_eq!(p[0].rule, Some(0));
-    // The confirmation says the order changed.
+
     let old = Draft {
         rules: vec![d.rules[1].clone(), d.rules[0].clone()],
         ..d.clone()
@@ -196,7 +190,7 @@ fn reordering_rules_changes_which_one_decides() {
         lines.iter().any(|l| l.contains("1. ~/labs/* -> bob")),
         "{lines:?}"
     );
-    // A more specific rule still beats a higher, broader one.
+
     d.rules.insert(
         0,
         GitRule {
@@ -207,7 +201,7 @@ fn reordering_rules_changes_which_one_decides() {
     );
     let p = preview(&d, &base, std::slice::from_ref(&dir), &Store::default());
     assert_eq!(p[0].owner.as_deref(), Some("bob"));
-    // No rule: undefined.
+
     let p = preview(&d, &base, &[PathBuf::from("/opt/x")], &Store::default());
     assert_eq!(p[0].rule, None);
     assert!(p[0].line.ends_with("-> undefined (no rule covers it)"));
@@ -248,7 +242,7 @@ fn invalid_globs_are_refused() {
         let c = check(&rule(good), None);
         assert!(c.ok(), "{good:?}: {c:?}");
     }
-    // Bad names and choose without choices.
+
     let mut d = rule("~/**");
     d.owners[0].owner = "-bad".into();
     d.rules[0].owner = "choose".into();
@@ -271,7 +265,7 @@ fn the_vault_is_refused_as_a_glob_or_a_folder() {
         assert!(c.errors.iter().any(|e| e.contains("vault")), "{v:?}: {c:?}");
     }
     assert!(check(&rule("/Volumes/Other/**"), None).ok());
-    // A binding there too.
+
     let d = Draft {
         binds: vec![BindEdit {
             key: "/Volumes/Private/x".into(),
@@ -306,7 +300,7 @@ fn gh_accounts_and_their_logins() {
     assert!(!a[1].logged_in);
     assert!(a[2].logged_in && !a[2].active);
     assert!(!serde_json::to_string(&a).unwrap().contains("gho_"));
-    // An owner whose account is not logged in warns; the save still goes.
+
     let d = sample("your-org");
     let c = check(&d, Some(&a));
     assert!(c.ok());
@@ -332,7 +326,7 @@ fn the_diff_names_each_change() {
         "+ rule ~/acme/** -> choose your-org or alice, conversations and .env kept out"
     )));
     assert!(diff(&new, &new, &store).is_empty());
-    // Binding edits.
+
     store.projects.insert(
         "~/a".into(),
         Binding {
@@ -402,7 +396,7 @@ fn the_starter_set_is_built_from_the_gh_accounts() {
     assert_eq!(d.rules[0].owner, "your-org");
     assert_eq!(d.rules.last().unwrap().pattern, "~/**");
     assert_eq!(d.rules.last().unwrap().owner, "bob", "the active account");
-    // No account active: the first one.
+
     let d = from_accounts(&[a("alice", false), a("bob", false)]).unwrap();
     assert_eq!(d.rules.last().unwrap().owner, "alice");
 }

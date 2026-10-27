@@ -21,6 +21,7 @@ import os
 import random
 import socket
 import struct
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -37,7 +38,7 @@ BUILD = [hashlib.sha1(str(time.time()).encode()).hexdigest()[:12]]
 RNG = random.Random(7)
 
 ACCOUNTS = [
-    {"account": 1, "label": "Alpha", "harness": "claude", "logged_in": True, "available": True},
+    {"account": 1, "label": "Alpha", "email": "dev@example.com", "harness": "claude", "logged_in": True, "available": True},
     {"account": 2, "label": "Bravo", "harness": "claude", "logged_in": True, "available": True},
     {"account": 3, "label": "Grok", "harness": "grok", "logged_in": True, "available": True},
     {"account": 4, "label": "Delta", "harness": "claude", "logged_in": False, "available": False},
@@ -87,7 +88,6 @@ class Tab:
         a = acct(self.account)
         v = {"id": "t%d" % self.uid, "uid": self.uid, "cols": self.cols, "rows": self.rows, "running": True, "account": self.account, "account_label": a["label"], "position": "tab %d of %d" % (pos, n),
              "name": self.name, "folder": self.folder, "state": self.state, "model": self.model,
-             # Last activity: a spread from now to days ago, by uid (like GodTerm's active_at, to 30 s).
              "active_at": int(time.time()) - (0, 240, 3 * 3600, 26 * 3600, 50 * 3600, 90, 7200)[self.uid % 7]}
         if self.pinned:
             v["pinned"] = True
@@ -104,7 +104,6 @@ class Tab:
             v["loops"] = loops
         if a["harness"] == "claude":
             v["effort"] = "high" if self.uid % 2 else "medium"
-        # The status bar's git and browser, varied across the tabs.
         k = self.uid % 3
         if k == 0:
             v["git"] = "main, github acme/%s, 2 unpushed, 3 modified" % self.name
@@ -320,7 +319,6 @@ def dirty():
     STATE_DIRTY[0] = True
 
 
-# ---- WebSocket -----------------------------------------------------------
 
 class Client:
     def __init__(self, sock):
@@ -508,7 +506,6 @@ def stream_reply(cl, text):
         acc += ("" if i == 0 else " ") + w
         broadcast({"t": "assistant", "id": "live", "role": "assistant", "text": acc, "done": False})
         time.sleep(0.01 if low.startswith("/md") else 0.03)
-    # Like GodTerm: the live reply ends empty and the final text is a log entry.
     broadcast({"t": "assistant", "id": "live", "role": "assistant", "text": "", "done": True})
     chat_msg("assistant", acc)
     BUSY[0] = False
@@ -537,7 +534,6 @@ def beep():
     return buf.getvalue()
 
 
-# ---- sessions -----------------------------------------------------------
 
 def make_sessions():
     r = random.Random(42)
@@ -555,7 +551,6 @@ def make_sessions():
                     "first_prompt": "Please " + " ".join(r.sample(words, 5)), "modified": now - age, "created": now - age - r.random() * 5 * 86400,
                     "messages": msgs, "tokens": {"new_input": msgs * r.randint(200, 2000), "output": msgs * r.randint(50, 400), "largest_context": r.randint(10, 190) * 1000},
                     "subagents": r.choice([None, None, None, 1, 3]), "live": age < 600})
-    # Fixtures for the tab filter's "Other sessions" (one per harness).
     for i, (h, src, proj, title) in enumerate([
             ("claude", 2, "~/work/acme-api", "Acme API login refactor"), ("grok", 3, "~/work/acme-web", "Acme web landing page"),
             ("codex", "codex 1", "~/work/acme-api", "Fix the acme billing export"), ("cursor", "~/.cursor", "~/work/acme-web", "Add a dark theme to acme web"),
@@ -569,7 +564,6 @@ def make_sessions():
 
 SESSIONS = make_sessions()
 
-# Archived tabs, as the server's archived_json.
 ARCHIVED = [{"id": "arch%02d" % i, "name": n, "account": acc, "account_label": "Account %d" % acc, "provider": "claude", "folder": f,
              "session": None, "model": None, "pinned": False, "group": None, "loops": 0, "idle_hours_when_archived": 30,
              "last_active": "%d days ago" % (i + 2), "archived": "%d days ago" % (i + 1), "by": "user"}
@@ -616,7 +610,6 @@ def sessions_tool(a):
     return {"sessions": shown, "matched": len(rows), "shown": len(shown), "say": "%d sessions." % len(rows)}
 
 
-# ---- tools ---------------------------------------------------------------
 
 CONFIRM = {}
 LAST_PROMPT = {}
@@ -635,13 +628,27 @@ def tool(name, a):
         if name2 is None:
             return {"ok": False, "error": "that confirmation expired"}
         if (says or "").strip().lower() in ("no", "cancel"):
-            # A no with the token drops the question, as in GodTerm.
             return {"ok": True, "result": {"say": "Cancelled."}}
         a = {**a, "_confirmed": True}
     r = mock_sync.tool(name, a, needs, TABS)
     if r is not None:
         return r
     t = find(a.get("tab"))
+    if name == "list_settings":
+        if not a.get("section"):
+            return {"ok": True, "result": {"sections": ["Voice and Audio"]}}
+        mk = lambda k, l, v, kind, g: {"key": k, "label": l, "value": v, "kind": kind, "help": "", "group": g}
+        return {"ok": True, "result": {"settings": [
+            mk("voice.tts_engine", "Voice engine", "kokoro", {"one of": ["kokoro", "say", "grok", "off"]}, "Talk back"),
+            mk("voice.tts_speed", "Speed", "1.0", "number", "Talk back"),
+            mk("voice.mode", "Mode", "push", {"one of": ["push", "wake"]}, "Listening"),
+            mk("voice.wake_words", "Wake words", "hey god", "text", "Listening"),
+            mk("voice.engine", "Recognizer", "whisper", {"one of": ["auto", "apple", "whisper", "grok"]}, "Speech recognition"),
+            mk("voice.language", "Language", "en", "text", "Speech recognition"),
+            mk("voice.debug_save_audio", "Save last 20 utterances", "off", "on/off", "Advanced and debugging"),
+        ]}}
+    if name == "speaker":
+        return {"ok": True, "result": {"say": "ok"}}
     if name == "sessions":
         return {"ok": True, "result": sessions_tool(a)}
     if name == "list_archived":
@@ -673,7 +680,6 @@ def tool(name, a):
         dirty()
         return {"ok": True, "result": {"say": "Closed %s." % t.name}}
     if name == "archive_tabs" and t:
-        # One tab named by id: no question, unless it is busy (then force=true is asked for).
         if t.state in ("working", "background", "approval") and not a.get("force"):
             return {"ok": False, "error": "%s is busy; force=true archives it anyway." % t.name}
         TABS.remove(t)
@@ -682,7 +688,6 @@ def tool(name, a):
         dirty()
         return {"ok": True, "result": {"say": "Archived 1 tab.", "archived": 1}}
     if name == "send_prompt" and t:
-        # A receipt like GodTerm's: typed in when idle, queued behind a busy tab.
         busy = t.state in ("working", "approval")
         mode = a.get("mode") or "auto"
         text = a.get("text") or ""
@@ -706,7 +711,6 @@ def tool(name, a):
             dirty()
             return {"ok": True, "result": {"say": "Duplicated to %s." % acct(to)["label"], "tabs": ["t%d" % nt.uid]}}
         if t.state in ("working", "background"):
-            # Busy: queued, with why (GodTerm's move_tab does the same).
             why = "2 subagents running"
             return {"ok": True, "result": {"say": "%s is busy (%s); it moves when that ends. Move now stops it and moves at once." % (t.name, why),
                     "moved": [], "after_current_work": ["t%d" % t.uid], "waiting_for": [{"tab": "t%d" % t.uid, "name": t.name, "why": why}]}}
@@ -716,7 +720,6 @@ def tool(name, a):
         to = int(a.get("to") or 1)
         busy = t.state in ("working", "background")
         if not a.get("_confirmed"):
-            # Asks once more, naming what it stops (GodTerm's move_now does).
             return needs(name, a, "Move %s to %s now?%s" % (t.name, acct(to)["label"], " This stops what runs in %s: 2 subagents running." % t.name if busy else ""))
         nt = relaunch(t, to)
         return {"ok": True, "result": {"say": "Moved %s to %s; what ran in it was stopped." % (t.name, acct(nt.account)["label"]), "moved": [{"from": "t%d" % t.uid, "now": "t%d" % nt.uid}]}}
@@ -828,6 +831,22 @@ def handle_text(cl, m):
             r = tool(m.get("name"), {**(m.get("args") or {}), "_says": m.get("user_says")})
         time.sleep(0.15)
         cl.send({"t": "result", "id": m.get("id"), "result": r})
+    elif t in ("file", "image"):
+        raw = m.get("data", "").split("base64,")[-1]
+        try:
+            blob = base64.b64decode(raw)
+        except ValueError:
+            blob = None
+        if blob is None or len(blob) > 20 << 20:
+            cl.send({"t": "error", "id": m.get("id"), "error": "the file could not be read or is over 20 MB"})
+        else:
+            d = os.path.join(tempfile.gettempdir(), "godterm-mock-uploads")
+            os.makedirs(d, exist_ok=True)
+            name = "".join(c if c.isalnum() or c in "._-" else "_" for c in os.path.basename(m.get("name", "") or "image.png")).lstrip(".") or "file"
+            p = os.path.join(d, "%d-%s" % (int(time.time() * 1000), name))
+            with open(p, "wb") as f:
+                f.write(blob)
+            cl.send({"t": t, "id": m.get("id"), "path": p, **({"w": 1, "h": 1} if t == "image" else {})})
     elif t == "ping":
         cl.send({"t": "pong", "id": m.get("id")})
     elif t == "git":
@@ -836,7 +855,6 @@ def handle_text(cl, m):
         cl.send({"t": "git", "id": m.get("id"), **r})
     elif t == "voice":
         if "muted" in m:
-            # The browser's mic mute: it sends only silence meanwhile.
             print("voice: client %d mic %s (nonzero audio so far: %d bytes)" % (id(cl) % 1000, "muted" if m["muted"] else "unmuted", cl.audio_nonzero), flush=True)
             cl.audio_nonzero = 0
         elif m.get("on"):
@@ -921,14 +939,12 @@ class H(http.server.BaseHTTPRequestHandler):
             broadcast({"t": "update", "available": True, "version": "0.42.0", "current": "0.41.3", "state": "downloaded", "notes": "Faster startup and a new sessions view.", "page": None, "update_with": "Update and restart"})
             return self.reply(200, b"ok")
         if u.path == "/dev/last_prompt":
-            # What send_prompt last got, per tab (for tests).
             return self.reply(200, json.dumps(LAST_PROMPT).encode(), "application/json")
         if u.path in ("/dev/sync-on", "/dev/sync-off", "/dev/sync-fail"):
             mock_sync.set_on(u.path != "/dev/sync-off")
             mock_sync.ST["fail"] = u.path == "/dev/sync-fail"
             return self.reply(200, b"ok")
         if u.path == "/dev/reset":
-            # The world as it started (tabs, chat, approvals, the archive), for tests.
             with LOCK:
                 TABS.clear(); MOVED.clear(); APPROVALS.clear(); CHAT.clear(); LAST_PROMPT.clear()
                 ARCHIVED[:] = ARCHIVED0
@@ -937,8 +953,6 @@ class H(http.server.BaseHTTPRequestHandler):
                 dirty()
             return self.reply(200, b"ok")
         if u.path == "/dev/busy":
-            # /dev/busy?tab=t3776 (or ?off=1 with it): a tab that stays busy
-            # (for the move sheet's "it moves when they finish").
             q = urllib.parse.parse_qs(u.query)
             with LOCK:
                 t = find((q.get("tab") or [""])[0])
@@ -956,9 +970,6 @@ class H(http.server.BaseHTTPRequestHandler):
                 ask_approval(RNG.choice(TABS))
             return self.reply(200, b"ok")
         if u.path == "/dev/clip":
-            # Two speech clips to every client, as a reply's would come:
-            # one with non-zero edges (the page fades them), one at full
-            # scale (the page scales it under clipping).
             for cl in list(CLIENTS):
                 cl.bin(2, 0, clip(20000))
                 cl.bin(2, 0, clip(32767))

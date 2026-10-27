@@ -1,20 +1,9 @@
-//! Compressed mic audio from a browser: the web app's last fallback when
-//! Web Audio gives it no samples (seen on iPhone home screen apps). The
-//! page records with MediaRecorder (AAC in MP4 on iOS, Opus in WebM
-//! elsewhere) in small pieces, and ffmpeg decodes the stream as it comes
-//! into 16 kHz mono PCM16, which goes to the voice engine exactly as the
-//! PCM the page sends itself.
-//!
-//! A recording that ffmpeg cannot read as a stream (an MP4 whose index is
-//! written at the end) is decoded again as a whole when it ends.
-
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// ffmpeg's path, set by the app (voice.ffmpeg).
 static FFMPEG: Mutex<String> = Mutex::new(String::new());
 
 pub fn set_ffmpeg(path: &str) {
@@ -30,7 +19,6 @@ fn ffmpeg() -> String {
     }
 }
 
-/// ffmpeg's input format for a MediaRecorder type.
 pub fn input_format(mime: &str) -> Option<&'static str> {
     let m = mime.to_ascii_lowercase();
     if m.contains("mp4") || m.contains("aac") || m.contains("m4a") {
@@ -44,21 +32,18 @@ pub fn input_format(mime: &str) -> Option<&'static str> {
     }
 }
 
-/// Where the decoded PCM goes.
 pub type PcmSink = Box<dyn FnMut(&[u8]) + Send>;
 type Sink = Arc<Mutex<PcmSink>>;
 
-/// One recording being decoded.
 pub struct Decoder {
     pub mime: String,
     tx: Option<mpsc::Sender<Vec<u8>>>,
     child: Arc<Mutex<Child>>,
-    /// PCM bytes decoded so far.
+
     out_bytes: Arc<Mutex<u64>>,
-    /// The reader finished (ffmpeg's output ended).
+
     done: Arc<(Mutex<bool>, std::sync::Condvar)>,
-    /// Everything that came, for a decode of the whole when the stream
-    /// gave nothing.
+
     all: Vec<u8>,
     sink: Sink,
     pub in_bytes: u64,
@@ -107,7 +92,6 @@ fn spawn(mime: &str, input: Option<&std::path::Path>) -> std::io::Result<Child> 
     Ok(child)
 }
 
-/// Read ffmpeg's PCM into the sink (whole samples), and its errors.
 fn pipe_out(
     child: &mut Child,
     sink: Sink,
@@ -152,8 +136,6 @@ fn pipe_out(
 }
 
 impl Decoder {
-    /// Start decoding a recording of type `mime`; PCM16 (16 kHz mono,
-    /// little endian, whole samples) goes to `sink` as it is decoded.
     pub fn start(mime: &str, sink: PcmSink) -> std::io::Result<Decoder> {
         let mut child = spawn(mime, None)?;
         let sink: Sink = Arc::new(Mutex::new(sink));
@@ -169,8 +151,6 @@ impl Decoder {
         );
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         if let Some(mut si) = child.stdin.take() {
-            // Writes on their own thread: a slow ffmpeg never holds up the
-            // connection's reader.
             std::thread::spawn(move || {
                 while let Ok(b) = rx.recv() {
                     if si.write_all(&b).is_err() {
@@ -195,11 +175,10 @@ impl Decoder {
         })
     }
 
-    /// A piece of the recording.
     pub fn push(&mut self, bytes: &[u8]) {
         self.in_bytes += bytes.len() as u64;
         self.chunks += 1;
-        // (At most 20 MB kept for the decode of the whole.)
+
         if self.all.len() < 20 << 20 {
             self.all.extend_from_slice(bytes);
         }
@@ -208,14 +187,10 @@ impl Decoder {
         }
     }
 
-    /// PCM bytes decoded so far.
     pub fn decoded(&self) -> u64 {
         *self.out_bytes.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The recording ended: decode what is left (waits up to `wait`). When
-    /// the stream gave nothing, the whole recording is decoded from a file.
-    /// Returns a line for the log.
     pub fn finish(&mut self, wait: Duration) -> String {
         self.tx = None;
         let until = Instant::now() + wait;
@@ -321,8 +296,6 @@ mod tests {
         assert_eq!(input_format("audio/x-unknown"), None);
     }
 
-    /// A real recording (a tone in AAC/MP4 and Opus/WebM made by ffmpeg),
-    /// fed in small pieces: PCM comes out, about as long as it went in.
     #[test]
     fn decodes_a_recording_fed_in_pieces() {
         if Command::new("ffmpeg").arg("-version").output().is_err() {

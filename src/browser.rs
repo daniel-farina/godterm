@@ -1,14 +1,3 @@
-//! BrowserSkill (Tencent/BrowserSkill, `bsk`) status, read only.
-//!
-//! `bsk` is a local daemon plus a Chrome extension; agents drive it through
-//! an Agent Skill that runs `bsk` from Bash. This module only looks: whether
-//! `bsk` is installed, whether its daemon answers, which browsers are
-//! connected, whether the skill is installed per harness and per GodTerm
-//! account, and which Chrome profiles have the extension. It never starts,
-//! stops or updates the daemon (every call sets `BSK_AUTO_START=0`), never
-//! drives a browser, and every `bsk` call has a timeout. It is meant to run
-//! on a background thread (see `app_browser`).
-
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -17,21 +6,16 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-/// The BrowserSkill Chrome extension.
 pub const EXTENSION_ID: &str = "hhcmgoofomhgciiibhipgmgkgnoenaoi";
 
-/// Where things are looked for. The real one is `Env::real()`; tests build
-/// their own so nothing of the user's machine is ever read.
 #[derive(Debug, Clone)]
 pub struct Env {
-    /// Folders searched for `bsk`, in order (PATH, `~/.local/bin`,
-    /// `$BSK_INSTALL_DIR`).
     pub bin_dirs: Vec<PathBuf>,
-    /// Chrome's user data folder (holds `Local State` and the profiles).
+
     pub chrome_root: PathBuf,
-    /// The longest any single `bsk` call may take (doctor gets twice this).
+
     pub timeout: Duration,
-    /// Folders that may hold the skill to copy, in order.
+
     pub skill_sources: Vec<PathBuf>,
 }
 
@@ -57,7 +41,6 @@ impl Env {
     }
 }
 
-/// Chrome's user data folder on this OS.
 pub fn chrome_root() -> PathBuf {
     let home = crate::config::home_dir();
     if cfg!(target_os = "macos") {
@@ -72,7 +55,6 @@ pub fn chrome_root() -> PathBuf {
     }
 }
 
-/// `bsk` in the first folder that has it.
 pub fn find_bsk(dirs: &[PathBuf]) -> Option<PathBuf> {
     let names: &[&str] = if cfg!(windows) {
         &["bsk.exe", "bsk.cmd", "bsk"]
@@ -92,15 +74,11 @@ pub fn find_bsk(dirs: &[PathBuf]) -> Option<PathBuf> {
 
 #[derive(Debug, PartialEq)]
 pub enum RunErr {
-    /// Could not start it.
     Spawn(String),
-    /// Did not finish in time (it was killed).
+
     Timeout,
 }
 
-/// Run `bsk args` with a timeout. Never starts the daemon
-/// (`BSK_AUTO_START=0`), has no stdin, and returns the exit code with
-/// stdout (at most 1 MB).
 pub fn run_bsk(bin: &Path, args: &[&str], timeout: Duration) -> Result<(i32, String), RunErr> {
     let mut child = Command::new(bin)
         .args(args)
@@ -138,14 +116,10 @@ pub fn run_bsk(bin: &Path, args: &[&str], timeout: Duration) -> Result<(i32, Str
     Ok((code, text))
 }
 
-// ---------- parsing ----------
-
-/// One connected browser (an extension instance).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Browser {
     pub instance_id: String,
-    /// Free text the user typed in the extension popup. It is NOT the
-    /// Chrome profile name.
+
     pub label: String,
     pub browser_name: String,
     pub browser_version: String,
@@ -203,8 +177,6 @@ fn browsers_of(v: &Value) -> Vec<Browser> {
         .collect()
 }
 
-/// `bsk browsers --json`: an array (or an object with `browsers`). Unknown
-/// fields are ignored, missing ones default, garbage gives nothing.
 pub fn parse_browsers(text: &str) -> Vec<Browser> {
     let Ok(v) = serde_json::from_str::<Value>(text) else {
         return vec![];
@@ -215,7 +187,6 @@ pub fn parse_browsers(text: &str) -> Vec<Browser> {
     }
 }
 
-/// What `bsk status --json` says about the daemon.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DaemonInfo {
     pub version: String,
@@ -229,7 +200,7 @@ pub struct DaemonInfo {
 pub fn parse_status(text: &str) -> Option<DaemonInfo> {
     let v: Value = serde_json::from_str(text).ok()?;
     let o = v.as_object()?;
-    // A status without any daemon field is not a daemon's answer.
+
     if !["daemon_version", "pid", "ws_port", "browsers", "sessions"]
         .iter()
         .any(|k| o.contains_key(*k))
@@ -254,7 +225,6 @@ pub fn parse_status(text: &str) -> Option<DaemonInfo> {
     })
 }
 
-/// One `bsk doctor` line: `ok    name    detail`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DoctorLine {
     pub status: String,
@@ -280,7 +250,7 @@ impl Doctor {
     pub fn fail(&self) -> usize {
         self.count(|s| s.starts_with("fail") || s == "error")
     }
-    /// "8 ok" / "7 ok, 1 warning" / "6 ok, 2 failed".
+
     pub fn summary(&self) -> String {
         if self.lines.is_empty() {
             return "no result".into();
@@ -306,8 +276,6 @@ impl Doctor {
     }
 }
 
-/// `bsk doctor` plain text. Lines that do not start with a status word are
-/// ignored.
 pub fn parse_doctor(text: &str) -> Doctor {
     const WORDS: &[&str] = &[
         "ok", "warn", "warning", "fail", "failed", "error", "info", "skip",
@@ -336,7 +304,6 @@ pub fn parse_doctor(text: &str) -> Doctor {
     Doctor { lines }
 }
 
-/// One harness `bsk install-skill --list --json` knows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HarnessSkill {
     pub id: String,
@@ -370,8 +337,6 @@ pub fn parse_harnesses(text: &str) -> Vec<HarnessSkill> {
         .collect()
 }
 
-/// A Chrome profile, from `Local State` (`profile.info_cache`): only the
-/// folder name and the three display fields are kept.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ChromeProfile {
     pub dir: String,
@@ -418,7 +383,7 @@ pub fn parse_local_state(text: &str) -> Vec<ChromeProfile> {
             }
         })
         .collect();
-    // Default first, then Profile 1, Profile 2, ... in numeric order.
+
     out.sort_by_key(|p| {
         let n = p
             .dir
@@ -431,15 +396,11 @@ pub fn parse_local_state(text: &str) -> Vec<ChromeProfile> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExtPref {
-    /// Secure Preferences has no entry for the extension.
     Missing,
     Enabled,
     Disabled,
 }
 
-/// The extension's state in a profile's `Secure Preferences`
-/// (`extensions.settings.<id>`: `state` 0 or any `disable_reasons` means
-/// disabled). Nothing else of the file is used.
 pub fn parse_ext_pref(text: &str, id: &str) -> ExtPref {
     let Ok(v) = serde_json::from_str::<Value>(text) else {
         return ExtPref::Missing;
@@ -464,13 +425,12 @@ pub fn parse_ext_pref(text: &str, id: &str) -> ExtPref {
     }
 }
 
-/// The extension in one profile.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileExt {
     pub profile: ChromeProfile,
-    /// `Extensions/<id>` exists in the profile folder.
+
     pub installed: bool,
-    /// Enabled, from Secure Preferences (None: no entry there).
+
     pub enabled: Option<bool>,
 }
 
@@ -499,9 +459,6 @@ impl ProfileExt {
     }
 }
 
-/// Chrome profiles and whether each has the extension. Read only: the
-/// profile list from `Local State`, then per profile the `Extensions/<id>`
-/// folder and `Secure Preferences`.
 pub fn chrome_extensions(root: &Path) -> Vec<ProfileExt> {
     let text = std::fs::read_to_string(root.join("Local State")).unwrap_or_default();
     parse_local_state(&text)
@@ -526,9 +483,6 @@ pub fn chrome_extensions(root: &Path) -> Vec<ProfileExt> {
         .collect()
 }
 
-// ---------- skill presence ----------
-
-/// The skill folder a Claude or Grok home would hold.
 pub fn skill_dir(home: &Path) -> PathBuf {
     home.join("skills").join("browser-skill")
 }
@@ -537,10 +491,8 @@ pub fn skill_present(home: &Path) -> bool {
     skill_dir(home).join("SKILL.md").is_file()
 }
 
-/// A GodTerm account to look at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccountRef {
-    /// 1 based, as the user sees it.
     pub number: usize,
     pub label: String,
     pub harness: String,
@@ -553,15 +505,13 @@ pub struct AccountSkill {
     pub installed: bool,
 }
 
-// ---------- the snapshot ----------
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Daemon {
     NotInstalled,
-    /// Installed, but nothing answered (not running).
+
     Stopped,
     Running(DaemonInfo),
-    /// Did not answer in time.
+
     Unresponsive,
     Unknown(String),
 }
@@ -641,8 +591,6 @@ impl Snapshot {
     }
 }
 
-/// Look at everything once. Blocking (up to a few `bsk` calls, each with a
-/// timeout): run it on a background thread.
 pub fn collect(env: &Env, accounts: &[AccountRef]) -> Snapshot {
     let bsk_path = find_bsk(&env.bin_dirs);
     let mut snap = Snapshot {
@@ -667,7 +615,6 @@ pub fn collect(env: &Env, accounts: &[AccountRef]) -> Snapshot {
     };
     let t = env.timeout;
     if let Ok((0, out)) = run_bsk(&bin, &["--version"], t) {
-        // "bsk 0.3.3" or "0.3.3".
         snap.version = out
             .split_whitespace()
             .find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))

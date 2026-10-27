@@ -1,9 +1,3 @@
-//! The assistant panel as a window: the width carets [< >] (and Ctrl-a {
-//! / }, set_setting, voice, a drag on its edge), minimize to a strip,
-//! maximize over the grid, close; the quick action bar above the input;
-//! the composer (3 rows, a placeholder, growing); 80x24; docked and
-//! overlay.
-
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -104,10 +98,6 @@ fn saved(key: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The carets sit on the title row left of the window controls; < widens
-/// (leftward) and > narrows by 8, clamped between 36 and what leaves the
-/// panes 40; the width shows a moment and is kept in config.toml; Ctrl-a {
-/// and }, set_setting, the voice tool and a drag on the edge do the same.
 #[test]
 fn carets_change_the_width_clamp_and_persist() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -150,19 +140,19 @@ fn carets_change_the_width_clamp_and_persist() {
     }
     assert_eq!(app.cfg.assistant.panel_width, 160, "the panes keep 40");
     assert_eq!(saved("panel_width"), "160");
-    // Ctrl-a } and {.
+
     app.on_command(KeyEvent::new(KeyCode::Char('}'), KeyModifiers::NONE));
     assert_eq!(app.cfg.assistant.panel_width, 152);
     app.on_command(KeyEvent::new(KeyCode::Char('{'), KeyModifiers::NONE));
     assert_eq!(app.cfg.assistant.panel_width, 160);
-    // set_setting, at once (no yes).
+
     let v = app.control_call(
         "set_setting",
         &json!({"key": "assistant.panel_width", "value": 60}),
     );
     assert_eq!(v["ok"], json!(true), "{v}");
     assert_eq!(app.cfg.assistant.panel_width, 60);
-    // "make the assistant wider".
+
     let v = app.control_call("assistant_panel", &json!({"width": "wider"}));
     assert_eq!(v["ok"], json!(true), "{v}");
     assert_eq!(app.cfg.assistant.panel_width, 68);
@@ -171,11 +161,11 @@ fn carets_change_the_width_clamp_and_persist() {
     assert_eq!(app.cfg.assistant.panel_width, 0);
     draw(&mut app, &mut t);
     assert_eq!(panel(&app).width, 76);
-    // In Settings > Assistant.
+
     assert!(crate::settings::search(&app.cfg, "panel width")
         .iter()
         .any(|(_, s)| s.key == crate::settings::Key::Global("assistant.panel_width")));
-    // A drag on its left edge, kept when it ends.
+
     let p = panel(&app);
     let edge = find(&app, &ctl(PanelCtl::Edge)).unwrap();
     assert_eq!((edge.x, edge.width), (p.x, 1));
@@ -206,9 +196,6 @@ fn carets_change_the_width_clamp_and_persist() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// _ collapses it to a 3 column strip at the right edge ("◂", the word,
-/// the state dot) that gives the keys back and keeps voice on; a click on
-/// the strip (or Ctrl-a .) restores it.
 #[test]
 fn minimize_renders_a_strip_and_a_click_restores() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -233,29 +220,27 @@ fn minimize_renders_a_strip_and_a_click_restores() {
         .collect();
     assert_eq!(word, "assistant");
     assert!(["●", "○"].contains(&b[(198, strip.y + 12)].symbol()));
-    // Docked, the panes take the room back.
+
     let right = app.pane_rects.iter().map(|r| r.x + r.width).max().unwrap();
     assert_eq!(right, 197);
-    // A click on it restores.
+
     click_at(&mut app, strip.x + 1, strip.y + 6);
     assert_eq!(app.assistant.win, PanelWin::Normal);
     assert!(app.assistant_has_focus());
     draw(&mut app, &mut t);
     assert_eq!(panel(&app).width, 76);
-    // Ctrl-a . restores too.
+
     app.panel_ctl(PanelCtl::Minimize);
     app.on_command(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
     assert_eq!(app.assistant.win, PanelWin::Normal);
     assert!(app.assistant.show && app.assistant_has_focus());
-    // By voice.
+
     let v = app.control_call("assistant_panel", &json!({"window": "minimize"}));
     assert_eq!(v["ok"], json!(true), "{v}");
     assert_eq!(app.assistant.win, PanelWin::Min);
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// □ takes the whole grid area (floating: the panes keep their size) and
-/// shows ▣, which restores it; × hides it.
 #[test]
 fn maximize_takes_the_grid_and_restores_and_close_hides() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -288,7 +273,7 @@ fn maximize_takes_the_grid_and_restores_and_close_hides() {
     assert_eq!(panel(&app), p0);
     let m = find(&app, &ctl(PanelCtl::Maximize)).unwrap();
     assert_eq!(t.backend().buffer()[(m.x + 1, m.y)].symbol(), "□");
-    // The controls read _ □ × at the top right, before the corner.
+
     let r = find(&app, &ctl(PanelCtl::Minimize)).unwrap();
     let c = find(&app, &ctl(PanelCtl::Close)).unwrap();
     assert_eq!(c.x + 3, p0.x + p0.width - 1);
@@ -298,7 +283,7 @@ fn maximize_takes_the_grid_and_restores_and_close_hides() {
         [b[(r.x + 1, r.y)].symbol(), b[(c.x + 1, c.y)].symbol()],
         ["_", "×"]
     );
-    // The toolbar's ⋯ stays, without a second close.
+
     let more = find(
         &app,
         &UiAction::MenuOpen(crate::menus::MenuId::AssistantMore),
@@ -310,7 +295,7 @@ fn maximize_takes_the_grid_and_restores_and_close_hides() {
         .regions
         .iter()
         .any(|r| r.action == UiAction::Key('.') && p0.intersects(r.rect)));
-    // Close.
+
     click(&mut app, &ctl(PanelCtl::Close));
     assert!(!app.assistant.show && !app.assistant_has_focus());
     draw(&mut app, &mut t);
@@ -318,8 +303,6 @@ fn maximize_takes_the_grid_and_restores_and_close_hides() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The quick bar above the input: buttons with their keys, wired to the
-/// app's own actions.
 #[test]
 fn quick_buttons_trigger_their_actions() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -337,7 +320,7 @@ fn quick_buttons_trigger_their_actions() {
     let mut t = term(200, 50);
     let s = draw(&mut app, &mut t);
     let g = app.assistant.input_geo.get().unwrap();
-    // The quick rows: right above the composer's frame.
+
     let in_bar = |r: &Rect| r.y + 3 >= g.y && r.y + 1 < g.y;
     let bar: Vec<UiAction> = app
         .last_hits
@@ -365,7 +348,7 @@ fn quick_buttons_trigger_their_actions() {
     ] {
         assert!(s.contains(words), "{words}");
     }
-    // (The voice strip under the grid comes and goes: the bar moves.)
+
     let quick = |app: &App, a: &UiAction| -> Rect {
         let g = app.assistant.input_geo.get().unwrap();
         app.last_hits
@@ -376,24 +359,24 @@ fn quick_buttons_trigger_their_actions() {
             .unwrap_or_else(|| panic!("{a:?} not in the bar"))
             .rect
     };
-    // Speaker.
+
     let r = quick(&app, &UiAction::SpeakerToggle);
     click_at(&mut app, r.x + 1, r.y);
     assert!(app.cfg.voice.speaker_muted);
     let s = draw(&mut app, &mut t);
     assert!(s.contains("Speaker off"), "{s}");
-    // Mic.
+
     let r = quick(&app, &UiAction::MuteToggle);
     click_at(&mut app, r.x + 1, r.y);
     assert!(app.voice.muted);
     draw(&mut app, &mut t);
-    // Approvals.
+
     let r = quick(&app, &UiAction::Key('y'));
     click_at(&mut app, r.x + 1, r.y);
     assert!(matches!(app.modal, Modal::Approvals(0)));
     app.modal = Modal::None;
     draw(&mut app, &mut t);
-    // Attach image: the clipboard's image becomes a chip.
+
     let c = FakeClipboard::default();
     *c.holds.lock().unwrap() = Some(ClipImage::Png(png(20, 10)));
     app.assistant.clipboard = Some(Box::new(c));
@@ -404,7 +387,7 @@ fn quick_buttons_trigger_their_actions() {
     app.assistant.set_input(String::new());
     app.assistant.pending_images.clear();
     draw(&mut app, &mut t);
-    // Summarize tabs: the canned request goes to the assistant.
+
     draw(&mut app, &mut t);
     let r = quick(&app, &ctl(PanelCtl::Summarize));
     click_at(&mut app, r.x + 1, r.y);
@@ -421,9 +404,6 @@ fn quick_buttons_trigger_their_actions() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The composer: a framed field 3 rows tall with the placeholder, growing
-/// with the text up to assistant.input_rows; Send and the mic state on
-/// its bottom edge.
 #[test]
 fn the_composer_is_three_rows_with_a_placeholder_and_grows() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -443,12 +423,12 @@ fn the_composer_is_three_rows_with_a_placeholder_and_grows() {
     assert_eq!(send.y, g.y + 3, "Send on the bottom edge");
     assert!(line(&t, g.y + 3).contains("sound on"));
     assert_eq!(app.want_cursor.get(), Some((g.tx, g.y)));
-    // Unfocused: a faint frame.
+
     app.assistant.focused = false;
     draw(&mut app, &mut t);
     assert_eq!(t.backend().buffer()[(p.x + 1, g.y)].fg, crate::theme::FAINT);
     app.assistant.focused = true;
-    // It grows with the lines, up to 8.
+
     app.assistant
         .set_input("one\ntwo\nthree\nfour\nfive".into());
     draw(&mut app, &mut t);
@@ -462,7 +442,7 @@ fn the_composer_is_three_rows_with_a_placeholder_and_grows() {
     draw(&mut app, &mut t);
     let g = app.assistant.input_geo.get().unwrap();
     assert_eq!((g.h, g.top), (8, 4));
-    // The setting.
+
     let v = app.control_call(
         "set_setting",
         &json!({"key": "assistant.input_rows", "value": 4}),
@@ -470,7 +450,7 @@ fn the_composer_is_three_rows_with_a_placeholder_and_grows() {
     assert_eq!(v["ok"], json!(true), "{v}");
     draw(&mut app, &mut t);
     assert_eq!(app.assistant.input_geo.get().unwrap().h, 4);
-    // Editing still works: typing and Send.
+
     app.assistant.set_input(String::new());
     for c in "hi".chars() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
@@ -481,8 +461,6 @@ fn the_composer_is_three_rows_with_a_placeholder_and_grows() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// No region of the panel sticks out of it, and none of its buttons
-/// overlap.
 fn assert_tidy(app: &App) {
     let p = panel(app);
     let mine: Vec<Rect> = app
@@ -516,9 +494,6 @@ fn assert_tidy(app: &App) {
     }
 }
 
-/// 80x24: everything fits (one quick row at most, the carets, the
-/// controls, a 3 row composer); shorter, the quick bar goes first; too
-/// narrow for the title, the carets go, the controls stay.
 #[test]
 fn eighty_by_twenty_four_degrades_sensibly() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -543,7 +518,7 @@ fn eighty_by_twenty_four_degrades_sensibly() {
         .map(|r| r.rect.y)
         .collect();
     assert_eq!(quick_rows.len(), 1, "one quick row");
-    // Short: the quick bar goes, the composer stays.
+
     let mut short = term(80, 15);
     draw(&mut app, &mut short);
     assert_tidy(&app);
@@ -557,25 +532,22 @@ fn eighty_by_twenty_four_degrades_sensibly() {
     assert!(find(&app, &UiAction::AssistantSend).is_some());
     assert!(find(&app, &ctl(PanelCtl::Wider)).is_some());
     let _ = p;
-    // At its narrowest (36 columns) the title gives up its pieces; the
-    // carets and the controls stay.
+
     app.cfg.assistant.panel_width = 36;
     draw(&mut app, &mut t);
     assert_eq!(panel(&app).width, 36);
     assert_tidy(&app);
     assert!(find(&app, &ctl(PanelCtl::Wider)).is_some());
-    // Narrower than the title needs (a tiny floating panel): the carets go.
+
     assert!(!crate::ui_panelwin::carets_fit(&app, 30));
     assert!(find(&app, &ctl(PanelCtl::Minimize)).is_some());
     assert!(find(&app, &ctl(PanelCtl::Close)).is_some());
-    // The ⋯ menu still has the width.
+
     let es = crate::menus::entries(&app, crate::menus::MenuId::AssistantMore);
     assert!(es.iter().any(|e| e.label == "Wider panel"));
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Docked, the panes make room for its width (and the strip's); floating,
-/// they keep their size whatever its width.
 #[test]
 fn docked_and_overlay_both_resize_and_minimize() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -588,7 +560,7 @@ fn docked_and_overlay_both_resize_and_minimize() {
     assert_eq!(p.width, 84);
     let right = app.pane_rects.iter().map(|r| r.x + r.width).max().unwrap();
     assert!(right <= p.x, "docked: no pane under it");
-    // Overlay.
+
     app.set_panel_mode("overlay").unwrap();
     app.assistant.show = false;
     draw(&mut app, &mut t);

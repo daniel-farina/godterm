@@ -1,6 +1,4 @@
 #!/bin/sh
-# Opens iTerm (or Terminal) running the godterm inside this bundle, at the
-# remembered window position. Mirrors what `godterm install` writes.
 res="$(cd "$(dirname "$0")" && pwd)"
 bin="$(cd "$res/../MacOS" && pwd)/godterm"
 run="$res/run.sh"

@@ -1,17 +1,3 @@
-// GodTerm Web performance harness (Playwright for Node), the numbers in
-// docs/WEB_APP.md "Performance": a cold load, a warm reload through the
-// service worker, key latency, a reconnect, idle and streaming frame
-// rates, a flood, resizes, and a soak with memory samples.
-//
-//   PW_DIR=<node_modules with playwright> node scripts/e2e/web_perf.mjs \
-//     --url 'http://127.0.0.1:7901/?t=TOKEN' [--engine chromium|webkit]
-//     [--device desktop|phone] [--throttle] [--stream S] [--flood MB]
-//     [--soak MIN --panes 4] [--nogl] [--label name] [--out file.json]
-//
-// The instance: a demo or the matrix's fake one (scripts/e2e/web_matrix.py
-// --serve --instance fake), never the live GodTerm. --throttle is Chrome's
-// Fast 3G with a 4x CPU slowdown (Chromium only; so are the CDP metrics).
-// One headless browser at a time.
 import path from 'node:path';
 import fs from 'node:fs';
 const PW = process.env.PW_DIR || path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'web', 'dev', 'node_modules');
@@ -142,7 +128,7 @@ async function keyLatency(page, n) {
   const lat = await page.evaluate(() => window.__gtPerf.keyLat.slice());
   lat.sort((a, b) => a - b);
   const q = (p) => +(lat[Math.min(lat.length - 1, Math.floor(p * lat.length))] || 0).toFixed(2);
-  // Clear the typed text.
+
   for (let i = 0; i < n; i++) await page.keyboard.press('Backspace');
   return { n: lat.length, p50: q(0.5), p90: q(0.9), max: +(lat[lat.length - 1] || 0).toFixed(2) };
 }
@@ -190,10 +176,10 @@ async function main() {
   out.cold.gotFrame = gotFrame;
   out.cold.wall = Date.now() - t0;
   Object.assign(out.cold, { m: await metrics(s) });
-  // The service worker: give it a moment to install and precache.
+
   await page.waitForTimeout(THROTTLE ? 8000 : 2500);
   out.cold.sw = await page.evaluate(async () => { const r = await navigator.serviceWorker?.getRegistration(); return r ? (r.active ? 'active' : r.installing ? 'installing' : r.waiting ? 'waiting' : 'none') : 'no-sw'; });
-  // Warm reload (service worker and HTTP cache).
+
   const t1 = Date.now();
   await page.reload({ waitUntil: 'commit' });
   const gotFrame2 = await waitFirstFrame(page, 60000);
@@ -203,9 +189,9 @@ async function main() {
   out.warm.wall = Date.now() - t1;
   Object.assign(out.warm, { m: await metrics(s) });
   out.warm.controlled = await page.evaluate(() => !!navigator.serviceWorker?.controller);
-  // Input latency.
+
   if (gotFrame2) out.keys = await keyLatency(page, KEYS);
-  // Reconnect after a dropped socket (as after sleep): time until the pane is live again, by a resume or a snapshot.
+
   if (gotFrame2) {
     out.reconnect = [];
     for (let i = 0; i < 3; i++) {
@@ -220,11 +206,11 @@ async function main() {
       await page.waitForTimeout(500);
     }
   }
-  // Idle fps and long tasks for 3 s.
+
   out.idle = await fps(page, 3000);
-  // Resize.
+
   out.resize = await resizeCost(page);
-  // Streaming.
+
   if (STREAM && gotFrame2) {
     await typeLine(page, `stream ${STREAM}`);
     await page.waitForTimeout(500);
@@ -240,14 +226,14 @@ async function main() {
     await typeLine(page, `flood ${FLOOD}`);
     const tf = Date.now();
     const f = await fps(page, 6000);
-    // Wait until the flood is through (the output rate drops).
+
     let last = -1;
     for (let i = 0; i < 120; i++) { await page.waitForTimeout(500); const b = await page.evaluate(() => window.__gtPerf.ws.bin); if (b === last) break; last = b; }
     const w1 = await page.evaluate(() => ({ ...window.__gtPerf.ws }));
     out.flood = { ...f, wallMs: Date.now() - tf, binMB: +((w1.bin - w0.bin) / 1048576).toFixed(2), binMsgs: w1.binMsgs - w0.binMsgs, snapshots: (w1.byType.snapshot?.n || 0) - (w0.byType.snapshot?.n || 0), m0, m1: await metrics(s) };
   }
   if (SOAK) {
-    // Several panes streaming for SOAK minutes; memory sampled each minute.
+
     if (PANES > 1 && DEVICE === 'desktop') {
       await page.evaluate((n) => { const G = window.GT; G.panes.setN(n); const ids = G.S.tabs.map((t) => t.id); for (let i = 0; i < n; i++) G.panes.list[i].setTab(ids[i % ids.length]); G.panes.save(); G.panes.sync(); }, PANES);
       await page.waitForTimeout(2000);

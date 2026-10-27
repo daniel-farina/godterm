@@ -1,14 +1,8 @@
-// The one WebSocket: JSON text frames and binary terminal frames
-// (1 byte kind, 4 bytes tab uid big endian, payload). Reconnects with
-// backoff; subscribers re-run their setup on every open.
 import { emit } from './util.js';
 
 export const KIND = { OUTPUT: 1, AUDIO: 2, AUDIO_IN: 3, SNAPSHOT_GZ: 6 };
 const enc = new TextEncoder();
-// A big snapshot comes gzipped (binary kind 6) when the subscribe said
-// `gz: true`: a 3000 line history is a tenth of the bytes over a slow
-// link. Inflating is async, so frames that arrive meanwhile wait their
-// turn (output after a snapshot must stay after it).
+
 let gz = typeof DecompressionStream === 'function';
 export const gzOk = () => gz;
 let hold = false, held = [], gen = 0;
@@ -39,7 +33,7 @@ function dispatch(e) {
       const p = pending.get(m.id);
       pending.delete(m.id);
       clearTimeout(p.timer);
-      // GodTerm wraps the control reply: {t, id, result: {ok, result | error | needs_confirmation}}.
+
       const r = m.t === 'error' ? { ok: false, error: m.error } : m.result && typeof m.result === 'object' && 'ok' in m.result ? { id: m.id, ...m.result } : m;
       p.resolve(r);
     }
@@ -94,16 +88,15 @@ export function connect() {
     ws = null;
     conn.open = false;
     probing = false;
-    // Frames held for a snapshot still inflating were this socket's.
+
     hold = false; held = []; gen++;
     clearTimeout(probeT);
     for (const [, p] of pending) p.resolve({ ok: false, error: 'connection lost' });
     pending.clear();
     emit('conn', e.code === 4401 || e.code === 1008 ? 'auth' : 'down', e.code);
-    // A socket refused before it opened may be a sign in that no longer
-    // holds (a new token): the page itself answers 401 then.
+
     if (!opened) fetch('app.css', { cache: 'no-store' }).then((r) => { if (r.status === 401) emit('conn', 'auth'); }).catch(() => {});
-    // Replaced on purpose (a dead socket after sleep): at once.
+
     if (e.code === 4000 && !document.hidden) { tries = 0; connect(); return; }
     retry();
   };
@@ -113,11 +106,11 @@ export function connect() {
 function retry() {
   clearTimeout(timer);
   let ms = Math.min(15000, 400 * 2 ** Math.min(tries++, 6)) * (0.7 + Math.random() * 0.6);
-  // Hidden: no busy retries (the phone's battery); coming back connects.
+
   if (document.hidden) ms = Math.max(ms, 60000);
   timer = setTimeout(connect, ms);
 }
-// Close a socket that looks open but is not, and connect again.
+
 function replace() {
   const s = ws;
   if (!s) return;
@@ -125,13 +118,8 @@ function replace() {
   s.onclose?.({ code: 4000 });
 }
 
-// Come back at once when the page or the network returns.
 addEventListener('online', () => { tries = 0; connect(); });
-// Back from sleep or another app: a socket that still looks open may be
-// dead (iOS drops it silently). Away for long, it is replaced at once
-// (the panes resume with only what they missed); after a short while a
-// ping must be answered within 1.5 s, and keys typed meanwhile wait for
-// the answer instead of going into a socket that may be dead.
+
 let hiddenAt = 0, probing = false, probeT = 0;
 function wake() {
   if (document.hidden) { hiddenAt = Date.now(); return; }
@@ -148,9 +136,6 @@ function wake() {
 document.addEventListener('visibilitychange', wake);
 addEventListener('pageshow', (e) => e.persisted && wake());
 
-// A ping every 20 s, whatever else flows: it keeps proxies and GodTerm's
-// idle timer from closing a socket this page only listens on, and a socket
-// silent for 45 s (a phone that slept, a network that changed) is replaced.
 let lastPing = 0;
 setInterval(() => {
   if (!ws || ws.readyState !== 1 || document.hidden) return;
@@ -178,9 +163,6 @@ export function sendBin(kind, uid, payload) {
   return true;
 }
 
-// Keys typed while the socket reconnects wait (up to 10 s and 4 KB) and
-// go out in order as soon as it is open again; older ones are dropped
-// with a note, never silently.
 const QUEUE_MS = 10000;
 let queue = [];
 export function sendInput(uid, payload) {
@@ -205,8 +187,6 @@ function flushQueue() {
   if (lost) emit('input-lost', lost);
 }
 
-// A control tool call; resolves with the control reply {ok, result, error,
-// needs_confirmation, token, question}. `extra` adds frame fields (user_says).
 export function tool(name, args = {}, ms = 60000, extra = {}) {
   const id = 'w' + ++toolSeq;
   return new Promise((resolve) => {

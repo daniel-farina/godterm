@@ -1,18 +1,3 @@
-//! Follow-through for questions the assistant asks a tab's agent: the
-//! question is watched, the tab's answer is taken from its transcript
-//! once its turn is over, and a turn of our own has the brain tell the
-//! user in a sentence or two.
-//!
-//! A question sent to a busy tab is often taken into its running turn (a
-//! queued command attachment) instead of starting a turn of its own, so
-//! it is looked for there too; failing that, the reply written after it
-//! was sent counts once the tab has worked and is ready again. Several
-//! questions one turn answered are told together. Reports wait for a
-//! quiet moment (app_quiet). At the wait limit a tab still working is
-//! waited for (the user is told once), up to a hard cap; a tab that is
-//! idle with no answer found is said plainly. Nothing is dropped
-//! silently.
-
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -25,7 +10,7 @@ use crate::pane::Activity;
 #[derive(Debug, Clone, PartialEq)]
 pub enum FuState {
     Waiting,
-    /// The answer is in; it is told once the user can hear it.
+
     Answered {
         text: String,
         at: chrono::DateTime<chrono::Local>,
@@ -36,7 +21,7 @@ pub enum FuState {
     },
     TimedOut,
     Cancelled,
-    /// The tab was closed before it answered.
+
     Gone,
 }
 
@@ -45,50 +30,40 @@ pub struct FollowUp {
     pub id: u64,
     pub uid: u64,
     pub tab: String,
-    /// The prompt sent to the tab.
+
     pub question: String,
-    /// What the user said that turn.
+
     pub asked: String,
     pub sent: Instant,
     pub sent_at: chrono::DateTime<chrono::Local>,
-    /// The tab was seen working on it.
+
     pub seen_working: bool,
     pub checked: Option<Instant>,
     pub state: FuState,
-    /// Mentioned in the "While you were away" summary already.
+
     pub held: bool,
-    /// When it left Waiting (finished entries are kept a while for the
-    /// snapshot).
+
     pub ended: Option<Instant>,
-    /// The user was told it is still being worked on (past the wait).
+
     pub told_working: bool,
-    /// A new tab's first prompt (open_tab): the wait starts once its
-    /// first turn does, not while the tab is still coming up.
+
     pub await_start: bool,
-    /// Answered by a side question or background session (app_busy), not
-    /// found in the tab's transcript: the delivery it follows.
+
     pub external: Option<u64>,
 }
 
-/// Finished entries stay in the snapshot this long.
 const KEEP_DONE: Duration = Duration::from_secs(3600);
-/// An answer the quiet gate has held this long is told anyway, as soon
-/// as a turn is possible (the user is not mid sentence, the assistant is
-/// free): a report that waits for perfect quiet can wait forever when a
-/// gate never clears (talk back that never reports its end, a stale
-/// confirmation), and silence is the one thing the user must not get.
+
 pub const REPORT_FORCE: Duration = Duration::from_secs(90);
-/// How often a held report is explained in the log.
+
 const HELD_LOG_EVERY: Duration = Duration::from_secs(30);
-/// A tab still working past the wait limit is waited for up to this long.
+
 pub const HARD_CAP: Duration = Duration::from_secs(2 * 3600);
-/// Turns of a transcript searched for the question.
+
 const SEARCH_TURNS: usize = 40;
-/// The send time is taken a little before the paste lands.
+
 const CLOCK_SLACK_S: i64 = 2;
 
-/// Whether what the user said asks for information (so a prompt sent for
-/// it is a question to follow up on).
 pub fn asks_something(user: &str) -> bool {
     let c = user.to_lowercase();
     if c.contains('?') {
@@ -130,8 +105,6 @@ pub fn asks_something(user: &str) -> bool {
     .any(|k| c.contains(k))
 }
 
-/// A short key of a prompt, to find it again in a transcript (pasting
-/// can change whitespace).
 pub fn key_of(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -145,25 +118,18 @@ fn trimmed(text: &str, max: usize) -> String {
     crate::sessions::first_sentences(text.trim(), max)
 }
 
-/// Whether a turn holds the question: as its own prompt, or taken into it
-/// while it ran.
 fn holds(turn: &crate::sessions::Turn, key: &str) -> bool {
     std::iter::once(&turn.user)
         .chain(turn.queued.iter())
         .any(|t| !t.is_empty() && key_of(t).contains(key))
 }
 
-/// Seconds since the epoch of a transcript time.
 fn ts(t: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(t)
         .ok()
         .map(|d| d.timestamp())
 }
 
-/// The answer to the question keyed `key`, sent at `sent` (epoch
-/// seconds): the reply of the turn that holds it, once that turn is over;
-/// else, with `fallback`, the reply of the last turn when it is over and
-/// was written after the send. None while there is no answer yet.
 pub fn find_answer(
     turns: &[crate::sessions::Turn],
     key: &str,
@@ -195,11 +161,9 @@ pub fn find_answer(
 }
 
 impl App {
-    /// Watch for the answer to `question`, just sent to tab `uid`.
     pub fn register_follow_up(&mut self, uid: u64, question: &str) {
         let tab = self.spoken_tab_name(uid);
-        // Several questions to one tab are all followed (a busy tab may
-        // answer them in one turn); the same question again replaces it.
+
         let key = key_of(question);
         for f in &mut self.assistant.follow_ups {
             if f.uid == uid && f.state == FuState::Waiting && key_of(&f.question) == key {
@@ -231,10 +195,6 @@ impl App {
         });
     }
 
-    /// After a brain send_prompt (or open_tab with a prompt, `new_tab`):
-    /// follow up on the deliveries that ask, and say in the result whether
-    /// the answer will be reported (`will_report`), so nothing is promised
-    /// that will not come.
     pub fn follow_up_sends(&mut self, args: &Value, v: &mut Value, new_tab: bool) {
         let explicit = args.get("expect_reply").and_then(Value::as_bool);
         let mut watched: Vec<String> = vec![];
@@ -251,8 +211,7 @@ impl App {
             else {
                 continue;
             };
-            // A side question or background session always reports its
-            // result: it is followed by app_busy, not by the transcript.
+
             if mode.external() {
                 self.register_follow_up(uid, &text);
                 if let Some(f) = self.assistant.follow_ups.last_mut() {
@@ -286,7 +245,6 @@ impl App {
         });
     }
 
-    /// Stop waiting (all, or one tab's). Returns how many were dropped.
     pub fn cancel_follow_ups(&mut self, uid: Option<u64>) -> usize {
         let mut n = 0;
         for f in &mut self.assistant.follow_ups {
@@ -304,7 +262,6 @@ impl App {
         n
     }
 
-    /// "never mind" while waiting for a tab's answer: stop waiting.
     pub fn cancel_follow_ups_said(&mut self, text: &str) -> bool {
         let c: String = text
             .to_lowercase()
@@ -359,9 +316,6 @@ impl App {
         true
     }
 
-    /// Every second or so: look for answers, keep waiting on a tab still
-    /// working past the wait, say what never came, and tell the user what
-    /// came in once it is quiet.
     pub fn follow_ups_tick(&mut self) {
         let wait = Duration::from_secs(self.cfg.assistant.answer_wait_min.max(1) * 60);
         let cap = HARD_CAP.max(wait);
@@ -385,8 +339,7 @@ impl App {
                 ));
                 continue;
             };
-            // A new tab: its wait starts with its first turn (the prompt
-            // accepted and the tab past starting).
+
             if f.await_start {
                 let coming = self.panes[s].tabs[t].activity == Activity::Starting
                     || self
@@ -423,7 +376,6 @@ impl App {
                             cap.as_secs() / 3600
                         )));
                     } else if past && !f.told_working {
-                        // Busy on it: keep waiting, and say so once.
                         f.told_working = true;
                         crate::log::info(&format!(
                             "follow-up: t{uid} still working past the wait; waiting on"
@@ -450,8 +402,7 @@ impl App {
                     continue;
                 }
             }
-            // The prompt is still on its way, or the tab has not shown it
-            // started (a ready screen right after the paste is not the end).
+
             if !past
                 && (self.deliveries.iter().any(|d| d.uid == uid && !d.done())
                     || (!f.seen_working && f.sent.elapsed() < Duration::from_secs(8)))
@@ -511,12 +462,10 @@ impl App {
         self.report_answers();
     }
 
-    /// Whether the user can take a report now: the one quiet gate.
     fn can_report(&self) -> bool {
         self.quiet_moment()
     }
 
-    /// Tell the user the answers that came in: one turn for all of them.
     fn report_answers(&mut self) {
         let answered: Vec<usize> = (0..self.assistant.follow_ups.len())
             .filter(|&i| matches!(self.assistant.follow_ups[i].state, FuState::Answered { .. }))
@@ -525,7 +474,6 @@ impl App {
             return;
         }
         if self.paused() {
-            // Named in the "While you were away" summary; told on resume.
             for &i in &answered {
                 if !self.assistant.follow_ups[i].held {
                     self.assistant.follow_ups[i].held = true;
@@ -546,8 +494,6 @@ impl App {
             return;
         }
         if !self.can_report() {
-            // Held: say why now and then, and past REPORT_FORCE tell it
-            // as soon as a turn is possible at all.
             let held = answered
                 .iter()
                 .filter_map(|&i| match &self.assistant.follow_ups[i].state {
@@ -581,7 +527,7 @@ impl App {
             ));
         }
         self.assistant.report_held_logged = None;
-        // Questions one tab turn answered are told together.
+
         let mut groups: Vec<(u64, String, String, Vec<String>)> = vec![];
         for &i in &answered {
             let f = &self.assistant.follow_ups[i];
@@ -621,8 +567,7 @@ impl App {
         } else {
             "Summarize it for the user in one or two spoken sentences. Call no tools."
         };
-        // Other updates that waited for this quiet moment go in the same
-        // short turn.
+
         let also: Vec<String> = self
             .assistant
             .quiet
@@ -643,8 +588,6 @@ impl App {
         crate::log::info(&format!("follow-up: reporting {}", names.join(", ")));
         self.ask_assistant_system(&note, &msg);
         if !self.assistant.busy {
-            // The assistant could not start (no account, no claude): the
-            // answers stay and are told once it can.
             crate::log::info("follow-up: the assistant did not start; the report waits");
             self.assistant.report_retry = Some(Instant::now() + Duration::from_secs(30));
             return;
@@ -660,7 +603,6 @@ impl App {
         }
     }
 
-    /// The questions out to tabs, for the snapshot and get_state.
     pub fn pending_answers_json(&self) -> Value {
         json!(self
             .assistant
@@ -696,7 +638,6 @@ impl App {
             .collect::<Vec<_>>())
     }
 
-    /// One line per question out to a tab, for the state block.
     pub fn pending_answers_line(&self) -> String {
         let items: Vec<String> = self
             .assistant

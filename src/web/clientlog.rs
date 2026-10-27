@@ -1,10 +1,3 @@
-//! The browsers' debug log: `log` frames (docs/WEB_APP.md) written to
-//! `<app home>/web-client.log` (0600, one `.1` kept at 4 MB), read with
-//! `godterm web-log`. Lines are scrubbed here too, whatever the page
-//! already left out: no tokens, cookies, typed text or blobs ever land in
-//! the file. A thread of its own writes; the socket's reader only formats
-//! and hands lines over (dropped, and counted, when the writer is behind).
-
 use serde_json::Value;
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -13,19 +6,17 @@ use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// The file rolls over to `.1` at this size.
 pub const MAX_BYTES: u64 = 4 << 20;
-/// Lines taken from one frame, and the length of one line's text.
+
 const MAX_LINES: usize = 200;
 const MAX_TEXT: usize = 2000;
 const MAX_DEVICE: usize = 80;
-/// Per client: a burst of this many lines (and bytes), refilled per second.
+
 const BURST_LINES: f64 = 1000.0;
 const RATE_LINES: f64 = 20.0;
 const BURST_BYTES: f64 = 256.0 * 1024.0;
 const RATE_BYTES: f64 = 16.0 * 1024.0;
-/// Categories whose text is never kept (the page never sends these; if a
-/// page did, only the length is written).
+
 const HIDDEN: &[&str] = &["typed", "input", "paste", "clipboard", "audio", "mic"];
 
 pub fn path() -> PathBuf {
@@ -38,15 +29,12 @@ fn rotated(p: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// The web token, scrubbed by value as well as by shape.
 static SECRET: Mutex<String> = Mutex::new(String::new());
 
 pub fn set_secret(token: &str) {
     *SECRET.lock().unwrap_or_else(|e| e.into_inner()) = token.to_string();
 }
 
-/// Text made safe for the file: one line, no control characters, no
-/// secrets, at most `MAX_TEXT` characters.
 pub fn scrub(s: &str, secret: &str) -> String {
     let mut t: String = s
         .chars()
@@ -66,8 +54,6 @@ fn cap(s: &str, n: usize) -> String {
     }
 }
 
-/// `Cookie: ...`, `Authorization: ...`, `godterm_web=...` and `Bearer x`:
-/// the value goes, up to a quote, comma or brace (or the end).
 fn headers(s: &str) -> String {
     let low = s.to_ascii_lowercase();
     let mut out = String::with_capacity(s.len());
@@ -105,7 +91,6 @@ fn headers(s: &str) -> String {
     out
 }
 
-/// A `t=` query value (the sign in link's token).
 fn query_t(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -131,8 +116,6 @@ fn query_t(s: &str) -> String {
     out
 }
 
-/// Long hex (32+) and long base64 like runs (40+, with digits and both
-/// cases): tokens, hashes, data URLs.
 fn blobs(s: &str) -> String {
     let word = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-');
     let mut out = String::with_capacity(s.len());
@@ -164,7 +147,6 @@ fn blobs(s: &str) -> String {
     out
 }
 
-/// One client's allowance: a token bucket for lines and bytes.
 pub struct Rate {
     lines: f64,
     bytes: f64,
@@ -203,8 +185,6 @@ impl Rate {
     }
 }
 
-/// A `log` frame as file lines (timestamp, client, device, category,
-/// text), within the client's allowance.
 pub fn lines(client: u64, v: &Value, secret: &str, rate: &mut Rate, now: Instant) -> Vec<String> {
     rate.refill(now);
     let mut device = scrub(v["device"].as_str().unwrap_or("?"), secret);
@@ -258,7 +238,6 @@ pub fn lines(client: u64, v: &Value, secret: &str, rate: &mut Rate, now: Instant
     out
 }
 
-/// The file, rolled over to `.1` past `max` bytes.
 pub struct LogFile {
     path: PathBuf,
     max: u64,
@@ -294,7 +273,6 @@ impl LogFile {
     }
 
     pub fn write(&mut self, text: &str) -> std::io::Result<()> {
-        // Deleted or moved by hand: start a new file.
         if self.file.is_some() && !self.path.exists() {
             self.file = None;
         }
@@ -314,8 +292,6 @@ impl LogFile {
 static TX: OnceLock<SyncSender<String>> = OnceLock::new();
 static BEHIND: AtomicU64 = AtomicU64::new(0);
 
-/// Hand lines to the writer thread (never blocks; lines it has no room
-/// for are counted and noted later).
 pub fn submit(lines: Vec<String>) {
     if lines.is_empty() {
         return;
@@ -350,13 +326,11 @@ pub fn submit(lines: Vec<String>) {
     }
 }
 
-/// A `log` frame from client `id`.
 pub fn take(client: u64, v: &Value, rate: &mut Rate) {
     let secret = SECRET.lock().unwrap_or_else(|e| e.into_inner()).clone();
     submit(lines(client, v, &secret, rate, Instant::now()));
 }
 
-/// Of the file's lines, those of client `n` (None: all).
 fn client_of(line: &str) -> Option<u64> {
     line.split_whitespace()
         .nth(2)
@@ -364,7 +338,6 @@ fn client_of(line: &str) -> Option<u64> {
         .and_then(|n| n.parse().ok())
 }
 
-/// `godterm web-log [--follow] [--client N] [--lines N]`.
 pub fn command(args: &[String]) -> anyhow::Result<()> {
     let val = |name: &str| {
         args.iter()
@@ -399,8 +372,7 @@ pub fn command(args: &[String]) -> anyhow::Result<()> {
     if !follow {
         return Ok(());
     }
-    // Follow: read what is appended; a rotation (the file shrank or was
-    // replaced) starts over at the top of the new one.
+
     let mut pos = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
     let mut part = String::new();
     loop {

@@ -1,8 +1,3 @@
-//! The assistant's providers with stub backends: the registry, a fake
-//! headless grok (streaming-messages-json), tools through use_tool, the
-//! built in tools removed, a switch that keeps the conversation, and a
-//! refused login falling back to Claude.
-
 use serde_json::json;
 
 use crate::assistant::BrainEvent;
@@ -20,7 +15,6 @@ fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     (app, home)
 }
 
-/// A turn of fake grok output: deltas, a use_tool call, the answer.
 const GROK_TURN: &str = r#"{"type":"system","subtype":"init","session_id":"s1","model":"grok-4.7-build-fast","tools":["run_terminal_command","search_tool","use_tool"],"mcp_servers":[{"name":"godterm","status":"connected"}]}
 {"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use"}}}
 {"type":"assistant","message":{"id":"m0","content":[{"type":"tool_use","id":"c1","name":"use_tool","input":{"tool_name":"godterm__get_state","tool_input":{}}}]}}
@@ -30,7 +24,6 @@ const GROK_TURN: &str = r#"{"type":"system","subtype":"init","session_id":"s1","
 {"type":"result","subtype":"success","is_error":false,"result":"Two tabs are working.","total_cost_usd":0.004}
 "#;
 
-/// The events a grok brain sends for one turn (until its Done).
 fn grok_turn(
     app: &mut crate::app::App,
     rx: &std::sync::mpsc::Receiver<crate::app::AppEvent>,
@@ -73,7 +66,7 @@ fn grok_brain_turns_tools_and_switching() {
     let (mut app, home) = test_app("grok");
     let (tx, rx) = std::sync::mpsc::channel();
     app.tx = tx;
-    // A fake grok that prints a canned turn and records its argv.
+
     let canned = home.join("turn.jsonl");
     std::fs::write(&canned, GROK_TURN).unwrap();
     let args = home.join("grok-args.txt");
@@ -85,7 +78,7 @@ fn grok_brain_turns_tools_and_switching() {
         ],
     );
     app.cfg.grok_bin = Some(stub.to_string_lossy().into_owned());
-    // A first exchange on Claude, then the switch.
+
     app.assistant.log.push(crate::app_assistant::Entry::new(
         crate::app_assistant::Who::User,
         "remember the fotmesh deploy",
@@ -102,7 +95,7 @@ fn grok_brain_turns_tools_and_switching() {
         "{say}"
     );
     assert_eq!(app.cfg.assistant.provider, "grok");
-    // Not signed in: a clear error, no process.
+
     app.ask_assistant("what is running");
     assert!(
         app.assistant
@@ -112,14 +105,14 @@ fn grok_brain_turns_tools_and_switching() {
         "{:?}",
         app.assistant.log
     );
-    // Its own home gets a (fake) login; the user's Grok accounts are not used.
+
     let gh = crate::providers::grok::home();
     assert!(gh.starts_with(&home));
     std::fs::create_dir_all(&gh).unwrap();
     std::fs::write(gh.join("auth.json"), r#"{"fake": "test login"}"#).unwrap();
     app.assistant.carry = app.conversation_carry();
     let evs = grok_turn(&mut app, &rx, "what is running");
-    // use_tool is the godterm tool; the answer arrives.
+
     assert!(
         evs.contains(&BrainEvent::Tool("get_state".into(), json!({}))),
         "{evs:?}"
@@ -139,7 +132,7 @@ fn grok_brain_turns_tools_and_switching() {
         "Two tabs are working."
     );
     let argv = std::fs::read_to_string(&args).unwrap();
-    // The conversation came along; built in tools are gone, the shell denied.
+
     assert!(
         argv.contains("remember the fotmesh deploy") && argv.contains("fotmesh deploys at five"),
         "{argv}"
@@ -155,7 +148,7 @@ fn grok_brain_turns_tools_and_switching() {
         argv.contains("godterm__get_state"),
         "tool keys in the prompt"
     );
-    // Its config: only godterm's MCP server, imports of other tools off.
+
     let cfg = std::fs::read_to_string(gh.join("config.toml")).unwrap();
     assert!(
         cfg.contains("[mcp_servers.godterm]")
@@ -163,13 +156,12 @@ fn grok_brain_turns_tools_and_switching() {
             && cfg.contains("mcps = false"),
         "{cfg}"
     );
-    // The next turn resumes the same session.
+
     std::fs::remove_file(&args).unwrap();
     grok_turn(&mut app, &rx, "and now");
     let argv2 = std::fs::read_to_string(&args).unwrap();
     assert!(argv2.contains("--resume"), "{argv2}");
-    // A shell call is never run by GodTerm: it is only a tool event, and
-    // grok was told to deny it.
+
     let shell = crate::assistant::parse_line(
         r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"run_terminal_command","input":{"command":"rm -rf /"}}]}}"#,
     );
@@ -180,7 +172,7 @@ fn grok_brain_turns_tools_and_switching() {
             json!({"command": "rm -rf /"})
         )]
     );
-    // Use Opus: back on Claude with that model, said once.
+
     let v = app.control_call(
         "switch_assistant",
         &json!({"provider": "claude", "model": "opus"}),

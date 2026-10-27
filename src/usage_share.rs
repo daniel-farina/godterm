@@ -1,10 +1,3 @@
-//! One usage fetch per account, shared by every GodTerm process (the app,
-//! `godterm status`, a second window): the last reply and when the next
-//! request is allowed live in ~/.godterm/usage/<account>.json, and a lock
-//! file keeps two processes from asking at the same moment. A 429 backs
-//! off on a ladder (1, 2, 5, 10, 15 minutes), longer when the server's
-//! Retry-After says so; Retry-After 0 or none still waits the ladder.
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -12,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::usage::{parse_usage, Usage, UsageError};
 
-/// What the endpoint said: status, Retry-After seconds, body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Raw {
     pub status: u16,
@@ -22,23 +14,20 @@ pub struct Raw {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 struct Entry {
-    /// When it was asked (unix seconds).
     at: i64,
     status: u16,
     body: String,
-    /// No request before this (unix seconds).
+
     until: i64,
-    /// 429s in a row.
+
     strikes: u32,
-    /// Last good body and when it came.
+
     good: Option<(i64, String)>,
 }
 
-/// Waits after the nth 429 in a row (1-based): 1, 2, 5, 10, 15 minutes.
 const LADDER: [u64; 5] = [60, 120, 300, 600, 900];
 pub const MAX_BACKOFF: Duration = Duration::from_secs(15 * 60);
 
-/// How long to wait after `strikes` 429s in a row, given Retry-After.
 pub fn backoff(strikes: u32, retry_after: Option<u64>) -> Duration {
     let i = (strikes.max(1) as usize - 1).min(LADDER.len() - 1);
     let ladder = Duration::from_secs(LADDER[i]);
@@ -46,10 +35,9 @@ pub fn backoff(strikes: u32, retry_after: Option<u64>) -> Duration {
     ladder.max(server).min(MAX_BACKOFF)
 }
 
-/// Up to a tenth more, so accounts that started together drift apart.
 pub fn jitter(d: Duration) -> Duration {
     use std::hash::{BuildHasher, Hasher};
-    // A fresh random seed per call (the std hasher's keys).
+
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
     h.write_u128(
         std::time::SystemTime::now()
@@ -83,7 +71,6 @@ fn write(p: &Path, e: &Entry) {
     }
 }
 
-/// The reply as a result.
 fn outcome(status: u16, body: &str, retry: Option<u64>) -> Result<Usage, UsageError> {
     match status {
         200..=299 => parse_usage(body),
@@ -94,18 +81,13 @@ fn outcome(status: u16, body: &str, retry: Option<u64>) -> Result<Usage, UsageEr
     }
 }
 
-/// What a remembered entry says now, with no request.
 fn from_entry(e: &Entry) -> Result<Usage, UsageError> {
     let left = (e.until - now()).max(0) as u64;
     outcome(e.status, &e.body, Some(left))
 }
 
-/// A lock older than this is from a process that died mid request.
 const STALE_LOCK: Duration = Duration::from_secs(30);
 
-/// Usage for `account`: the shared reply when it is newer than `min` or a
-/// backoff is running, otherwise one request through `net` (only one
-/// process at a time asks; the others wait briefly and read its reply).
 pub fn fetch(
     account: &str,
     min: Duration,
@@ -129,7 +111,6 @@ pub fn fetch_in(
     let _ = std::fs::create_dir_all(dir);
     let mut held = take_lock(&lock);
     if !held {
-        // Someone else is asking: their reply, when it comes.
         let t0 = std::time::Instant::now();
         while t0.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(100));
@@ -213,7 +194,6 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
 
-    /// A fake usage endpoint: answers each request with the next reply.
     fn server(replies: Vec<String>) -> (String, std::thread::JoinHandle<usize>) {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/api/oauth/usage", l.local_addr().unwrap());
@@ -283,7 +263,7 @@ mod tests {
             "at least a minute: {}",
             e.until - e.at
         );
-        // Another process (or the next try) inside the backoff: no request.
+
         let r = fetch_in(&d, "a1", Duration::from_secs(0), || {
             panic!("asked again during the backoff")
         });
@@ -310,7 +290,7 @@ mod tests {
         assert!(matches!(ask(&d), Err(UsageError::RateLimited(_))));
         let e = read(&d.join("a2.json")).unwrap();
         assert!((60..=66).contains(&(e.until - e.at)), "{}", e.until - e.at);
-        // The backoff ran out (as if): the second 429 says 700 s.
+
         let mut e2 = e.clone();
         e2.until = 0;
         e2.at = 0;
@@ -323,7 +303,7 @@ mod tests {
             "{}",
             e.until - e.at
         );
-        // Then a good reply: strikes reset, shared with the next caller.
+
         let mut e3 = e.clone();
         e3.until = 0;
         e3.at = 0;
@@ -343,7 +323,7 @@ mod tests {
     fn one_request_at_a_time_across_processes() {
         let d = tmp("lock");
         std::fs::create_dir_all(&d).unwrap();
-        // Another process holds the lock and then writes its reply.
+
         std::fs::write(d.join("a3.lock"), "").unwrap();
         let d2 = d.clone();
         let other = std::thread::spawn(move || {
@@ -376,22 +356,22 @@ mod tests {
             w >= Duration::from_secs(59) && w <= Duration::from_secs(67),
             "{w:?}"
         );
-        // A 429 saying "retry after 0": still a minute, then two.
+
         st.record_usage(Err(UsageError::RateLimited(Some(0))), 60);
         assert!(st.fetch_wait() >= Duration::from_secs(59));
         st.record_usage(Err(UsageError::RateLimited(None)), 60);
         assert!(st.fetch_wait() >= Duration::from_secs(119));
         let now = chrono::Utc::now();
-        // The numbers are recent: nothing to say.
+
         assert_eq!(st.usage_problem(Duration::from_secs(60), now), None);
-        // Old: said calmly, never "retry after 0s".
+
         st.usage_good_at = Some(now - chrono::Duration::minutes(3));
         let p = st.usage_problem(Duration::from_secs(60), now).unwrap();
         assert_eq!(
             p,
             "usage from 3 min ago (the usage service asked us to slow down)"
         );
-        // Other errors still say what happened.
+
         st.usage_err = Some(UsageError::Http(500));
         assert!(st
             .usage_problem(Duration::from_secs(60), now)

@@ -1,6 +1,3 @@
-//! Sorting, grouping and the headless filter for session lists, shared by
-//! the Sessions view and the assistant's `sessions` tool.
-
 use std::cmp::Ordering;
 
 use crate::sessions::SessionInfo;
@@ -30,7 +27,6 @@ pub const KEYS: [SortKey; 8] = [
 ];
 
 impl SortKey {
-    /// The name used in state.json and the tool ("modified", "context", ...).
     pub fn name(self) -> &'static str {
         match self {
             SortKey::Modified => "modified",
@@ -44,7 +40,6 @@ impl SortKey {
         }
     }
 
-    /// The menu label.
     pub fn label(self) -> &'static str {
         match self {
             SortKey::Modified => "Modified",
@@ -79,7 +74,6 @@ impl SortKey {
         KEYS[(i + 1) % KEYS.len()]
     }
 
-    /// Numbers and times sort biggest / newest first; text A to Z.
     pub fn descending(self) -> bool {
         !matches!(self, SortKey::Project | SortKey::Source | SortKey::Title)
     }
@@ -114,8 +108,6 @@ impl Group {
     }
 }
 
-/// Compare two sessions by `key` in its natural direction; `rev` flips it.
-/// Ties fall back to newest first.
 pub fn compare(
     key: SortKey,
     rev: bool,
@@ -142,9 +134,6 @@ pub fn compare(
     o.then_with(|| ib.modified.cmp(&ia.modified))
 }
 
-/// A folder only scripts and tools use: the temp dirs. The demo's own
-/// world counts as a home, not a temp dir, wherever it was made (a demo
-/// started with HOME in a temp dir would hide every session it seeded).
 pub fn temp_dir(cwd: &str) -> bool {
     if crate::demo::active() {
         let home = crate::demo::home();
@@ -168,8 +157,6 @@ pub fn temp_dir(cwd: &str) -> bool {
         || (!tmp.is_empty() && under(&format!("/private{tmp}")))
 }
 
-/// Not something a person ran in a terminal: a non-interactive run
-/// (claude -p / the SDK, grok headless) or one in a temp folder.
 pub fn headless(s: &SessionInfo) -> bool {
     s.headless || temp_dir(&s.cwd)
 }
@@ -217,7 +204,7 @@ mod tests {
         };
         assert_eq!(order(SortKey::Modified, false), "bac");
         assert_eq!(order(SortKey::Modified, true), "cab");
-        // Created: b (30 msgs) is 71+1 min old, a 90+5, c 80+9.
+
         assert_eq!(order(SortKey::Created, false), "bca");
         assert_eq!(order(SortKey::Messages, false), "bca");
         assert_eq!(order(SortKey::Tokens, false), "acb");

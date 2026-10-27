@@ -1,5 +1,3 @@
-//! The Settings screen: sections on the left, clickable controls on the right.
-
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -42,7 +40,7 @@ pub fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
         inner.height,
     );
     let buf = f.buffer_mut();
-    // Section list.
+
     for (i, (_, name)) in SECTIONS.iter().enumerate() {
         let y = inner.y + 1 + i as u16;
         if y >= inner.y + inner.height {
@@ -80,7 +78,7 @@ pub fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
             c.set_style(Style::default().fg(FAINT));
         }
     }
-    // Bottom bar of the left column.
+
     let by = inner.y + inner.height - 1;
     let mut hits = app.hits.borrow_mut();
     button(
@@ -110,8 +108,7 @@ pub fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
 fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
     let (rows, lines) = app.settings_view();
     let buf = f.buffer_mut();
-    // Labels are never cut: the column is as wide as the longest one (up
-    // to 60% of the width), then the values.
+
     let longest = rows
         .iter()
         .map(|s| s.label.chars().count() as u16 + 3)
@@ -128,7 +125,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
     );
     let sel = app.settings_sel.min(rows.len().saturating_sub(1));
     let limit = area.x + area.width;
-    // The search box, when searching.
+
     let mut top = area.y + 1;
     if let Some(q) = &app.settings_query {
         text(
@@ -153,7 +150,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
             Style::default().fg(FAINT),
         );
     }
-    // Lines: headers, rows, and a dim hint under the selected row.
+
     enum L<'a> {
         Head(&'a crate::app_settings::SettingsLine),
         Row(usize),
@@ -283,14 +280,14 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
             .borrow_mut()
             .add(row, UiAction::Row(List::Settings, i), s.help);
         x = area.x + label_w + 1;
-        // The Grok login: who, and what it has left for voice.
+
         let shown = if s.key == settings::Key::Global("voice.grok.source") {
             app.grok_source_line(&settings::display(&app.cfg, s))
         } else {
             settings::display(&app.cfg, s)
         };
         let mut hits = app.hits.borrow_mut();
-        // The Grok login: who and what is left, and Change… for the picker.
+
         let kind = if s.key == settings::Key::Global("voice.grok.source") {
             x = text(
                 buf,
@@ -308,7 +305,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
         let local_row = settings::local_install_row(&s.key);
         match kind {
             _ if grok_row => {}
-            // A local voice: its status and Install… or Remove….
+
             _ if local_row.is_some() => {
                 let id = local_row.unwrap_or_default();
                 let st = crate::voice::local_tts::status(id, &app.cfg.voice);
@@ -593,8 +590,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
                 theme::MAUVE,
             );
         }
-        // What the engine or voice is (local or cloud, memory, speed,
-        // license; a voice's accent and grade).
+
         if let Some(d) = settings::describe(&app.cfg, s) {
             x = text(
                 buf,
@@ -621,7 +617,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
         }
         let _ = selected;
     }
-    // Section extras.
+
     let mut y = area.y + 1 + list_h;
     if sec == Section::Accounts && y < area.y + area.height {
         let mut hits = app.hits.borrow_mut();
@@ -668,7 +664,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
             );
         }
         y += 2;
-        // What each account has (the assistant can add more by voice).
+
         if y < area.y + area.height {
             text(
                 buf,
@@ -783,7 +779,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
             "The voice welcome again: the pieces, a mic and speaker check, a short spoken tour",
             theme::MAUVE,
         );
-        // The device lists come from a background check.
+
         match settings::list_state() {
             settings::ListState::Detecting | settings::ListState::NotStarted => {
                 x = text(
@@ -820,7 +816,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
             settings::ListState::Done => {}
         }
         drop(hits);
-        // The live meter while the mic is open.
+
         let spans = crate::ui::meter_spans(app);
         let mut mx = x + 2;
         for sp in spans {
@@ -836,7 +832,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
                 Style::default().fg(DIM),
             );
         }
-        // Which talk back engine is in use, and why when it fell back.
+
         let engine = match (&app.voice.engine, &app.voice.preview) {
             (Some(v), _) => v.tts_engine(),
             (None, Some(p)) => p.engine(),
@@ -864,7 +860,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
                 Style::default().fg(FAINT),
             );
         }
-        // Background voices: train, the mic mode picker, the live score.
+
         if y + 3 < area.y + area.height {
             let mut hits = app.hits.borrow_mut();
             let mut x = button(
@@ -915,7 +911,7 @@ fn draw_rows(f: &mut Frame, app: &App, area: Rect, sec: Section) {
             );
         }
     }
-    // Help for the selected row.
+
     if let Some(s) = rows.get(sel) {
         let hy = area.y + area.height - help_h;
         let r = Rect::new(area.x + 1, hy, area.width.saturating_sub(2), help_h);
@@ -956,7 +952,6 @@ fn draw_keys(f: &mut Frame, area: Rect) {
     );
 }
 
-/// Settings > Setup: what is installed, what is missing, and Install.
 fn draw_setup(f: &mut Frame, app: &App, area: Rect) {
     use crate::deps::{Group, Step};
     let buf = f.buffer_mut();
@@ -1298,9 +1293,6 @@ fn draw_about(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// The text editor dialog for a setting.
-/// With Grok in the chain: where the text goes, the Voice usage when the
-/// billing reply has it, and the last Test.
 fn grok_note(app: &App) -> String {
     let mut s = String::new();
     if app.cfg.voice.engine == "grok" {
@@ -1352,7 +1344,7 @@ pub fn draw_edit(f: &mut Frame, area: Rect, app: &App, row: usize, buf_text: &st
         h,
     );
     f.render_widget(Clear, r);
-    // A secret is masked as it is typed.
+
     let secret = rows
         .get(row)
         .is_some_and(|s| s.kind == settings::Kind::Secret);
@@ -1395,7 +1387,6 @@ pub fn draw_edit(f: &mut Frame, area: Rect, app: &App, row: usize, buf_text: &st
     );
 }
 
-/// Settings > Browser: BrowserSkill (bsk) as the last passive look saw it.
 fn draw_browser(f: &mut Frame, app: &App, area: Rect) {
     use crate::browser::Daemon;
     let buf = f.buffer_mut();
@@ -1427,7 +1418,7 @@ fn draw_browser(f: &mut Frame, app: &App, area: Rect) {
         }
         *y += 1;
     };
-    // Daemon and version.
+
     let (mark, c) = match &s.daemon {
         Daemon::Running(_) => ("✓", theme::SAGE),
         Daemon::NotInstalled => ("·", theme::SAND),
@@ -1619,7 +1610,7 @@ fn draw_browser(f: &mut Frame, app: &App, area: Rect) {
             ),
             faint,
         );
-        // The Chrome profile links open in ([browser] default_profile).
+
         if y + 2 < bottom {
             let dp = &app.cfg.browser.default_profile;
             let who = if dp.is_empty() {
@@ -1648,7 +1639,7 @@ fn draw_browser(f: &mut Frame, app: &App, area: Rect) {
                 theme::SLATE,
             );
         }
-        // Sign in pages and Remote Control links ([browser] login_links).
+
         if y + 3 < bottom && !app.cfg.browser.default_profile.is_empty() {
             let where_ = if app.cfg.browser.login_links {
                 "that profile too"

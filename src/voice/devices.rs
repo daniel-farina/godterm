@@ -1,13 +1,10 @@
-//! Which microphone the voice engine really records from, and whether it
-//! is a good one for speech recognition (from `system_profiler`).
-
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioDev {
     pub name: String,
     pub inputs: u32,
-    /// "bluetooth", "builtin", "usb", "virtual", "aggregate", "unknown"...
+
     pub transport: String,
     pub rate: u32,
     pub default_input: bool,
@@ -49,7 +46,6 @@ pub fn list() -> Vec<AudioDev> {
         .unwrap_or_default()
 }
 
-/// The device `device` ("default", an index or a name) resolves to.
 pub fn chosen<'a>(devs: &'a [AudioDev], device: &str) -> Option<&'a AudioDev> {
     let d = device.trim();
     if d.is_empty() || d == "default" {
@@ -58,7 +54,6 @@ pub fn chosen<'a>(devs: &'a [AudioDev], device: &str) -> Option<&'a AudioDev> {
     devs.iter().find(|x| x.name.eq_ignore_ascii_case(d))
 }
 
-/// What is wrong with recording speech from this device, and what to do.
 pub fn advice(devs: &[AudioDev], device: &str) -> Option<String> {
     let d = chosen(devs, device)?;
     let better = devs

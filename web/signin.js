@@ -1,5 +1,3 @@
-// The theme first (this runs in <head>, before the page paints): the
-// choice kept on this device by the app (js/theme.js), Dark by default.
 (function () {
   var p = 'dark';
   try { var v = JSON.parse(localStorage.getItem('gt.theme')); if (v === 'light' || v === 'system') p = v; } catch (e) {}
@@ -11,7 +9,6 @@
   if (st) st.setAttribute('content', t === 'light' ? 'default' : 'black-translucent');
 })();
 
-// A pasted sign in link works as well as the bare token.
 addEventListener('DOMContentLoaded', () => {
   document.getElementById('f').addEventListener('submit', () => {
     const i = document.getElementById('t');

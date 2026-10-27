@@ -1,7 +1,3 @@
-//! Clicking the buttons of every confirmation a move can show: the move
-//! picker, the busy tab dialog, the failover notice, the assistant's
-//! question; with the panel closed, docked and floating.
-
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::hits::UiAction;
 use crate::pane::{Activity, PaneState};
@@ -33,7 +29,6 @@ pub(crate) fn draw(
     t.draw(|f| crate::ui::draw(f, app)).unwrap();
 }
 
-/// A real mouse click on the (topmost) region with this action.
 pub(crate) fn click(app: &mut crate::app::App, a: &UiAction) -> (u16, u16) {
     let r = app
         .last_hits
@@ -115,8 +110,6 @@ fn the_busy_dialog_buttons_click() {
     }
 }
 
-/// Moving a saved session to another account (Sessions screen): the
-/// target buttons and the Yes / Cancel of its confirmation, by mouse.
 #[test]
 fn the_session_move_confirmation_clicks() {
     use crate::app::Modal;
@@ -151,7 +144,7 @@ fn the_session_move_confirmation_clicks() {
         click(&mut app, &UiAction::SessTarget(0));
         assert_eq!(app.modal, Modal::SessConfirm, "{m:?}");
         draw(&mut app, &mut t);
-        // No cancels, nothing moves.
+
         click(&mut app, &UiAction::ModalCancel);
         assert_eq!(app.modal, Modal::None, "{m:?}: Cancel");
         assert!(file.is_file());
@@ -257,7 +250,7 @@ fn the_keyboard_answers_every_dialog() {
     let key =
         |app: &mut crate::app::App, c: KeyCode| app.on_key(KeyEvent::new(c, KeyModifiers::NONE));
     let (mut app, home) = test_app("keys");
-    // Even with the panel taking the keys, the dialog answers first.
+
     app.assistant.show = true;
     app.assistant.focused = true;
     app.panes[0].tabs[0].state = PaneState::Running;
@@ -275,7 +268,7 @@ fn the_keyboard_answers_every_dialog() {
         assert_eq!(!app.queued_moves.is_empty(), queued, "{k:?}");
         assert!(app.assistant.input.is_empty(), "not typed into the panel");
     }
-    // The picker: Esc cancels, Enter moves.
+
     app.panes[0].tabs[0].activity = Activity::Ready;
     app.open_move_picker(0, 0, false);
     key(&mut app, KeyCode::Esc);
@@ -284,7 +277,7 @@ fn the_keyboard_answers_every_dialog() {
     app.open_move_picker(0, 0, false);
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.pending_moves.len(), 1);
-    // The default button stands out (bold, underlined).
+
     app.request_move(1, 0, 0, false, true);
     if matches!(app.modal, Modal::MoveBusy(_)) {
         let mut t = term();
@@ -309,8 +302,7 @@ fn no_click_reaches_the_pane_beneath_a_dialog() {
         app.request_move(0, 0, 1, false, true);
         let mut t = term();
         draw(&mut app, &mut t);
-        // A click on the second pane, outside the dialog: nothing happens
-        // under it, the dialog stays.
+
         let p1 = app.pane_rects[1];
         app.on_mouse_event(crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),

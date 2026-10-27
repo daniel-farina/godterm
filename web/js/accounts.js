@@ -1,12 +1,3 @@
-// The Accounts screen: every account (Claude, Grok, Codex, Cursor, agy,
-// OpenCode) with its login, usage, tabs and whether it runs the
-// assistant; log in from the phone (the CLI's own login in a tab of that
-// account: its sign in page opens here, a code it asks for is pasted
-// here), add, rename, recolor, remove, and Claude's long-lived tokens.
-// Through `accounts` frames ({op, ...}); GodTerm answers with the view.
-// A token never comes here: only that one exists, its date and last four.
-// Log out, remove, copy and delete a token ask first (a confirm id from
-// GodTerm); the assistant has no way to send these frames.
 import { h, on, toast, pctClass, icon, emit, words, skeleton, failRow } from './util.js';
 import { send } from './conn.js';
 import { openSheet, closeSheet, sheetKind } from './sheet.js';
@@ -18,7 +9,7 @@ on('msg:accounts', (m) => {
   if (m.view) view = m.view;
   const w = m.id != null && waits.get(m.id);
   if (w) { waits.delete(m.id); w(m); return; }
-  // A push (a login moved on): repaint an open screen.
+
   if (m.op === 'view' && sheetKind === 'accounts') paint();
 });
 on('conn', (s) => { if (s === 'live' && sheetKind === 'accounts') ask({ op: 'watch', on: true }).then(() => paint()); });
@@ -32,7 +23,6 @@ function ask(frame, ms = 60000) {
   });
 }
 
-// An action: its answer's toast, a question when it asks first.
 async function act(frame, done) {
   const r = await ask(frame);
   if (!r.ok) { toast(r.error || 'It did not work', 'error'); paint(); return r; }
@@ -96,15 +86,13 @@ const STAGE = {
   checking: 'Checking the code...', done: 'Done', failed: 'It did not work',
 };
 
-// Codes typed but not sent yet, kept across repaints.
 const drafts = {};
 let body = null;
 
 export async function accountsSheet() {
   style();
   const mine = h('div.acc', {}, skeleton(3));
-  // (Opening it again closes the old one first: only that one's close
-  // stops watching.)
+
   openSheet({ kind: 'accounts', tall: true, onClose: () => { if (body === mine) { ask({ op: 'watch', on: false }); body = null; } } },
     title('Accounts'), mine);
   body = mine;
@@ -115,7 +103,7 @@ export async function accountsSheet() {
 
 function paint() {
   if (!body || !view || sheetKind !== 'accounts') return;
-  // Never repaint under the user's typing (a code, a name).
+
   const a = document.activeElement;
   if (a && body.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) { setTimeout(paint, 700); return; }
   const top = body.parentElement?.scrollTop;
@@ -193,7 +181,6 @@ function flowBox(a) {
   return h('div.flow', {}, kids);
 }
 
-// Syncing tokens to the other machines: off by default, asks first.
 function syncBox() {
   const ts = view.token_sync || {};
   if (!view.accounts.some((a) => a.token)) return null;
@@ -227,7 +214,6 @@ function tokenBox(a) {
       btn('Delete', () => act({ op: 'token_delete', account: n }), '.sm.bad')));
 }
 
-// A question GodTerm asked: its own yes (named), or cancel.
 function confirmSheet(c) {
   return new Promise((resolve) => {
     openSheet({ kind: 'confirm' }, h('div.sh-title', {}, h('span', {}, 'Confirm')), h('div.appr-q', {}, c.question),
@@ -236,7 +222,7 @@ function confirmSheet(c) {
         h('button.btn', { onclick: async () => { closeSheet(); await ask({ op: 'confirm', confirm_id: c.id, answer: 'no' }); resolve(null); reopen(); } }, 'Cancel')));
   });
 }
-// Back to the list after a question (unless another question took over).
+
 function reopen() { if (!sheetKind) accountsSheet(); }
 
 function renameSheet(a) {

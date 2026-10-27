@@ -1,39 +1,28 @@
-//! Editing the assistant panel's input: a caret (a byte index, always on
-//! a grapheme boundary) and an optional selection anchor over a String,
-//! the moves and edits the keys make, and the wrapped layout the panel
-//! draws (rows, the caret's row and column, a click back to a byte index).
-//! Wide characters and emoji count by their cells.
-
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-/// Where the caret is in the input, and where a selection started.
 #[derive(Debug, Default, Clone)]
 pub struct Caret {
     pub pos: usize,
     pub anchor: Option<usize>,
-    /// The column Up and Down aim for (kept over a run of them).
+
     pub goal: Option<usize>,
-    /// The text length this caret was set for: text changed elsewhere
-    /// (cleared, sent, set to "yes") puts the caret at its end.
+
     seen: Option<usize>,
 }
 
-/// One visual row of the wrapped input: bytes start..end of the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub start: usize,
     pub end: usize,
-    /// The row was wrapped: the next row goes on the same line.
+
     pub soft: bool,
 }
 
-/// The cells a grapheme takes (as ratatui draws it).
 pub fn gw(g: &str) -> usize {
     g.width()
 }
 
-/// The text as rows of at most `w` cells: its own lines, wrapped.
 pub fn rows(text: &str, w: usize) -> Vec<Row> {
     let w = w.max(1);
     let mut out = vec![];
@@ -64,8 +53,6 @@ pub fn rows(text: &str, w: usize) -> Vec<Row> {
     out
 }
 
-/// The caret's (row, column) in `rows`. A caret after a full row is at
-/// the start of the next one (which may be past the last row).
 pub fn caret_rc(text: &str, rows: &[Row], pos: usize, w: usize) -> (usize, usize) {
     for (r, row) in rows.iter().enumerate() {
         if pos < row.start {
@@ -82,9 +69,6 @@ pub fn caret_rc(text: &str, rows: &[Row], pos: usize, w: usize) -> (usize, usize
     (rows.len().saturating_sub(1), 0)
 }
 
-/// The byte index nearest to column `col` of row `r` (a click there, or
-/// Up/Down aiming at it). A wrapped row ends before its last grapheme
-/// (its end is drawn as the next row's start).
 pub fn pos_at(text: &str, rows: &[Row], r: usize, col: usize) -> usize {
     let Some(row) = rows.get(r.min(rows.len().saturating_sub(1))) else {
         return 0;
@@ -95,7 +79,6 @@ pub fn pos_at(text: &str, rows: &[Row], r: usize, col: usize) -> usize {
         let at = row.start + i;
         let cw = gw(g);
         if col < n + cw {
-            // The right half of a wide character: after it.
             return if (col - n) * 2 < cw.max(1) {
                 at
             } else {
@@ -112,7 +95,6 @@ pub fn pos_at(text: &str, rows: &[Row], r: usize, col: usize) -> usize {
     }
 }
 
-/// The grapheme boundary at or before `i`.
 pub fn snap(text: &str, i: usize) -> usize {
     let i = i.min(text.len());
     if i == text.len() {
@@ -129,8 +111,6 @@ pub fn snap(text: &str, i: usize) -> usize {
 }
 
 impl Caret {
-    /// The caret and selection over `text` as the next edit will see
-    /// them (for drawing).
     pub fn view(&self, text: &str) -> (usize, Option<(usize, usize)>) {
         if self.seen != Some(text.len()) {
             return (text.len(), None);
@@ -149,7 +129,6 @@ fn is_word(g: &str) -> bool {
     g.chars().any(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// The text with its caret, for one edit (the caret is synced first).
 pub struct Ed<'a> {
     pub text: &'a mut String,
     pub c: &'a mut Caret,
@@ -178,7 +157,6 @@ impl<'a> Ed<'a> {
         self.c.pos
     }
 
-    /// The grapheme boundary at or before `i`.
     pub fn snap(&self, i: usize) -> usize {
         snap(self.text, i)
     }
@@ -197,14 +175,12 @@ impl<'a> Ed<'a> {
             .map_or(self.text.len(), |g| i + g.len())
     }
 
-    /// The selected bytes (start, end), when there are any.
     pub fn selection(&self) -> Option<(usize, usize)> {
         let a = self.c.anchor?;
         let p = self.c.pos;
         (a != p).then(|| (a.min(p), a.max(p)))
     }
 
-    /// Put the caret at `to`; `extend` grows the selection to it.
     pub fn go(&mut self, to: usize, extend: bool) {
         if extend {
             self.c.anchor.get_or_insert(self.c.pos);
@@ -229,7 +205,6 @@ impl<'a> Ed<'a> {
         }
     }
 
-    /// The start of the word before `i` (punctuation and spaces skipped).
     pub fn word_start(&self, mut i: usize) -> usize {
         while i > 0 {
             let j = self.prev(i);
@@ -248,7 +223,6 @@ impl<'a> Ed<'a> {
         i
     }
 
-    /// The end of the word after `i`.
     pub fn word_end(&self, mut i: usize) -> usize {
         let n = self.text.len();
         while i < n {
@@ -276,7 +250,6 @@ impl<'a> Ed<'a> {
         self.go(self.word_end(self.c.pos), extend);
     }
 
-    /// The start and end of the caret's own line.
     pub fn line_start(&self) -> usize {
         self.text[..self.c.pos].rfind('\n').map_or(0, |i| i + 1)
     }
@@ -295,8 +268,6 @@ impl<'a> Ed<'a> {
         self.go(self.line_end(), extend);
     }
 
-    /// Up (or Down) a visual row at `w` cells; false on the first (last)
-    /// row, where it does nothing (the history is there).
     pub fn vertical(&mut self, down: bool, w: usize, extend: bool) -> bool {
         let rs = rows(self.text, w);
         let (r, col) = caret_rc(self.text, &rs, self.c.pos, w);
@@ -318,7 +289,6 @@ impl<'a> Ed<'a> {
         true
     }
 
-    /// Remove bytes a..b; the caret goes to a.
     pub fn remove(&mut self, a: usize, b: usize) {
         self.text.replace_range(a..b, "");
         self.c.pos = a;
@@ -326,7 +296,6 @@ impl<'a> Ed<'a> {
         self.c.goal = None;
     }
 
-    /// Remove the selection; true when there was one.
     pub fn delete_selection(&mut self) -> bool {
         match self.selection() {
             Some((a, b)) => {
@@ -340,7 +309,6 @@ impl<'a> Ed<'a> {
         }
     }
 
-    /// Typed or pasted text at the caret (over the selection).
     pub fn insert(&mut self, s: &str) {
         self.delete_selection();
         let p = self.c.pos;
@@ -363,7 +331,6 @@ impl<'a> Ed<'a> {
         }
     }
 
-    /// Option+Backspace: the word before the caret.
     pub fn delete_word_back(&mut self) {
         if !self.delete_selection() {
             let p = self.c.pos;
@@ -371,7 +338,6 @@ impl<'a> Ed<'a> {
         }
     }
 
-    /// Option+Delete: the word after the caret.
     pub fn delete_word_forward(&mut self) {
         if !self.delete_selection() {
             let p = self.c.pos;
@@ -379,7 +345,6 @@ impl<'a> Ed<'a> {
         }
     }
 
-    /// Ctrl-W: back to the previous space (the shell's word).
     pub fn rubout(&mut self) {
         if self.delete_selection() {
             return;
@@ -396,7 +361,6 @@ impl<'a> Ed<'a> {
         self.remove(i, p);
     }
 
-    /// Ctrl-U: to the start of the line.
     pub fn kill_to_start(&mut self) {
         if !self.delete_selection() {
             let p = self.c.pos;
@@ -404,7 +368,6 @@ impl<'a> Ed<'a> {
         }
     }
 
-    /// Ctrl-K: to the end of the line (at its end: the line break).
     pub fn kill_to_end(&mut self) {
         if !self.delete_selection() {
             let p = self.c.pos;
@@ -513,7 +476,7 @@ mod tests {
         e.home(true);
         e.right(true);
         assert_eq!(e.selection(), Some((1, 11)));
-        // A plain arrow collapses it to its side.
+
         e.left(false);
         assert_eq!((e.pos(), e.selection()), (1, None));
         e.end(true);
@@ -523,7 +486,6 @@ mod tests {
 
     #[test]
     fn wide_characters_and_emoji_move_as_one() {
-        // A family emoji (a ZWJ sequence), a flag, a combining accent, CJK.
         let s = "a👨‍👩‍👧b🇯🇵e\u{301}漢字";
         let (mut t, mut c) = at(s, 0);
         let mut e = Ed::new(&mut t, &mut c);
@@ -542,7 +504,7 @@ mod tests {
         e.go(1, false);
         e.delete();
         assert_eq!(e.text.as_str(), "ab🇯🇵e\u{301}漢");
-        // A caret set inside a grapheme snaps back to its start.
+
         e.go(3, false);
         assert_eq!(e.pos(), 2);
     }
@@ -553,15 +515,15 @@ mod tests {
         let rs = rows(s, 4);
         let cut: Vec<&str> = rs.iter().map(|r| &s[r.start..r.end]).collect();
         assert_eq!(cut, ["abcd", "ef", "漢字", "漢字", "x"]);
-        // After "abcd" (a full row): the next row's start.
+
         assert_eq!(caret_rc(s, &rs, 4, 4), (1, 0));
         assert_eq!(caret_rc(s, &rs, 6, 4), (1, 2));
-        // Wide characters are two cells.
+
         assert_eq!(caret_rc(s, &rs, 7 + 3, 4), (2, 2));
-        // A full last row: the caret goes under it.
+
         let rs = rows("abcd", 4);
         assert_eq!(caret_rc("abcd", &rs, 4, 4), (1, 0));
-        // A click: the cell's character, the right half of a wide one after it.
+
         let rs = rows(s, 4);
         assert_eq!(pos_at(s, &rs, 2, 0), 7);
         assert_eq!(pos_at(s, &rs, 2, 1), 10);
@@ -579,7 +541,7 @@ mod tests {
         let s = "abcdefghij\nxy";
         let (mut t, mut c) = at(s, 7);
         let mut e = Ed::new(&mut t, &mut c);
-        // Rows of 4: "abcd" "efgh" "ij" "xy"; the caret at "h" (row 1, col 3).
+
         assert!(e.vertical(false, 4, false));
         assert_eq!(e.pos(), 3);
         assert!(!e.vertical(false, 4, false), "the first row: history");
@@ -589,7 +551,7 @@ mod tests {
         assert!(e.vertical(true, 4, false));
         assert_eq!(e.pos(), 13);
         assert!(!e.vertical(true, 4, false), "the last row: history");
-        // The goal column is kept across the short row.
+
         e.go(3, false);
         e.vertical(true, 4, false);
         e.vertical(true, 4, false);

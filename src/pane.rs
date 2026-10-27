@@ -1,5 +1,3 @@
-//! A pane: one `claude` child in a PTY, rendered through a vt100 parser.
-
 use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
@@ -10,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use crate::app::AppEvent;
 
-/// Env vars that would make a child use some other identity than its slot.
 const SCRUBBED_ENV: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -20,21 +17,13 @@ const SCRUBBED_ENV: &[&str] = &[
     "CLAUDE_EFFORT",
 ];
 
-/// True for variables a child claude must not inherit. When godterm is
-/// started from inside a Claude Code session, its environment carries
-/// CLAUDECODE and CLAUDE_CODE_* markers (CHILD_SESSION, SESSION_ID,
-/// MESSAGING_SOCKET, ...) that make every child think it is a subagent:
-/// transcripts are switched off and the permission mode is inherited.
-/// `pass` lists names to keep anyway (`pass_env` in config.toml).
 pub fn should_scrub(key: &str, pass: &[String]) -> bool {
     if key == "CLAUDE_CONFIG_DIR" || pass.iter().any(|p| p == key) {
         return false;
     }
-    // A parent grok's markers would make a child grok its subagent.
+
     SCRUBBED_ENV.contains(&key)
         || key.starts_with("CLAUDE_CODE_")
-        // GodTerm's own variables (its home, control socket and token)
-        // stay out of tabs: a tab must not drive the others (QA-26).
         || key.starts_with("GODTERM_")
         || key.starts_with("CLAUDEGO_")
         || crate::harness::scrub_grok(key)
@@ -43,21 +32,15 @@ pub fn should_scrub(key: &str, pass: &[String]) -> bool {
         || key == "CODEX_THREAD_ID"
 }
 
-/// Most bytes a second one tab's output is read at (see the reader).
 pub const STREAM_CAP: usize = 4 << 20;
 const STREAM_SLICE: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Lines of history kept per tab. Each line costs about 32 bytes per
-/// column, so this bounds memory: 12 tabs x 2000 lines x 110 columns is
-/// about 85 MB at worst. Set from `scrollback_lines` in config.toml.
 static SCROLLBACK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2000);
 
 pub fn set_scrollback(lines: usize) {
     SCROLLBACK.store(lines.min(100_000), std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Input queued per tab, in writes (from `writer_queue_kb`), and the PTY
-/// read buffer in bytes. Both apply to tabs started afterwards.
 static WRITER_QUEUE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1024);
 static READ_BUF: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(16384);
 
@@ -78,7 +61,6 @@ fn scrollback() -> usize {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaneState {
-    /// Nothing spawned yet.
     Idle,
     Running,
     Exited(Option<u32>),
@@ -94,43 +76,39 @@ pub enum LaunchKind {
 
 pub struct LaunchSpec {
     pub program: String,
-    /// The variable that names the account's isolated home
-    /// (CLAUDE_CONFIG_DIR, GROK_HOME or CODEX_HOME). Empty for native stores.
+
     pub home_env: &'static str,
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub config_dir: PathBuf,
     pub kind: LaunchKind,
-    /// Variables to pass through even though they look like Claude Code's.
+
     pub pass_env: Vec<String>,
-    /// Bytes to type into the child once its output goes quiet.
+
     pub type_when_idle: Option<Vec<u8>>,
-    /// More variables for the child (grok's compat switches).
+
     pub extra_env: Vec<(String, String)>,
-    /// The CLI this runs (its screens are read by `prompt_cli`).
+
     pub harness: crate::harness::Harness,
 }
 
 struct Proc {
     master: Box<dyn MasterPty + Send>,
-    /// Bytes for the child, written by a dedicated thread so a child that
-    /// stops reading can never block the UI.
+
     input: std::sync::mpsc::SyncSender<Vec<u8>>,
     child: Box<dyn Child + Send + Sync>,
 }
 
-/// What a running claude appears to be doing, read off its screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Activity {
-    /// No process.
     Idle,
-    /// Process running, nothing recognizable yet.
+
     Starting,
-    /// Spinner with "esc to interrupt" visible.
+
     Working,
-    /// A permission prompt ("Do you want to proceed?") is open.
+
     Permission,
-    /// The input box is waiting for a prompt.
+
     Ready,
     Exited,
 }
@@ -142,21 +120,17 @@ impl Activity {
             Activity::Starting => "starting",
             Activity::Working => "working",
             Activity::Permission => "needs approval",
-            // The word the headers, the assistant and list_tabs use.
+
             Activity::Ready => "ready",
             Activity::Exited => "exited",
         }
     }
 }
 
-/// A question or menu dialog waits for a pick (the AskUserQuestion tool,
-/// pickers): Enter selects, Esc cancels. Whatever is typed or pasted
-/// there answers it, so nothing may be sent into it.
 pub fn asks_question(text: &str) -> bool {
     text.contains("Enter to select") && text.contains("Esc to cancel")
 }
 
-/// Classify a claude screen. Pure, so it is easy to test.
 pub fn detect_activity(text: &str) -> Activity {
     if let Some(p) = crate::prompt::parse_prompt(text) {
         use crate::prompt::PromptKind;
@@ -174,15 +148,12 @@ pub fn detect_activity(text: &str) -> Activity {
         Activity::Permission
     } else if text.contains("esc to interrupt")
         || text.contains("Ctrl+c to cancel the turn")
-        // Grok Build 1.0.69+: "⠋ Waiting for response… 0.1s ... [stop]"
-        // over a "Shift+Tab:mode │ Ctrl+c:cancel" footer.
         || text.contains("Ctrl+c:cancel")
     {
         Activity::Working
     } else if text.contains("? for shortcuts")
         || text.contains("Type a message")
         || text.contains("│ >")
-        // Grok Build 1.0.69+: an empty boxed `❯` input on its home screen.
         || text.contains("│ ❯")
         || text
             .lines()
@@ -196,19 +167,14 @@ pub fn detect_activity(text: &str) -> Activity {
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// The id the next tab gets.
 pub fn next_uid() -> u64 {
     NEXT_UID.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Never hand out an id below `n` (ids used before a restart).
 pub fn reserve_uids_below(n: u64) {
     NEXT_UID.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Ids handed out are reserved on disk ahead of use, a block at a time
-/// (`<home>/tab-ids`), so one used between two state saves is never
-/// handed out again after a crash.
 static RESERVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const RESERVE_BLOCK: u64 = 32;
 
@@ -216,7 +182,6 @@ fn reserve_file() -> PathBuf {
     crate::config::app_home().join("tab-ids")
 }
 
-/// The id ceiling a previous run reserved on disk (0: none).
 pub fn reserved_on_disk() -> u64 {
     std::fs::read_to_string(reserve_file())
         .ok()
@@ -225,7 +190,6 @@ pub fn reserved_on_disk() -> u64 {
 }
 
 fn alloc_uid() -> u64 {
-    // The first id of a run starts past what the last run reserved.
     if RESERVED.load(std::sync::atomic::Ordering::Relaxed) == 0 {
         let d = reserved_on_disk();
         NEXT_UID.fetch_max(d, std::sync::atomic::Ordering::Relaxed);
@@ -241,112 +205,95 @@ fn alloc_uid() -> u64 {
 }
 
 pub struct Pane {
-    /// Unique across all tabs, used to route PTY events.
     pub uid: u64,
-    /// Where the session is now (its process or transcript), when that
-    /// differs from `cwd`; refreshed every 2 s while shown.
+
     pub live_cwd: Option<PathBuf>,
     pub cwd_polled: Option<std::time::Instant>,
-    /// Working directory the session runs in.
+
     pub cwd: PathBuf,
-    /// Name given with rename (Ctrl-a , or "rename tab to ...").
+
     pub custom_name: Option<String>,
-    /// Accent color picked from the tab's menu (a palette name).
+
     pub accent: Option<String>,
-    /// Claude session id, known when resumed or detected from transcripts.
+
     pub session_id: Option<String>,
-    /// When the current process started.
+
     pub started: std::time::SystemTime,
-    /// Launch to perform when this tab is first shown (restored tabs).
+
     pub pending: Option<LaunchKind>,
     pub activity: Activity,
-    /// A helper tab (editor, doctor): not saved or restored.
+
     pub transient: bool,
-    /// The trust dialog of this process was already answered.
+
     pub trust_answered: bool,
-    /// Automatic restart scheduled after a crash.
+
     pub restart_at: Option<Instant>,
-    /// Recent crash times, to stop restart loops.
+
     pub crashes: Vec<Instant>,
-    /// When `activity` last changed.
+
     pub activity_since: Instant,
     pub parser: Arc<Mutex<vt100::Parser>>,
     pub state: PaneState,
     pub kind: LaunchKind,
     pub scroll: usize,
-    /// Bumped on each spawn so stale exit events can be ignored.
+
     pub generation: u64,
     size: (u16, u16),
     proc: Option<Proc>,
     last_output: Arc<Mutex<Instant>>,
     pending_type: Option<(Instant, Vec<u8>)>,
-    /// History lines kept (see `set_history`).
+
     history: usize,
-    /// Stopped by the memory saver; resumes (with --resume) when shown.
+
     pub suspended: bool,
-    /// Its group in the account's tab list (by name), if any.
+
     pub group: Option<String>,
-    /// Pinned: first in the list, asks before closing, left out of
-    /// "close all".
+
     pub pinned: bool,
-    /// The Chrome profile folder this tab's browser is bound to (the
-    /// Browser button; see tab_browser). With more than one, this is the
-    /// primary one.
+
     pub browser: Option<String>,
-    /// More Chrome profiles bound to this tab beside the primary (never
-    /// it, no repeats; empty when there is no primary).
+
     pub browser_also: Vec<String>,
-    /// When the tab was first opened (kept across restarts).
+
     pub opened: std::time::SystemTime,
-    /// The user's last keystroke or prompt into it.
+
     pub last_input: Instant,
-    /// A real turn ended while the user looked elsewhere; cleared when
-    /// they look at it or it works again (tab_labels).
+
     pub finished: bool,
-    /// The turn ended but background agents or shells still run: not
-    /// finished yet; "finished" waits until they are done too.
+
     pub bg_wait: bool,
-    /// Its turn ended out of view (for the finished label once the
-    /// background work is done).
+
     pub bg_wait_unseen: bool,
-    /// Its resume failed because a Claude Code background run holds the
-    /// session: the tab offers attach, stop and resume, or fork.
+
     pub bg_lock: Option<crate::session_ids::BgLock>,
-    /// The next launch attaches or forks instead of a plain resume.
+
     pub next_launch: Option<crate::session_ids::NextLaunch>,
-    /// Its session's lease (GodTerm Sync): read only, or input blocked
-    /// while the conversation moves to another machine.
+
     pub lease: Option<crate::app_lease::TabLease>,
-    /// The model it runs, as its transcript, session or screen names it
-    /// ("claude-opus-5-5", "Sonnet 5.5", "grok-4.7"); app_tabmodel.
+
     pub model: Option<String>,
-    /// Its reasoning effort as its screen shows it ("medium").
+
     pub effort: Option<String>,
     pub model_polled: Option<Instant>,
-    /// The transcript's (size, mtime) when its model was last read.
+
     pub model_stamp: Option<(u64, std::time::SystemTime)>,
-    /// A /model just sent (its arg, when): shown until the tab says so.
+
     pub model_set: Option<(String, Instant)>,
-    /// The CLI the tab last ran (set at launch).
+
     pub harness: crate::harness::Harness,
-    /// Its output and input for web clients (src/web/tap.rs).
+
     pub web: Arc<crate::web::tap::Tap>,
-    /// A size a browser took for it (its "take size" toggle): the PTY
-    /// keeps it whatever the pane's area is, until released.
+
     pub web_size: Option<(u16, u16)>,
-    /// Who took it ("iPhone"), shown in the pane's header.
+
     pub web_sizer: Option<String>,
-    /// A tab that may print a secret (`claude setup-token`): its output
-    /// goes through this filter before the parser and the web tap, so the
-    /// token is caught here and only dots ever reach a screen.
+
     pub secret: Option<Arc<Mutex<crate::acct_tokens::Scrub>>>,
 }
 
-/// A secret tab is this wide at least, so a token never wraps.
 pub const SECRET_COLS: u16 = 320;
 
 impl Pane {
-    /// The visible screen as text.
     pub fn screen_text(&self) -> String {
         self.parser
             .lock()
@@ -410,24 +357,15 @@ impl Pane {
         }
     }
 
-    /// When it last printed anything.
     pub fn last_output_at(&self) -> Instant {
         *self.last_output.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The last output, input or state change.
     pub fn last_activity(&self) -> Instant {
         let out = *self.last_output.lock().unwrap_or_else(|e| e.into_inner());
         out.max(self.activity_since).max(self.last_input)
     }
 
-    /// History lines this tab keeps. Changing it rebuilds the screen
-    /// parser (vt100 fixes it per parser): the newest history that fits
-    /// the new size comes along (as text), then the screen itself with
-    /// its colors, so lowering it frees the oldest history and raising it
-    /// (the tab comes on screen) keeps what there was. A view scrolled
-    /// back stays where it was. Before, every rebuild kept only the
-    /// screen: a tab clicked in a tab list had no history to scroll.
     pub fn set_history(&mut self, lines: usize) {
         if lines == self.history {
             return;
@@ -446,12 +384,10 @@ impl Pane {
         self.history
     }
 
-    /// History lines this tab keeps now.
     pub fn history_lines(&self) -> usize {
         self.history
     }
 
-    /// How to bring this tab back: resume its conversation when known.
     pub fn relaunch_kind(&self) -> LaunchKind {
         match &self.session_id {
             Some(id) => LaunchKind::Resume(id.clone()),
@@ -459,12 +395,10 @@ impl Pane {
         }
     }
 
-    /// True when the last process ended with a non zero exit code.
     pub fn crashed(&self) -> bool {
         matches!(self.state, PaneState::Exited(Some(c)) if c != 0)
     }
 
-    /// Process id of the running child, if any.
     pub fn pid(&self) -> Option<u32> {
         self.proc.as_ref().and_then(|p| p.child.process_id())
     }
@@ -474,15 +408,13 @@ impl Pane {
     }
 
     pub fn spawn(&mut self, spec: LaunchSpec, events: Sender<AppEvent>) -> Result<()> {
-        // A test never starts the test binary itself (as claude, doctor,
-        // install...): that would run the suite again, recursively.
         if cfg!(test) && crate::test_guard::is_current_exe(std::path::Path::new(&spec.program)) {
             anyhow::bail!("refused in tests: {} is the test binary", spec.program);
         }
         self.kill();
         self.generation += 1;
         let (rows, cols) = self.size;
-        // Fresh screen for the new process.
+
         self.parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, self.history)));
         self.sync_tap();
         self.scroll = 0;
@@ -563,8 +495,7 @@ impl Pane {
         let last = Arc::clone(&self.last_output);
         let (id, gen) = (self.uid, self.generation);
         let secret = self.secret.clone();
-        // Windows: ConPTY keeps its output open after the child exits, so
-        // the reader may never see EOF; a watcher reports the exit then.
+
         let reader_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         #[cfg(windows)]
         if let Some(pid) = child.process_id() {
@@ -581,7 +512,6 @@ impl Pane {
                             0
                         };
                         if gone >= 2 {
-                            // Let the reader take the last output first.
                             std::thread::sleep(Duration::from_millis(400));
                             if !done.load(std::sync::atomic::Ordering::SeqCst) {
                                 let _ = events.send(AppEvent::PaneExited(id, gen));
@@ -596,13 +526,10 @@ impl Pane {
             .name(format!("pty-{id}"))
             .spawn(move || {
                 let mut buf = vec![0u8; read_buf];
-                // A tab that streams without pause (`yes`, a huge cat) is
-                // read at most STREAM_CAP bytes a second: the rest waits in
-                // the PTY, which slows the writer down, instead of every
-                // core parsing output nobody can read that fast (QA-14).
+
                 let mut window = Instant::now();
                 let mut in_window = 0usize;
-                // Huge counts in CSI sequences capped (vt_guard.rs).
+
                 let mut cap = crate::vt_guard::CsiCap::default();
                 let mut clean = Vec::with_capacity(read_buf);
                 let mut scrubbed = Vec::new();
@@ -640,14 +567,9 @@ impl Pane {
                                         crate::control::tab_id(id)
                                     ));
                                 }
-                                // Browsers get what the parser got, under
-                                // its lock (no gap or repeat after their
-                                // snapshot); a rebuilt screen is re-sent.
+
                                 if web.active() {
-                                    // Back from a full screen app: the
-                                    // main screen a browser's snapshot
-                                    // never had (it got only the
-                                    // alternate one) comes from a new one.
+
                                     if fed && alt && !p.screen().alternate_screen() {
                                         web.resync_all();
                                     } else if fed {
@@ -662,7 +584,7 @@ impl Pane {
                                 let _ = w2.try_send(reply);
                             }
                             *last.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-                            // One wake up per frame is enough; coalesce.
+
                             if !OUTPUT_PENDING.swap(true, std::sync::atomic::Ordering::AcqRel)
                                 && events.send(AppEvent::PaneOutput).is_err()
                             {
@@ -671,8 +593,7 @@ impl Pane {
                         }
                     }
                 }
-                // A secret tab's last held bytes (and a token that ended
-                // with the stream).
+
                 if let Some(sc) = &secret {
                     let mut tail = vec![];
                     sc.lock()
@@ -700,13 +621,11 @@ impl Pane {
         Ok(())
     }
 
-    /// Called when the reader thread hits EOF.
     pub fn on_exit(&mut self, gen: u64) {
         if gen != self.generation {
             return;
         }
         let code = self.proc.as_mut().and_then(|p| {
-            // Give the child a moment to be reaped.
             for _ in 0..20 {
                 if let Ok(Some(s)) = p.child.try_wait() {
                     return Some(s.exit_code());
@@ -728,8 +647,6 @@ impl Pane {
 
     pub fn kill(&mut self) {
         if let Some(p) = self.proc.take() {
-            // SIGHUP now (cheap), then wait and escalate off the UI thread:
-            // portable-pty's own kill() sleeps up to 200 ms per child.
             if let Some(pid) = p.child.process_id() {
                 crate::platform::kill(pid as i32, crate::platform::SIGHUP);
             }
@@ -739,7 +656,7 @@ impl Pane {
                 child,
             } = p;
             drop(input);
-            // The tap's copy too, so the writer thread ends.
+
             self.web.stop_input();
             reap_after_hup(child, master);
         }
@@ -757,7 +674,6 @@ impl Pane {
         }
     }
 
-    /// Re-read the screen and classify it. Returns (old, new) on change.
     pub fn update_activity(&mut self) -> Option<(Activity, Activity)> {
         if self.state != PaneState::Running {
             return None;
@@ -779,7 +695,6 @@ impl Pane {
         }
     }
 
-    /// Short tab name: last path component of the cwd.
     pub fn name(&self) -> String {
         if let Some(n) = self.custom_name.as_ref().filter(|n| !n.trim().is_empty()) {
             return n.clone();
@@ -794,22 +709,21 @@ impl Pane {
         if bytes.is_empty() || self.lease.as_ref().is_some_and(|l| l.blocks_input()) {
             return;
         }
-        self.last_input = Instant::now();
+        if is_typing(bytes) {
+            self.last_input = Instant::now();
+        }
+        #[cfg(test)]
+        SENT.with(|s| s.borrow_mut().extend_from_slice(bytes));
         if let Some(p) = &self.proc {
-            // Never blocks: if the child has stopped reading and 1024 writes
-            // are queued, further input is dropped.
             let _ = p.input.try_send(bytes.to_vec());
         }
     }
 
-    /// The PTY's size (rows, cols).
     #[cfg(test)]
     pub fn pty_size(&self) -> (u16, u16) {
         self.size
     }
 
-    /// The web tap follows the uid (restored tabs get their saved one
-    /// after they were made).
     fn sync_tap(&mut self) {
         if self.web.uid != self.uid {
             self.web.forget();
@@ -817,8 +731,6 @@ impl Pane {
         }
     }
 
-    /// Resize the PTY and the virtual screen to the pane's inner area (or
-    /// to the size a browser took for it).
     pub fn resize(&mut self, rows: u16, cols: u16) {
         self.sync_tap();
         let (rows, cols) = self.web_size.unwrap_or((rows, cols));
@@ -833,13 +745,9 @@ impl Pane {
         }
         self.size = (rows, cols);
         {
-            // A reader thread that panicked inside the parser poisons the
-            // lock; like every other use, go on with the screen as it is.
             let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
             p.screen_mut().set_size(rows, cols);
-            // A wide char cut in half by the narrower screen makes vt100
-            // panic on the next edit there (see process_guarded): lay the
-            // screen out again now instead, wrapping it to the next row.
+
             if wide_at_edge(&mut p) {
                 let was = p.screen().scrollback();
                 let modes = p.screen().input_mode_formatted();
@@ -848,11 +756,9 @@ impl Pane {
                 fresh.screen_mut().set_scrollback(was.min(keep));
                 self.scroll = fresh.screen().scrollback();
                 *p = fresh;
-                // A rebuilt screen: browsers redraw from a snapshot.
+
                 self.web.resync_all();
             } else {
-                // Browsers resize their terminal and output flows on
-                // (the app redraws at the new size), no snapshot.
                 self.web.resized(rows, cols);
             }
         }
@@ -868,11 +774,10 @@ impl Pane {
 
     pub fn scroll_by(&mut self, delta: isize) {
         let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
-        // From where the view is: vt100 moves it up as output arrives, to
-        // keep the same lines in view.
+
         let next = (p.screen().scrollback() as isize + delta).max(0) as usize;
         p.screen_mut().set_scrollback(next);
-        // vt100 clamps to the available history.
+
         self.scroll = p.screen().scrollback();
     }
 
@@ -903,7 +808,6 @@ impl Pane {
             .bracketed_paste()
     }
 
-    /// Type queued input once the child has been quiet for a moment.
     pub fn tick(&mut self) {
         let Some((started, _)) = &self.pending_type else {
             return;
@@ -931,13 +835,11 @@ impl Drop for Pane {
     }
 }
 
-/// Set by PTY readers when new output arrived and a redraw is pending.
 pub static OUTPUT_PENDING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 static REAPING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Give a hung up child 400 ms to exit, then SIGKILL it, and reap it.
 fn reap_after_hup(mut child: Box<dyn Child + Send + Sync>, master: Box<dyn MasterPty + Send>) {
     REAPING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let spawned = std::thread::Builder::new()
@@ -967,8 +869,6 @@ fn reap_after_hup(mut child: Box<dyn Child + Send + Sync>, master: Box<dyn Maste
     }
 }
 
-/// Block (at most `limit`) until every killed child has been reaped. Used
-/// on shutdown so no child outlives godterm.
 pub fn wait_for_reapers(limit: Duration) {
     let t0 = Instant::now();
     while REAPING.load(std::sync::atomic::Ordering::SeqCst) > 0 && t0.elapsed() < limit {
@@ -976,7 +876,6 @@ pub fn wait_for_reapers(limit: Duration) {
     }
 }
 
-/// Wait for a child on a background thread so it never lingers as a zombie.
 fn reap(mut child: Box<dyn Child + Send + Sync>) {
     let _ = std::thread::Builder::new()
         .name("reaper".into())
@@ -985,9 +884,6 @@ fn reap(mut child: Box<dyn Child + Send + Sync>) {
         });
 }
 
-/// A new parser with what `p` shows: the newest `lines` of its history (as
-/// text), then its screen with colors. Returns it and how much history
-/// came along. `p` is left scrolled to the bottom.
 fn rebuilt(p: &mut vt100::Parser, lines: usize) -> (vt100::Parser, usize) {
     let (rows, cols) = p.screen().size();
     p.screen_mut().set_scrollback(usize::MAX);
@@ -1001,8 +897,6 @@ fn rebuilt(p: &mut vt100::Parser, lines: usize) -> (vt100::Parser, usize) {
     let replay = p.screen().contents_formatted();
     let mut fresh = vt100::Parser::new(rows, cols, lines);
     if keep > 0 {
-        // The history, then the screen's rows as text: the history ends up
-        // above the screen, which is then drawn again in full.
         text.extend(p.screen().rows(0, cols));
         let n = text.len();
         for (i, l) in text.iter().enumerate() {
@@ -1016,8 +910,6 @@ fn rebuilt(p: &mut vt100::Parser, lines: usize) -> (vt100::Parser, usize) {
     (fresh, keep)
 }
 
-/// A wide char starts in the last column of the live screen (it has no
-/// room for its second half).
 fn wide_at_edge(p: &mut vt100::Parser) -> bool {
     let was = p.screen().scrollback();
     p.screen_mut().set_scrollback(0);
@@ -1028,14 +920,6 @@ fn wide_at_edge(p: &mut vt100::Parser) -> bool {
     found
 }
 
-/// Feed PTY output to the parser; true when it went through.
-///
-/// vt100 0.16 can panic on its own state: a wide char left in the last
-/// column when a resize narrows the screen by one makes the next erase or
-/// print there index past the row (row.rs clear_wide, screen.rs text). The
-/// reader thread died with it and the tab froze for good (the soak run hit
-/// it every few minutes). The parser is rebuilt from what it showed instead
-/// (history and screen; the chunk that failed is lost) and reading goes on.
 pub fn process_guarded(p: &mut vt100::Parser, bytes: &[u8], lines: usize) -> bool {
     use std::panic::{catch_unwind, AssertUnwindSafe};
     if catch_unwind(AssertUnwindSafe(|| p.process(bytes))).is_ok() {
@@ -1054,8 +938,6 @@ pub fn process_guarded(p: &mut vt100::Parser, bytes: &[u8], lines: usize) -> boo
     false
 }
 
-/// Answer terminal queries that TUI apps send while probing capabilities.
-/// Without replies some programs wait for a timeout before drawing.
 pub fn query_replies(chunk: &[u8], screen: &vt100::Screen) -> Vec<u8> {
     let mut out = Vec::new();
     let has = |pat: &[u8]| chunk.windows(pat.len()).any(|w| w == pat);
@@ -1110,7 +992,6 @@ mod tests {
 
     #[test]
     fn scrollback_is_bounded() {
-        // A flood of output keeps at most the configured history.
         let mut p = vt100::Parser::new(10, 40, 100);
         for i in 0..20_000 {
             p.process(format!("line {i} \x1b[31mred\x1b[0m\r\n").as_bytes());
@@ -1128,10 +1009,10 @@ mod tests {
             p.process("history\r\n".repeat(20).as_bytes());
             p.process("\x1b[2;1Hkept\x1b[2;10H日".as_bytes());
         }
-        // One column fewer: 日 would start in the last column.
+
         t.resize(5, 10);
         let mut p = t.parser.lock().unwrap();
-        // The edit that panicked vt100 there goes through.
+
         assert!(process_guarded(&mut p, b"\x1b[2;10H\x1b[K", 100));
         assert!(process_guarded(&mut p, b"\x1b[2;10Hx", 100));
         assert!(p.screen().contents().contains("kept"));
@@ -1141,8 +1022,6 @@ mod tests {
 
     #[test]
     fn history_survives_a_new_limit() {
-        // A tab going to the background (a lower limit) keeps its newest
-        // history, and coming back (a higher one) keeps what it had.
         let mut t = Pane::new("/tmp".into());
         t.resize(10, 40);
         t.set_history(10_000);
@@ -1176,7 +1055,7 @@ mod tests {
             vt100::Color::Idx(1)
         );
         drop(p);
-        // The oldest kept line is the right one.
+
         t.scroll_by(1000);
         let p = t.parser.lock().unwrap();
         assert!(
@@ -1185,7 +1064,7 @@ mod tests {
             p.screen().contents()
         );
         drop(p);
-        // A view scrolled back stays scrolled back.
+
         t.scroll_by(-50);
         let at = t.scroll;
         t.set_history(5_000);
@@ -1226,7 +1105,7 @@ mod tests {
         ] {
             assert!(!should_scrub(k, &none), "{k} must be kept");
         }
-        // The allowlist wins.
+
         assert!(!should_scrub(
             "CLAUDE_CODE_USE_BEDROCK",
             &["CLAUDE_CODE_USE_BEDROCK".to_string()]
@@ -1241,4 +1120,34 @@ mod tests {
         assert_eq!(r, b"\x1b[2;3R\x1b[?62;22c");
         assert!(query_replies(b"plain text", p.screen()).is_empty());
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub static SENT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn is_typing(b: &[u8]) -> bool {
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == 0x1b && b.get(i + 1) == Some(&b'[') {
+            let rest = &b[i + 2..];
+            let end = rest.iter().position(|c| (0x40..=0x7e).contains(c));
+            let Some(e) = end else { return true };
+            let (body, fin) = (&rest[..e], rest[e]);
+            let report = match fin {
+                b'I' | b'O' if body.is_empty() => true,
+                b'M' | b'm' if body.first() == Some(&b'<') => true,
+                b'R' | b'c' => true,
+                _ => false,
+            };
+            if !report {
+                return true;
+            }
+            i += 2 + e + 1;
+        } else {
+            return true;
+        }
+    }
+    false
 }

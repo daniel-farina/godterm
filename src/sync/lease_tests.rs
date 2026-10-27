@@ -1,7 +1,3 @@
-//! Phase 3 (docs/SYNC.md 4): leases and moving conversations between
-//! machines, on two fixture homes with local bare repos standing in for
-//! GitHub. After every scenario every remote ref only moved forward.
-
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -15,8 +11,6 @@ use super::*;
 
 const MIN: i64 = 60_000;
 
-/// A link like the app's: nothing runs (unless listed), and pulled store
-/// changes are applied to the file the way the app applies them.
 fn link(app_home: &Path, running: &[&str]) -> Link {
     let home = app_home.to_path_buf();
     Link(Arc::new(AppLink {
@@ -41,7 +35,6 @@ struct Two {
     api_b: PathBuf,
 }
 
-/// Machine A inits, machine B clones; neither runs a CLI.
 fn two(name: &str) -> Two {
     let r = root(name);
     let (a, home_a) = fixture_a(&r);
@@ -85,7 +78,6 @@ fn append(p: &Path, text: &str) {
     std::io::Write::write_all(&mut f, text.as_bytes()).unwrap();
 }
 
-/// Every ref of every bare repo under the remotes folder.
 fn refs(remotes: &Path) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
     for owner in std::fs::read_dir(remotes).unwrap().flatten() {
@@ -110,8 +102,6 @@ fn refs(remotes: &Path) -> BTreeMap<String, String> {
     m
 }
 
-/// No remote ref was ever rewritten: each old tip is an ancestor of the
-/// new one (`git merge-base --is-ancestor`), and none disappeared.
 fn assert_ff(before: &BTreeMap<String, String>, after: &BTreeMap<String, String>) {
     for (k, old) in before {
         let new = after.get(k).unwrap_or_else(|| panic!("{k} disappeared"));
@@ -147,7 +137,7 @@ fn engine(c: &Ctx, held: &[&str]) -> Engine {
 fn two_clones_race_to_acquire_and_exactly_one_wins() {
     let t = two("lease-race");
     let before = refs(&t.remotes);
-    // Interleaved: both decide on the same board, A pushes first.
+
     let ra = Repo::open(&t.a).unwrap();
     let rb = Repo::open(&t.b).unwrap();
     let pa = ra
@@ -164,7 +154,7 @@ fn two_clones_race_to_acquire_and_exactly_one_wins() {
         git::Pushed::Rejected,
         "B lost the swap"
     );
-    // B decides again on what is there now: A holds it, live.
+
     match acquire(&t.b, "S9", Op::Acquire) {
         Outcome::Held(Status::Live { owner, label, .. }) => {
             assert_eq!(owner, t.a.machine.id);
@@ -172,7 +162,7 @@ fn two_clones_race_to_acquire_and_exactly_one_wins() {
         }
         o => panic!("{o:?}"),
     }
-    // At the same moment from two threads: one winner, every time.
+
     for sid in ["R1", "R2", "R3"] {
         let bar = Arc::new(std::sync::Barrier::new(2));
         let hs: Vec<_> = [t.a.clone(), t.b.clone()]
@@ -209,7 +199,7 @@ fn a_lease_expires_after_ten_minutes_and_a_stale_owner_never_blocks() {
         acquire(&t.a, "S1", Op::Acquire),
         Outcome::Acquired { gen: 1, .. }
     ));
-    // A machine always beats with its lease.
+
     let b9 = at(&t.b, t0 + 9 * MIN + 59_000);
     assert!(matches!(
         acquire(&b9, "S1", Op::Acquire),
@@ -225,13 +215,13 @@ fn a_lease_expires_after_ten_minutes_and_a_stale_owner_never_blocks() {
         }
         o => panic!("{o:?}"),
     }
-    // A comes back: its lease is gone; its next check says so.
+
     let a11 = at(&t.a, t0 + 11 * MIN);
     assert!(matches!(
         acquire(&a11, "S1", Op::Keep),
         Outcome::Lost(Status::Live { .. })
     ));
-    // A heartbeat keeps a lease alive past ten minutes.
+
     let a12 = at(&t.a, t0 + 12 * MIN);
     assert!(matches!(
         acquire(&a12, "S7", Op::Acquire),
@@ -265,11 +255,11 @@ fn take_over_now_on_a_live_lease_old_owner_blocks_and_forks_its_unsent_bytes() {
         "{ev:?}"
     );
     assert!(ea.held.lock().unwrap().contains_key("S1"));
-    // A writes a line it never pushes (its CLI runs there).
+
     let s1_a = session_file(&t.a, "work", &t.api_a, "S1");
     let before_bytes = std::fs::read(&s1_a).unwrap();
     append(&s1_a, &line("S1", &t.api_a, "unsent on A"));
-    // B: Take over now (the user said yes), never waiting.
+
     let mut eb = engine(&t.b, &[]);
     let ev = eb.handle(
         &t.b,
@@ -279,7 +269,7 @@ fn take_over_now_on_a_live_lease_old_owner_blocks_and_forks_its_unsent_bytes() {
         }],
     );
     assert!(matches!(&ev[0], Event::Acquired { .. }), "{ev:?}");
-    // A's next heartbeat finds the loss.
+
     let a2 = at(&t.a, t.a.now_ms + 2 * MIN);
     let ev = ea.poll(&a2);
     let lost = ev.iter().find_map(|e| match e {
@@ -291,14 +281,14 @@ fn take_over_now_on_a_live_lease_old_owner_blocks_and_forks_its_unsent_bytes() {
         _ => None,
     });
     assert_eq!(lost, Some(("S1".into(), "Linux".into(), false)), "{ev:?}");
-    // Not twice.
+
     assert!(!ea.poll(&a2).iter().any(|e| matches!(e, Event::Lost { .. })));
-    // While A's CLI still runs, a sync never pushes its bytes under S1.
+
     let mut a_run = a2.clone();
     a_run.link = Some(link(&a2.app_home, &["S1"]));
     let rep = state_repo::sync_now(&a_run).unwrap();
     assert!(rep.ok && rep.held.iter().any(|h| h == "S1"), "{rep:?}");
-    // The CLI stopped (the app's job): the unsent part becomes a fork.
+
     let ev = ea.handle(
         &a2,
         vec![Cmd::Fork {
@@ -324,7 +314,7 @@ fn take_over_now_on_a_live_lease_old_owner_blocks_and_forks_its_unsent_bytes() {
         ft.contains("unsent on A") && ft.contains("fork from MacBook"),
         "{ft}"
     );
-    // The fork goes up as its own session, from S1.
+
     let rep = state_repo::sync_now(&a2).unwrap();
     assert!(rep.ok, "{rep:?}");
     let m = state_repo::load_manifest(&t.a.state_dir(), "work", &fork).unwrap();
@@ -345,9 +335,9 @@ fn a_dead_machine_returning_forks_what_it_never_pushed() {
     ));
     let s2_a = session_file(&t.a, "work", &t.api_a, "S2");
     let s2_b = session_file(&t.b, "work", &t.api_b, "S2");
-    // A writes, then dies before pushing.
+
     append(&s2_a, &line("S2", &t.api_a, "A wrote this, then died"));
-    // B, eleven minutes later: the lease is stale, B takes it and writes.
+
     let b11 = at(&t.b, t0 + 11 * MIN);
     let mut eb = engine(&b11, &[]);
     let ev = eb.handle(
@@ -362,7 +352,7 @@ fn a_dead_machine_returning_forks_what_it_never_pushed() {
     append(&s2_b, &line("S2", &t.api_b, "B carries on"));
     let rb = state_repo::sync_now(&b11).unwrap();
     assert!(rb.ok && rb.sessions_pushed >= 1, "{rb:?}");
-    // A returns: its first sync pulls, sees B owns S2 and forks A's part.
+
     let a30 = at(&t.a, t0 + 30 * MIN);
     let ra = state_repo::sync_now(&a30).unwrap();
     assert!(ra.ok, "{ra:?}");
@@ -371,7 +361,7 @@ fn a_dead_machine_returning_forks_what_it_never_pushed() {
     let nid = ra.forked[0].split(" -> ").nth(1).unwrap().to_string();
     let f = std::fs::read_to_string(session_file(&t.a, "work", &t.api_a, &nid)).unwrap();
     assert!(f.contains("A wrote this, then died"));
-    // A second sync settles: nothing more forks.
+
     let ra = state_repo::sync_now(&at(&t.a, t0 + 31 * MIN)).unwrap();
     assert!(ra.ok && ra.forked.is_empty(), "{ra:?}");
     assert_ff(&before, &refs(&t.remotes));
@@ -392,7 +382,7 @@ fn request_then_the_idle_owner_releases_and_the_requester_takes_it() {
     );
     let s1_a = session_file(&t.a, "work", &t.api_a, "S1");
     let s1_b = session_file(&t.b, "work", &t.api_b, "S1");
-    // A's last turn, written but not pushed yet.
+
     append(&s1_a, &line("S1", &t.api_a, "last turn on A"));
     let mut eb = engine(&t.b, &[]);
     let ev = eb.handle(
@@ -412,16 +402,16 @@ fn request_then_the_idle_owner_releases_and_the_requester_takes_it() {
         ),
         "{ev:?}"
     );
-    // B polls quickly while it waits.
+
     assert_eq!(eb.interval_s(&t.b), 20);
-    // A sees the request on its next fetch.
+
     let ev = ea.poll(&t.a);
     assert!(
         ev.iter()
             .any(|e| matches!(e, Event::Asked { sid, label } if sid == "S1" && label == "Linux")),
         "{ev:?}"
     );
-    // Idle: A (its CLI stopped) pushes the final bytes and lets go.
+
     let ev = ea.handle(
         &t.a,
         vec![Cmd::Release {
@@ -435,7 +425,7 @@ fn request_then_the_idle_owner_releases_and_the_requester_takes_it() {
     let r = l.released.clone().unwrap();
     assert_eq!(r.len, std::fs::metadata(&s1_a).unwrap().len());
     assert_eq!(r.to.as_deref(), Some(t.b.machine.id.as_str()));
-    // B's next poll takes it and pulls the transcript first.
+
     let ev = eb.poll(&t.b);
     assert!(
         ev.iter().any(
@@ -455,7 +445,7 @@ fn request_then_the_idle_owner_releases_and_the_requester_takes_it() {
 fn offline_start_resumes_our_lease_with_a_banner_and_forks_on_reconnect() {
     let t = two("lease-offline");
     let before = refs(&t.remotes);
-    // B owns S1 (online), then loses the network.
+
     let mut eb = engine(&t.b, &[]);
     eb.handle(
         &t.b,
@@ -468,7 +458,7 @@ fn offline_start_resumes_our_lease_with_a_banner_and_forks_on_reconnect() {
     let mut b_off = t.b.clone();
     b_off.cfg.sync.remote = super::git::file_url(&t.b.home.join("no-network"));
     let _ = std::fs::remove_dir_all(b_off.sync_dir().join("leases.git"));
-    // A restart while offline: our last known lease resumes, with the banner.
+
     let mut eb = engine(&b_off, &[]);
     let ev = eb.handle(
         &b_off,
@@ -486,9 +476,9 @@ fn offline_start_resumes_our_lease_with_a_banner_and_forks_on_reconnect() {
         } => assert!(w.contains("will fork if someone else took over"), "{w}"),
         e => panic!("{e:?}"),
     }
-    // Someone else's session: read only, unless "Work offline anyway".
+
     acquire(&t.a, "S2", Op::Acquire);
-    lease::current(&t.b); // B saw that before going offline.
+    lease::current(&t.b);
     let ev = eb.handle(
         &b_off,
         vec![Cmd::Acquire {
@@ -516,13 +506,13 @@ fn offline_start_resumes_our_lease_with_a_banner_and_forks_on_reconnect() {
         }],
     );
     assert!(matches!(&ev[0], Event::Acquired { offline: true, .. }));
-    // Meanwhile A takes S1 over now and writes; B writes offline too.
+
     acquire(&t.a, "S1", Op::TakeOverNow);
     let s1_b = session_file(&t.b, "work", &t.api_b, "S1");
     let s2_b = session_file(&t.b, "work", &t.api_b, "S2");
     append(&s1_b, &line("S1", &t.api_b, "written offline on B"));
     append(&s2_b, &line("S2", &t.api_b, "S2 offline on B"));
-    // Back online: both are lost (A has them); B's parts become forks.
+
     let mut b_on = t.b.clone();
     b_on.now_ms += 3 * MIN;
     let ev = eb.poll(&b_on);
@@ -559,7 +549,7 @@ fn offline_start_resumes_our_lease_with_a_banner_and_forks_on_reconnect() {
 #[test]
 fn back_online_with_nobody_else_on_it_keeps_going_without_a_fork() {
     let t = two("lease-offline-quiet");
-    // Offline from the start, with no lease anywhere for S1.
+
     let mut b_off = t.b.clone();
     b_off.cfg.sync.remote = super::git::file_url(&t.b.home.join("no-network"));
     let mut eb = engine(&b_off, &[]);
@@ -586,7 +576,7 @@ fn back_online_with_nobody_else_on_it_keeps_going_without_a_fork() {
     );
     let (b, _) = lease::current(&t.b);
     assert_eq!(b.unwrap().leases["S1"].owner, t.b.machine.id);
-    // The owner's bytes go up under S1.
+
     let r = state_repo::sync_now(&t.b).unwrap();
     assert!(
         r.ok && r.forked.is_empty() && r.sessions_pushed >= 1,
@@ -597,7 +587,7 @@ fn back_online_with_nobody_else_on_it_keeps_going_without_a_fork() {
 #[test]
 fn pulled_store_changes_go_through_the_app_never_written_under_it() {
     let t = two("lease-stores");
-    // B changes the archive; A's app holds archive.json.
+
     let ap = t.b.app_home.join("archive.json");
     let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&ap).unwrap()).unwrap();
     v["entries"][0]["label"] = json!("docs, renamed on B");
@@ -610,7 +600,7 @@ fn pulled_store_changes_go_through_the_app_never_written_under_it() {
         running: Mutex::default(),
         apply: Box::new(move |x| {
             s2.lock().unwrap().push(x);
-            false // the app has not taken it yet
+            false
         }),
     })));
     let file = a.app_home.join("archive.json");
@@ -629,7 +619,7 @@ fn pulled_store_changes_go_through_the_app_never_written_under_it() {
         got[0].set["a1"].as_ref().unwrap()["label"],
         "docs, renamed on B"
     );
-    // Not taken: the next sync hands it over again; taken: settled.
+
     a.link = Some(link(&a.app_home, &[]));
     let r = state_repo::sync_now(&a).unwrap();
     assert!(r.applied.iter().any(|x| x.starts_with("archive")), "{r:?}");

@@ -1,8 +1,3 @@
-//! The live browser view: parsing, which session a tab attaches to, the
-//! shared capture loop and the actions. Everything runs against a fake
-//! `bsk` (a shell script with fixture JSON and a fixture PNG) in temp
-//! folders: no real browser is ever looked at.
-// Most of these tests run a shell script, so on Windows the helpers go unused.
 #![cfg_attr(not(unix), allow(dead_code))]
 
 use std::fs;
@@ -23,7 +18,6 @@ pub(crate) fn tmp(tag: &str) -> PathBuf {
     d
 }
 
-/// A PNG's signature and IHDR (all the view looks at).
 fn png(w: u32, h: u32) -> Vec<u8> {
     let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
     b.extend_from_slice(&w.to_be_bytes());
@@ -32,8 +26,6 @@ fn png(w: u32, h: u32) -> Vec<u8> {
     b
 }
 
-/// A fake bsk in `d`: logs its arguments to `d/log`, answers from the
-/// fixture files there.
 #[cfg(unix)]
 pub(crate) fn fake(d: &Path, browsers: &str, sessions: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -103,7 +95,6 @@ fn log(d: &Path) -> String {
     fs::read_to_string(d.join("log")).unwrap_or_default()
 }
 
-/// The next `bview` frame with this op (others skipped).
 fn next(out: &Outbox, op: &str, wait: Duration) -> Option<Value> {
     let end = Instant::now() + wait;
     while Instant::now() < end {
@@ -117,7 +108,6 @@ fn next(out: &Outbox, op: &str, wait: Duration) -> Option<Value> {
     None
 }
 
-/// The next picture frame: (uid, payload).
 fn picture(out: &Outbox, wait: Duration) -> Option<(u64, Vec<u8>)> {
     let end = Instant::now() + wait;
     while Instant::now() < end {
@@ -140,8 +130,6 @@ fn wait_until(mut f: impl FnMut() -> bool, wait: Duration) -> bool {
     }
     f()
 }
-
-// ---------- parsing ----------
 
 #[test]
 fn parses_sessions_tabs_and_sizes() {
@@ -174,7 +162,7 @@ fn parses_sessions_tabs_and_sizes() {
     assert!(current_tab(&[]).is_none());
 
     assert_eq!(image_size(&png(1280, 800)), Some((1280, 800)));
-    // A JPEG's SOF0 after an APP0.
+
     let mut j = vec![0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0];
     j.extend_from_slice(&[0xff, 0xc0, 0, 11, 8, 0x01, 0x90, 0x02, 0x80, 3, 0, 0]);
     assert_eq!(image_size(&j), Some((640, 400)));
@@ -198,7 +186,7 @@ fn finds_the_agents_session_in_its_transcript() {
     ]
     .join("\n");
     assert_eq!(last_session(&tail).as_deref(), Some("s-later"));
-    // A variable is not an id; something that is not bsk is not looked at.
+
     assert_eq!(
         last_session(&call("bsk click @e3 --session \"$SID\"")),
         None
@@ -210,8 +198,6 @@ fn finds_the_agents_session_in_its_transcript() {
     );
     assert!(!valid_id("a b") && !valid_id("") && !valid_id("$X") && valid_id("8c1f-22:ab_c.d"));
 }
-
-// ---------- which session ----------
 
 #[test]
 fn chooses_only_sessions_on_the_tabs_own_browser() {
@@ -226,7 +212,7 @@ fn chooses_only_sessions_on_the_tabs_own_browser() {
         choose(&all, &mine, None, None, false),
         Choice::Session("a1".into(), "the only one")
     );
-    // Another browser's session is never taken, even when named.
+
     assert_eq!(
         choose(&all, &mine, Some("other"), Some("other"), false),
         Choice::Session("a1".into(), "the only one")
@@ -245,7 +231,7 @@ fn chooses_only_sessions_on_the_tabs_own_browser() {
         choose(&two, &mine, Some("a1"), Some("a2"), false),
         Choice::Session("a1".into(), "started here")
     );
-    // A browser two tabs share: the lone session may be the other tab's.
+
     assert_eq!(
         choose(&[s("a1", "aaa")], &mine, None, None, true),
         Choice::Unsure(1)
@@ -299,8 +285,6 @@ fn a_picture_waits_for_the_one_queued() {
     assert_eq!(out.queued().1, 2);
 }
 
-// ---------- the loop, with a fake bsk ----------
-
 #[cfg(unix)]
 #[test]
 fn open_streams_pictures_and_meta_until_closed() {
@@ -330,8 +314,7 @@ fn open_streams_pictures_and_meta_until_closed() {
     );
     let (uid, p) = picture(&out, Duration::from_secs(5)).expect("a picture");
     assert_eq!((uid, image_size(&p)), (41, Some((1280, 800))));
-    // A second picture comes by itself (the loop goes on), and only the
-    // tab's own session is ever captured.
+
     assert!(picture(&out, Duration::from_secs(5)).is_some());
     let l = log(&d);
     assert!(
@@ -375,7 +358,7 @@ fn one_loop_for_two_viewers_and_a_closed_socket_leaves() {
         picture(&a, Duration::from_secs(5)).is_some()
             && picture(&b, Duration::from_secs(5)).is_some()
     );
-    // Captures are never two at once: about one per period, not per viewer.
+
     let t0 = Instant::now();
     let n0 = log(&d).matches("screenshot").count();
     std::thread::sleep(Duration::from_millis(2000));
@@ -414,7 +397,7 @@ fn no_session_is_never_started_by_itself() {
         .as_str()
         .unwrap()
         .contains("hasn't opened the browser"));
-    // Actions without a watched session do nothing.
+
     handle(
         &c,
         2,
@@ -431,7 +414,6 @@ fn no_session_is_never_started_by_itself() {
         "{l}"
     );
 
-    // The user's Start: on the tab's own browser only, then live.
     handle(&c, 2, &out, &json!({"op": "start", "tab": 43}));
     let r = next(&out, "start", Duration::from_secs(5)).unwrap();
     assert_eq!(
@@ -448,7 +430,6 @@ fn no_session_is_never_started_by_itself() {
     handle(&c, 2, &out, &json!({"op": "close", "tab": 43}));
     assert!(wait_until(|| !streaming("s-new"), Duration::from_secs(6)));
 
-    // No browser set, no bsk: plain answers, no bsk call.
     let mut c2 = ctx(&d, bin, 44);
     c2.profile = None;
     handle(&c2, 2, &out, &json!({"op": "open", "tab": 44}));
@@ -530,7 +511,7 @@ fn actions_go_to_the_watched_session() {
         l.contains("evaluate") && l.contains("click --selector [data-godterm-hit="),
         "{l}"
     );
-    // A click the page dispatched itself needs no bsk click.
+
     fs::write(
         d.join("eval.json"),
         r#"{"ok":true,"result":{"mode":"synthetic","w":1000,"h":500}}"#,
@@ -539,7 +520,7 @@ fn actions_go_to_the_watched_session() {
     let n = log(&d).matches("click --selector").count();
     assert_eq!(act(json!({"do": "click", "x": 0.1, "y": 0.9}))["ok"], true);
     assert_eq!(log(&d).matches("click --selector").count(), n);
-    // The wheel in page pixels (the viewport the click saw: 500 high).
+
     assert_eq!(act(json!({"do": "wheel", "dy": 0.5}))["ok"], true);
     assert!(
         log(&d).contains("wheel --delta-y 250 --delta-x 0 --session s-act"),
@@ -581,7 +562,7 @@ fn actions_go_to_the_watched_session() {
         "{}",
         log(&d)
     );
-    // Another client watching nothing cannot act on this session.
+
     handle(
         &c,
         99,
@@ -610,7 +591,7 @@ fn an_ended_session_says_so_and_stops() {
     let out = Outbox::new();
     handle(&c, 5, &out, &json!({"op": "open", "tab": 47}));
     assert!(picture(&out, Duration::from_secs(5)).is_some());
-    // The agent stops it: screenshots fail and the list no longer has it.
+
     fs::write(d.join("sessions.json"), "[]").unwrap();
     fs::remove_file(d.join("fix.png")).unwrap();
     let e = next(&out, "ended", Duration::from_secs(8)).expect("ended");

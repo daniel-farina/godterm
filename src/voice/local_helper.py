@@ -27,8 +27,8 @@ import threading
 import time
 
 PROTO = sys.stdout.buffer
-sys.stdout = sys.stderr  # stray prints must never corrupt the protocol
-os.environ.setdefault("HF_HUB_OFFLINE", "1")  # never download while speaking
+sys.stdout = sys.stderr
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 LOCK = threading.Lock()
 
@@ -83,16 +83,12 @@ def main():
         import mlx.core as mx
         from mlx_audio.tts.utils import load_model
 
-        # The MLX buffer cache grows without bound otherwise.
         mx.set_cache_limit(a.cache_mb << 20)
         model = load_model(model_dir(a.model))
     except Exception as e:  # noqa: BLE001
         send({"ev": "error", "msg": f"load failed: {type(e).__name__}: {e}"[:400]})
         return 2
 
-    # Chatterbox: a reference clip is turned into conditionals once (it
-    # replaces the built in voice inside the model), and the built in
-    # voice comes back when the clip is cleared.
     voice = {"ref": "", "default": getattr(model, "_conds", None)}
 
     def use_ref(ref):
@@ -119,7 +115,6 @@ def main():
                 kw["voice"] = req.get("voice") or "US_Emma"
         return kw
 
-    # Warm up (kernels compile on first use), so the first sentence is quick.
     try:
         for _ in model.generate(text="Ready.", **kwargs({})):
             pass

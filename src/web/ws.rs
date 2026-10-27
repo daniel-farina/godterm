@@ -1,8 +1,3 @@
-//! The WebSocket at /ws: frames in docs/WEB_APP.md. A reader thread takes
-//! the browser's frames; a writer thread sends what the client's outbox
-//! holds (state, snapshots, tab output), so a slow browser only ever
-//! slows its own writer.
-
 use super::tap::{self, Out};
 use super::{Client, Hub, ToApp};
 use serde_json::{json, Value};
@@ -14,24 +9,18 @@ use std::time::{Duration, Instant};
 use tungstenite::protocol::{Role, WebSocketConfig};
 use tungstenite::{Message, WebSocket};
 
-/// Binary frame kinds (first byte).
 pub const KIND_OUTPUT: u8 = 1;
 pub const KIND_INPUT: u8 = 1;
-/// Assistant speech to the browser: a WAV clip.
+
 pub const KIND_AUDIO: u8 = 2;
-/// The browser's mic: 16 kHz mono PCM16 little endian.
+
 pub const KIND_MIC: u8 = 3;
-/// The browser's mic as a recording (MediaRecorder pieces, the type named
-/// by the `voice {rec}` frame before them), decoded here with ffmpeg.
+
 pub const KIND_MIC_REC: u8 = 4;
-/// A tab's snapshot frame, gzipped (the JSON text as it would have been
-/// sent): for browsers whose `subscribe` said `gz: true`, when the frame
-/// is at least GZ_MIN bytes. A 3000 line history is about a tenth of its
-/// size this way over a slow link.
+
 pub const KIND_SNAPSHOT_GZ: u8 = 6;
 pub const GZ_MIN: usize = 16 << 10;
 
-/// `bytes` gzipped (level 6: a 500 KB snapshot in a few ms).
 pub fn gzip(bytes: &[u8]) -> Vec<u8> {
     use std::io::Write as _;
     let mut z = flate2::write::GzEncoder::new(
@@ -42,17 +31,12 @@ pub fn gzip(bytes: &[u8]) -> Vec<u8> {
     z.finish().unwrap_or_default()
 }
 
-/// Images in one `say`, and the size of each.
 const MAX_IMAGES: usize = 6;
 const MAX_IMAGE_BYTES: usize = 20 << 20;
 
-/// The writer pings this often; a reader that hears nothing for
-/// `READ_IDLE` drops the connection.
 const PING_EVERY: Duration = Duration::from_secs(25);
 const READ_IDLE: Duration = Duration::from_secs(90);
 
-/// The socket for reading only: the reader's WebSocket never writes
-/// (pongs and close replies go through the writer).
 struct ReadSide(TcpStream);
 
 impl Read for ReadSide {
@@ -70,7 +54,6 @@ impl Write for ReadSide {
     }
 }
 
-/// The socket for writing only.
 struct WriteSide(TcpStream);
 
 impl Read for WriteSide {
@@ -88,7 +71,6 @@ impl Write for WriteSide {
     }
 }
 
-/// Binary frame: kind, tab uid (u32, big endian), payload.
 pub fn frame(kind: u8, uid: u64, payload: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(5 + payload.len());
     v.push(kind);
@@ -97,7 +79,6 @@ pub fn frame(kind: u8, uid: u64, payload: &[u8]) -> Vec<u8> {
     v
 }
 
-/// (kind, uid, payload) of a binary frame.
 pub fn unframe(b: &[u8]) -> Option<(u8, u64, &[u8])> {
     if b.len() < 5 {
         return None;
@@ -106,8 +87,6 @@ pub fn unframe(b: &[u8]) -> Option<(u8, u64, &[u8])> {
     Some((b[0], uid, &b[5..]))
 }
 
-/// Finish the handshake and serve the connection on this thread (the
-/// reader) and a new one (the writer).
 pub fn accept(hub: &Arc<Hub>, mut s: TcpStream, req: &super::http::Request) -> std::io::Result<()> {
     let key = req.header("sec-websocket-key").unwrap_or("");
     if key.is_empty() || req.header("sec-websocket-version") != Some("13") {
@@ -152,9 +131,6 @@ pub fn accept(hub: &Arc<Hub>, mut s: TcpStream, req: &super::http::Request) -> s
 }
 
 fn write_loop<S: Read + Write>(mut ws: WebSocket<S>, c: &Client) {
-    // Pings go out every PING_EVERY even while frames flow: a browser that
-    // only listens sends nothing back but the pongs, and the reader drops
-    // a connection that is silent for READ_IDLE.
     let mut last_ping = Instant::now();
     let mut pending = false;
     loop {
@@ -201,8 +177,7 @@ fn write_loop<S: Read + Write>(mut ws: WebSocket<S>, c: &Client) {
                 return;
             }
         };
-        // Written now, flushed once the queue is empty (fewer syscalls
-        // under a flood, no delay when idle).
+
         if ws.write(msg).is_err() {
             return;
         }
@@ -213,22 +188,17 @@ fn write_loop<S: Read + Write>(mut ws: WebSocket<S>, c: &Client) {
 #[derive(Default)]
 struct ReadState {
     subs: HashSet<u64>,
-    /// When a tab was last reported typed into (to the UI thread).
+
     typed: HashMap<u64, Instant>,
-    /// Mic audio: the last once a second debug line, and frames that came
-    /// in a row while this browser is not the voice (logged at 50).
+
     mic_log: Option<Instant>,
     mic_stray: u32,
-    /// Its allowance for `log` frames.
+
     log: super::clientlog::Rate,
-    /// The mic recording being decoded (the page's MediaRecorder fallback).
+
     rec: Option<crate::voice::webdec::Decoder>,
 }
 
-/// `voice {rec: type}`: a new recording starts; its decoded PCM goes to
-/// this browser's mic (whatever it is when the audio comes), and its level
-/// back to the page a few times a second (`voice_level`), so the page can
-/// show that sound arrives.
 fn rec_start(c: &Arc<Client>, st: &mut ReadState, mime: &str) {
     if let Some(mut old) = st.rec.take() {
         let line = old.finish(Duration::from_millis(300));
@@ -277,17 +247,13 @@ fn rec_start(c: &Arc<Client>, st: &mut ReadState, mime: &str) {
     }
 }
 
-/// `voice {web_tts: {engine, voice} | null}`: the talk back voice this
-/// browser hears while it is the voice. Kept per client; it applies from
-/// the next sentence when this browser is the voice now.
 pub fn web_tts(c: &Client, t: &Value) {
     let r = crate::voice::web_tts::parse(t);
     let reply = match &r {
         Ok(choice) => {
             let mut held = c.tts.lock().unwrap_or_else(|e| e.into_inner());
             *held = Some(choice.clone());
-            // (Under the client's lock, so it cannot cross the browser
-            // becoming the voice.)
+
             crate::voice::web_tts::choice_changed(c.id, Some(choice.clone()));
             crate::log::info(&format!(
                 "web: client {} chose talk back {} {}",
@@ -312,8 +278,6 @@ pub fn web_tts(c: &Client, t: &Value) {
     c.out.text(reply.to_string());
 }
 
-/// `voice {rec_end: true}`: the recording ended; what is left is decoded
-/// before the frames after it (a release of push to talk) are handled.
 fn rec_end(c: &Client, st: &mut ReadState) {
     if let Some(mut d) = st.rec.take() {
         let line = d.finish(Duration::from_secs(3));
@@ -321,12 +285,9 @@ fn rec_end(c: &Client, st: &mut ReadState) {
     }
 }
 
-/// Binary kind 3: the browser's mic, for the voice engine when this
-/// browser is the voice.
 fn on_mic(c: &Client, st: &mut ReadState, data: &[u8]) {
     let mic = c.mic.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let Some(m) = mic else {
-        // (The first few can come before GodTerm made it the voice.)
         st.mic_stray += 1;
         if st.mic_stray == 50 {
             crate::log::info(&format!(
@@ -425,7 +386,6 @@ fn error_frame(msg: &str, id: Option<&Value>) -> String {
     v.to_string()
 }
 
-/// Tab uids in a frame's `tabs` (numbers, or "t12" ids).
 fn uids(v: &Value) -> Vec<u64> {
     let one = |x: &Value| {
         x.as_u64().or_else(|| {
@@ -449,8 +409,7 @@ fn on_input(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, uid: u64, data:
             .text(json!({"t": "error", "error": "the tab is not running", "tab": uid}).to_string());
         return;
     }
-    // The UI thread notes it (scrolls the tab back down, marks it used),
-    // at most every 200 ms per tab.
+
     let now = Instant::now();
     if st
         .typed
@@ -472,8 +431,6 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
             for uid in uids(&v["tabs"]) {
                 match tap::get(uid) {
                     Some(tap) => {
-                        // A browser back after a lost connection says
-                        // where its copy ends: it may get only the rest.
                         let r = &v["resume"][uid.to_string()];
                         match (r["sid"].as_str(), r["pos"].as_u64()) {
                             (Some(sid), Some(pos)) => {
@@ -495,7 +452,7 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
                 }
             }
         }
-        // What this browser shows (for the assistant's turns typed here).
+
         "view" => {
             let mut keep = json!({});
             for k in ["device", "panes", "tabs", "focused", "open"] {
@@ -514,15 +471,11 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
             }
         }
         "input" => {
-            // Text input as JSON (the binary frame is the fast path).
             if let (Some(uid), Some(d)) = (uids(&v["tab"]).first(), v["data"].as_str()) {
                 on_input(hub, c, st, *uid, d.as_bytes());
             }
         }
         "wheel" => {
-            // A touch drag over a tab whose app scrolls itself (mouse
-            // reports, a full screen app): `n` wheel notches at a cell,
-            // sent as the terminal UI's wheel sends them.
             let Some(&uid) = uids(&v["tab"]).first() else {
                 return;
             };
@@ -550,7 +503,7 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
                 }
                 _ => None,
             };
-            // A short device name for the terminal UI's pane header.
+
             let by = v["by"].as_str().map(|s| {
                 s.chars()
                     .filter(|c| c.is_alphanumeric() || *c == ' ')
@@ -573,7 +526,6 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
                 .flatten()
                 .take(MAX_IMAGES)
             {
-                // A data URL ("data:image/png;base64,...") or bare base64.
                 let s = i.as_str().unwrap_or("");
                 let b64 = s.split_once("base64,").map_or(s, |(_, b)| b);
                 match crate::assistant_images::unbase64(b64) {
@@ -592,9 +544,6 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
             }
         }
         "image" => {
-            // An image for a tab: saved as the terminal UI saves a pasted
-            // one; the browser then types its path into the tab (as a
-            // file pasted on the Mac would be).
             let s = v["data"].as_str().unwrap_or("");
             let b64 = s.split_once("base64,").map_or(s, |(_, b)| b);
             let saved = match crate::assistant_images::unbase64(b64) {
@@ -611,6 +560,22 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
                 Err(e) => error_frame(&e, Some(&v["id"])),
             });
         }
+        "file" => {
+            let s = v["data"].as_str().unwrap_or("");
+            let b64 = s.split_once("base64,").map_or(s, |(_, b)| b);
+            let name = v["name"].as_str().unwrap_or("file");
+            let saved = match crate::assistant_images::unbase64(b64) {
+                Some(b) if b.len() > MAX_IMAGE_BYTES => Err("the file is over 20 MB".into()),
+                Some(b) => {
+                    crate::assistant_images::save_upload(name, &b).map_err(|e| format!("{e:#}"))
+                }
+                None => Err("the file could not be read".into()),
+            };
+            c.out.text(match saved {
+                Ok(path) => json!({"t": "file", "id": v["id"], "path": path}).to_string(),
+                Err(e) => error_frame(&e, Some(&v["id"])),
+            });
+        }
         "answer" => {
             let id = v["id"].as_str().unwrap_or("").to_string();
             let choice = v["choice"].as_str().unwrap_or("").to_string();
@@ -621,8 +586,6 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
             });
         }
         "voice" => {
-            // Voice debugging from the browser: its own log lines go to
-            // GodTerm's log, and `debug` turns the once a second lines on.
             if let Some(d) = v["debug"].as_bool() {
                 crate::voice::audio::VOICE_DEBUG.store(d, std::sync::atomic::Ordering::Relaxed);
                 crate::log::info(&format!(
@@ -644,15 +607,13 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
             if let Some(t) = v.get("web_tts") {
                 web_tts(c, t);
             }
-            // The page plays speech (or stopped): only the voice browser
-            // has a mic here, so another one's word changes nothing.
+
             if let Some(p) = v["playing"].as_bool() {
                 if let Some(m) = c.mic.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                     m.set_playing(p);
                 }
             }
-            // Direct mode, brainstorm, stop speaking, a mode change: the
-            // UI thread's (see voice.rs, web_voice_ctl).
+
             if [
                 "direct",
                 "brainstorm",
@@ -682,25 +643,21 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
             });
         }
         "tool" => tool_call(hub, c, v),
-        // The Git sheet: view, prepare (checks only) and run a plan the
-        // user confirmed in the sheet. Not a control tool: the assistant
-        // has no way to send it.
+
         "git" => {
             hub.send(ToApp::Git {
                 client: c.id,
                 v: v.clone(),
             });
         }
-        // A tab's live browser view (browser_view.rs). Not a control tool:
-        // the assistant has no way to send it.
+
         "bview" => {
             hub.send(ToApp::BrowserView {
                 client: c.id,
                 v: v.clone(),
             });
         }
-        // The Accounts screen: logins, codes, tokens (never sent here:
-        // only their last four). Not a control tool either.
+
         "accounts" => {
             hub.send(ToApp::Accounts {
                 client: c.id,
@@ -708,7 +665,7 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
             });
         }
         "push" => super::push::on_frame(c.id, &c.out, v),
-        // The page's debug log (clientlog.rs writes it, scrubbed).
+
         "log" => super::clientlog::take(c.id, v, &mut st.log),
         "ping" => {
             c.out.text(json!({"t": "pong", "id": v["id"]}).to_string());
@@ -720,10 +677,6 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
     }
 }
 
-/// A control tool for the browser, as the user: the same call the socket
-/// makes (AppEvent::Control), from client "web". `user_says` (the user's
-/// own answer to a question the reply asked) is a user turn first, as
-/// typing it would be.
 fn tool_call(hub: &Arc<Hub>, c: &Arc<Client>, v: &Value) {
     let id = v["id"].clone();
     let Some(name) = v["name"].as_str().filter(|n| !n.is_empty()) else {

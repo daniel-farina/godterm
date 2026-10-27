@@ -1,6 +1,3 @@
-//! Wake word training: say the wake word five times and five normal
-//! sentences; what whisper heard becomes the wake profile.
-
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::{App, Modal};
@@ -12,11 +9,11 @@ pub const TAKES: usize = 5;
 #[allow(clippy::large_enum_variant)]
 pub enum Phase {
     Intro,
-    /// Saying the wake word, take n (0 based).
+
     Wake(usize),
-    /// Reading normal sentence n.
+
     Normal(usize),
-    /// Learned, not saved yet.
+
     Done(WakeProfile),
 }
 
@@ -26,15 +23,15 @@ pub struct Training {
     pub wake_word: String,
     pub takes: Vec<(String, UttStats)>,
     pub normals: Vec<(String, UttStats)>,
-    /// What was heard last, shown under the prompt.
+
     pub last: Option<String>,
-    /// The profile on disk when training started.
+
     pub existing: Option<WakeProfile>,
-    /// "Train my voice": only the speaker lock's sentences, no wake word.
+
     pub voice_only: bool,
-    /// Speaker lock enrollment progress or result.
+
     pub speaker: Option<String>,
-    /// The voice was calibrated and can be saved.
+
     pub speaker_ready: bool,
 }
 
@@ -53,7 +50,6 @@ impl Training {
         }
     }
 
-    /// The sentences read in this training.
     pub fn sentences(&self) -> &'static [&'static str] {
         if self.voice_only {
             crate::app_speaker::SPEAKER_SENTENCES
@@ -62,13 +58,10 @@ impl Training {
         }
     }
 
-    /// Voice only training is over: Done carries the wake profile as it
-    /// was (it is not changed).
     fn voice_done(&mut self) {
         self.phase = Phase::Done(self.existing.clone().unwrap_or_default());
     }
 
-    /// What to say now.
     pub fn prompt(&self) -> Option<String> {
         match &self.phase {
             Phase::Wake(_) => Some(format!("Say \"{}\"", self.wake_word)),
@@ -77,8 +70,6 @@ impl Training {
         }
     }
 
-    /// Record one utterance and move on. True when a new capture should
-    /// start.
     pub fn heard(
         &mut self,
         text: &str,
@@ -121,7 +112,6 @@ impl Training {
         }
     }
 
-    /// Skip the current prompt (nothing heard, or a bad take).
     pub fn skip(&mut self, wake_words: &[String], sensitivity: f32) -> bool {
         match self.phase {
             Phase::Wake(i) => {
@@ -155,7 +145,6 @@ impl Training {
         }
     }
 
-    /// The step counter, e.g. "wake word 2/5".
     pub fn step(&self) -> String {
         match &self.phase {
             Phase::Intro => "ready".into(),
@@ -168,7 +157,6 @@ impl Training {
         }
     }
 
-    /// Body lines of the dialog.
     pub fn lines(&self) -> Vec<String> {
         let mut v = vec![];
         if self.voice_only {
@@ -244,7 +232,6 @@ impl Training {
         v
     }
 
-    /// The dialog for "Train my voice".
     fn voice_lines(&self) -> Vec<String> {
         let mut v = vec![];
         match &self.phase {
@@ -301,11 +288,9 @@ impl App {
         self.modal = Modal::WakeTrain;
     }
 
-    /// Start capturing the next take (push to talk style, so no wake word
-    /// is needed and the mic closes after each one in push mode).
     fn train_listen(&mut self) {
         if cfg!(test) {
-            return; // never open the microphone from tests
+            return;
         }
         if self.voice.engine.is_none() {
             self.start_voice(false);
@@ -330,8 +315,7 @@ impl App {
             t.speaker = None;
             t.speaker_ready = false;
         }
-        // The same takes enroll the voice for the speaker lock: from
-        // scratch with the wake word, added to earlier clips otherwise.
+
         if !cfg!(test) && self.voice.engine.is_none() {
             self.start_voice(false);
         }
@@ -339,7 +323,6 @@ impl App {
         self.train_listen();
     }
 
-    /// Training reached Done: calibrate the voice on the clips.
     fn train_calibrate(&mut self) {
         if self
             .voice
@@ -351,7 +334,6 @@ impl App {
         }
     }
 
-    /// Route a transcript to training. True when it was consumed.
     pub fn train_heard(&mut self, text: &str, stats: UttStats) -> bool {
         if self.modal != Modal::WakeTrain {
             return false;
@@ -543,13 +525,13 @@ mod tests {
             assert!(t.prompt().unwrap().contains(s));
             assert_eq!(t.heard(s, UttStats::default(), &ww, 0.75), i + 1 < n);
         }
-        // Done keeps the wake profile as it was.
+
         let Phase::Done(p) = &t.phase else { panic!() };
         assert_eq!(p.wake_word, "hey go");
         assert!(t.lines().iter().any(|l| l.contains("Learning your voice")));
         t.speaker = Some("Your voice: 13 clips, threshold 0.42".into());
         assert_eq!(t.lines()[0], "Your voice: 13 clips, threshold 0.42");
-        // Skipping also finishes.
+
         t.phase = Phase::Normal(0);
         let mut k = 0;
         while t.skip(&ww, 0.75) {

@@ -1,24 +1,12 @@
-//! Barge-in on words, not noise. Loud sound over our reply (the echo
-//! gate's trigger) only starts a decision: the reply is ducked, the
-//! overlapping audio goes to the fast ASR, and the reply stops only when
-//! that holds real speech: a command word ("stop", "wait", ...) at once,
-//! or `min_words` real words. A vacuum, a cough, a clap, whisper's stock
-//! hallucinations or our own voice echoed back restore the volume, and
-//! each such false alarm raises the bar for the next one (a rolling noise
-//! floor plus a margin that decays), so sustained noise stops retriggering.
-//!
-//! Pure logic on millisecond timestamps, so it is tested without a mic.
-
-/// Words that stop the reply on their own, as soon as a partial has them.
 const COMMANDS: &[&str] = &["stop", "wait", "cancel", "pause", "no", "enough", "quiet"];
-/// Two word commands.
+
 const COMMAND_PAIRS: &[(&str, &str)] = &[("hey", "god"), ("shut", "up"), ("hold", "on")];
-/// Not words: hesitations and backchannel noises.
+
 const FILLERS: &[&str] = &[
     "um", "umm", "uh", "uhh", "uhm", "hmm", "hm", "mm", "mmm", "mhm", "ah", "ahh", "oh", "er",
     "erm", "eh", "huh", "uh-huh", "mm-hmm", "ha", "haha", "hah",
 ];
-/// What whisper writes for noise or silence (whole transcript).
+
 const HALLUCINATIONS: &[&str] = &[
     "you",
     "thank you",
@@ -40,19 +28,18 @@ const HALLUCINATIONS: &[&str] = &[
     "subtitles by the amara org community",
 ];
 
-/// Settings for the decision.
 #[derive(Debug, Clone, Copy)]
 pub struct BargeCfg {
     pub enabled: bool,
-    /// Real words (fillers and repeats not counted) that stop the reply.
+
     pub min_words: usize,
-    /// Duck the reply while deciding instead of letting it play on.
+
     pub duck: bool,
-    /// Volume while ducked (0 to 1).
+
     pub duck_level: f32,
-    /// Decide by then (ms after the trigger) when no words came.
+
     pub decide_ms: u64,
-    /// A transcript still on its way may hold the decision this long.
+
     pub max_wait_ms: u64,
 }
 
@@ -69,22 +56,17 @@ impl BargeCfg {
     }
 }
 
-/// What a transcript of the overlapping audio holds.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Heard {
-    /// A command word: stop now.
     Command(String),
-    /// This many real words.
+
     Words(usize),
-    /// Our own reply coming back through the mic.
+
     Echo,
-    /// Nothing that is speech (empty, a sound tag, a hallucination,
-    /// fillers, or audio whisper itself doubts).
+
     Noise(&'static str),
 }
 
-/// Lowercase words of `text`, without bracketed or starred sound tags
-/// ("[BLANK_AUDIO]", "(coughs)", "*clap*") and punctuation.
 pub fn words(text: &str) -> Vec<String> {
     let mut out = String::with_capacity(text.len());
     let mut depth = 0i32;
@@ -105,9 +87,6 @@ pub fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Classify one transcript of the audio over our reply. `said`: what we
-/// were speaking around then (the echo check). `no_speech` and `logprob`:
-/// whisper's own doubt, when known.
 pub fn classify(
     text: &str,
     said: &[String],
@@ -127,7 +106,7 @@ pub fn classify(
         return Heard::Noise("hallucination");
     }
     let doubtful = no_speech.is_some_and(|n| n > 0.6) || logprob.is_some_and(|l| l < -1.0);
-    // Our own words: most of what was heard is in the sentence we are saying.
+
     let ours: std::collections::HashSet<String> = said.iter().flat_map(|s| words(s)).collect();
     let real: Vec<&String> = w
         .iter()
@@ -158,7 +137,7 @@ pub fn classify(
     if doubtful {
         return Heard::Noise("unclear");
     }
-    // Repeats do not count ("the the the" is one word).
+
     let mut distinct: Vec<&String> = vec![];
     for x in real {
         if !distinct.contains(&x) {
@@ -168,28 +147,24 @@ pub fn classify(
     Heard::Words(distinct.len())
 }
 
-/// The outcome of one trigger.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decision {
-    /// Stop the reply (the user is talking) or let it go on (noise).
     pub stop: bool,
     pub reason: String,
-    /// The transcript the decision was made on (may be empty).
+
     pub text: String,
-    /// ms from the trigger to the decision.
+
     pub after_ms: u64,
-    /// Let go because the words were our own reply coming back.
+
     pub echo: bool,
 }
 
-/// What to do right after a trigger.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Start {
-    /// Barge-in is off: nothing happens.
     Off,
-    /// A false alarm just before: ignore this one too.
+
     Cooldown,
-    /// Decide on the transcript; duck the reply to `duck` meanwhile.
+
     Decide { duck: f32 },
 }
 
@@ -199,23 +174,20 @@ struct Pending {
     last: Option<Heard>,
 }
 
-/// Rolling noise floor (dBFS) of the mic and an extra margin raised by
-/// false alarms; together they lift the barge-in bar in a noisy room.
 #[derive(Debug, Clone)]
 pub struct NoiseFloor {
     pub floor_db: f32,
-    /// Added to the bar after false alarms; decays back to 0.
+
     pub extra_db: f32,
     last_ms: u64,
     frames: u32,
 }
 
-/// The bar sits this far over the rolling floor.
 pub const FLOOR_MARGIN_DB: f32 = 10.0;
-/// Each false alarm adds this much.
+
 pub const FALSE_ALARM_DB: f32 = 4.0;
 pub const MAX_EXTRA_DB: f32 = 16.0;
-/// The extra margin decays this many dB per second.
+
 pub const EXTRA_DECAY_DB_S: f32 = 0.5;
 
 impl Default for NoiseFloor {
@@ -230,8 +202,6 @@ impl Default for NoiseFloor {
 }
 
 impl NoiseFloor {
-    /// One mic frame. The floor falls quickly to quiet frames and rises
-    /// slowly (a vacuum lifts it over a few seconds; speech barely does).
     pub fn push(&mut self, level_db: f32, now_ms: u64) {
         let l = level_db.clamp(-100.0, 0.0);
         self.frames = self.frames.saturating_add(1);
@@ -248,36 +218,29 @@ impl NoiseFloor {
         self.extra_db = (self.extra_db - dt * EXTRA_DECAY_DB_S).max(0.0);
     }
 
-    /// Time passing on a frame that must not move the floor (our own reply
-    /// coming back from a browser's speakers is no room noise): only the
-    /// extra margin decays.
     pub fn hold(&mut self, now_ms: u64) {
         let dt = now_ms.saturating_sub(self.last_ms) as f32 / 1000.0;
         self.last_ms = now_ms;
         self.extra_db = (self.extra_db - dt * EXTRA_DECAY_DB_S).max(0.0);
     }
 
-    /// A trigger turned out to be noise.
     pub fn false_alarm(&mut self) {
         self.extra_db = (self.extra_db + FALSE_ALARM_DB).min(MAX_EXTRA_DB);
     }
 
-    /// The lowest level that may count as the user over our reply.
     pub fn bar_db(&self) -> f32 {
         self.floor_db + FLOOR_MARGIN_DB + self.extra_db
     }
 }
 
-/// Decides each trigger on the words heard over the reply.
 pub struct Decider {
     pub cfg: BargeCfg,
     pending: Option<Pending>,
     pub noise: NoiseFloor,
-    /// No new decision before then (ms) after a false alarm.
+
     quiet_until: u64,
 }
 
-/// After a false alarm, triggers are ignored this long.
 pub const COOLDOWN_MS: u64 = 600;
 
 impl Decider {
@@ -294,7 +257,6 @@ impl Decider {
         self.pending.is_some()
     }
 
-    /// The output volume factor right now (ducked while deciding).
     pub fn duck(&self) -> f32 {
         if self.pending.is_some() && self.cfg.duck {
             self.cfg.duck_level
@@ -303,7 +265,6 @@ impl Decider {
         }
     }
 
-    /// The echo gate fired (sustained loud sound over our reply).
     pub fn trigger(&mut self, now_ms: u64) -> Start {
         if !self.cfg.enabled {
             return Start::Off;
@@ -322,9 +283,6 @@ impl Decider {
         Start::Decide { duck: self.duck() }
     }
 
-    /// A transcript of the overlapping audio so far. Stops at once on a
-    /// command or enough words; otherwise waits for more audio (or the
-    /// deadline, see `tick`).
     pub fn transcript(
         &mut self,
         now_ms: u64,
@@ -346,8 +304,6 @@ impl Decider {
         Some(self.finish(now_ms, true, reason))
     }
 
-    /// Time passing: past the deadline with no words, it was noise.
-    /// `in_flight`: a transcript is on its way (worth a short wait).
     pub fn tick(&mut self, now_ms: u64, in_flight: bool) -> Option<Decision> {
         let p = self.pending.as_ref()?;
         let age = now_ms.saturating_sub(p.since);
@@ -364,7 +320,6 @@ impl Decider {
         Some(self.finish(now_ms, false, reason))
     }
 
-    /// Drop the decision (we stopped talking for another reason).
     pub fn cancel(&mut self) {
         self.pending = None;
     }
@@ -384,7 +339,6 @@ impl Decider {
         }
     }
 
-    /// One log line for a decision.
     pub fn log_line(d: &Decision) -> String {
         format!(
             "voice: barge-in {} after {} ms ({}): {:?}",
@@ -423,7 +377,7 @@ mod tests {
     fn no_transcript_at_all_is_noise() {
         let mut d = dec();
         d.trigger(0);
-        // One is still on its way: wait a little longer, then give up.
+
         assert_eq!(d.tick(800, true), None);
         let r = d.tick(1100, true).expect("decided");
         assert!(!r.stop && r.reason.contains("no transcript"), "{r:?}");
@@ -457,7 +411,7 @@ mod tests {
             assert_eq!(d.transcript(300, t, &said(), None, None), None, "{t}");
             assert!(!d.tick(700, false).unwrap().stop, "{t}");
         }
-        // A repeated word is one word.
+
         assert_eq!(classify("the the the", &[], None, None), Heard::Words(1));
     }
 
@@ -490,7 +444,7 @@ mod tests {
             .transcript(450, "Actually, open", &said(), None, None)
             .expect("two words");
         assert!(r.stop && r.reason == "2 words", "{r:?}");
-        // min_words is a setting.
+
         let mut d = Decider::new(BargeCfg::new(true, 3, true));
         d.trigger(0);
         assert_eq!(d.transcript(300, "open it", &said(), None, None), None);
@@ -527,10 +481,10 @@ mod tests {
         );
         let r = d.tick(700, false).unwrap();
         assert!(!r.stop && r.reason.contains("echo"), "{r:?}");
-        // A command we are saying ourselves does not count either.
+
         let s = vec!["Say stop when you want me to stop.".to_string()];
         assert_eq!(classify("stop", &s, None, None), Heard::Echo);
-        // The user's own words over it do.
+
         assert_eq!(
             classify("open my calendar", &said(), None, None),
             Heard::Words(3)
@@ -540,20 +494,20 @@ mod tests {
     #[test]
     fn sustained_noise_raises_the_floor_and_stops_retriggering() {
         let mut d = dec();
-        // A quiet room.
+
         for i in 0..100 {
             d.noise.push(-60.0, i * 30);
         }
         let quiet_bar = d.noise.bar_db();
         assert!(quiet_bar < -45.0, "{quiet_bar}");
-        // A vacuum starts at -30 dBFS and keeps going.
+
         let mut t = 3000;
         let mut triggers = 0;
         let mut stops = 0;
         for _ in 0..400 {
             t += 30;
             d.noise.push(-30.0, t);
-            // The gate fires only while the vacuum is over the bar.
+
             if -30.0 > d.noise.bar_db() && !d.pending() {
                 if let Start::Decide { .. } = d.trigger(t) {
                     triggers += 1;
@@ -567,7 +521,7 @@ mod tests {
         assert_eq!(stops, 0);
         assert!(triggers <= 3, "{triggers} triggers");
         assert!(d.noise.bar_db() > -30.0, "bar {}", d.noise.bar_db());
-        // A false alarm raised the margin and starts a cooldown.
+
         assert!(d.noise.extra_db > 0.0);
     }
 
@@ -595,18 +549,17 @@ mod tests {
         let r = d.tick(700, false).unwrap();
         assert!(!r.stop);
         assert_eq!(d.duck(), 1.0);
-        // Just after, another burst is ignored (cooldown), and not ducked.
+
         assert_eq!(d.trigger(900), Start::Cooldown);
         assert_eq!(d.duck(), 1.0);
         assert!(matches!(d.trigger(1400), Start::Decide { .. }));
-        // Without ducking, the volume never changes.
+
         let mut d = Decider::new(BargeCfg::new(true, 2, false));
         assert_eq!(d.trigger(0), Start::Decide { duck: 1.0 });
     }
 
     #[test]
     fn echo_held_out_of_the_noise_floor() {
-        // A quiet room, then a reply at -25 dBFS coming back for 5 s.
         let mut lifted = NoiseFloor::default();
         let mut held = NoiseFloor::default();
         let mut t = 0;
@@ -622,10 +575,9 @@ mod tests {
             lifted.push(-25.0, t);
             held.hold(t);
         }
-        // Learned from, the echo lifts the bar towards itself: the user
-        // talking over it would have to be far louder.
+
         assert!(lifted.bar_db() > -40.0, "{}", lifted.bar_db());
-        // Held out, the floor stays the room's and only the extra decays.
+
         assert!((held.floor_db - -70.0).abs() < 1.0, "{}", held.floor_db);
         assert!(
             held.extra_db < extra && held.extra_db > 0.0,
@@ -650,14 +602,9 @@ mod tests {
         assert!(words(" . ... ").is_empty());
     }
 
-    /// Fixtures made once with tests/fixtures/barge/make.sh: pink noise
-    /// and a `say` sentence. Run through the echo gate as if we were
-    /// talking: the gate may fire on either (energy alone); the transcript
-    /// decides, and noise (no words) never stops the reply.
     #[test]
     fn wav_fixtures_through_the_gate() {
         fn pcm(bytes: &[u8]) -> Vec<i16> {
-            // 16 kHz mono s16 WAV: the samples follow the "data" chunk header.
             let at = bytes.windows(4).position(|w| w == b"data").expect("data") + 8;
             bytes[at..]
                 .chunks_exact(2)

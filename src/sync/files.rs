@@ -1,10 +1,3 @@
-//! File sets: folders synced file by file with the keyed merge (a file is
-//! an entry keyed by its relative path, its value its hash). Used for the
-//! Claude account files (settings, CLAUDE.md, skills, commands, agents),
-//! the assistant's saved conversations, Claude's project memory and
-//! project .env files. `<area>/.index.json` in the state repo holds the
-//! stamps; the files sit next to it as is.
-
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -12,36 +5,31 @@ use std::path::{Path, PathBuf};
 
 use super::merge::{self, Base, Pick};
 
-/// How an area treats a conflict and a remote delete.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
-    /// Newest wins; remote deletes delete here.
     Plain,
-    /// .env: both changed keeps both (`.env.from-<machine>`); a remote
-    /// delete never deletes a local .env; writes are 0600, no symlinks.
+
     Env,
 }
 
 #[derive(Debug, Clone)]
 pub struct Area {
-    /// Its folder in the state repo ("claude/work").
     pub name: String,
-    /// Its folder here (None: not placeable on this machine).
+
     pub root: Option<PathBuf>,
-    /// key -> local file, what this machine has now.
+
     pub items: BTreeMap<String, PathBuf>,
     pub kind: Kind,
 }
 
-/// What a file set merge did.
 #[derive(Debug, Clone, Default)]
 pub struct Outcome {
     pub to_home: Vec<String>,
     pub to_repo: Vec<String>,
-    /// .env keep-both: (file, changed key names).
+
     pub kept_both: Vec<(String, Vec<String>)>,
     pub errors: Vec<String>,
-    /// The base to save once the push went through.
+
     pub base: Base,
 }
 
@@ -49,7 +37,6 @@ fn index_path(wc: &Path, area: &str) -> PathBuf {
     wc.join(area).join(".index.json")
 }
 
-/// Merge one area between the home and the working copy `wc`.
 pub fn sync_area(
     a: &Area,
     wc: &Path,
@@ -68,7 +55,7 @@ pub fn sync_area(
         }
     }
     let remote = merge::load_doc(&index_path(wc, &a.name));
-    // Who wrote each file last (for `.env.from-<machine>`).
+
     let by_path = wc.join(&a.name).join(".by.json");
     let mut by: BTreeMap<String, String> = std::fs::read(&by_path)
         .ok()
@@ -122,7 +109,6 @@ pub fn sync_area(
                     }
                     match a.kind {
                         Kind::Plain => {
-                            // GodTerm's own folders: only the vault check.
                             if let Some(why) = super::paths::refused(&dst, &[]) {
                                 anyhow::bail!("{why}");
                             }
@@ -139,8 +125,7 @@ pub fn sync_area(
                                     format!("{}/{k}", a.name),
                                     super::env::changed_keys(lb, &rb),
                                 ));
-                                // The local file stays and stays the
-                                // repo's copy.
+
                                 super::write_file(&repo_file(k), lb)?;
                                 by.insert(k.clone(), machine.to_string());
                                 return Ok(());
@@ -154,15 +139,13 @@ pub fn sync_area(
             Ok(())
         })();
         if let Err(e) = res {
-            // Not placed here: left out of the base, so the next sync
-            // places it instead of reading its absence as a delete.
             unplaced.push(k.clone());
             if a.root.is_some() {
                 out.errors.push(format!("{}/{k}: {e:#}", a.name));
             }
         }
     }
-    // A kept-both .env stays as this machine had it.
+
     let mut doc = m.doc.clone();
     for (f, _) in &out.kept_both {
         let k = f.strip_prefix(&format!("{}/", a.name)).unwrap_or(f);
@@ -190,7 +173,6 @@ pub fn sync_area(
     out
 }
 
-/// Area names present in the working copy under `prefix` ("memory/work").
 pub fn repo_areas(wc: &Path, prefix: &str) -> Vec<String> {
     std::fs::read_dir(wc.join(prefix))
         .into_iter()

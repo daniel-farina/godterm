@@ -1,6 +1,3 @@
-//! Setup with stubs only: fake package managers and installers, a mock
-//! download server, never a real install, download or ~/.cache model.
-
 use serde_json::json;
 
 use crate::config::testing::LOCK as ENV_LOCK;
@@ -13,7 +10,7 @@ fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = crate::app::App::new(crate::config::Config::default(), tx);
     app.accounts[0].login.source = Some(CredSource::Keychain);
-    // Every path the setup looks at is in the test home.
+
     let c = home.join("cache");
     app.cfg.voice.model = c
         .join("whisper/ggml-large-v3-turbo.bin")
@@ -27,15 +24,13 @@ fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     app.cfg.voice.espeak = "espeak-ng".into();
     app.cfg.claude_bin = Some("claude".into());
     app.cfg.grok_bin = Some("grok".into());
-    // Nothing of the host counts: no PATH (only the test's bin folder),
-    // its own cache folder, and the platform the test says.
+
     app.setup.bin_dir = Some(home.join("empty-bin"));
     app.setup.cache_dir = Some(c);
     app.setup.os = Some(crate::deps::Os::Mac);
     (app, home)
 }
 
-/// A fake program `name` in `dir` that records its arguments.
 fn fake(dir: &std::path::Path, name: &str, record: &std::path::Path) {
     let stub = crate::test_stub::claude(
         &dir.join(format!(".{name}")),
@@ -75,7 +70,7 @@ fn status_plans_and_a_confirmed_install() {
     let (mut app, home) = test_app("plan");
     let bin = home.join("bin");
     let rec = home.join("installs.txt");
-    // A Mac with Homebrew and a shell, nothing else.
+
     fake(&bin, "brew", &rec);
     fake(&bin, "sh", &rec);
     app.setup.bin_dir = Some(bin.clone());
@@ -97,7 +92,7 @@ fn status_plans_and_a_confirmed_install() {
     assert_eq!(get("whisper-model")["download"], "1.6 GB");
     assert!(app.state_preamble().contains("missing: claude (required)"));
     assert!(app.required_missing().contains(&"Claude Code"));
-    // The voice pack: one question with the commands and the size.
+
     user_says(&mut app, "install the voice pack");
     let v = app.control_call(
         "install_dependency",
@@ -110,7 +105,7 @@ fn status_plans_and_a_confirmed_install() {
             && q.contains("brew install ffmpeg"),
         "{v}"
     );
-    // Claude Code through its official installer, after a yes.
+
     user_says(&mut app, "install claude code");
     let v = app.control_call(
         "install_dependency",
@@ -153,8 +148,7 @@ fn status_plans_and_a_confirmed_install() {
         .history
         .iter()
         .any(|h| h.contains("install Claude Code")));
-    // A brew package from Settings > Setup: the first click shows it,
-    // the second installs.
+
     app.setup_click("ffmpeg");
     assert!(app
         .flash
@@ -178,7 +172,7 @@ fn checksum_mismatch_is_refused_and_sudo_goes_to_a_tab() {
     fake(&bin, "apt-get", &rec);
     app.setup.bin_dir = Some(bin);
     app.setup.os = Some(crate::deps::Os::Linux);
-    // The mock server serves the wrong bytes for the model.
+
     let srv = crate::update::tests::mock_routes(
         |_| vec![("/ggml-large-v3-turbo.bin".into(), b"not the model".to_vec())],
         false,
@@ -199,7 +193,7 @@ fn checksum_mismatch_is_refused_and_sudo_goes_to_a_tab() {
         !dest.exists() && !std::path::PathBuf::from(format!("{}.part", dest.display())).exists(),
         "nothing left behind"
     );
-    // apt needs sudo: it runs in a visible tab, never in the background.
+
     app.setup_click("ffmpeg");
     app.setup_click("ffmpeg");
     assert_eq!(app.admin.jobs, 0);
@@ -232,7 +226,7 @@ fn injected_installs_are_refused_and_a_missing_agent_says_so() {
         &json!({"_client": "brain", "targets": "grok"}),
     );
     assert!(v["error"].as_str().unwrap().starts_with("refused"), "{v}");
-    // A tab whose claude is not installed says how to get it.
+
     app.panes[0].cur_mut().state = crate::pane::PaneState::Failed("claude: not found".into());
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 40)).unwrap();
     term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
@@ -246,7 +240,7 @@ fn injected_installs_are_refused_and_a_missing_agent_says_so() {
     }
     assert!(t.contains("Claude Code isn't installed. Press I to"), "{t}");
     assert!(t.contains("SETUP:"), "{t}");
-    // The Setup screen.
+
     app.open_setup();
     term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let b = term.backend().buffer();

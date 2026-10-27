@@ -1,9 +1,3 @@
-//! A tab whose conversation another machine owns (GodTerm Sync): read
-//! only, with who has it, how to get it (Request take over, Take over
-//! now), what happened ("Moved to MacBook; your unsent part is fork X")
-//! and the transcript's last exchanges. Also the banner over a running
-//! tab that works offline or is being handed over.
-
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -14,8 +8,6 @@ use crate::app_lease::{active_words, TabLease};
 use crate::pane::Pane;
 use crate::theme::{self, BAR_BG, DIM, FG};
 
-/// Draw the tab's lease view over `area`. True when it took the whole
-/// area (read only, waiting); false leaves the screen to the caller.
 pub fn draw(f: &mut Frame, pane: &Pane, area: Rect) -> bool {
     let Some(l) = &pane.lease else {
         return false;
@@ -136,8 +128,6 @@ fn one_line(s: &str, max: usize) -> String {
     crate::paths::head(&t, max).to_string()
 }
 
-/// The one line banner over a running tab (offline, or input blocked
-/// while it moves to another machine).
 pub fn banner(f: &mut Frame, pane: &Pane, area: Rect) {
     let Some(msg) = pane.lease.as_ref().and_then(|l| l.banner()) else {
         return;

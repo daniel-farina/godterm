@@ -1,26 +1,11 @@
-//! Settings > GitHub accounts and repos: the `[git]` owners and folder
-//! rules and the saved per project bindings, as the user edits them in
-//! the app (web Settings and the terminal Settings view).
-//!
-//! The editor works on a [`Draft`]. Nothing is written until the user's
-//! own Save, after a confirmation that shows [`diff`]. Then
-//! [`write_toml`] puts the owners and rules into config.toml with
-//! toml_edit (comments and every other key kept) and the binding edits go
-//! through `git_map::Store`. The assistant can read all of this (the
-//! git_bindings tool) and suggest changes in words; no tool saves them.
-
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table};
 
 use crate::git_map::{self, Binding, GitCfg, GitRule, Store};
 
-/// Owners in the shipped starter set that stand for something the user
-/// still has to fill in. Shown "placeholder" until renamed. A
-/// `github-suggestions.toml` can name more (its `placeholders` list).
 pub const PLACEHOLDER_OWNERS: &[&str] = &["your-github-user", "your-org"];
 
-/// The comment written after a placeholder owner in config.toml.
 const PLACEHOLDER_NOTE: &str = "# placeholder: set the real name";
 
 pub fn is_placeholder(owner: &str) -> bool {
@@ -33,8 +18,6 @@ pub fn is_placeholder(owner: &str) -> bool {
         })
 }
 
-/// Every owner name shown as a placeholder: the shipped ones and the
-/// ones a `github-suggestions.toml` adds.
 pub fn placeholder_owners() -> Vec<String> {
     let mut v: Vec<String> = PLACEHOLDER_OWNERS.iter().map(|s| s.to_string()).collect();
     if let Some(s) = user_suggestions() {
@@ -48,8 +31,6 @@ pub fn placeholder_owners() -> Vec<String> {
     v
 }
 
-/// One row of the owners table: GitHub owner to the gh account that
-/// pushes for it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct OwnerRow {
@@ -57,16 +38,13 @@ pub struct OwnerRow {
     pub account: String,
 }
 
-/// A change to one saved binding: `binding` None unbinds.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BindEdit {
-    /// The folder, "~/x" or absolute.
     pub key: String,
     #[serde(default)]
     pub binding: Option<Binding>,
 }
 
-/// What the editor holds: the owners, the ordered rules, and binding edits.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct Draft {
@@ -91,7 +69,6 @@ impl Draft {
         }
     }
 
-    /// The draft's owners and rules on top of `base` (its other keys).
     pub fn to_cfg(&self, base: &GitCfg) -> GitCfg {
         let mut c = base.clone();
         c.owners = self
@@ -103,7 +80,6 @@ impl Draft {
         c
     }
 
-    /// No owners and no rules: the section offers the starter set.
     pub fn is_empty(&self) -> bool {
         self.owners.is_empty() && self.rules.is_empty()
     }
@@ -152,7 +128,6 @@ fn rule(pattern: &str, owner: &str) -> GitRule {
     }
 }
 
-/// The shipped starter set: generic examples, every owner a placeholder.
 pub fn placeholders() -> Draft {
     Draft {
         owners: vec![
@@ -167,8 +142,6 @@ pub fn placeholders() -> Draft {
     }
 }
 
-/// A fuller starter set for the tests: a user, a lab org, a second
-/// account, an org (`org`) to choose for, and a kept out folder.
 #[cfg(test)]
 pub fn sample(org: &str) -> Draft {
     let mut choose = rule("~/acme/**", "choose");
@@ -190,10 +163,6 @@ pub fn sample(org: &str) -> Draft {
     }
 }
 
-/// A starter set built from the gh accounts this machine has: each
-/// account owns its own repos, an example org (a placeholder) is pushed
-/// by the active one, and everything else under ~ goes to the active one.
-/// None when gh lists no account.
 pub fn from_accounts(accounts: &[Acct]) -> Option<Draft> {
     let main = accounts
         .iter()
@@ -208,13 +177,10 @@ pub fn from_accounts(accounts: &[Acct]) -> Option<Draft> {
     })
 }
 
-/// The optional per user file that replaces the suggested starter set.
 pub fn suggestions_path() -> PathBuf {
     crate::config::app_home().join("github-suggestions.toml")
 }
 
-/// `github-suggestions.toml`: the draft's `owners` and `rules`, plus the
-/// owner names to mark as placeholders.
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct UserSuggestions {
@@ -223,12 +189,10 @@ pub struct UserSuggestions {
     pub placeholders: Vec<String>,
 }
 
-/// The suggestions file parsed, or None when it is missing or unreadable.
 pub fn parse_suggestions(text: &str) -> Option<UserSuggestions> {
     toml::from_str::<UserSuggestions>(text).ok()
 }
 
-/// The user's suggestions file, read again only when it changes.
 pub fn user_suggestions() -> Option<UserSuggestions> {
     use std::sync::Mutex;
     use std::time::SystemTime;
@@ -249,10 +213,6 @@ pub fn user_suggestions() -> Option<UserSuggestions> {
     v
 }
 
-/// The suggested starter set, shown (marked as placeholders) while `[git]`
-/// has no owners and no rules. "Use these" saves it. The user's
-/// `github-suggestions.toml` wins; then one built from the gh accounts;
-/// then the shipped examples.
 pub fn suggested(accounts: Option<&[Acct]>) -> Draft {
     if let Some(s) = user_suggestions().filter(|s| !s.owners.is_empty() || !s.rules.is_empty()) {
         return Draft {
@@ -266,9 +226,6 @@ pub fn suggested(accounts: Option<&[Acct]>) -> Draft {
         .unwrap_or_else(placeholders)
 }
 
-// ---- gh accounts ----
-
-/// A gh account `gh auth status` lists, and whether it is logged in.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Acct {
     pub name: String,
@@ -276,8 +233,6 @@ pub struct Acct {
     pub active: bool,
 }
 
-/// The accounts in `gh auth status` output. Only names and states are
-/// kept: nothing else of the text (gh's masked tokens among it) leaves.
 pub fn parse_accounts(text: &str) -> Vec<Acct> {
     let mut v: Vec<Acct> = vec![];
     for l in text.lines() {
@@ -308,20 +263,16 @@ pub fn parse_accounts(text: &str) -> Vec<Acct> {
     v
 }
 
-/// The gh accounts on github.com (runs `gh auth status`, read only).
 pub fn accounts(gh: &Path) -> Vec<Acct> {
     crate::git_cred::status_text(gh)
         .map(|t| parse_accounts(&t))
         .unwrap_or_default()
 }
 
-// ---- checking ----
-
 #[derive(Debug, Clone, Serialize, Default, PartialEq)]
 pub struct Check {
-    /// These stop the save.
     pub errors: Vec<String>,
-    /// These are shown; the save still goes ahead.
+
     pub warnings: Vec<String>,
 }
 
@@ -331,8 +282,6 @@ impl Check {
     }
 }
 
-/// The literal folder a glob starts from: everything before the first
-/// wildcard, cut back to a whole folder.
 fn glob_base(full: &str) -> String {
     let lit: String = full
         .chars()
@@ -348,7 +297,6 @@ fn glob_base(full: &str) -> String {
     }
 }
 
-/// Why a folder rule's glob is refused, if it is.
 pub fn glob_problem(pat: &str) -> Option<String> {
     let p = pat.trim();
     if p.is_empty() {
@@ -373,7 +321,7 @@ pub fn glob_problem(pat: &str) -> Option<String> {
     }
     let base = glob_base(&full);
     let vault = Path::new(crate::guard::VAULT);
-    // In the vault, or a folder above it the wildcards could reach into.
+
     let above = !base.is_empty() && vault.starts_with(&base);
     if crate::guard::in_vault(Path::new(&base)) || above || git_map::glob_matches(p, vault) {
         return Some(format!(
@@ -389,8 +337,6 @@ pub fn glob_problem(pat: &str) -> Option<String> {
     None
 }
 
-/// Check a draft. `accounts` is what gh lists (None: not known yet, so
-/// nothing is said about logins).
 pub fn check(d: &Draft, accounts: Option<&[Acct]>) -> Check {
     let mut c = Check::default();
     let mut seen: Vec<String> = vec![];
@@ -502,26 +448,21 @@ pub fn check(d: &Draft, accounts: Option<&[Acct]>) -> Check {
     c
 }
 
-// ---- preview ----
-
-/// How the draft's rules decide one known project.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PreviewRow {
-    /// "~/work/team-hub".
     pub key: String,
-    /// The deciding rule (an index into the draft's rules), None: undefined.
+
     pub rule: Option<usize>,
     pub owner: Option<String>,
     pub account: Option<String>,
     pub choices: Vec<String>,
     pub state_exclude: bool,
-    /// A saved binding (after the draft's binding edits): owner/repo as account.
+
     pub bound: Option<String>,
-    /// "~/work/team-hub -> your-org (your-github-user)".
+
     pub line: String,
 }
 
-/// How `dir` resolves under the draft's rules (no git is run).
 pub fn preview_one(cfg: &GitCfg, dir: &Path) -> PreviewRow {
     let key = git_map::key(dir);
     let mut r = PreviewRow {
@@ -560,7 +501,6 @@ pub fn preview_one(cfg: &GitCfg, dir: &Path) -> PreviewRow {
     r
 }
 
-/// Every known project under the draft (sorted by folder).
 pub fn preview(d: &Draft, base: &GitCfg, projects: &[PathBuf], store: &Store) -> Vec<PreviewRow> {
     let cfg = d.to_cfg(base);
     let store = with_binds(store, d);
@@ -578,7 +518,6 @@ pub fn preview(d: &Draft, base: &GitCfg, projects: &[PathBuf], store: &Store) ->
     out
 }
 
-/// The store as it would be after the draft's binding edits (in memory).
 pub fn with_binds(store: &Store, d: &Draft) -> Store {
     let mut s = store.clone();
     for b in &d.binds {
@@ -594,8 +533,6 @@ pub fn with_binds(store: &Store, d: &Draft) -> Store {
     }
     s
 }
-
-// ---- the diff the confirmation shows ----
 
 fn rule_words(r: &GitRule) -> String {
     let r = clean_rule(r);
@@ -616,8 +553,6 @@ fn bind_words(b: &Binding) -> String {
     format!("{}/{} as {}", b.owner, b.repo, b.account)
 }
 
-/// What saving `new` over `old` changes, line by line ("+", "-", "~").
-/// Empty: nothing to save.
 pub fn diff(old: &Draft, new: &Draft, store: &Store) -> Vec<String> {
     let mut out = vec![];
     let find = |d: &Draft, o: &str| {
@@ -699,8 +634,6 @@ pub fn diff(old: &Draft, new: &Draft, store: &Store) -> Vec<String> {
     out
 }
 
-// ---- writing ----
-
 fn set_str(t: &mut Table, k: &str, v: &str) {
     if t.get(k).and_then(|i| i.as_str()) == Some(v) {
         return;
@@ -715,9 +648,6 @@ fn set_str(t: &mut Table, k: &str, v: &str) {
     }
 }
 
-/// config.toml's text with `[git]` owners and rules set to the draft's.
-/// Comments, layout and every other key stay as they were; a rule kept
-/// from before keeps its own comments.
 pub fn write_toml(text: &str, d: &Draft) -> Result<String, String> {
     let mut doc: DocumentMut = text
         .parse()
@@ -729,7 +659,7 @@ pub fn write_toml(text: &str, d: &Draft) -> Result<String, String> {
         .get_mut("git")
         .and_then(Item::as_table_mut)
         .ok_or("[git] in config.toml is not a table")?;
-    // Owners: drop the ones gone, set the rest in place.
+
     if git.get("owners").and_then(Item::as_table).is_none() {
         git.insert("owners", Item::Table(Table::new()));
     }
@@ -762,8 +692,7 @@ pub fn write_toml(text: &str, d: &Draft) -> Result<String, String> {
             }
         }
     }
-    // Rules: in the draft's order, each reusing its old table (and its
-    // comments) when the glob was there before.
+
     let mut old: Vec<Option<Table>> = git
         .get("rules")
         .and_then(Item::as_array_of_tables)
@@ -806,7 +735,7 @@ pub fn write_toml(text: &str, d: &Draft) -> Result<String, String> {
                 t.remove("state");
             }
         }
-        // Keep the rules where they were in the file, in the new order.
+
         if let Some(p) = positions.get(i).or(positions.last()) {
             t.set_position(*p);
         }
@@ -818,7 +747,7 @@ pub fn write_toml(text: &str, d: &Draft) -> Result<String, String> {
         git.insert("rules", Item::ArrayOfTables(arr));
     }
     let out = doc.to_string();
-    // What was written must read back as the draft.
+
     let back = crate::config::Config::parse(&out).map_err(|e| format!("{e:#}"))?;
     let want = d.to_cfg(&back.git);
     if back.git.owners != want.owners || back.git.rules != want.rules {
@@ -827,7 +756,6 @@ pub fn write_toml(text: &str, d: &Draft) -> Result<String, String> {
     Ok(out)
 }
 
-/// Apply the draft's binding edits to the store (each checked).
 pub fn apply_binds(store: &mut Store, d: &Draft) -> Result<usize, String> {
     let mut n = 0;
     for b in &d.binds {
@@ -851,8 +779,6 @@ pub fn apply_binds(store: &mut Store, d: &Draft) -> Result<usize, String> {
     Ok(n)
 }
 
-/// Save the draft: config.toml (owners, rules) then the bindings. Refused
-/// when the check has errors.
 pub fn save(config_path: &Path, d: &Draft, accounts: Option<&[Acct]>) -> Result<String, String> {
     let c = check(d, accounts);
     if !c.ok() {

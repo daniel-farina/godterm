@@ -1,8 +1,3 @@
-//! Move (or copy) a live tab to another account: the conversation goes on
-//! there with `claude --resume <id>`, for example when one account runs
-//! low. The session is copied with the session engine; the target tab
-//! must come up before the source closes.
-
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -12,11 +7,10 @@ use crate::pane::Activity;
 use crate::pane::LaunchKind;
 use crate::session_ops::{self, Conflict};
 
-/// One account in the "Move tab to..." picker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MoveTarget {
     pub account: usize,
-    /// None when it can take the tab; else why not.
+
     pub disabled: Option<String>,
     pub five_left: Option<f64>,
     pub week_left: Option<f64>,
@@ -24,7 +18,6 @@ pub struct MoveTarget {
 }
 
 impl MoveTarget {
-    /// The lower of the two windows: what the account can really do.
     pub fn effective(&self) -> Option<f64> {
         match (self.five_left, self.week_left) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -32,41 +25,36 @@ impl MoveTarget {
         }
     }
 
-    /// Out of usage (under 2% in either window).
     pub fn exhausted(&self) -> bool {
         self.effective().is_some_and(|e| e < 2.0)
     }
 }
 
-/// The picker dialog.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MovePicker {
     pub slot: usize,
     pub tab: usize,
     pub sel: usize,
-    /// Copy keeps the source tab open.
+
     pub copy: bool,
     pub same_folder: bool,
-    /// The tab's name, editable in the Tab section (Esc goes back to
-    /// name_orig).
+
     pub name: String,
     pub name_edit: bool,
     pub name_orig: String,
-    /// Focus: None on the Move section's targets, Some(i) on option row i
-    /// (app_tabopts::panel_rows).
+
     pub opt: Option<usize>,
-    /// The session's own title, editable.
+
     pub title: String,
     pub title_orig: String,
     pub title_edit: bool,
-    /// The Color row's swatch (0: none) and the Group row's choice.
+
     pub color_sel: usize,
     pub group_sel: usize,
-    /// Copy only the conversation there (no tab opens).
+
     pub session_only: bool,
 }
 
-/// A move waiting for its tab to go idle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueuedMove {
     pub uid: u64,
@@ -75,7 +63,6 @@ pub struct QueuedMove {
     pub same_folder: bool,
 }
 
-/// A started move: the source closes once the target is up.
 #[derive(Debug, Clone)]
 pub struct PendingMove {
     pub source_uid: u64,
@@ -86,7 +73,6 @@ pub struct PendingMove {
     pub target: usize,
 }
 
-/// For Undo (about 10 s after a move).
 #[derive(Debug, Clone)]
 pub struct DoneMove {
     pub target_uid: u64,
@@ -96,12 +82,8 @@ pub struct DoneMove {
 
 pub const UNDO_FOR: Duration = Duration::from_secs(10);
 
-/// Sort targets: usable first, by 5 hour % left then weekly % left, both
-/// descending; disabled ones at the bottom.
 pub fn sort_targets(v: &mut [MoveTarget]) {
     v.sort_by(|a, b| {
-        // Usable first; then by what is really left (the binding window);
-        // an exhausted account sorts with the unusable ones.
         let key = |t: &MoveTarget| {
             (
                 u8::from(t.exhausted()) + 2 * u8::from(t.disabled.is_some()),
@@ -126,7 +108,6 @@ impl App {
             .map(|w| w.left_now())
     }
 
-    /// Every other account, sorted for the picker.
     pub fn move_targets(&self, slot: usize) -> Vec<MoveTarget> {
         let from = self.panes.get(slot).and_then(|s| s.account);
         let mut v: Vec<MoveTarget> = (0..self.cfg.accounts.len())
@@ -175,9 +156,6 @@ impl App {
         v
     }
 
-    /// Why a tab of `slot` cannot move to account `target`: a CLI whose
-    /// sessions GodTerm does not read, or an account of another harness
-    /// (a Claude conversation cannot continue on Grok). None: it can.
     pub fn move_refusal(&self, slot: usize, target: usize) -> Option<String> {
         let src = self.panes.get(slot)?.account?;
         let from = self.cfg.accounts.get(src)?.harness();
@@ -196,7 +174,6 @@ impl App {
         })
     }
 
-    /// Double click on a tab, Ctrl-a m, the tab menu, voice.
     pub fn open_move_picker(&mut self, slot: usize, tab: usize, copy: bool) {
         if self.panes.get(slot).and_then(|s| s.tabs.get(tab)).is_none() {
             return;
@@ -220,8 +197,6 @@ impl App {
         }
     }
 
-    /// Confirm the picker's selection.
-    /// Save the name typed in the move dialog (if it changed).
     pub fn apply_picker_name(&mut self, p: &MovePicker) {
         let cur = self
             .panes
@@ -233,7 +208,6 @@ impl App {
         }
     }
 
-    /// Cancel the move dialog; a name edit is still kept.
     pub fn cancel_move_picker(&mut self) {
         if let Modal::MoveTab(p) = self.modal.clone() {
             self.apply_picker_name(&p);
@@ -259,8 +233,6 @@ impl App {
         self.request_move(p.slot, p.tab, t.account, p.copy, p.same_folder);
     }
 
-    /// Copy a tab's conversation to `target` so it can be resumed there;
-    /// no tab opens.
     pub fn copy_session_to(&mut self, slot: usize, tab: usize, target: usize) {
         self.detect_sessions();
         match self.copy_transcript(slot, tab, target) {
@@ -274,8 +246,6 @@ impl App {
         }
     }
 
-    /// Copy the tab's transcript into `target`'s config dir: the id there,
-    /// or None when the tab has no conversation yet.
     fn copy_transcript(
         &self,
         slot: usize,
@@ -290,8 +260,7 @@ impl App {
         };
         let sdir = self.cfg.accounts[src_acct].config_dir();
         let tdir = self.cfg.accounts[target].config_dir();
-        // Already there: reuse it, unless ours is longer (newer turns, e.g.
-        // moving back after an undo), then it wins.
+
         let there = jsonl.strip_prefix(&sdir).map(|r| tdir.join(r)).ok();
         let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
         let conflict = match there {
@@ -303,14 +272,11 @@ impl App {
             .map_err(|e| format!("{e:#}"))
     }
 
-    /// Queue a move for when the tab's work ends: one per tab (asking
-    /// again replaces the earlier ask instead of stacking).
     pub fn queue_move(&mut self, q: QueuedMove) {
         self.queued_moves.retain(|m| m.uid != q.uid);
         self.queued_moves.push(q);
     }
 
-    /// The move queued for a tab: (target account's name, why it waits).
     pub fn move_pending(&self, uid: u64) -> Option<(String, String)> {
         let q = self.queued_moves.iter().find(|m| m.uid == uid)?;
         let (s, t) = self.find_tab(uid)?;
@@ -321,8 +287,6 @@ impl App {
         Some((to, why))
     }
 
-    /// "Move now (stops the agents)": the plan for move_now, the tool a
-    /// busy tab's move picker offers after the move was queued.
     pub(crate) fn move_now_plan_for(
         &mut self,
         args: &Value,
@@ -363,8 +327,6 @@ impl App {
         Ok((json!({"uids": uids, "to": to}), q, true))
     }
 
-    /// The confirmed move_now: every tab moves at once, whatever runs in
-    /// it, and any earlier queued move of it is dropped.
     pub(crate) fn move_now_run(&mut self, plan: &Value) -> Result<Value, String> {
         let to = plan["to"].as_u64().ok_or("the plan has no account")? as usize;
         let mut moved = vec![];
@@ -400,7 +362,6 @@ impl App {
         }}))
     }
 
-    /// Move now, or ask first when the tab is busy.
     pub fn request_move(
         &mut self,
         slot: usize,
@@ -412,7 +373,7 @@ impl App {
         let Some(t) = self.panes.get(slot).and_then(|s| s.tabs.get(tab)) else {
             return;
         };
-        // Working or background work running: a move would stop it.
+
         if self.tab_has_running_work(slot, tab) {
             self.modal = Modal::MoveBusy(QueuedMove {
                 uid: t.uid,
@@ -425,7 +386,6 @@ impl App {
         self.move_tab_now(slot, tab, target, copy, same_folder);
     }
 
-    /// Busy dialog: wait for idle (queued), or interrupt then move.
     pub fn move_busy_choice(&mut self, interrupt: bool) {
         let Modal::MoveBusy(q) = self.modal.clone() else {
             return;
@@ -444,7 +404,6 @@ impl App {
         self.queue_move(q);
     }
 
-    /// A move that did not happen: its old id names its own tab again.
     pub(crate) fn forget_move(&mut self, source: u64, target: u64) {
         if self.moved_ids.get(&source) == Some(&target) {
             self.moved_ids.remove(&source);
@@ -461,7 +420,6 @@ impl App {
             .find_map(|(s, p)| p.tabs.iter().position(|t| t.uid == uid).map(|t| (s, t)))
     }
 
-    /// Where a tab's transcript lives in its account.
     pub(crate) fn transcript_of(
         &self,
         slot: usize,
@@ -486,8 +444,6 @@ impl App {
             .map(|p| (p, id))
     }
 
-    /// Copy the session to `target` and open it there. The source closes
-    /// (for a move) only once the target tab is up.
     pub fn move_tab_now(
         &mut self,
         slot: usize,
@@ -503,7 +459,7 @@ impl App {
             self.flash(why);
             return;
         }
-        // Learn the session id if the tab started recently.
+
         self.detect_sessions();
         let src = &self.panes[slot].tabs[tab];
         let (cwd, name, uid) = (src.cwd.clone(), src.custom_name.clone(), src.uid);
@@ -513,7 +469,7 @@ impl App {
             self.cfg.accounts[target].work_dir()
         };
         let label = src.name();
-        // The browser binding goes with the conversation.
+
         let browser = src.browser.clone();
         let browser_also = src.browser_also.clone();
         let kind = match self.copy_transcript(slot, tab, target) {
@@ -522,7 +478,7 @@ impl App {
                 self.flash(format!("Could not copy the session: {e}"));
                 return;
             }
-            // No conversation yet: a fresh tab in the same folder.
+
             Ok(None) => LaunchKind::Normal,
         };
         crate::log::info(&format!(
@@ -581,9 +537,7 @@ impl App {
         self.state_dirty = true;
     }
 
-    /// Called from tick: finish started moves, start queued ones.
     pub fn tabmove_tick(&mut self) {
-        // Queued: the tab went idle.
         let queued = std::mem::take(&mut self.queued_moves);
         for q in queued {
             match self.find_tab(q.uid) {
@@ -592,11 +546,10 @@ impl App {
                 None => {}
             }
         }
-        // Started: the target is up (or failed).
+
         let pending = std::mem::take(&mut self.pending_moves);
         for m in pending {
             let Some((ts, tt)) = self.find_tab(m.target_uid) else {
-                // The new tab is gone: the source is the tab again.
                 self.forget_move(m.source_uid, m.target_uid);
                 continue;
             };
@@ -613,8 +566,6 @@ impl App {
                 .unwrap_or_default();
             let tname = self.cfg.accounts[m.target].display().to_string();
             if failed {
-                // The original stays open and keeps its id: tools that name
-                // it must reach it, not the failed copy.
                 if self.find_tab(m.source_uid).is_some() {
                     self.forget_move(m.source_uid, m.target_uid);
                 }
@@ -658,7 +609,6 @@ impl App {
         }
     }
 
-    /// Undo the last tab move within UNDO_FOR: move it back.
     pub fn undo_tab_move(&mut self) {
         let Some(d) = self.last_tab_move.take() else {
             self.flash("No tab move to undo");
@@ -673,15 +623,12 @@ impl App {
         }
     }
 
-    /// An Undo chip shows while the last move can still be undone.
     pub fn undo_move_live(&self) -> bool {
         self.last_tab_move
             .as_ref()
             .is_some_and(|d| d.at.elapsed() < UNDO_FOR)
     }
 
-    /// A low account's tab gets a chip suggesting the account with the
-    /// most left: (target, % left).
     pub fn move_suggestion(&self, slot: usize) -> Option<(usize, f64)> {
         let below = self.cfg.suggest_move_below;
         if below <= 0.0 {
@@ -707,7 +654,6 @@ impl App {
         self.modal = Modal::TabMenu(slot, tab, 0);
     }
 
-    /// Row `i` of the right click menu (app_tabopts::tab_actions).
     pub fn tab_menu_run(&mut self, slot: usize, tab: usize, i: usize) {
         match self.tab_actions(slot, tab).get(i).map(|r| r.act) {
             Some(a) => self.tab_act_run(slot, tab, a),
@@ -775,9 +721,7 @@ mod tests {
         ];
         sort_targets(&mut v);
         let order: Vec<usize> = v.iter().map(|x| x.account).collect();
-        // By what is really left (the lower window), unknown usage after,
-        // a weekly exhausted account (100% 5h, 0% weekly) below every
-        // usable one, disabled at the bottom whatever their usage.
+
         assert_eq!(order, vec![2, 0, 1, 4, 5, 3]);
         assert!(t(5, Some(100.0), Some(0.0), false).exhausted());
     }

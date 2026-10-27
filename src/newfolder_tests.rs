@@ -1,7 +1,3 @@
-//! A new session in a folder that is not there yet: made when its parent
-//! exists (inside the home folder, never a system or private place),
-//! asked about once when more is missing.
-
 use serde_json::json;
 
 use crate::config::testing::LOCK as ENV_LOCK;
@@ -20,8 +16,6 @@ fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     (app, home)
 }
 
-/// A work folder next to GodTerm's test home (not inside it: that one is
-/// private).
 fn work(tag: &str) -> std::path::PathBuf {
     let w = std::env::temp_dir().join(format!("godterm-work-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&w);
@@ -54,7 +48,7 @@ fn a_missing_folder_whose_parent_exists_is_made_and_opened() {
         std::fs::canonicalize(&t.cwd).unwrap(),
         std::fs::canonicalize(&dir).unwrap()
     );
-    // There now: opening it again makes nothing and says nothing of it.
+
     let v = app.control_call(
         "open_tab",
         &json!({"account": 4, "dir": dir.to_string_lossy()}),
@@ -77,7 +71,7 @@ fn more_missing_asks_once_then_makes_it() {
     let e = v["error"].as_str().unwrap_or("");
     assert!(e.contains("ask the user once") && e.contains("acme"), "{v}");
     assert!(!base.join("acme").exists(), "nothing made before the yes");
-    // The yes.
+
     let v = app.control_call(
         "open_tab",
         &json!({"account": 2, "dir": dir.to_string_lossy(), "create": true}),
@@ -106,7 +100,7 @@ fn never_outside_home_system_or_private_places() {
         assert!(v["error"].as_str().unwrap_or("").contains(want), "{d}: {v}");
         assert!(!std::path::Path::new(d).exists());
     }
-    // Inside GodTerm's own (private) home: refused, not made.
+
     let p = home.join("accounts/new-thing");
     let v = app.control_call(
         "open_tab",
@@ -117,7 +111,7 @@ fn never_outside_home_system_or_private_places() {
         "{v}"
     );
     assert!(!p.exists());
-    // A file is not a folder.
+
     let base = work("file");
     std::fs::write(base.join("notes.txt"), "x").unwrap();
     let v = app.control_call(

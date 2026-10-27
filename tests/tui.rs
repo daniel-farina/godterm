@@ -1,7 +1,3 @@
-//! End to end tests: run the real godterm binary in a PTY against a fake
-//! claude, send keys, and read the screen through a vt100 parser. No tmux,
-//! no network (usage comes from a fixture), no real claude.
-//! Unix only: the fake claude is a shell script.
 #![cfg(unix)]
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -26,8 +22,6 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// A throwaway GODTERM_HOME with two logged in (fake) accounts whose
-/// "claude" is a shell script that echoes its input.
 fn make_home(tag: &str, extra: &str) -> PathBuf {
     let home = std::env::temp_dir().join(format!("godterm-it-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
@@ -35,9 +29,6 @@ fn make_home(tag: &str, extra: &str) -> PathBuf {
     let fake = home.join("fake-claude.sh");
     std::fs::write(
         &fake,
-        // The screen shows the arguments, with a long one (the tab hint) cut to
-        // a marker so it cannot push the line start out of the narrow pane; the
-        // full list is in .tab-args.txt.
         r#"#!/bin/sh
 env > "$PWD/.tab-env.txt"
 echo "$*" >> "$PWD/.tab-args.txt"
@@ -67,7 +58,7 @@ exec cat
         fake.display(),
         home.join("tabs").display()
     );
-    // New tab folders go in a workspace (GodTerm's home itself is private).
+
     std::fs::create_dir_all(home.join("tabs")).unwrap();
     for (name, label) in [("one", "Alpha"), ("two", "Bravo")] {
         let dir = home.join("accounts").join(name);
@@ -79,19 +70,17 @@ exec cat
         ));
     }
     cfg.push_str("[voice]\ntts = false\nchime = false\nwake_model = \"off\"\n");
-    // The tab job tools lengthen every tab's command line (the fake echoes
-    // it): off here, on in the test that is about them.
+
     if !extra.contains("[tabs]") {
         cfg.push_str("[tabs]\njobs_tools = false\n");
     }
     cfg.push_str(extra);
     std::fs::write(home.join("config.toml"), cfg).unwrap();
-    // The first launch tour has its own test; keep it out of the way here.
+
     std::fs::write(home.join("tour_done"), "1").unwrap();
     home
 }
 
-/// Fails when a test would point the app at the user's real data.
 fn assert_not_real(p: &std::path::Path, what: &str) {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
     let real = [".claude", ".grok", ".godterm", ".claudego"].map(|d| home.join(d));
@@ -107,8 +96,6 @@ impl Tui {
         Self::start_with(home, args, true)
     }
 
-    /// `rw`: other local clients (the test's stub brains and scripts) may
-    /// change things (GODTERM_CONTROL_RW=1); otherwise they are read-only.
     fn start_with(home: PathBuf, args: &[&str], rw: bool) -> Tui {
         let pty = native_pty_system();
         let pair = pty
@@ -127,24 +114,22 @@ impl Tui {
             cmd.env("GODTERM_CONTROL_RW", "1");
         }
         cmd.env("GODTERM_USAGE_FIXTURE", fixture("usage.json"));
-        // Never make a sound on the user's speakers.
+
         cmd.env("GODTERM_NO_AUDIO", "1");
-        // Never open the user's microphone either.
+
         cmd.env("GODTERM_NO_MIC", "1");
-        // Never open files or browsers on the user's screen.
+
         cmd.env("GODTERM_NO_OPEN", "1");
-        // Never the start up splash (the fresh homes would show it).
+
         cmd.env("GODTERM_NO_SPLASH", "1");
-        // The main installs are fixtures here, never the user's own.
+
         cmd.env("GODTERM_MAIN_DIR", home.join("main-claude"));
         cmd.env("GODTERM_MAIN_GROK_DIR", home.join("main-grok"));
         cmd.env("TERM", "xterm-256color");
-        // As if started from inside a grok session: its markers must not
-        // reach the tabs.
+
         cmd.env("GROK_AGENT_ID", "parent-agent");
         cmd.env("GROK_SESSION_ID", "parent-session");
-        // Whatever the shell running the tests has, the app under test
-        // never sees the user's own config dirs.
+
         cmd.env_remove("CLAUDE_CONFIG_DIR");
         cmd.env_remove("GROK_HOME");
         for v in ["GODTERM_HOME", "GODTERM_MAIN_DIR", "GODTERM_MAIN_GROK_DIR"] {
@@ -158,7 +143,7 @@ impl Tui {
         let w2 = Arc::clone(&writer);
         let screen = Arc::new(Mutex::new(vt100::Parser::new(ROWS, COLS, 0)));
         let s2 = Arc::clone(&screen);
-        // Keep the master alive for the life of the reader.
+
         let master = Arc::new(Mutex::new(pair.master));
         std::thread::spawn(move || {
             let _keep = master;
@@ -170,7 +155,7 @@ impl Tui {
                         let chunk = &buf[..n];
                         let mut p = s2.lock().unwrap();
                         p.process(chunk);
-                        // Answer the queries a real terminal would.
+
                         let has = |pat: &[u8]| chunk.windows(pat.len()).any(|w| w == pat);
                         let mut reply = Vec::new();
                         if has(b"\x1b[6n") {
@@ -211,9 +196,6 @@ impl Tui {
         std::thread::sleep(Duration::from_millis(120));
     }
 
-    /// Type to the assistant and send: Enter only once the text shows in
-    /// its input box, so it is read as a key of its own, never as part of
-    /// a burst (a paste, where Enter is a new line).
     fn ask(&mut self, text: &str) {
         self.send(text.as_bytes());
         let shown: String = text.chars().take(30).collect();
@@ -221,7 +203,6 @@ impl Tui {
         self.send(b"\r");
     }
 
-    /// Where `needle` is on screen (0-based column, row), the last match.
     fn find(&self, needle: &str) -> Option<(u16, u16)> {
         let screen = self.screen.lock().unwrap();
         let sc = screen.screen();
@@ -250,13 +231,11 @@ impl Tui {
         found
     }
 
-    /// A left click (SGR mouse, as a terminal sends it) at a cell.
     fn click_at(&mut self, col: u16, row: u16) {
         self.send(format!("\x1b[<0;{};{}M", col + 1, row + 1).as_bytes());
         self.send(format!("\x1b[<0;{};{}m", col + 1, row + 1).as_bytes());
     }
 
-    /// Click the middle of a label on screen.
     fn click(&mut self, label: &str) {
         let (c, r) = self
             .find(label)
@@ -264,14 +243,11 @@ impl Tui {
         self.click_at(c + label.chars().count() as u16 / 2, r);
     }
 
-    /// Ctrl-a then a key.
     fn cmd(&mut self, key: &[u8]) {
         self.send(b"\x01");
         self.send(key);
     }
 
-    /// Wait until a file has `needle` (what a stub wrote: no screen
-    /// wrapping, no timing).
     fn wait_file(&self, path: &Path, needle: &str, secs: u64) {
         let t0 = Instant::now();
         while t0.elapsed() < Duration::from_secs(secs) {
@@ -310,7 +286,6 @@ impl Tui {
         panic!("{needle:?} did not go away; screen:\n{}", self.text());
     }
 
-    /// Quit and keep the home (to start again on it).
     fn quit_keep(mut self) {
         self.cmd(b"Q");
         let t0 = Instant::now();
@@ -345,18 +320,17 @@ fn tabs_overview_and_palette() {
     let home = make_home("tabs", "");
     let proj = home.join("projx");
     let mut t = Tui::start(home, &[]);
-    // Both logged in panes start the fake claude, in bypass mode by default.
+
     t.wait_for("fake claude in work", 15);
-    // (A pane can wrap the flag, so the start of it is enough.)
+
     t.wait_for("args:--dangerously", 5);
     t.wait_for("Alpha", 5);
     t.wait_for("Bravo", 5);
 
-    // New tab via the picker, typed path.
     t.cmd(b"t");
     t.wait_for("New tab for Alpha", 5);
     t.wait_for("Will create:", 5);
-    // Open existing: clear the prefilled base, type the folder, Enter.
+
     t.send(b"\x0f");
     t.send(b"\x15");
     t.send(proj.to_string_lossy().as_bytes());
@@ -365,21 +339,17 @@ fn tabs_overview_and_palette() {
     t.wait_for("fake claude in projx", 5);
     t.wait_for("Alpha [2/2]", 5);
 
-    // Switch back and forth.
     t.cmd(b"p");
     t.wait_for("Alpha [1/2]", 5);
     t.cmd(b"n");
     t.wait_for("Alpha [2/2]", 5);
 
-    // Overview lists every tab.
     t.cmd(b"o");
     t.wait_for("Overview: every account", 5);
     t.wait_for("projx", 2);
     t.send(b"\x1b");
     t.wait_gone("Overview: every account", 5);
 
-    // Palette action: close tab. It is idle, so no confirmation by
-    // default (confirm_close = "busy"), and an Undo toast offers it back.
     t.cmd(b":");
     t.wait_for("command palette", 5);
     t.send(b"close tab");
@@ -388,14 +358,12 @@ fn tabs_overview_and_palette() {
     t.wait_for("Undo", 5);
     t.wait_gone("[2/2]", 5);
 
-    // Typed text that is no action's name is a request for the assistant.
     t.cmd(b":");
     t.send(b"in bravo type hello from the palette");
     t.send(b"\r");
     t.wait_for("you in bravo type hello from the palette", 5);
     t.send(b"\x1b");
 
-    // Help overlay lists keys and voice commands.
     t.cmd(b"?");
     t.wait_for("godterm help", 5);
     t.wait_for("Voice: say the wake word", 2);
@@ -413,13 +381,13 @@ fn tabs_are_restored_after_restart() {
     t.cmd(b"t");
     t.wait_for("New tab for Alpha", 5);
     t.wait_for("Will create:", 5);
-    // Open existing: clear the prefilled base, type the folder, Enter.
+
     t.send(b"\x0f");
     t.send(b"\x15");
     t.send(proj.to_string_lossy().as_bytes());
     t.send(b"\r");
     t.wait_for("tabs 2", 5);
-    // Quit without removing the home this time.
+
     t.cmd(b"Q");
     let t0 = Instant::now();
     while t.child.try_wait().ok().flatten().is_none() && t0.elapsed() < Duration::from_secs(10) {
@@ -430,15 +398,11 @@ fn tabs_are_restored_after_restart() {
 
     let t2 = Tui::start(home, &[]);
     t2.wait_for("tabs 2", 15);
-    // The restored active tab starts on its own.
+
     t2.wait_for("fake claude in projx", 10);
     assert_eq!(t2.quit(), 0);
 }
 
-/// Eager restore starts every saved tab, not only the visible ones, with
-/// --resume when the session id is known, and says how many it restored.
-/// After a restart the assistant still knows the last conversation: the
-/// new brain's first message carries the memory, and the answer uses it.
 #[test]
 fn assistant_remembers_across_restarts() {
     let home = make_home("memory", "");
@@ -466,7 +430,7 @@ done
     t.ask("show me the code/fotmesh sessions");
     t.wait_for("Two sessions in code/fotmesh.", 20);
     t.quit_keep();
-    // GodTerm starts again: a new brain.
+
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
     t.cmd(b".");
@@ -482,17 +446,13 @@ done
     assert!(!t.text().contains("I don't have context"));
 }
 
-/// The user's 19:38 conversation: "code/fot mesh", then "code forward
-/// slash vodmesh", then "the code slash vod mesh": the brain passes what
-/// it heard, and the sessions tool still finds ~/code/fotmesh (it is
-/// among the projects) and says it took the name as code/fotmesh.
 #[test]
 fn misheard_project_resolves_to_fotmesh() {
     if !have("python3") {
         return;
     }
     let home = make_home("fotmesh", "");
-    // A session in code/fotmesh in the (fixture) main ~/.claude.
+
     let proj = home.join("main-claude/projects/-Users-x-code-fotmesh");
     std::fs::create_dir_all(&proj).unwrap();
     std::fs::write(
@@ -565,8 +525,6 @@ for line in sys.stdin:
     assert!(!calls.contains("came back empty"), "{calls}");
 }
 
-/// "Hold on for ten seconds": the brain reads the duration and calls
-/// pause_listening(10); the status bar counts down and it resumes alone.
 #[test]
 fn assistant_pauses_listening() {
     let home = make_home("pause", "");
@@ -596,13 +554,11 @@ done
     t.wait_for("PAUSED 0:", 30);
     let out = std::fs::read_to_string(home.join("pause-out.txt")).unwrap();
     assert!(out.contains("paused_s") && out.contains("10"), "{out}");
-    // It resumes by itself when the time is up.
+
     t.wait_gone("PAUSED 0:", 15);
     assert_eq!(t.quit(), 0);
 }
 
-/// QA-26: without --control-rw, other local clients can only look, and
-/// tabs do not get GodTerm's home or token in their environment.
 #[test]
 fn other_clients_are_read_only() {
     let home = make_home("readonly", "");
@@ -628,27 +584,23 @@ fn other_clients_are_read_only() {
     assert!(look.contains("\\\"ok\\\":true"), "{look}");
     let act = mcp("close_tabs", "{\"tab\":\"all\"}");
     assert!(act.contains("read-only"), "{act}");
-    // The tab's own environment: no GodTerm home or token.
+
     let env = std::fs::read_to_string(home.join("work").join(".tab-env.txt")).unwrap_or_default();
     assert!(env.contains("PATH=") && !env.contains("GODTERM_"), "{env}");
 }
 
-/// The agent of a tab gets a `godterm mcp` of its own: five job tools, its
-/// own tab only, nothing of the assistant's; the user's yes comes in
-/// GodTerm, not from the agent.
 #[test]
 fn a_tab_gets_a_job_server_limited_to_itself() {
     let home = make_home("tabjobs", "[tabs]\njobs_tools = true\n");
     let mut t = Tui::start_with(home.clone(), &[], false);
     t.wait_for("fake claude in work", 15);
-    // The hint is long and the pane narrow, so it wraps at a place that
-    // depends on the temp path: read the arguments the stub wrote instead.
+
     t.wait_file(
         &home.join("work").join(".tab-args.txt"),
         "Prefer the godterm create_job tool",
         10,
     );
-    // The launch's --mcp-config names the server and this tab's identity.
+
     let dir = home.join("tab-mcp");
     let file = std::fs::read_dir(&dir)
         .unwrap()
@@ -715,14 +667,12 @@ fn a_tab_gets_a_job_server_limited_to_itself() {
         .as_array()
         .unwrap()
         .len();
-    // The five job tools and the two browser tools (tab_jobs::TAB_TOOLS).
+
     assert_eq!(tools, 7);
-    // Nothing was made: the user has not said yes.
+
     let jobs = std::fs::read_to_string(home.join("jobs.json")).unwrap_or_default();
     assert!(!jobs.contains("\"prompt\""), "{jobs}");
-    // The request's dialog comes up on a later tick; any key answers it,
-    // so a quit typed while it shows would only decline it (and the Q
-    // would go to the tab). Wait for it and decline it first.
+
     t.wait_for("job from a tab", 10);
     t.send(b"\x1b");
     t.wait_gone("job from a tab", 5);
@@ -731,9 +681,6 @@ fn a_tab_gets_a_job_server_limited_to_itself() {
     assert_eq!(t.quit(), 0);
 }
 
-/// A first run goes straight into the app: no questions on the plain
-/// terminal, no placeholder accounts, the first account picker with every
-/// agent.
 #[test]
 fn first_run_opens_the_first_account_picker() {
     let home = std::env::temp_dir().join(format!("godterm-it-first-{}", std::process::id()));
@@ -747,14 +694,12 @@ fn first_run_opens_the_first_account_picker() {
     assert!(!t.text().contains("How many agent slots"));
     let cfg = std::fs::read_to_string(home.join("config.toml")).unwrap();
     assert!(!cfg.contains("[[accounts]]"), "{cfg}");
-    // Esc: no account yet, and the grid says how to add one.
+
     t.send(b"\x1b");
     t.wait_for("Ctrl-a A adds one", 5);
     assert_eq!(t.quit(), 0);
 }
 
-/// QA-25: Ctrl-C during `godterm setup` on a new home leaves no config
-/// behind, so setup is offered again.
 #[test]
 fn interrupted_setup_writes_no_config() {
     let home = std::env::temp_dir().join(format!("godterm-it-setup-{}", std::process::id()));
@@ -777,8 +722,6 @@ fn interrupted_setup_writes_no_config() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// QA-23: one GodTerm per home. A second start explains and exits; the
-/// first keeps its control socket.
 #[test]
 fn second_instance_refuses_and_keeps_the_socket() {
     let home = make_home("single", "");
@@ -836,11 +779,9 @@ fn eager_restore_starts_every_tab() {
     std::fs::write(home.join("state.json"), state.to_string()).unwrap();
     let t = Tui::start(home.clone(), &[]);
     t.wait_for("Restored 3 tabs across 2 accounts", 20);
-    // The hidden tab started too: every tab in the sidebars reads ready
-    // (a lazy tab would stay idle until shown).
+
     let t0 = Instant::now();
-    // Tab rows read "N ○ name" once ready (idle at the prompt: a dim ○;
-    // starting is ◌).
+
     let ready = |s: &str| {
         s.split('│')
             .filter(|seg| {
@@ -861,7 +802,7 @@ fn eager_restore_starts_every_tab() {
         "{screen}"
     );
     assert!(screen.contains("--resume sess-456"), "{screen}");
-    // The hidden tab kept its name and resumed its session.
+
     let mut t = t;
     t.cmd(b"1");
     t.cmd(b"n");
@@ -870,14 +811,12 @@ fn eager_restore_starts_every_tab() {
     assert_eq!(t.quit(), 0);
 }
 
-/// Moving a live tab copies its session to the other account, resumes it
-/// there, closes the original once the new one is up, and can be undone.
 #[test]
 fn move_tab_to_another_account() {
     let home = make_home("movetab", "");
     let work = home.join("work");
     let id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-    // claude's project dir name for the cwd.
+
     let enc: String = work
         .to_string_lossy()
         .chars()
@@ -901,7 +840,7 @@ fn move_tab_to_another_account() {
     std::fs::write(home.join("state.json"), state.to_string()).unwrap();
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("--resume aaaaaaaa", 15);
-    // Ctrl-a m: the picker lists Bravo with its usage, marked most left.
+
     t.cmd(b"m");
     t.wait_for("move 'api'", 5);
     t.wait_for("most left", 5);
@@ -913,20 +852,18 @@ fn move_tab_to_another_account() {
         .join(format!("{id}.jsonl"))
         .is_file());
     let screen = t.text();
-    // Pane 2 now resumes the same conversation; pane 1's tab closed.
+
     assert!(
         screen.matches("--resume aaaaaaaa").count() == 1,
         "only the moved tab: {screen}"
     );
     assert!(screen.contains("UNDO MOVE"), "undo chip: {screen}");
-    // Undo moves it back.
+
     t.cmd(b"U");
     t.wait_for("Moved 'api' to Alpha", 15);
     assert_eq!(t.quit(), 0);
 }
 
-/// Loops are found in a running tab's transcript; Stop types a request
-/// into the idle tab and the transcript confirms it.
 #[test]
 fn loops_view_and_stop() {
     let home = make_home("loops", "");
@@ -965,10 +902,10 @@ fn loops_view_and_stop() {
     t.wait_for("e0e3839a", 5);
     t.wait_for("every 15 minutes", 5);
     t.send(b"s");
-    // Back on the grid the stub echoes what was typed into it.
+
     t.send(b"\x1b");
     t.wait_for("Cancel the scheduled job e0e3839a", 10);
-    // claude would now run CronDelete; the transcript says so.
+
     let mut f = std::fs::OpenOptions::new()
         .append(true)
         .open(&jsonl)
@@ -981,14 +918,11 @@ fn loops_view_and_stop() {
     assert_eq!(t.quit(), 0);
 }
 
-/// The assistant end to end with a stub "claude -p": it reads the turn,
-/// calls `godterm mcp` (socket, token, control API) for list_tabs, and
-/// streams a reply that shows in the panel.
 #[test]
 fn assistant_loop_with_a_stub_brain() {
     let home = make_home("assist", "");
     let exe = env!("CARGO_BIN_EXE_godterm");
-    // Tabs get the normal fake; "-p" (the brain) gets this.
+
     let brain = home.join("fake-claude.sh");
     std::fs::write(
         &brain,
@@ -1015,20 +949,20 @@ done
     .unwrap();
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
-    // Ctrl-a . opens the panel; type a question and send it.
+
     t.cmd(b".");
     t.wait_for("Type or speak", 5);
     t.ask("what is going on");
     t.wait_for("Both are ready.", 20);
     t.wait_for("checked get state", 10);
     t.wait_for("Assistant: Claude on", 5);
-    // The stub really reached the control API through godterm mcp.
+
     let out = std::fs::read_to_string(home.join("mcp-out.txt")).unwrap();
     assert!(
         out.contains("\"serverInfo\"") && out.contains("\\\"tabs\\\""),
         "{out}"
     );
-    // The system prompt goes to claude by file (--append-system-prompt-file).
+
     let args = std::fs::read_to_string(home.join("brain-args.txt")).unwrap()
         + &std::fs::read_to_string(home.join("assistant").join("system-prompt.md"))
             .unwrap_or_default();
@@ -1039,9 +973,7 @@ done
         "mcp__godterm__answer_prompt",
         "--model claude-haiku-4-5",
         "--effort low",
-        // Its own session, kept across restarts (assistant.resume).
         "--session-id ",
-        // The brain does what is asked instead of offering to.
         "Do, don't offer",
         "Never answer it with \"Want me to do that?\"",
     ] {
@@ -1050,11 +982,6 @@ done
     assert_eq!(t.quit(), 0);
 }
 
-///// A stand in for claude's input box, as far as delivery goes: it turns on
-/// bracketed paste, keeps pasted text (and LF) as newlines, treats a CR
-/// that arrives in the same burst as a paste as a newline too (what makes
-/// a prompt sit in the box), and submits only on a CR of its own. A
-/// submitted prompt shows a spinner for a moment, as claude does.
 const FAKE_TAB: &str = r#"#!/usr/bin/env python3
 import os, sys, tty, time, signal
 cwd = os.path.basename(os.getcwd())
@@ -1104,7 +1031,6 @@ while True:
     draw()
 "#;
 
-/// The tab claude is the stub above; `-p` (the brain) runs `brain`.
 fn write_fakes(home: &Path, brain: &str) {
     std::fs::write(home.join("fake-tab.py"), FAKE_TAB).unwrap();
     std::fs::write(
@@ -1121,10 +1047,6 @@ fn write_fakes(home: &Path, brain: &str) {
     }
 }
 
-/// A multi step request: the stub brain opens a tab with a prompt in one
-/// call. The prompt reaches the new tab once its claude is ready, in a new
-/// folder named after the task, and is really submitted (a paste, then a
-/// separate Enter), which the tool reports as delivered.
 #[test]
 fn assistant_opens_a_tab_and_prompts_it() {
     if !have("python3") {
@@ -1148,26 +1070,24 @@ done
         ),
     );
     let mut t = Tui::start(home.clone(), &[]);
-    // Generous waits (conditions, not sleeps): CI runners are slow.
+
     t.wait_for("fake claude in work", 60);
     t.cmd(b".");
     t.wait_for("Type or speak", 20);
     t.ask("start a new tab on account two and create a simple calculator");
     t.wait_for("asked it to build", 60);
     assert!(home.join("tabs/calculator").is_dir(), "task folder");
-    t.send(b"\x01."); // close the panel to see the tab
+    t.send(b"\x01.");
     t.wait_gone("assistant · Claude", 30);
     t.wait_for("fake claude in calculator", 30);
-    // One prompt, both lines, submitted once: what the stub received (its
-    // screen may have wrapped it while the docked panel made it narrow).
+
     let submitted = home.join("tabs/calculator/submitted.txt");
     t.wait_file(
         &submitted,
         "Create a simple calculator app.\nKeep it tiny.\n",
         30,
     );
-    // On screen too, once the closed panel gave the pane its width back
-    // (the stub redraws on the resize).
+
     t.wait_for(
         "SUBMITTED: Create a simple calculator app. NL Keep it tiny.",
         30,
@@ -1182,8 +1102,7 @@ done
         1,
         "submitted once"
     );
-    // The user's own Enter still submits in that tab afterwards: once
-    // the text shows in its input, Enter of its own.
+
     t.send(b"next step");
     t.wait_for("> next step", 10);
     t.send(b"\r");
@@ -1191,9 +1110,6 @@ done
     assert_eq!(t.quit(), 0);
 }
 
-/// The stub itself: a paste and its Enter in one burst (how godterm used
-/// to send prompts) leave the prompt in the box; a CR of its own submits.
-/// This is the failure the assistant's delivery avoids.
 #[test]
 fn a_cr_in_the_paste_burst_is_a_newline() {
     if !have("python3") {
@@ -1257,9 +1173,6 @@ fn a_cr_in_the_paste_burst_is_a_newline() {
     let _ = child.kill();
 }
 
-/// "close all tabs in all accounts": one question for the whole set; a
-/// question back ("Do you close them?") is not a yes; one clear yes closes
-/// every tab, one summary.
 #[test]
 fn assistant_closes_a_batch_with_one_confirmation() {
     if !have("python3") {
@@ -1296,7 +1209,7 @@ done
     );
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("fake claude in work", 15);
-    // A second tab on account one: three tabs across two accounts.
+
     t.cmd(b"t");
     t.wait_for("New tab", 5);
     t.send(b"\r");
@@ -1307,7 +1220,7 @@ done
     t.wait_for("Close 3 tabs across 2 accounts?", 20);
     let ask = std::fs::read_to_string(home.join("ask.txt")).unwrap();
     assert!(ask.contains("needs_confirmation"), "{ask}");
-    // A question back is not a yes: nothing closes, it asks again.
+
     t.ask("Do you close them?");
     t.wait_for("Want me to close all three? Say yes.", 20);
     assert!(std::fs::read_to_string(home.join("done.txt"))
@@ -1317,7 +1230,7 @@ done
     t.wait_for("Closed all three tabs.", 20);
     let done = std::fs::read_to_string(home.join("done.txt")).unwrap();
     assert!(done.contains("\\\"closed\\\":3"), "{done}");
-    // One question, one yes: the reply log asked once.
+
     let screen = t.text();
     assert_eq!(
         screen.matches("Close 3 tabs across 2 accounts?").count(),
@@ -1327,8 +1240,6 @@ done
     assert_eq!(t.quit(), 0);
 }
 
-/// A follow up goes to the tab used last ("make it blue" after "create a
-/// calculator"), addressed as "last", not by guessing a number.
 #[test]
 fn assistant_follow_up_goes_to_the_last_tab() {
     if !have("python3") {
@@ -1366,9 +1277,7 @@ done
     t.wait_for("Opened calc", 30);
     t.ask("make it blue");
     t.wait_for("Asked calc to make it blue.", 30);
-    // It went to the last tab: delivered at once, or (a slow machine,
-    // where the tab is still busy with its first prompt) queued for it.
-    // Either way the tab itself is the proof, below.
+
     let out = std::fs::read_to_string(home.join("out-2.txt")).unwrap();
     assert!(out.contains("\\\"tab\\\":\\\"t3\\\""), "{out}");
     assert!(
@@ -1382,11 +1291,6 @@ done
     assert_eq!(t.quit(), 0);
 }
 
-/// The user's 14:06 sequence: open five tabs, move three to another
-/// account, one prompt to all five with a confirmation, "did you do it"
-/// in between, then "yes": every tab gets the prompt, verified. On the
-/// way the brain tries to redeem a token in the turn that issued it, and
-/// is refused.
 #[test]
 fn assistant_batch_after_moves_delivers_everywhere() {
     if !have("python3") {
@@ -1461,7 +1365,6 @@ for line in sys.stdin:
             "Send that prompt to 5 tabs on Bravo?",
         ),
         ("did you do it", "I am waiting for your yes."),
-        // The fake claude writes no transcript: typed in, no receipt yet.
         ("oh yeah I said yes", "Typed into 5 tabs"),
     ] {
         t.ask(said);
@@ -1472,7 +1375,7 @@ for line in sys.stdin:
         calls.contains("same turn"),
         "self confirmation refused: {calls}"
     );
-    // Every one of the five folders got the prompt, once.
+
     for d in ["job-1", "job-2", "job-3", "web-1", "web-2"] {
         let got = std::fs::read_to_string(home.join("tabs").join(d).join("submitted.txt"))
             .unwrap_or_default();
@@ -1485,17 +1388,12 @@ for line in sys.stdin:
     assert_eq!(t.quit(), 0);
 }
 
-/// A grok account: the tab runs the (stub) grok with its own GROK_HOME,
-/// --leader-socket and --always-approve, none of a parent grok's markers
-/// and no CLAUDE_CONFIG_DIR; the header shows the grok badge; the stub's
-/// approval prompt is answered with grok's own options. No real grok, no
-/// login, no prompt sent anywhere.
 #[test]
 fn grok_account_runs_isolated() {
     let home = make_home("grok", "");
     let slot = home.join("accounts").join("three");
     std::fs::create_dir_all(&slot).unwrap();
-    // A stand in login file for the stub only (no real grok runs here).
+
     std::fs::write(
         slot.join("auth.json"),
         r#"{"user":{"email":"g@example.com"},"key":"stub"}"#,
@@ -1527,7 +1425,7 @@ fn grok_account_runs_isolated() {
     let mut t = Tui::start(home.clone(), &[]);
     t.wait_for("Gamma", 15);
     t.wait_for("grok", 5);
-    // Show the grok pane and approve its prompt from the approval strip.
+
     let t0 = Instant::now();
     while !home.join("grok-args.txt").is_file() && t0.elapsed() < Duration::from_secs(15) {
         t.cmd(b"3");
@@ -1558,7 +1456,7 @@ fn grok_account_runs_isolated() {
     );
     t.wait_for("Allow once", 10);
     t.wait_for("waiting", 10);
-    // Ctrl-a y lists it; Enter... simpler: the always key from the strip.
+
     t.cmd(b"y");
     t.wait_for("approvals", 5);
     t.send(b"A");
@@ -1575,9 +1473,6 @@ fn grok_account_runs_isolated() {
     assert_eq!(t.quit(), 0);
 }
 
-/// "open all the html files" across five tabs: one batched list_dir, one
-/// open_path with all five files, a short factual reply. Nothing really
-/// opens (GODTERM_NO_OPEN).
 #[test]
 fn assistant_opens_every_html_file_in_one_call() {
     if !have("python3") {
@@ -1666,8 +1561,6 @@ for line in sys.stdin:
     assert_eq!(t.quit(), 0);
 }
 
-/// "what were my last sessions?": one sessions call, a grouped factual
-/// answer (Claude first, then Grok), subagents left out.
 #[test]
 fn assistant_lists_recent_sessions_grouped() {
     if !have("python3") {
@@ -1675,7 +1568,7 @@ fn assistant_lists_recent_sessions_grouped() {
     }
     let home = make_home("lastsess", "");
     let exe = env!("CARGO_BIN_EXE_godterm");
-    // A main ~/.claude fixture with a session and its subagent, and a main grok one.
+
     let p = home.join("main-claude/projects/-Users-x-api");
     std::fs::create_dir_all(p.join("s1/subagents")).unwrap();
     std::fs::write(p.join("s1.jsonl"), "{\"type\":\"user\",\"cwd\":\"/Users/x/api\",\"message\":{\"role\":\"user\",\"content\":\"fix the login flow\"}}\n{\"type\":\"ai-title\",\"aiTitle\":\"Fix login flow\"}\n").unwrap();
@@ -1730,8 +1623,6 @@ for line in sys.stdin:
     assert_eq!(t.quit(), 0);
 }
 
-/// A grok account whose usage API is unavailable: the footer mirrors
-/// grok's own status line ("Weekly limit left: 37%") within a refresh.
 #[test]
 fn grok_footer_follows_its_status_line() {
     let home = make_home("grokline", "");
@@ -1781,10 +1672,6 @@ fn have(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The wake word alone through the whole pipeline (say, whisper, the
-/// app): it answers and opens the follow up window, and the command said
-/// after a pause runs without the wake word. Runs only where `say`,
-/// ffmpeg, whisper and the default model exist; nothing is played aloud.
 #[test]
 fn voice_file_bare_wake_then_command() {
     let model = dirs::home_dir()
@@ -1824,7 +1711,6 @@ fn voice_file_bare_wake_then_command() {
     assert_eq!(t.quit(), 0);
 }
 
-/// Runs only where `say`, ffmpeg, whisper and the default model exist.
 #[test]
 fn voice_file_commands() {
     let model = dirs::home_dir()
@@ -1859,14 +1745,12 @@ fn voice_file_commands() {
     assert!(ok, "could not make the test recording");
     let t = Tui::start(home, &["--voice", "--voice-file", &wav.to_string_lossy()]);
     t.wait_for("voice", 15);
-    // Instant commands, straight from the recording.
+
     t.wait_for("now on", 60);
     t.wait_for("asleep until", 30);
     assert_eq!(t.quit(), 0);
 }
 
-/// The move picker's buttons work with a real mouse (SGR clicks through
-/// the terminal), with the assistant panel closed and open.
 #[test]
 fn move_confirmation_buttons_click() {
     let home = make_home("moveclick", "");
@@ -1876,14 +1760,14 @@ fn move_confirmation_buttons_click() {
         if panel {
             t.cmd(b".");
             t.wait_for("Type or speak", 5);
-            t.send(b"\x1b"); // the keys back to the grid
+            t.send(b"\x1b");
         }
-        // Cancel closes it, nothing moves.
+
         t.cmd(b"m");
         t.wait_for("keep the same folder", 5);
         t.click(" Cancel ");
         t.wait_gone("keep the same folder", 5);
-        // Move moves it.
+
         t.cmd(b"m");
         t.wait_for("keep the same folder", 5);
         let (_, row) = t.find(" Cancel ").unwrap();
@@ -1894,7 +1778,6 @@ fn move_confirmation_buttons_click() {
         t.click_at(c + 3, r);
         t.wait_gone("keep the same folder", 5);
         if panel {
-            // Back onto Alpha: its idle tab runs the session now.
             t.wait_gone("Press Enter to start claude", 10);
         } else {
             t.wait_for("tabs 2 ●", 10);
@@ -1902,10 +1785,6 @@ fn move_confirmation_buttons_click() {
     }
 }
 
-/// The voice onboarding (`--onboarding`): the welcome comes before any
-/// UI and Esc skips it for good; the steps can be gone through by typing
-/// ("skip", Ctrl-a J, "stop onboarding"). Voice pieces are pointed at
-/// paths that do not exist, so nothing is installed, heard or played.
 #[test]
 fn voice_onboarding_welcome_steps_and_skip() {
     let home = make_home("onboarding", "");
@@ -1915,7 +1794,7 @@ fn voice_onboarding_welcome_steps_and_skip() {
         "[voice]\nengine = \"whisper\"\nffmpeg = \"/nonexistent/ffmpeg\"\nwhisper_server = \"/nonexistent/whisper-server\"\nwhisper_cli = \"/nonexistent/whisper-cli\"\nmodel = \"/nonexistent/ggml.bin\"\nespeak = \"/nonexistent/espeak-ng\"\nkokoro_model = \"/nonexistent/kokoro.onnx\"\nkokoro_voices = \"/nonexistent/voices.bin\"\n",
     );
     std::fs::write(&cfg, t).unwrap();
-    // Esc on the welcome: skipped, recorded, the normal UI.
+
     let mut t = Tui::start(home.clone(), &["--onboarding"]);
     t.wait_for("Run all your coding agent sessions just by talking.", 15);
     t.wait_for("Turn voice on", 5);
@@ -1927,7 +1806,6 @@ fn voice_onboarding_welcome_steps_and_skip() {
     assert!(marker.starts_with("skipped"), "{marker}");
     t.quit_keep();
 
-    // Again: Enter shows what voice needs, c goes on by typing.
     let mut t = Tui::start(home.clone(), &["--onboarding"]);
     t.wait_for("Turn voice on", 15);
     t.send(b"\r");
@@ -1936,7 +1814,7 @@ fn voice_onboarding_welcome_steps_and_skip() {
     t.send(b"c");
     t.wait_for("voice tour · step 1 of 5", 5);
     t.wait_for("▸ Ask how something works", 5);
-    // Typed "skip" skips the step; Ctrl-a J too.
+
     t.ask("skip");
     t.wait_for("voice tour · step 2 of 5", 5);
     t.cmd(b"J");
@@ -1949,10 +1827,6 @@ fn voice_onboarding_welcome_steps_and_skip() {
     assert_eq!(t.quit(), 0);
 }
 
-/// Damaged state files at start (cut short by a crash or a full disk):
-/// GodTerm starts, moves them aside with a note and quits cleanly. A
-/// config.toml that does not parse is moved aside too, and setup is
-/// offered again instead of a refusal to start.
 #[test]
 fn damaged_state_files_do_not_stop_a_start() {
     let home = make_home("damaged", "");
@@ -1992,19 +1866,16 @@ fn damaged_state_files_do_not_stop_a_start() {
     t.quit_keep();
     let log = std::fs::read_to_string(home.join("godterm.log")).unwrap_or_default();
     assert!(!log.contains("panic"), "{log}");
-    // A clean quit writes whole files again.
+
     let st = std::fs::read_to_string(home.join("state.json")).unwrap();
     assert!(
         serde_json::from_str::<serde_json::Value>(&st).is_ok(),
         "{st}"
     );
 
-    // The config itself.
     std::fs::write(home.join("config.toml"), "claude_bin = \"/x\n[[account]\n").unwrap();
     let mut t = Tui::start(home.clone(), &[]);
-    // A damaged config starts over like a new home (no accounts; the
-    // welcome and the first account picker on a real terminal), with the
-    // old file moved aside and logged.
+
     t.wait_for("No accounts yet", 15);
     assert_eq!(backups("config.toml"), 1);
     let log = std::fs::read_to_string(home.join("godterm.log")).unwrap_or_default();

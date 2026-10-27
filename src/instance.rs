@@ -1,17 +1,9 @@
-//! One GodTerm per home: an exclusive lock on `<home>/godterm.lock`, held
-//! for the life of the TUI. A second start explains and points at the
-//! running one (the launcher focuses its window instead of opening
-//! another), so sessions never run twice and the control socket is never
-//! taken over.
-
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
-/// Held while this process runs the TUI.
 pub struct Lock(#[allow(dead_code)] File);
 
-/// Who holds the lock.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Holder {
     pub pid: u32,
@@ -47,8 +39,6 @@ fn try_lock(f: &File) -> bool {
     crate::platform::try_lock(f)
 }
 
-/// Who holds it, in a file of its own: on Windows the lock is mandatory,
-/// so nobody else can read the locked file itself.
 fn holder_path() -> PathBuf {
     crate::config::app_home().join("godterm.lock.json")
 }
@@ -67,11 +57,10 @@ fn read_holder(f: &mut File) -> Holder {
     serde_json::from_str(&s).unwrap_or_default()
 }
 
-/// Take the lock, or say who has it.
 pub fn acquire() -> Result<Lock, Holder> {
     let mut f = match open() {
         Ok(f) => f,
-        // No lock file possible (read only home): do not block starting.
+
         Err(_) => return Err(Holder::default()),
     };
     if !try_lock(&f) {
@@ -91,7 +80,6 @@ pub fn acquire() -> Result<Lock, Holder> {
     Ok(Lock(f))
 }
 
-/// The running instance, if any (without taking the lock).
 pub fn running() -> Option<Holder> {
     let mut f = std::fs::File::options()
         .read(true)
@@ -105,10 +93,8 @@ pub fn running() -> Option<Holder> {
     Some(read_holder(&mut f))
 }
 
-/// Bring the running instance's terminal window to the front.
 #[cfg(target_os = "macos")]
 pub fn focus(h: &Holder) -> bool {
-    // Tests (and GODTERM_NO_OPEN) never drive the user's terminal.
     if cfg!(test) || crate::config::env_var("NO_OPEN").is_some() {
         return false;
     }
@@ -169,14 +155,12 @@ mod tests {
         crate::config::testing::set_home(&home);
         assert!(running().is_none());
         let first = acquire().expect("first");
-        // flock is per open file: a second open in this process conflicts
-        // just like another process would.
+
         let second = acquire();
         assert_eq!(second.err().map(|h| h.pid), Some(std::process::id()));
         assert_eq!(running().map(|h| h.pid), Some(std::process::id()));
         drop(first);
-        // A process another test forks at this moment holds a copy of the
-        // descriptor until it execs (close on exec): give it a moment.
+
         let t0 = std::time::Instant::now();
         while running().is_some() && t0.elapsed() < std::time::Duration::from_secs(2) {
             std::thread::sleep(std::time::Duration::from_millis(20));

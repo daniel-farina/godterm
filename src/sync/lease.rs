@@ -1,25 +1,3 @@
-//! Conversation ownership (docs/SYNC.md 4): one machine owns a session
-//! at a time, through a lease on the state repo's `leases` branch.
-//!
-//! - `leases/<session-id>.json` = [`Lease`]: the owner's machine id, a
-//!   generation bumped on every change of hands, a pending take over
-//!   request and, once the owner let go, what it left behind (`released`:
-//!   the transcript's length and SHA-256).
-//! - `heartbeats/<machine-id>.json` = [`Beat`]: when that machine was last
-//!   alive. A lease is live while its owner's heartbeat is younger than
-//!   `lease_s` (10 min); heartbeats go out every `heartbeat_s` (2 min).
-//!
-//! Every change is a compare and swap: fetch `leases`, decide on what is
-//! there, commit on top of it, and `git push` without rebase or force. A
-//! push that is not a fast forward means another machine wrote first: the
-//! loop fetches and decides again. GitHub's atomic ref update is the
-//! lock. Time always comes in as an argument (`Ctx::now_ms`), so tests pin
-//! the clock.
-//!
-//! The working repo is a small bare clone of its own
-//! (`<app home>/sync/leases.git`, carrying the sync mark), apart from the
-//! state working copy, so a lease never waits for a long sync.
-
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -30,7 +8,6 @@ use std::process::Stdio;
 use super::git::{self, Cred, Pushed};
 use super::Ctx;
 
-/// `leases/<session-id>.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Lease {
     pub owner: String,
@@ -40,8 +17,7 @@ pub struct Lease {
     pub takeover: Option<Takeover>,
     #[serde(default)]
     pub released: Option<Released>,
-    /// The owner's label when it took the lease (for when its heartbeat
-    /// is gone).
+
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
 }
@@ -54,19 +30,17 @@ pub struct Takeover {
     pub label: String,
 }
 
-/// What the owner left when it let go: the transcript as it pushed it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Released {
     pub len: u64,
     pub sha256: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub at: String,
-    /// The machine that asked for it, if one did.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
 }
 
-/// `heartbeats/<machine-id>.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Beat {
     pub at: String,
@@ -74,46 +48,41 @@ pub struct Beat {
     pub label: String,
 }
 
-/// The `leases` branch as last read.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Board {
     pub leases: BTreeMap<String, Lease>,
     pub beats: BTreeMap<String, Beat>,
-    /// The commit it was read from.
+
     #[serde(default)]
     pub head: Option<String>,
-    /// When it was fetched (ms; 0: never).
+
     #[serde(default)]
     pub fetched_ms: i64,
 }
 
-/// A session as seen from one machine.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
-    /// No lease: nobody claimed it yet.
     Free,
-    /// Ours. `takeover`: another machine asks for it.
+
     Mine {
         gen: u64,
         takeover: Option<Takeover>,
     },
-    /// Its owner let go (`by`, maybe us): free to take, and the transcript
-    /// must reach `len` bytes with `sha256` before a resume.
+
     Released {
         by: String,
         len: u64,
         sha256: String,
         to: Option<String>,
     },
-    /// Owned elsewhere, and that machine is alive.
+
     Live {
         owner: String,
         label: String,
         beat_ms: i64,
         takeover: Option<Takeover>,
     },
-    /// Owned elsewhere, but its heartbeat is older than the lease: it
-    /// never blocks anyone.
+
     Stale {
         owner: String,
         label: String,
@@ -122,27 +91,23 @@ pub enum Status {
 }
 
 impl Status {
-    /// May this machine write the session (push its bytes)?
     pub fn writable(&self) -> bool {
         matches!(self, Status::Free | Status::Mine { .. })
     }
 }
 
-/// Milliseconds since 1970 of an RFC 3339 time (0 when unreadable).
 pub fn ms_of(s: &str) -> i64 {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|d| d.timestamp_millis())
         .unwrap_or(0)
 }
 
-/// RFC 3339 of milliseconds since 1970.
 pub fn rfc(ms: i64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
         .unwrap_or_default()
         .to_rfc3339()
 }
 
-/// A session id that is safe as a file name on the branch.
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -152,7 +117,6 @@ pub fn valid_id(id: &str) -> bool {
 }
 
 impl Board {
-    /// When `machine` last beat (ms), if ever.
     pub fn beat_ms(&self, machine: &str) -> Option<i64> {
         self.beats.get(machine).map(|b| ms_of(&b.at))
     }
@@ -171,7 +135,6 @@ impl Board {
             .unwrap_or_else(|| crate::paths::head(machine, 8).to_string())
     }
 
-    /// Is `machine` alive at `now` (a heartbeat under `lease_ms` old)?
     pub fn alive(&self, machine: &str, now: i64, lease_ms: i64) -> bool {
         self.beat_ms(machine)
             .is_some_and(|b| now.saturating_sub(b) < lease_ms)
@@ -214,41 +177,38 @@ impl Board {
     }
 }
 
-/// What a machine wants done with a session's lease.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
-    /// Take it if nobody live holds it.
     Acquire,
-    /// Ask the live owner to let go (or take it when free).
+
     Request,
-    /// Take it whoever holds it (the user said yes).
+
     TakeOverNow,
-    /// Let go of ours, leaving the transcript as pushed.
-    Release { len: u64, sha256: String },
-    /// Still ours? (a heartbeat's check)
+
+    Release {
+        len: u64,
+        sha256: String,
+    },
+
     #[cfg_attr(not(test), allow(dead_code))]
     Keep,
 }
 
-/// How an operation went.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
-    /// Ours now (or still). `prior` is what it was before.
     Acquired { gen: u64, prior: Status },
-    /// Someone live holds it; nothing written.
+
     Held(Status),
-    /// The request is on the lease.
+
     Requested(Status),
-    /// Let go.
+
     Released,
-    /// Not ours any more (`by` holds it, or it was released).
+
     Lost(Status),
-    /// Ours, nothing to change (Keep), with any request on it.
+
     Kept { takeover: Option<Takeover> },
 }
 
-/// Decide one operation on the board as read: the lease to write (if
-/// any) and the outcome. Pure: the clock and the machine come in.
 pub fn decide(
     board: &Board,
     sid: &str,
@@ -337,25 +297,21 @@ pub fn decide(
     }
 }
 
-/// The leases repo: a bare clone of the state repo holding `leases` (and
-/// `main`, for reading manifests without the state working copy).
 pub struct Repo {
     pub dir: PathBuf,
     cred: Option<Cred>,
 }
 
-/// One prepared compare and swap, not pushed yet (tests interleave two).
 pub struct Prepared {
     pub board: Board,
     pub outcomes: Vec<(String, Outcome)>,
-    /// The commit to push, when anything changed.
+
     pub commit: Option<String>,
 }
 
 static INDEX_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Repo {
-    /// Open (made the first time) `<app home>/sync/leases.git`.
     pub fn open(ctx: &Ctx) -> Result<Repo> {
         let d = ctx.sync_dir().join("leases.git");
         let r = ctx.remote();
@@ -380,7 +336,6 @@ impl Repo {
         })
     }
 
-    /// Fetch `leases` and read it.
     pub fn fetch(&self, now: i64) -> Result<Board> {
         git::fetch(&self.dir, "leases", self.cred.as_ref())?;
         let mut b = self.read("refs/remotes/origin/leases")?;
@@ -388,18 +343,15 @@ impl Repo {
         Ok(b)
     }
 
-    /// Fetch `main` (the manifests) into `refs/remotes/origin/main`.
     pub fn fetch_main(&self) -> Result<()> {
         git::fetch(&self.dir, "main", self.cred.as_ref())
     }
 
-    /// A file of `main` as last fetched.
     pub fn main_file(&self, path: &str) -> Option<Vec<u8>> {
         let spec = format!("refs/remotes/origin/main:{path}");
         git::run_bytes(&self.dir, &["cat-file", "blob", &spec], None).ok()
     }
 
-    /// The board at `rev` (empty when the branch does not exist yet).
     pub fn read(&self, rev: &str) -> Result<Board> {
         let Some(head) = git::rev(&self.dir, rev) else {
             return Ok(Board::default());
@@ -440,7 +392,6 @@ impl Repo {
         Ok(b)
     }
 
-    /// Many blobs in one `git cat-file --batch`.
     fn cat_batch(&self, shas: &[String]) -> Result<Vec<Vec<u8>>> {
         if shas.is_empty() {
             return Ok(vec![]);
@@ -481,8 +432,6 @@ impl Repo {
         Ok(v)
     }
 
-    /// Fetch, decide every op, commit on top of what is there. Nothing is
-    /// pushed yet.
     pub fn prepare(&self, ctx: &Ctx, ops: &[(String, Op)], beat: bool) -> Result<Prepared> {
         for (sid, _) in ops {
             if !valid_id(sid) {
@@ -506,8 +455,7 @@ impl Repo {
             }
             outcomes.push((sid.clone(), o));
         }
-        // A lease always goes out with a fresh heartbeat: an owner without
-        // one would read as stale at once.
+
         if beat || wrote_lease {
             let hb = Beat {
                 at: rfc(now),
@@ -573,8 +521,6 @@ impl Repo {
         res
     }
 
-    /// Push a prepared commit: Done (it is the branch now) or Rejected
-    /// (another machine wrote first).
     pub fn push(&self, p: &Prepared) -> Result<Pushed> {
         let Some(c) = &p.commit else {
             return Ok(Pushed::Done);
@@ -590,8 +536,6 @@ impl Repo {
         Ok(r)
     }
 
-    /// The whole compare and swap: prepare and push until a push goes
-    /// through (or the branch keeps moving).
     pub fn apply(
         &self,
         ctx: &Ctx,
@@ -629,7 +573,6 @@ fn message(ops: &[(String, Op)], label: &str) -> String {
     }
 }
 
-/// The board as last fetched, kept for offline starts.
 pub fn board_path(ctx: &Ctx) -> PathBuf {
     ctx.sync_dir().join("leases.json")
 }
@@ -645,7 +588,6 @@ pub fn load_board(ctx: &Ctx) -> Option<Board> {
     serde_json::from_slice(&std::fs::read(board_path(ctx)).ok()?).ok()
 }
 
-/// Fetch the board (saved for offline use); offline: the last one saved.
 pub fn current(ctx: &Ctx) -> (Option<Board>, bool) {
     match Repo::open(ctx).and_then(|r| r.fetch(ctx.now_ms)) {
         Ok(b) => {
@@ -695,7 +637,7 @@ mod tests {
             b.status("s1", "me", 10 * MIN, lease),
             Status::Stale { .. }
         ));
-        // Live: an acquire is refused; stale: it never blocks.
+
         let (w, o) = decide(&b, "s1", &Op::Acquire, "me", "Linux", 9 * MIN, lease);
         assert!(w.is_none() && matches!(o, Outcome::Held(Status::Live { .. })));
         let (w, o) = decide(&b, "s1", &Op::Acquire, "me", "Linux", 11 * MIN, lease);
@@ -719,7 +661,7 @@ mod tests {
         assert_eq!(l.owner, "other", "a request does not change hands");
         assert_eq!(l.takeover.as_ref().unwrap().by, "me");
         assert!(matches!(o, Outcome::Requested(_)));
-        // The owner sees it, and lets go.
+
         let mut b2 = b.clone();
         b2.leases.insert("s1".into(), l);
         let (_, o) = decide(&b2, "s1", &Op::Keep, "other", "Mac", MIN, lease);
@@ -734,7 +676,7 @@ mod tests {
         let r = l.released.clone().unwrap();
         assert_eq!((r.len, r.to.as_deref()), (10, Some("me")));
         b2.leases.insert("s1".into(), l);
-        // Released: the requester takes it, knowing what to wait for.
+
         let (w, o) = decide(&b2, "s1", &Op::Acquire, "me", "Linux", MIN, lease);
         assert_eq!(w.unwrap().gen, 4);
         assert!(matches!(
@@ -744,10 +686,10 @@ mod tests {
                 ..
             }
         ));
-        // Take over now never waits, live or not.
+
         let (w, _) = decide(&b, "s1", &Op::TakeOverNow, "me", "Linux", MIN, lease);
         assert_eq!(w.unwrap().owner, "me");
-        // The old owner's next check finds the loss.
+
         let mut b3 = b.clone();
         b3.leases.insert(
             "s1".into(),

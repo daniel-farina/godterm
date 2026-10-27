@@ -1,8 +1,3 @@
-//! Tab row labels: each from its real state, in precedence, "finished"
-//! only from a real Working to Ready turn the user did not see, cleared
-//! when they look, kept across a save and restore, in get_state, and
-//! drawn at the end of the row (shortened when the list is narrow).
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -45,7 +40,6 @@ fn idle_all(app: &mut App) {
     }
 }
 
-/// A real turn in tab `t` of pane `s`: Working held 5 s, then Ready.
 fn real_turn(app: &mut App, s: usize, t: usize) {
     show(app, s, t, "esc to interrupt");
     app.tick();
@@ -73,40 +67,40 @@ fn each_label_comes_from_its_real_state_in_precedence() {
     let uid = app.panes[1].tabs[0].uid;
     app.focus = 0;
     assert_eq!(app.tab_label(1, 0), None);
-    // Queued: a delivery waiting for it.
+
     app.deliver(uid, "hello");
     assert_eq!(app.tab_label(1, 0), Some(TabLabel::Queued));
-    // Finished beats queued.
+
     app.panes[1].tabs[0].finished = true;
     assert_eq!(app.tab_label(1, 0), Some(TabLabel::Finished));
-    // Error: claude exited with a code.
+
     app.panes[1].tabs[0].state = PaneState::Exited(Some(1));
     assert_eq!(app.tab_label(1, 0), Some(TabLabel::Error));
-    // A clean exit is no error.
+
     app.panes[1].tabs[0].state = PaneState::Exited(Some(0));
     assert_eq!(app.tab_label(1, 0), Some(TabLabel::Finished));
     app.panes[1].tabs[0].state = PaneState::Failed("no claude".into());
     assert_eq!(app.tab_label(1, 0), Some(TabLabel::Error));
-    // Limit: the failover scan saw it on a running tab.
+
     app.panes[1].tabs[0].state = PaneState::Running;
     show(&mut app, 1, 0, "You've hit your limit · resets 5pm");
     app.failover_scan();
     assert!(app.limit_hit.contains(&uid));
     assert_eq!(app.tab_label(1, 0), Some(TabLabel::Limit));
-    // Confirm: an answerable question names it (uids or uid).
+
     app.pending_confirms
         .push(pending(serde_json::json!({"uids": [uid]})));
     assert_eq!(app.tab_label(1, 0), Some(TabLabel::Confirm));
     app.pending_confirms[0].plan = serde_json::json!({"uid": uid, "key": "x"});
     assert_eq!(app.tab_label(1, 0), Some(TabLabel::Confirm));
-    // Another tab's question is not this one's.
+
     app.pending_confirms[0].plan = serde_json::json!({"uids": [uid + 1000]});
     assert_eq!(app.tab_label(1, 0), Some(TabLabel::Limit));
     app.pending_confirms[0].plan = serde_json::json!({"uids": [uid]});
-    // Blocked beats everything.
+
     app.panes[1].tabs[0].set_activity(Activity::Permission);
     assert_eq!(app.tab_label(1, 0), Some(TabLabel::Blocked));
-    // Answered: down the list again.
+
     app.panes[1].tabs[0].set_activity(Activity::Ready);
     app.pending_confirms.clear();
     assert_eq!(app.tab_label(1, 0), Some(TabLabel::Limit));
@@ -126,22 +120,22 @@ fn finished_only_from_a_real_turn_and_cleared_when_seen() {
     let tab = &mut app.panes[s].tabs[t];
     tab.state = PaneState::Running;
     tab.set_activity(Activity::Starting);
-    // A start or restore (Starting to Ready): nothing.
+
     show(&mut app, s, t, "? for shortcuts");
     app.tick();
     assert_eq!(app.panes[s].tabs[t].activity, Activity::Ready);
     assert!(!app.panes[s].tabs[t].finished);
-    // A spinner flicker: nothing.
+
     show(&mut app, s, t, "esc to interrupt");
     app.tick();
     show(&mut app, s, t, "? for shortcuts");
     app.tick();
     assert!(!app.panes[s].tabs[t].finished);
-    // A real turn out of view: finished.
+
     real_turn(&mut app, s, t);
     assert!(app.panes[s].tabs[t].finished);
     assert_eq!(app.tab_label(s, t), Some(TabLabel::Finished));
-    // Working again clears it.
+
     show(&mut app, s, t, "esc to interrupt");
     app.tick();
     assert!(!app.panes[s].tabs[t].finished);
@@ -149,14 +143,14 @@ fn finished_only_from_a_real_turn_and_cleared_when_seen() {
     show(&mut app, s, t, "? for shortcuts");
     app.tick();
     assert!(app.panes[s].tabs[t].finished);
-    // Focusing it (a click on its row goes through jump_to) clears it.
+
     app.jump_to(s, t);
     assert!(!app.panes[s].tabs[t].finished);
     assert_eq!(app.tab_label(s, t), None);
-    // A turn that ends while the user watches it is never marked.
+
     real_turn(&mut app, s, t);
     assert!(!app.panes[s].tabs[t].finished);
-    // Marked, then the user switches to it by keys: the next tick clears.
+
     app.focus = 0;
     real_turn(&mut app, s, t);
     assert!(app.panes[s].tabs[t].finished);
@@ -184,7 +178,7 @@ fn finished_survives_a_save_and_restore_and_the_rest_do_not() {
     assert!(fresh.panes[s].tabs[t].finished);
     fresh.focus = if s == 0 { 1 } else { 0 };
     assert_eq!(fresh.tab_label(s, t), Some(TabLabel::Finished));
-    // Unmarked tabs save no field at all.
+
     app.panes[1].tabs[0].finished = false;
     let json = serde_json::to_string(&app.snapshot_state()).unwrap();
     assert!(!json.contains("finished"));
@@ -219,7 +213,6 @@ fn get_state_and_the_turn_state_carry_the_label() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The text of row `y` of the buffer.
 fn row_text(t: &ratatui::Terminal<ratatui::backend::TestBackend>, y: u16) -> String {
     let b = t.backend().buffer();
     (0..b.area.width).map(|x| b[(x, y)].symbol()).collect()
@@ -254,7 +247,7 @@ fn the_label_is_drawn_in_the_row_wide_and_narrow() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("render");
     one_pane(&mut app);
-    // Wide list: the full words, on the tab's own row.
+
     app.panes[0].sidebar_w = Some(40);
     let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
     crate::confirm_click_tests::draw(&mut app, &mut t);
@@ -262,13 +255,13 @@ fn the_label_is_drawn_in_the_row_wide_and_narrow() {
     assert!(row.contains(" finished "), "{row}");
     let (_, row) = find_row(&t, "waiter").expect("the row");
     assert!(row.contains(" blocked "), "{row}");
-    // The row is tinted (not inverted): its background is not the plain one.
+
     let b = t.backend().buffer();
     let bg = (0..b.area.width)
         .map(|x| b[(x, y)].bg)
         .find(|c| *c != ratatui::style::Color::Reset);
     assert!(bg.is_some(), "a tinted row");
-    // Narrow list: the short form.
+
     app.panes[0].sidebar_w = Some(crate::ui::SIDEBAR_MIN);
     let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
     crate::confirm_click_tests::draw(&mut app, &mut t);
@@ -280,7 +273,7 @@ fn the_label_is_drawn_in_the_row_wide_and_narrow() {
     assert!(row.contains(" done ") && !row.contains("finished"), "{row}");
     let (_, row) = find_row(&t, "waiter").expect("the row");
     assert!(row.contains(" blk ") || row.contains('●'), "{row}");
-    // The list folded to numbers: the header counts them.
+
     app.panes[0].sidebar_collapsed = true;
     let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
     crate::confirm_click_tests::draw(&mut app, &mut t);
@@ -336,7 +329,7 @@ fn handed_to_background_agents_is_not_finished_until_they_are_done() {
     tab.set_activity(Activity::Starting);
     show(&mut app, s, t, "? for shortcuts");
     app.tick();
-    // A real turn that ends with agents still running in the background.
+
     show(&mut app, s, t, "esc to interrupt");
     app.tick();
     app.panes[s].tabs[t].activity_since = Instant::now() - Duration::from_secs(5);
@@ -347,7 +340,7 @@ fn handed_to_background_agents_is_not_finished_until_they_are_done() {
         !app.panes[s].tabs[t].finished,
         "not finished: work still runs"
     );
-    // A finish is an event for the assistant (never said by GodTerm).
+
     let finished_event = |app: &App| {
         app.assistant
             .events
@@ -364,10 +357,10 @@ fn handed_to_background_agents_is_not_finished_until_they_are_done() {
     };
     assert!(!finished_event(&app), "no finished event yet");
     assert_eq!(app.tab_label(s, t), Some(TabLabel::Background));
-    // Still running a while later: still not finished.
+
     app.tick();
     assert_eq!(app.tab_label(s, t), Some(TabLabel::Background));
-    // The background work is done: finished now, and announced.
+
     show(&mut app, s, t, ">\n  ? for shortcuts");
     app.tick();
     assert!(app.panes[s].tabs[t].finished);

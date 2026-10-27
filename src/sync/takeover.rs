@@ -1,19 +1,3 @@
-//! Moving a conversation between machines (docs/SYNC.md 4): the
-//! transcript work around a lease.
-//!
-//! - [`reconcile`]: before a resume (and after a lost lease) the local
-//!   transcript is brought to what the state repo holds: remote ahead is
-//!   appended; local bytes the repo never got are kept, as this machine's
-//!   to push when it owns the session, or else as a forked session (a new
-//!   id, "<title> (fork from <machine>, <date>)"), with the repo's version
-//!   placed under the original id. Never merged, never rewritten.
-//! - [`release`]: the owner pushes its final bytes, then lets go with
-//!   their length and SHA-256, which the next owner waits for.
-//!
-//! Neither runs while the session's CLI runs here: the app stops it
-//! first (or has not started it yet). Only GodTerm's own repos are read
-//! or written; project repos are never touched.
-
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -24,11 +8,8 @@ use super::lease::{self, Op, Outcome};
 use super::state_repo::{self, Lock};
 use super::Ctx;
 
-/// How long a lease step waits for a running sync to finish.
 pub const LOCK_WAIT: Duration = Duration::from_secs(90);
 
-/// A session's files here, by account and id (Claude:
-/// `projects/*/<id>.jsonl`; Grok: `sessions/*/<id>/`).
 pub fn local_session(ctx: &Ctx, acct: &str, sid: &str) -> Option<SessionRef> {
     if !lease::valid_id(sid) {
         return None;
@@ -66,8 +47,6 @@ pub fn local_session(ctx: &Ctx, acct: &str, sid: &str) -> Option<SessionRef> {
     })
 }
 
-/// The length and SHA-256 that identify a session's transcript (Claude:
-/// its file; Grok: its files' names, lengths and hashes).
 pub fn fingerprint_files(files: &[(String, u64, String)]) -> (u64, String) {
     if let [(_, len, sha)] = files {
         return (*len, sha.clone());
@@ -97,29 +76,22 @@ pub fn fingerprint_manifest(m: &Manifest) -> (u64, String) {
     fingerprint_files(&v)
 }
 
-/// What a reconcile did.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Reconciled {
-    /// How the local transcript stood against the repo's.
     pub cmp: Option<Cmp>,
-    /// Remote bytes were appended (or the session placed here).
+
     pub pulled: bool,
-    /// Local bytes the repo did not have became this new session.
+
     pub forked: Option<String>,
-    /// There is no copy in the repo (nothing to pull).
+
     pub local_only: bool,
 }
 
-/// The session's manifest on `main`, as the leases repo last fetched it.
 pub fn remote_manifest(repo: &lease::Repo, acct: &str, sid: &str) -> Option<Manifest> {
     let b = repo.main_file(&format!("sessions/{acct}/{sid}.json"))?;
     serde_json::from_slice(&b).ok()
 }
 
-/// Bring a session's local transcript in line with the state repo (see
-/// the module notes). `owner`: this machine owns it, so local bytes past
-/// the repo's are its own to push; otherwise they become a fork. The
-/// caller makes sure its CLI does not run here.
 pub fn reconcile(ctx: &Ctx, acct: &str, sid: &str, owner: bool) -> Result<Reconciled> {
     let _lock = Lock::wait(ctx, LOCK_WAIT)?;
     let repo = lease::Repo::open(ctx)?;
@@ -148,7 +120,7 @@ pub fn reconcile_with(
         });
     };
     let read = |c: &chunks::Chunk| super::shards::read(ctx, c);
-    // Compare every file; mixed directions count as diverged.
+
     let mut cmp = Cmp::Equal;
     let local_files = s.files();
     let mut per: Vec<(chunks::FileMan, PathBuf, Cmp)> = vec![];
@@ -171,7 +143,7 @@ pub fn reconcile_with(
         };
         per.push((f, p, c));
     }
-    // A Grok file the repo does not have is local bytes too.
+
     if s.provider != "claude"
         && local_files
             .iter()
@@ -219,7 +191,7 @@ pub fn reconcile_with(
             } else {
                 chunks::fork_grok(&s.path, &ctx.machine.name(), &date)?
             };
-            // The repo's version takes the original id.
+
             if s.provider != "claude" {
                 for (n, p) in &local_files {
                     if !per.iter().any(|(f, _, _)| &f.name == n) {
@@ -246,17 +218,12 @@ pub fn reconcile_with(
     Ok(out)
 }
 
-/// After an acquire that found the session released: the transcript
-/// here must match what the last owner left.
 pub fn matches_release(ctx: &Ctx, acct: &str, sid: &str, len: u64, sha: &str) -> bool {
     local_session(ctx, acct, sid)
         .and_then(|s| fingerprint_local(&s).ok())
         .is_some_and(|(l, h)| l == len && h == sha)
 }
 
-/// Let go of a session this machine owns: push its final bytes (a sync),
-/// check the repo has all of them, then release with their length and
-/// hash. The CLI is stopped already.
 pub fn release(ctx: &Ctx, acct: &str, sid: &str) -> Result<Outcome> {
     let s = local_session(ctx, acct, sid).context("the transcript is not here")?;
     let want = fingerprint_local(&s)?;
@@ -311,11 +278,8 @@ pub fn release(ctx: &Ctx, acct: &str, sid: &str) -> Result<Outcome> {
     )
 }
 
-/// What the app asks the lease worker for.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
-    /// Before a resume (`pull`: bring the transcript up to date first) or
-    /// for a session id just seen in a tab (no pull: it is running).
     Acquire {
         sid: String,
         acct: String,
@@ -325,37 +289,34 @@ pub enum Cmd {
         sid: String,
         acct: String,
     },
-    /// The user said yes: take it whoever holds it.
+
     TakeOverNow {
         sid: String,
         acct: String,
     },
-    /// Its CLI stopped: push the final bytes and let go.
+
     Release {
         sid: String,
         acct: String,
     },
-    /// Its CLI stopped after a lost lease (or a conflict): local bytes
-    /// the repo does not have become a fork.
+
     Fork {
         sid: String,
         acct: String,
         owner: bool,
         label: String,
     },
-    /// "Work offline anyway": resume it now, fork on reconnect.
+
     Offline {
         sid: String,
         acct: String,
     },
-    /// Fetch now.
+
     Poll,
 }
 
-/// What the lease worker tells the app.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// Ours: the tab may resume. `offline`: from the last board seen.
     Acquired {
         sid: String,
         offline: bool,
@@ -363,7 +324,7 @@ pub enum Event {
         forked: Option<String>,
         warn: Option<String>,
     },
-    /// Someone else holds it: read only.
+
     Held {
         sid: String,
         status: lease::Status,
@@ -373,14 +334,13 @@ pub enum Event {
         sid: String,
         status: lease::Status,
     },
-    /// No longer ours (`label` has it), or (`conflict`) the repo's copy
-    /// moved on while this machine worked offline.
+
     Lost {
         sid: String,
         label: String,
         conflict: bool,
     },
-    /// Another machine asks for one of ours.
+
     Asked {
         sid: String,
         label: String,
@@ -405,15 +365,12 @@ pub enum Event {
     },
 }
 
-/// The lease worker's state and logic (one per app, on its own thread).
 #[derive(Default)]
 pub struct Engine {
-    /// Sessions the app runs as their owner (sid -> account), kept by the
-    /// app.
     pub held: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>,
-    /// Requested from another machine: taken once it lets go.
+
     pub wanted: std::collections::BTreeMap<String, String>,
-    /// Resumed offline: checked on reconnect.
+
     pub offline: std::collections::BTreeSet<String>,
     asked: std::collections::BTreeSet<String>,
     lost: std::collections::BTreeSet<String>,
@@ -437,8 +394,6 @@ impl Engine {
         self.held.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Seconds until the next poll: quicker while waiting on a request
-    /// or offline.
     pub fn interval_s(&self, ctx: &Ctx) -> u64 {
         let hb = ctx.sync().heartbeat_s.clamp(10, 3600);
         if !self.online {
@@ -450,12 +405,10 @@ impl Engine {
         }
     }
 
-    /// Whether a heartbeat is due.
     pub fn beat_due(&self, ctx: &Ctx) -> bool {
         ctx.now_ms - self.last_beat_ms >= ctx.sync().heartbeat_s.max(1) as i64 * 1000 - 1000
     }
 
-    /// Acquire and (when asked) pull before the resume.
     fn acquire(
         &mut self,
         ctx: &Ctx,
@@ -478,7 +431,6 @@ impl Engine {
                 self.board = Some(board);
             }
             Err(e) => {
-                // Offline (or the repo is unreachable): the last board.
                 self.online = false;
                 let b = self.board.clone().or_else(|| lease::load_board(ctx));
                 for (sid, acct, _) in list {
@@ -543,7 +495,7 @@ impl Engine {
                         warn: None,
                     };
                 }
-                // Pull first: the transcript as the last owner left it.
+
                 let r = (|| -> Result<Reconciled> {
                     let _lock = Lock::wait(ctx, LOCK_WAIT)?;
                     let mut last = Reconciled::default();
@@ -612,7 +564,6 @@ impl Engine {
         }
     }
 
-    /// Run what the app asked (acquires batched in one swap).
     pub fn handle(&mut self, ctx: &Ctx, cmds: Vec<Cmd>) -> Vec<Event> {
         let repo = match lease::Repo::open(ctx) {
             Ok(r) => r,
@@ -724,8 +675,6 @@ impl Engine {
             .remove(sid);
     }
 
-    /// The periodic look: fetch (and beat when due), then see what
-    /// changed for the sessions held here and the ones asked for.
     pub fn poll(&mut self, ctx: &Ctx) -> Vec<Event> {
         match lease::Repo::open(ctx) {
             Ok(repo) => {
@@ -795,8 +744,7 @@ impl Engine {
                         _ => {}
                     }
                 }
-                // Resumed offline with no lease, or its owner let go or
-                // died: take it now, then check nothing moved meanwhile.
+
                 lease::Status::Free => take.push((sid.clone(), acct.clone(), false)),
                 lease::Status::Released { .. } | lease::Status::Stale { .. } if was_offline => {
                     take.push((sid.clone(), acct.clone(), false))
@@ -830,7 +778,7 @@ impl Engine {
                             });
                         }
                     }
-                    // Taken quietly: the tab runs on.
+
                     Event::Acquired { .. } => {}
                     other => ev.push(other),
                 }
@@ -840,8 +788,7 @@ impl Engine {
                 check.push((s, a));
             }
         }
-        // Back online after working offline: if the repo's copy moved on
-        // meanwhile, this machine's part has to become a fork.
+
         if !check.is_empty() && repo.fetch_main().is_ok() {
             for (sid, acct) in check {
                 if self.diverged(ctx, repo, &acct, &sid) && self.lost.insert(sid.clone()) {
@@ -853,7 +800,7 @@ impl Engine {
                 }
             }
         }
-        // Asked for and let go: take it.
+
         let wanted: Vec<(String, String)> = self
             .wanted
             .iter()
@@ -879,8 +826,6 @@ impl Engine {
         ev
     }
 
-    /// Has the repo's copy of a session moved past what is here (so this
-    /// machine's bytes cannot simply be appended)? Read only.
     fn diverged(&self, ctx: &Ctx, repo: &lease::Repo, acct: &str, sid: &str) -> bool {
         let (Some(m), Some(s)) = (
             remote_manifest(repo, acct, sid),
@@ -904,7 +849,6 @@ impl Engine {
     }
 }
 
-/// Who holds it, in words.
 pub fn label_of(st: &lease::Status) -> String {
     match st {
         lease::Status::Live { label, .. } | lease::Status::Stale { label, .. } => label.clone(),

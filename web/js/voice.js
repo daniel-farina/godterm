@@ -1,24 +1,3 @@
-// Voice: this browser as GodTerm's mic and speakers, in every mode the Mac
-// has: push to talk, open mic (every utterance is a command) and wake word,
-// plus direct mode (talk to the tab shown) and brainstorm. The mic goes to
-// GodTerm as 16 kHz mono PCM16 (binary kind 3) or, when Web Audio gives no
-// samples, as a recording GodTerm decodes (kind 4); the assistant's speech
-// comes back as WAV clips (kind 2), played back to back.
-//
-// What the user sees is the truth: the mic buttons and a voice bar show
-// starting / listening / hearing you / thinking / speaking with a live mic
-// level, hands free has a big clear state, and a failure stays on screen
-// with what went wrong until it is dismissed or voice works again.
-//
-// The mic is opened by the first method of mic.js that gives sound
-// (worklet, then script processor, then recorder), chosen automatically,
-// logged, and remembered on this device. ?micmethod=script (or worklet,
-// recorder, auto) forces one; ?micbreak=worklet,script makes those give
-// nothing, to test the fallbacks.
-//
-// Debugging: ?voicedebug=1 (remembered, ?voicedebug=0 turns it off) logs
-// the mic once a second to the console and GodTerm's log, and GodTerm logs
-// what it gets; &voicetest=5 holds push to talk for 5 s after connecting.
 import { $, h, on, store, toast, skeleton, failRow } from './util.js';
 import { send, sendBin, KIND, tool, conn } from './conn.js';
 import { S } from './state.js';
@@ -30,41 +9,34 @@ import { METHODS, openCapture, recorderType } from './mic.js';
 const KIND_REC = 4;
 const q = new URLSearchParams(location.search);
 
-// Playback: its own context, started inside a touch (iOS).
 let ctx = null, playAt = 0;
 const playing = new Set();
-// Clips that came while the audio output was locked (iOS): played on a tap.
+
 let held = [];
-// The agent's voice here: a gain every clip goes through (volume 0..1 and
-// a speaker mute), kept per browser. Replies still come while muted.
+
 const vol0 = +store.get('voice.spkvol', 1);
 let spkVol = Number.isFinite(vol0) ? Math.max(0, Math.min(1, vol0)) : 1;
 let spkMuted = store.get('voice.spkmute', false) === true;
 let outGain = null;
-// The mic mute: the mode stays, the capture track is disabled (the
-// browser's recording indicator says so) and only silence goes to GodTerm,
-// so its engine keeps its timing. Replies still play. Kept per browser.
+
 let micMuted = store.get('voice.micmute', false) === true;
 
-// The mic: the stream, the capture on it (mic.js) and the mode it serves:
-// '' (not sending), push, open, wake, or test (the settings' mic test).
 let stream = null, cap = null, mode = '';
-// The phase shown for push to talk: '' starting asking listening sending
-// thinking. `err` stays until dismissed or the next working start.
+
 let phase = '', err = null, hint = '';
-// The page is in the background or the phone locked: iOS stopped the mic.
+
 let away = false, lost = '';
-// Mic level (0..1) and counts for the checks and the debug log.
+
 let level = 0, peakAt = 0, levelDb = -90;
 const st = { frames: 0, nonzero: 0, sumsq: 0, n: 0, peak: 0, since: 0, started: 0, any: false, sound: false, total: 0 };
-// The last few frames per second (the meter's proof that frames exist).
+
 let fps = 0, fpsN = 0, fpsAt = 0;
-// What the capture said about itself (worklet / script processor).
+
 let diag = null;
 
 const DEBUG_KEY = 'gt-voice-debug';
 let debug = false;
-// (Read now: main.js takes the query off the address.)
+
 let voiceTest = +q.get('voicetest') || 0;
 try {
   const d = q.get('voicedebug');
@@ -79,16 +51,12 @@ try {
   if (b != null) store.set('voice.break', b === '0' ? '' : b);
 }
 const broken = () => String(store.get('voice.break', '') || '').split(',').filter(Boolean);
-// The hands free mode the toggle starts: open or wake.
+
 let hfMode = store.get('voice.hf', 'open') === 'wake' ? 'wake' : 'open';
-// The mode picked in the mic menu (the header's mic): off, push (a Talk
-// button stays on screen), open or wake (a strip under the header says
-// so, with the live level). Kept on this device.
+
 const PICKS = ['off', 'push', 'open', 'wake'];
 let pick = PICKS.includes(store.get('voice.pick', 'off')) ? store.get('voice.pick', 'off') : 'off';
-// When the last mic audio came (samples, or GodTerm's level of a
-// recording): with none for a moment the page says "no audio", never
-// "listening".
+
 let audioAt = 0, sessionAt = 0;
 const NOAUDIO_MS = 2000;
 const noAudio = () => !!mode && performance.now() - Math.max(audioAt, sessionAt) > NOAUDIO_MS;
@@ -116,7 +84,6 @@ function audioCtx() {
   return ctx;
 }
 
-// iOS plays nothing until audio started inside a gesture: a silent buffer.
 function unlock() {
   const c = audioCtx();
   if (!c) return;
@@ -137,10 +104,6 @@ function fail(code, text) {
   paint();
 }
 
-// GodTerm's side: `voice {on, mode}` makes this browser its mic and
-// speakers; push to talk then presses and releases with `voice {talk}`.
-// Push to talk stays on for a while after the last press, so the reply is
-// heard here, then gives voice back to the Mac.
 const IDLE_MS = 90000;
 let serverOn = '', idleT = 0;
 
@@ -170,9 +133,6 @@ function micError(e) {
   return ['mic', 'The mic did not start: ' + (e?.message || n || e)];
 }
 
-// Echo cancellation keeps the reply's own voice out of the mic, so only
-// the user talking over it can cut it off (GodTerm decides the barge-in on
-// this audio); noise suppression and gain control keep the level steady.
 async function getMic() {
   const want = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
   let s;
@@ -192,7 +152,6 @@ async function getMic() {
 
 const dbOf = (ss, n) => Math.max(-90, 20 * Math.log10(Math.sqrt(ss / Math.max(1, n)) / 32768 + 1e-9));
 
-// A level for the meter (dBFS -60..0 as 0..1, fast up, slow down).
 function setLevel(db) {
   levelDb = db;
   const l = Math.max(0, Math.min(1, (db + 60) / 60));
@@ -202,14 +161,10 @@ function setLevel(db) {
   meter();
 }
 
-// Mic samples (PCM16 at 16 kHz) from the worklet or the script processor:
-// counted always (the checks need them between presses), sent while a mode
-// is on.
 let zeros = null;
 function onPcm(buf) {
   let a = new Int16Array(buf);
-  // Muted: silence in place of what the mic gave (the track is disabled
-  // too; this holds where disabling it does not silence it).
+
   if (micMuted) { if (zeros?.length !== a.length) zeros = new Int16Array(a.length); a = zeros; }
   let ss = 0, pk = 0, nz = 0;
   for (let i = 0; i < a.length; i++) {
@@ -237,14 +192,13 @@ function onPcm(buf) {
   if (mode && mode !== 'test') sendBin(KIND.AUDIO_IN, 0, a);
 }
 
-// Recorder pieces: to GodTerm (it decodes them and sends the level back).
 let recPieces = 0;
 function onChunk(bytes) {
   recPieces++;
   if (!st.any) { st.any = true; paint(); }
   if (mode !== 'test') sendBin(KIND_REC, 0, bytes);
 }
-// GodTerm's level of the decoded recording.
+
 let recLevelAt = 0, recMs = 0, recHeard = false;
 function onRecLevel(m) {
   recLevelAt = audioAt = performance.now();
@@ -260,7 +214,6 @@ function onDiag(d) {
   diag = d;
 }
 
-// The method order: forced, else the one that worked here last, then the rest.
 function order() {
   const f = store.get('voice.force', '');
   if (METHODS.includes(f)) return [f];
@@ -276,15 +229,8 @@ function resetStats() {
   audioAt = 0;
 }
 
-// Open the capture by the first method that gives sound. Resolves once one
-// is open (`first`), then keeps checking in the background: a method that
-// gives no samples (or only zeros) in its first moment is replaced by the
-// next, and the one that works is remembered.
 let probing = 0, probeDone = null;
-// While no method is known to work here, a recorder runs beside the first
-// tries, keeping its pieces: when Web Audio gives nothing, it becomes the
-// capture with everything said since the press (nothing is lost to the
-// tries).
+
 let shadow = null;
 function startShadow() {
   if (shadow || !window.MediaRecorder || store.get('voice.method', '') || !order().includes('recorder') || order()[0] === 'recorder') return;
@@ -311,7 +257,7 @@ async function openFirst(list) {
     let c;
     try {
       if (m === 'recorder' && shadow) {
-        // The recorder that ran beside: what it kept goes now.
+
         c = shadow;
         shadow = null;
         cap = c;
@@ -338,13 +284,12 @@ async function openFirst(list) {
   return null;
 }
 
-// The background check of the method just opened.
 async function probe(o) {
   if (!o) return;
   let { c, rest, run } = o;
   for (;;) {
     if (c.method === 'recorder') {
-      // Its proof is GodTerm's level of the decoded audio.
+
       setTimeout(() => {
         if (run !== probing || cap !== c || !mode || mode === 'test') return;
         if (!recLevelAt && recPieces) dlog(`recorder: ${recPieces} pieces sent, GodTerm decoded nothing yet`);
@@ -358,7 +303,7 @@ async function probe(o) {
       if (run !== probing || cap !== c) return;
       const t = performance.now() - t0;
       if (st.sound) { dropShadow(); remember(c, `${st.total} frames`); return; }
-      // Frames but only zeros: a quiet room is never exact zeros for long.
+
       if (t >= 700 && !st.any) break;
       if (t >= 2000) break;
     }
@@ -383,7 +328,6 @@ function remember(c, why) {
   liveInfo();
 }
 
-// A recording for GodTerm (the recorder method): starts now.
 function beginRec() {
   if (!cap || cap.method !== 'recorder' || cap.recording()) return;
   cap.start((mime) => { if (mode !== 'test') send({ t: 'voice', rec: mime }); });
@@ -406,16 +350,14 @@ async function start(m) {
   hint = '';
   lost = '';
   paint();
-  // Inside the gesture: the playback context (iOS starts it only here).
+
   if (!audioCtx()) { mode = ''; phase = ''; fail('noaudio', 'This browser has no Web Audio.'); return false; }
   unlock();
-  // Talking over a reply cuts it off (GodTerm stops it too).
+
   if (m === 'push' && (playing.size || held.length || S.voice?.speaking)) hush();
   try {
     const t0 = performance.now();
-    // Still open from the last press (kept while voice is on: iOS asks for
-    // the mic again on every getUserMedia in an installed app, and that
-    // prompt takes the touch away).
+
     const live = stream && cap && stream.getAudioTracks().some((t) => t.readyState === 'live');
     if (live) {
       await cap.resume();
@@ -425,15 +367,14 @@ async function start(m) {
       return ok;
     }
     release();
-    // A prompt is up when this takes a while: say what to do.
+
     const ask = setTimeout(() => { if (phase === 'starting') { phase = 'asking'; paint(); } }, 700);
     try { stream = await getMic(); } finally { clearTimeout(ask); }
     if (phase === 'asking') phase = 'starting';
     if (!mode) { release(); return false; }
     watchTrack(stream);
     startShadow();
-    // The capture context is made now, after the mic opened (on iOS one
-    // made before can run without ever getting the mic's samples).
+
     const o = await openFirst(order());
     if (!o) throw Object.assign(new Error('no way to read the mic worked here'), { name: 'NoCapture' });
     if (!mode) { release(); return false; }
@@ -449,10 +390,6 @@ async function start(m) {
   }
 }
 
-// The phone's log showed a kept mic that stayed "live" but gave nothing on
-// the next press (iOS after playing the reply): after 0.6 s of nothing the
-// capture is built again (a fresh context, from the same method on), after
-// 1.4 s the mic itself is opened again and every method gets its try.
 function keptCheck() {
   const at = st.started;
   const quiet = () => mode && st.started === at && !st.any && cap && cap.method !== 'recorder';
@@ -501,8 +438,6 @@ function began(m, t0) {
   return true;
 }
 
-// No sound a moment after the start, after every method had its try: say so
-// (the mic is muted by the system, another app has it).
 function checkAudio() {
   const at = st.started;
   setTimeout(() => {
@@ -519,8 +454,6 @@ function checkAudio() {
   }, 4500);
 }
 
-// iOS stops the mic in the background or when the screen locks: the track
-// ends or mutes. Shown, and resumed when the app is back.
 function watchTrack(s) {
   const tr = s.getAudioTracks()[0];
   if (!tr) return;
@@ -539,7 +472,7 @@ async function backAgain() {
   dlog(`back in the foreground: mic ${tr ? tr.readyState + (tr.muted ? ' muted' : '') : 'none'}, ${m || 'not sending'}`);
   if (ok) { await cap?.resume(); lost = ''; paint(); return; }
   if (!handsFree()) { release(); lost = ''; paint(); return; }
-  // Hands free: the mic again (it may need a tap: then the bar asks).
+
   probing++;
   mode = '';
   release();
@@ -547,8 +480,6 @@ async function backAgain() {
 }
 let resumeMode = '';
 
-// The mic itself closes (the browser's mic indicator goes off): when voice
-// goes off here, a failure, or the connection drops.
 function release() {
   probing++;
   dropShadow();
@@ -565,7 +496,7 @@ function stop() {
   const was = mode;
   if (!was) return;
   if (was === 'push') {
-    // A little more audio after the release, so the last word is not cut.
+
     phase = 'sending';
     paint();
     const done = () => {
@@ -576,7 +507,7 @@ function stop() {
       paint();
       voiceOffSoon();
     };
-    // (Once the method is settled: a recorder that took over ends its file.)
+
     setTimeout(async () => {
       await wait(probeDone || Promise.resolve(), 1600);
       if (cap?.method === 'recorder') await endRec();
@@ -593,10 +524,8 @@ function stop() {
   paint();
 }
 
-// After a release: "thinking" until GodTerm shows it transcribing or the
-// assistant busy, then until both are done (or a few seconds of neither).
 let thinkingUntil = 0;
-// Hands free: what was heard last, shown for a moment.
+
 let heardText = '', heardUntil = 0, lastHeard = null;
 
 function shown() {
@@ -607,14 +536,14 @@ function shown() {
   if (held.length) return 'locked';
   if (mode === 'push') return phase === 'listening' && noAudio() ? 'noaudio' : phase === 'listening' && !st.any ? 'starting' : phase;
   if (mode === 'test') return 'test';
-  // The mic off: nothing to say (an error still shows).
+
   if (pick === 'off' && !err) return '';
   const busy = serverOn && (v.status === 'transcribing' || S.assistant?.busy);
   if (handsFree()) {
     if (phase === 'starting' || phase === 'asking') return phase;
     if (noAudio()) return 'noaudio';
     if (micMuted) return 'muted';
-    // Nothing from the mic yet: not "listening" until it is.
+
     if (!st.any) return 'starting';
     if (v.speaking) return 'speaking';
     if (v.status === 'transcribing') return 'heard';
@@ -696,8 +625,6 @@ function ensureBar() {
   return bar;
 }
 
-// The level as text: "-42 dB" (dBFS, held and falling back as the bar
-// does), or "no audio" while none comes.
 const dbText = () => (noAudio() ? 'no audio' : !st.any && !audioAt ? '' : `${Math.max(-90, Math.round(Math.max(levelDb, level > 0.005 ? level * 60 - 60 : -90)))} dB`);
 let dbAt = 0;
 function meter() {
@@ -706,7 +633,7 @@ function meter() {
     const m = document.querySelector(sel);
     if (m) m.style.transform = s;
   }
-  // The numbers a few times a second (readable, and cheap).
+
   const now = performance.now();
   if (now - dbAt < 120) return;
   dbAt = now;
@@ -717,13 +644,6 @@ function meter() {
   }
 }
 
-// One wording for the mic everywhere (the header's pill, the chat head,
-// the Talk button, the strip, the floating bar, the mic menu, the voice
-// sheet): a mode is "Voice off", "Push to talk", "Open mic" or "Wake
-// word"; a state follows a middle dot in lower case ("· muted",
-// "· listening", "· speaking"). `micWords(mode, state, muted)` gives
-// {mode, state, text ("Open mic · muted"), short (the phone pill's word),
-// State (the state capitalised, for a line of its own)}.
 const MODE = { off: 'Voice off', push: 'Push to talk', open: 'Open mic', wake: 'Wake word' };
 const STATE = {
   starting: 'starting the mic',
@@ -752,14 +672,13 @@ export function micWords(m = pick, s = shown(), mu = micMuted) {
   if (s === 'error') state = STATE.error;
   return { mode, state, text: state ? `${mode} \u00b7 ${state}` : mode, short: on && mu ? 'Muted' : SHORT[m] || '', State: upFirst(state) };
 }
-// A state on a line of its own (the floating bar): the same words, capitalised.
+
 const TEXT = new Proxy({}, { get: (_, k) => (STATE[k] ? upFirst(STATE[k]) : undefined) });
 
 const wakeWord = () => S.voice?.wake_word || 'hey god';
-// "hey god" -> "Hey God", for labels.
+
 const wakeLabel = () => wakeWord().replace(/\b\w/g, (c) => c.toUpperCase());
 
-// The mic icon for each mode (the header's mic shows the one picked).
 const MIC = '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>';
 const ICON = {
   off: MIC + '<path d="M4 3l16 18"/>',
@@ -767,22 +686,21 @@ const ICON = {
   open: MIC + '<path d="M2 8v6M22 8v6"/>',
   wake: MIC + '<path d="M2.5 6.5l1.5 1.5M21.5 6.5L20 8"/>',
 };
-// The mic mute and the agent's voice here (speaker, quieter, muted).
+
 const MIC_OFF = ICON.off;
 const SPK = '<path d="M4 9.5v5h3.5L12 18V6L7.5 9.5H4z"/>';
 const spkIcon = () => svg(SPK + (spkMuted || spkVol === 0 ? '<path d="M16 9.5l5 5M21 9.5l-5 5"/>' : spkVol < 0.5 ? '<path d="M15.5 9.5a3.5 3.5 0 0 1 0 5"/>' : '<path d="M15.5 9.5a3.5 3.5 0 0 1 0 5M18 7a7 7 0 0 1 0 10"/>'));
 const spkWord = () => (spkMuted ? 'muted' : Math.round(spkVol * 100) + '%');
-// The header's mic says the mode in a word (the whole name on a desktop).
+
 const svg = (inner) => `<svg viewBox="0 0 24 24" aria-hidden="true">${inner}</svg>`;
 const CHECK = svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>');
 
-// The header's mic: the mode at a glance (icon, a short badge, a color).
 let headPick = null;
 function paintHeader(state) {
   for (const id of ['#b-ptt', '#b-ptt2']) {
     const el = $(id);
     if (!el) continue;
-    // Muted: the slashed mic in clay, the mode's word kept.
+
     const mu = micMuted && pick !== 'off';
     const w = micWords(pick, state, micMuted);
     if (el.dataset.mode !== pick || headPick !== pick + mu + w.text) {
@@ -800,8 +718,6 @@ function paintHeader(state) {
   headPick = pick + (micMuted && pick !== 'off') + micWords(pick, state, micMuted).text;
 }
 
-// The strip under the header while open mic or wake word is picked: the
-// mode, what it does now, the live level in dB, and a tap to change.
 let strip = null;
 function ensureStrip() {
   if (strip) return strip;
@@ -820,8 +736,7 @@ function ensureStrip() {
     if (a) {
       e.stopPropagation();
       if (a.dataset.act === 'unmute') {
-        // Lift GodTerm's own mute, then open the mic again. An older
-        // GodTerm ignores the request and refuses again: say how instead.
+
         send({ t: 'voice', unmute_mac: true });
         const m = resumeMode || pick; lost = ''; resumeMode = ''; err = null; unmuteAt = Date.now();
         setTimeout(() => start(m), 400);
@@ -831,8 +746,7 @@ function ensureStrip() {
     }
     openMicMenu(strip);
   });
-  // A wide screen keeps it in the actions row, at the right next to the
-  // mic button; narrower ones show it as a strip under the header.
+
   const wide = matchMedia('(min-width:1200px)');
   const place = () => {
     const row = $('.tr2'), mic = $('#b-ptt'), gap = $('.tr2-gap');
@@ -893,33 +807,74 @@ function paintStrip(s) {
   a.textContent = { stop: 'Stop', unmute: 'Unmute', start: err ? 'Retry' : lost === 'tap' ? 'Resume' : 'Start' }[act] || '';
 }
 
-// Push to talk: a big Talk button stays on screen (hold it while you
-// talk), with its state and the level while held.
-let talk = null;
+let talk = null, talkBox = null, ctxBtn = null;
 function ensureTalk() {
   if (talk) return talk;
   talk = h('button', { id: 'talk', type: 'button', hidden: true, 'aria-label': 'Hold to talk' },
     h('span.tk-ic', { html: svg(MIC) }), h('span.tk-l', {}, 'Talk'),
     h('span.tk-lv', {}, h('span.tk-meter', {}, h('i')), h('span.tk-db')));
   ptt(talk);
+
+  ctxBtn = h('button', { id: 'ctxbtn', type: 'button', 'aria-label': 'Context: what the assistant looks at', title: 'Context: all tabs or one tab' }, h('span.cx-l'));
+  ctxBtn.onclick = () => { const r = ctxBtn.getBoundingClientRect(); import('./chat.js').then((m) => m.scopeMenu({ x: r.left, y: r.top - 6, up: true })); };
+  const grip = h('div', { id: 'talkgrip', role: 'separator', tabindex: 0, 'aria-label': 'Move the Talk button', title: 'Drag to move, double click to put back' }, h('i'));
+  talkBox = h('div', { id: 'talkbox' }, grip, talk, ctxBtn);
+  dragTalk(grip);
+  const paintCtx = () => import('./chat.js').then((m) => { ctxBtn.firstChild.textContent = m.scopeLabel(); });
+  on('scope', paintCtx); on('state', paintCtx); paintCtx();
   homeTalk();
-  // The assistant panel can cover the terminals (a phone, a squeezed
-  // window): Talk then sits in the panel, above its composer.
+
   on('layout', homeTalk);
   return talk;
+}
+
+function dragTalk(grip) {
+  const set = (x, y) => { talkBox.style.setProperty('--tdx', x + 'px'); talkBox.style.setProperty('--tdy', y + 'px'); };
+  const off = () => ({ x: parseFloat(talkBox.style.getPropertyValue('--tdx')) || 0, y: parseFloat(talkBox.style.getPropertyValue('--tdy')) || 0 });
+  const fit = (x, y) => {
+    const host = talkBox.parentElement?.getBoundingClientRect(), r = talkBox.getBoundingClientRect(), o = off();
+    if (!host) return { x, y };
+
+    const l0 = r.left - o.x, t0 = r.top - o.y;
+    return { x: Math.min(Math.max(x, host.left - l0), host.right - r.width - l0), y: Math.min(Math.max(y, host.top - t0), host.bottom - r.height - t0) };
+  };
+  const saved = store.get('talkpos', null);
+  if (saved) set(saved.x, saved.y);
+  let d = null;
+  grip.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    d = { px: e.clientX, py: e.clientY, ...off() };
+  });
+  grip.addEventListener('pointermove', (e) => { if (d) { const p = fit(d.x + e.clientX - d.px, d.y + e.clientY - d.py); set(p.x, p.y); } });
+  const end = () => { if (!d) return; d = null; store.set('talkpos', off()); };
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) grip.addEventListener(ev, end);
+  grip.addEventListener('dblclick', () => { set(0, 0); store.set('talkpos', null); });
+  grip.addEventListener('keydown', (e) => {
+    const k = { ArrowLeft: [-16, 0], ArrowRight: [16, 0], ArrowUp: [0, -16], ArrowDown: [0, 16] }[e.key];
+    if (!k) return;
+    e.preventDefault();
+    const o = off(), p = fit(o.x + k[0], o.y + k[1]);
+    set(p.x, p.y);
+    store.set('talkpos', p);
+  });
+
+  addEventListener('resize', () => { const o = off(), p = fit(o.x, o.y); set(p.x, p.y); });
 }
 function homeTalk() {
   if (!talk) return;
   const main = $('#main');
   const covered = $('#app')?.classList.contains('chat-open') && main && getComputedStyle(main).visibility === 'hidden';
   const host = covered ? $('#chat') : ($('#panes') || main);
-  if (host && talk.parentElement !== host) host.append(talk);
+  if (host && talkBox.parentElement !== host) host.append(talkBox);
 }
 
 function paintTalk(s) {
   const t = ensureTalk();
   const on = pick === 'push';
   if (t.hidden === on) t.hidden = !on;
+  talkBox.hidden = !on;
   document.body.classList.toggle('ptt', on);
   if (!on) return;
   const st2 = err ? 'error' : mode === 'push' ? s || 'listening' : s === 'sending' || s === 'thinking' || s === 'speaking' ? s : 'idle';
@@ -931,8 +886,6 @@ function paintTalk(s) {
   t.setAttribute('aria-pressed', String(mode === 'push'));
 }
 
-// The mic menu: the four modes (the current one checked), direct mode for
-// the tab shown, and the voice settings.
 let menuAnchor = null, menuSkip = false;
 function openMicMenu(anchor) {
   if (menuSkip) { menuSkip = false; return; }
@@ -979,7 +932,7 @@ function paint() {
   const om = $('#b-openmic');
   if (om) {
     om.setAttribute('aria-pressed', String(handsFree()));
-    // The same words as the header's mic pill.
+
     om.textContent = micWords(pick, state, micMuted).text;
   }
   paintStrip(s);
@@ -1004,12 +957,9 @@ function paint() {
   else if (s === 'speaking') { text = TEXT.speaking; act = 'stop'; sub = extra; }
   else if (s) { text = TEXT[s] || upFirst(s); sub = extra; }
   else if (hint) text = hint;
-  // Open mic and wake word say it all in the strip; the floating bar is
-  // for push to talk, a reply waiting, and failures.
+
   const inStrip = (pick === 'open' || pick === 'wake') && !engineErr && s !== 'locked';
-  // Push to talk on a phone: the Talk button (and the header pill) show
-  // listening, sending and thinking; the bar is for a reply waiting,
-  // speaking (its Stop), no audio and failures.
+
   const inTalk = pick === 'push' && !err && !engineErr && talk && !talk.hidden && ['listening', 'sending', 'thinking', 'starting'].includes(s);
   b.hidden = !text || inStrip || inTalk || sheetKind === 'voice';
   b.dataset.state = err || engineErr ? 'error' : s || 'idle';
@@ -1026,8 +976,6 @@ function paint() {
   if (sheetKind === 'voice') paintSheet();
 }
 
-// Hold to talk on `btn` (the Talk button, the chat's mic while push to
-// talk is picked). The chat's mic opens the mic menu in the other modes.
 function ptt(btn, menuElse = false) {
   if (!btn) return;
   let tap = false;
@@ -1036,7 +984,7 @@ function ptt(btn, menuElse = false) {
     tap = false;
     if (menuElse && pick !== 'push') { tap = true; return; }
     if (handsFree()) {
-      // Hands free already listens: a press while it speaks cuts in.
+
       if (playing.size || S.voice?.speaking) { hush(); send({ t: 'voice', hush: true }); }
       return;
     }
@@ -1051,8 +999,7 @@ function ptt(btn, menuElse = false) {
     starting = null;
     if (!ok) return;
     if (!pressed) {
-      // Released while the mic was starting (a permission prompt takes
-      // the touch away): nothing was said yet.
+
       if (cap?.method === 'recorder') endRec();
       mode = '';
       phase = '';
@@ -1072,11 +1019,10 @@ function ptt(btn, menuElse = false) {
   btn.addEventListener('pointercancel', up);
   btn.addEventListener('lostpointercapture', up);
   btn.addEventListener('contextmenu', (e) => e.preventDefault());
-  // No text selection or callout on a long press (iOS).
+
   btn.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
 }
 
-// The mode picked in the mic menu (or the voice sheet, Settings).
 export const voicePick = () => pick;
 export { openVoiceSheet, openMicMenu };
 export function setMode(m) {
@@ -1100,7 +1046,6 @@ export function setMode(m) {
   start(m);
 }
 
-// The mic mute (the strip's mic button, the menu, M, the voice sheet).
 function muteTrack() {
   for (const t of stream?.getAudioTracks() || []) t.enabled = !micMuted;
 }
@@ -1118,9 +1063,6 @@ export function setMicMuted(on) {
   paint();
 }
 
-// The agent's voice here: volume (0..1) and mute, applied to the gain.
-// While GodTerm decides whether speech over the reply is a barge-in, it
-// ducks the reply (`audio_duck {level}`), as it does on the Mac's speakers.
 let duck = 1;
 const spkGain = () => (spkMuted ? 0 : spkVol * duck);
 function applyGain() {
@@ -1139,7 +1081,7 @@ export function setSpeaker({ volume, muted } = {}) {
   if (volume != null && Number.isFinite(+volume)) {
     spkVol = Math.max(0, Math.min(1, +volume));
     store.set('voice.spkvol', spkVol);
-    // Turning it up from muted means hearing it.
+
     if (spkMuted && spkVol > 0 && muted == null) { spkMuted = false; store.set('voice.spkmute', false); }
   }
   if (muted != null) { spkMuted = !!muted; store.set('voice.spkmute', spkMuted); }
@@ -1147,7 +1089,7 @@ export function setSpeaker({ volume, muted } = {}) {
   for (const r of document.querySelectorAll('.vol-row')) paintVol(r);
   paint();
 }
-// A volume row: the speaker (a tap mutes) and a slider, live.
+
 function volRow(cls) {
   const b = h('button.vr-b', { type: 'button', onclick: (e) => { e.stopPropagation(); setSpeaker({ muted: !spkMuted }); } });
   const r = h('input.vr-r', { type: 'range', min: 0, max: 100, step: 5, 'aria-label': 'The agent\'s voice volume here',
@@ -1170,11 +1112,6 @@ function paintVol(row) {
   row.querySelector('.vr-s').textContent = spkMuted ? 'Muted in this browser: replies show as text' : 'In this browser';
 }
 
-// Speech from GodTerm: WAV clips (PCM16 mono), played back to back in the
-// order they came, with no gap. One log line per reply.
-// `gen` goes up on every stop: a clip still on its way through the chain
-// (waiting for the context or a decode) when the reply is cut off is
-// dropped, never played after the stop.
 let chain = Promise.resolve(), gen = 0;
 const reply = { clips: 0, secs: 0, late: 0, t0: 0, quietT: 0 };
 function enqueue(bytes) {
@@ -1182,7 +1119,6 @@ function enqueue(bytes) {
   chain = chain.then(() => (g === gen ? play(bytes, g) : null)).catch((e) => dlog('play failed: ' + (e?.message || e)));
 }
 
-// A WAV clip read directly (no decodeAudioData: in order and at once).
 function wavBuffer(c, bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes.byteLength < 44 || dv.getUint32(0) !== 0x52494646) return null;
@@ -1204,10 +1140,6 @@ function wavBuffer(c, bytes) {
   return null;
 }
 
-// No clicks between clips, no crackle at the top: a 4 ms fade at each
-// edge of a clip (its first and last samples are rarely zero, and the
-// browser plays clips one after the other), and a clip that reaches full
-// scale is scaled under it instead of clipping.
 let hotClips = 0;
 function smooth(buf) {
   const ch = buf.getChannelData(0), n = ch.length;
@@ -1229,7 +1161,7 @@ async function play(bytes, g = gen) {
     await wait(c.resume().catch(() => {}), 300);
     if (g !== gen) return;
     if (c.state !== 'running') {
-      // Locked (iOS without a recent tap): wait for a tap on Play.
+
       held.push(bytes);
       if (held.length === 1) dlog('reply held: audio context ' + c.state);
       paint();
@@ -1261,7 +1193,7 @@ async function play(bytes, g = gen) {
   s.connect(outGain || c.destination);
   const now = c.currentTime;
   if (!playing.size || playAt < now) {
-    // The first clip, or the next one came after the last ended (late).
+
     if (playing.size || reply.clips) reply.late++;
     playAt = now + 0.03;
   }
@@ -1277,7 +1209,7 @@ async function play(bytes, g = gen) {
     playing.delete(s);
     if (!playing.size) {
       reply.quietT = setTimeout(replyDone, 700);
-      // (A clip a moment late in the same reply is no end.)
+
       clearTimeout(playOffT);
       playOffT = setTimeout(() => { if (!playing.size) sendPlaying(false); }, 250);
     }
@@ -1287,10 +1219,6 @@ async function play(bytes, g = gen) {
   if (serverOn === 'push' && !mode) voiceOffSoon();
 }
 
-// GodTerm is told when this page plays speech (`voice {playing}`): it
-// treats the mic as hearing the reply while it plays here, also when that
-// is later than it thinks (clips held for a tap on iOS, a slow network),
-// so talking over it is a barge-in and the reply's echo is not a request.
 let playSent = false, playOffT = 0;
 function sendPlaying(on) {
   clearTimeout(playOffT);
@@ -1307,8 +1235,6 @@ function replyDone() {
   Object.assign(reply, { clips: 0, secs: 0, late: 0 });
 }
 
-// The reply was cut off (a barge-in, Stop, a press of Talk): silent at
-// once, and nothing queued or still on its way plays after.
 function hush() {
   gen++;
   for (const s of playing) { try { s.onended = null; s.stop(); } catch {} }
@@ -1322,7 +1248,6 @@ function hush() {
   paint();
 }
 
-// GodTerm's answer to a `voice` frame.
 function onVoice(m) {
   if (m.web_tts_list !== undefined) { ttsList = m; paintTts(); return; }
   if (m.web_tts !== undefined) {
@@ -1343,9 +1268,15 @@ function onVoice(m) {
     release();
     phase = '';
     serverOn = '';
-    // GodTerm's own mic mute (Ctrl-a X on the Mac): offer to lift it here.
+
     if (m.code === 'muted' && Date.now() - unmuteAt < 5000) fail('mac-muted', 'Still muted: press Ctrl-a X on the Mac (unmuting from here needs a GodTerm restart)');
-    else if (m.code === 'muted') fail('mac-muted', 'GodTerm\'s mic is muted on the Mac');
+    else if (m.code === 'muted' && was) {
+
+      send({ t: 'voice', unmute_mac: true });
+      unmuteAt = Date.now();
+      setTimeout(() => start(was), 400);
+      return;
+    } else if (m.code === 'muted') fail('mac-muted', 'GodTerm\'s mic is muted on the Mac');
     else fail('server', 'GodTerm refused voice: ' + (m.error || 'no reason given'));
     if (was) dlog('refused while ' + was);
     return;
@@ -1364,9 +1295,6 @@ function onVoice(m) {
   paint();
 }
 
-// --- The voice sheet: mode, direct, brainstorm, the mic and settings.
-
-// Settings that make sense from a phone (the rest are the Mac's devices).
 const KEYS = ['voice.tts', 'voice.tts_engine', 'voice.kokoro_voice', 'voice.grok.voice', 'voice.tts_voice', 'voice.tts_speed', 'voice.tts_volume',
   'voice.wake_words', 'voice.wake_sensitivity', 'voice.wake_follow_up_s', 'voice.open_mic_sleep_min', 'voice.barge_in', 'voice.barge_margin_db',
   'voice.barge_in_min_words', 'voice.barge_in_duck', 'voice.direct_reply', 'voice.instant_commands', 'voice.end_silence_ms', 'voice.engine', 'voice.language', 'voice.speaker_lock'];
@@ -1438,7 +1366,7 @@ function paintSheet() {
 
 function settingRow(s) {
   const k = s.kind;
-  // Saved by GodTerm at once (the user's own change, as in its Settings).
+
   const save = (value) => { if (!send({ t: 'voice', set: { key: s.key, value } })) toast('Not connected: not saved'); };
   let input;
   const v = String(s.value ?? '');
@@ -1459,9 +1387,6 @@ function settingRow(s) {
   return h('label.row', {}, h('span', {}, s.label, h('small', {}, s.help ? String(s.help).split('. ')[0] : '')), input);
 }
 
-// The voice replies to this browser are spoken in (GodTerm's Kokoro
-// af_heart unless picked here), kept on this device and sent to GodTerm
-// on every connect. The Mac's own voice is its setting below.
 const TTS_DEFAULT = { engine: 'kokoro', voice: 'af_heart' };
 const ttsChoice = () => { const c = store.get('voice.webtts', null); return c && typeof c === 'object' && c.engine ? c : null; };
 let ttsList = null, ttsToast = false;
@@ -1480,8 +1405,7 @@ function setTts(c) {
   ttsToast = true;
   sendTts();
 }
-// The voice choice for this browser, as a box for a sheet (the voice
-// sheet, Settings). Filled once GodTerm lists the voices.
+
 export function ttsBox() {
   const box = h('div.tts-box');
   if (!ttsList) send({ t: 'voice', web_tts_list: true });
@@ -1494,7 +1418,7 @@ function paintTts() {
 function paintTtsBox(box) {
   const L = ttsList?.web_tts_list;
   if (!L) {
-    // Grey bars while GodTerm lists the voices; after 6 s, say so with Retry.
+
     if (!box.waited) { box.waited = setTimeout(() => { if (!ttsList && box.isConnected) box.replaceChildren(failRow('GodTerm did not list the voices', () => { send({ t: 'voice', web_tts_list: true }); box.waited = 0; paintTtsBox(box); }, 'The voice list')); }, 6000); }
     box.replaceChildren(skeleton(1, '.sm'));
     return;
@@ -1539,7 +1463,7 @@ function openVoiceSheet() {
     store.set('voice.force', v === 'auto' ? '' : v);
     if (v === 'auto') store.set('voice.method', '');
     if (cap && v !== 'auto' && cap.method !== v) {
-      // Reopen the mic with that method.
+
       const m = mode;
       stop();
       if (m && m !== 'push') start(m);
@@ -1570,20 +1494,18 @@ function openVoiceSheet() {
 }
 
 export function initVoice() {
-  // The header's mic: a tap opens the mic menu (the mode, direct, the
-  // settings). A tap on it while the menu is open closes it.
+
   const hm = $('#b-ptt');
   if (hm) {
     addEventListener('pointerdown', (e) => { if (menuOpen() && menuAnchor && menuAnchor.contains(e.target)) menuSkip = true; }, true);
     hm.addEventListener('click', () => openMicMenu(hm));
   }
-  // The chat's mic: hold to talk in push to talk, else the menu.
+
   ptt($('#b-ptt2'), true);
   const om = $('#b-openmic');
   if (om) om.addEventListener('click', () => openMicMenu(om));
   $('#b-voice')?.addEventListener('click', openVoiceSheet);
-  // M mutes or unmutes the mic while a mode is on, unless typing (a text
-  // field, the terminal, the chat).
+
   addEventListener('keydown', (e) => {
     if (e.key !== 'm' && e.key !== 'M') return;
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || e.isComposing) return;
@@ -1605,19 +1527,18 @@ export function initVoice() {
     if (s === 'live') sendTts();
     if (s === 'live' && debug) {
       send({ t: 'voice', debug: true });
-      // A test with no touch (the iOS Simulator): ?voicedebug=1&voicetest=5
-      // holds push to talk for 5 s once connected.
+
       const n = voiceTest;
       voiceTest = 0;
       if (n > 0 && !mode) setTimeout(async () => { if (await start('push')) setTimeout(stop, n * 1000); }, 1500);
     }
     if (s === 'live' && handsFree() && !serverOn) {
-      // Back after a reconnect: GodTerm has no voice from here yet.
+
       const m = mode;
       voiceOn(m);
     }
     if (s !== 'live') {
-      // The socket dropped: hands free keeps its mic for the reconnect.
+
       if (!handsFree()) { mode = ''; release(); phase = ''; }
       serverOn = '';
       hush();
@@ -1625,10 +1546,9 @@ export function initVoice() {
     paint();
   };
   on('conn', onConn);
-  // Loaded after the socket opened (main.js loads voice after the first
-  // screen): as if it had just opened.
+
   if (conn.open) onConn('live');
-  // GodTerm says whose voice it is (another browser may have taken it).
+
   on('state', () => {
     const v = S.voice || {};
     if (serverOn && v.web != null && v.web !== S.client) { serverOn = ''; mode = ''; release(); phase = ''; }
@@ -1638,7 +1558,7 @@ export function initVoice() {
     }
     paint();
   });
-  // iOS stops the mic in the background and when the screen locks.
+
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       if (mode || serverOn) { away = true; if (serverOn) send({ t: 'voice', away: true }); dlog('to the background'); paint(); }
@@ -1646,13 +1566,11 @@ export function initVoice() {
   });
   addEventListener('pageshow', () => { if (!document.hidden) backAgain(); });
   if (!secure()) for (const b of ['#b-openmic', '#b-ptt', '#b-ptt2']) $(b)?.classList.add('off');
-  // Open mic or wake word picked before: the strip offers Start (the mic
-  // and audio need a tap on iOS).
+
   if ((pick === 'open' || pick === 'wake') && !mode) resumeMode = pick;
-  // Unlock audio output on the first touch (iOS needs a gesture), and
-  // again on any tap while a reply waits.
+
   addEventListener('pointerdown', () => { if (!ctx || ctx.state !== 'running' || held.length) unlock(); }, { capture: true });
-  // The level falls back while nothing comes (the recorder's is GodTerm's).
+
   setInterval(() => {
     if (!mode) return;
     const quiet = cap?.method === 'recorder' ? performance.now() - recLevelAt > 400 : performance.now() - peakAt > 300;

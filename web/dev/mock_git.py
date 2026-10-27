@@ -7,9 +7,8 @@ import threading
 import time
 
 LOCK = threading.RLock()
-# gh accounts "logged in" on this fake machine.
 GH = [{"name": "dev-user", "logged_in": True, "active": True}, {"name": "dev-work", "logged_in": True, "active": False}]
-OWNERS = {}  # [git.owners]: owner -> account
+OWNERS = {}
 PLANS = {}
 LOGIN = {"state": None}
 
@@ -130,7 +129,7 @@ def frame(m, find):
             OWNERS.update(p[1])
             return {"ok": True, "said": "Saved: %d owners" % len(OWNERS), "view": cfg_view()}
         if op.startswith("cfg_gh_login") and os.environ.get("MOCK_GIT_NO_LOGIN"):
-            return {"ok": False, "error": "unknown git op %r" % op}  # a GodTerm without the login
+            return {"ok": False, "error": "unknown git op %r" % op}
         if op == "cfg_gh_login":
             if LOGIN["state"] not in ("starting", "code"):
                 LOGIN.clear()

@@ -1,22 +1,9 @@
-//! What is inside each project the user works in, for `find` and
-//! `search_projects`: a monorepo such as ~/code/platform holds
-//! apps/billing-dashboard, services/webhooks and packages/ui, and the
-//! user names those ("the billing dashboard", "the web hooks thing"), not
-//! the repo. Every known root (folders of sessions and tabs) gets a
-//! shallow map: subproject manifests (package.json, Cargo.toml,
-//! pyproject.toml, go.mod, pom.xml, *.csproj), README headings,
-//! workspace members and folders to depth 3. Built in the background
-//! with a per root cap and a time budget, kept on disk, and rescanned
-//! only when a folder or manifest it read has changed. Private folders,
-//! dotfiles and secrets are never read.
-
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-/// Folders never walked: dependencies, build output, caches.
 pub const IGNORED: &[&str] = &[
     "node_modules",
     "target",
@@ -39,7 +26,6 @@ pub const IGNORED: &[&str] = &[
     "obj",
 ];
 
-/// A folder name the walk skips (dot folders included).
 pub fn ignored_dir(name: &str) -> bool {
     name.starts_with('.') || IGNORED.contains(&name)
 }
@@ -53,7 +39,7 @@ pub struct Limits {
     pub total: Duration,
     pub max_roots: usize,
     pub max_file: u64,
-    /// How often an indexed root is checked for changes.
+
     pub recheck: Duration,
 }
 
@@ -72,20 +58,19 @@ impl Default for Limits {
     }
 }
 
-/// One folder inside a root ("" is the root itself).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Entry {
     pub rel: String,
-    /// The manifest that makes it a subproject ("package.json").
+
     pub manifest: Option<String>,
-    /// The manifest's name ("@acme/billing-dashboard").
+
     pub name: Option<String>,
-    /// The manifest's description, else the README's first heading or line.
+
     pub desc: Option<String>,
-    /// Listed as a workspace member by the root.
+
     #[serde(default)]
     pub member: bool,
-    /// A git repo of its own (holds .git).
+
     #[serde(default)]
     pub git: bool,
 }
@@ -94,14 +79,13 @@ pub struct Entry {
 pub struct RootMap {
     pub root: PathBuf,
     pub entries: Vec<Entry>,
-    /// The workspace tools the root uses (pnpm, npm, cargo, turbo, nx).
+
     pub workspaces: Vec<String>,
-    /// The repo name of the git remote (never its URL).
+
     pub remote: Option<String>,
-    /// Folders and files read, with their (mtime ns, size): any change
-    /// means a rescan.
+
     pub watched: Vec<(PathBuf, u128, u64)>,
-    /// A cap or the time budget cut the walk short.
+
     pub truncated: bool,
     #[serde(skip)]
     pub checked: Option<Instant>,
@@ -121,11 +105,11 @@ pub struct Index {
     pub building: bool,
     pub last: Stats,
     loaded: bool,
-    /// Git facts per repo top level (project_git).
+
     pub git: HashMap<PathBuf, crate::project_git::Facts>,
-    /// The last git update.
+
     pub git_checked: Option<Instant>,
-    /// A fetch the user asked for is running.
+
     pub git_fetching: bool,
 }
 
@@ -145,7 +129,6 @@ struct Disk {
     git: Vec<crate::project_git::Facts>,
 }
 
-/// Load the saved index once (roots and git facts).
 pub fn load(shared: &Shared) {
     let mut ix = shared.lock().unwrap_or_else(|e| e.into_inner());
     if ix.loaded || ix.building {
@@ -173,7 +156,6 @@ fn load_into(ix: &mut Index) {
     }
 }
 
-/// Write the index to disk (roots and git facts).
 pub fn save(shared: &Shared) {
     if cfg!(test) {
         return;
@@ -205,7 +187,6 @@ fn stamp(p: &Path) -> Option<(u128, u64)> {
     Some((t, m.len()))
 }
 
-/// The start of a small text file, at most `max` bytes, never a secret.
 fn read_small(p: &Path, max: u64) -> Option<String> {
     use std::io::Read;
     let name = p.file_name()?.to_string_lossy();
@@ -229,7 +210,6 @@ fn clip(s: &str) -> String {
     crate::sessions::snippet(s.trim(), 160)
 }
 
-/// The README's first heading, else its first line of prose.
 fn readme_line(text: &str) -> Option<String> {
     let mut first = None;
     for l in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -250,7 +230,6 @@ fn readme_line(text: &str) -> Option<String> {
     first
 }
 
-/// What one manifest says: (name, description, workspace members, tool).
 type Manifest = (Option<String>, Option<String>, Vec<String>, Option<String>);
 
 fn parse_manifest(file: &str, text: &str) -> Manifest {
@@ -328,7 +307,7 @@ fn parse_manifest(file: &str, text: &str) -> Manifest {
             let tag = |t: &str| {
                 let open = format!("<{t}>");
                 let body = text.split("<dependencies>").next().unwrap_or(text);
-                // The project's own tag, not its parent's.
+
                 let body = match body.find("</parent>") {
                     Some(i) => &body[i..],
                     None => body,
@@ -396,8 +375,6 @@ fn is_readme(name: &str) -> bool {
     n == "readme.md" || n == "readme" || n == "readme.txt" || n == "readme.rst"
 }
 
-/// The repo name of the root's git remote, from .git/config (only the
-/// last part of the URL is kept; credentials in it are never stored).
 fn git_remote(root: &Path) -> Option<String> {
     let text = read_small(&root.join(".git").join("config"), 32 * 1024)?;
     let mut in_origin = false;
@@ -431,7 +408,6 @@ fn git_remote(root: &Path) -> Option<String> {
     any
 }
 
-/// Workspace globs ("apps/*", "crates/**", "tools/cli") to folders.
 fn expand_members(root: &Path, globs: &[String], cap: usize) -> Vec<PathBuf> {
     let mut out = vec![];
     for g in globs {
@@ -472,7 +448,6 @@ fn rel_of(root: &Path, p: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Read one folder's manifests and README into its entry.
 fn read_dir_info(
     dir: &Path,
     names: &[String],
@@ -483,8 +458,7 @@ fn read_dir_info(
     let (mut members, mut tools) = (vec![], vec![]);
     let mut readme = None;
     let mut ordered: Vec<&String> = names.iter().collect();
-    // package.json before Cargo.toml and the rest: the JS name wins in a
-    // mixed folder, as the user most likely says it.
+
     ordered.sort_by_key(|n| {
         MANIFESTS
             .iter()
@@ -530,7 +504,6 @@ fn read_dir_info(
     (e, members, tools)
 }
 
-/// Map one root: a breadth first walk to `lim.depth`, within the caps.
 pub fn scan_root(root: &Path, lim: &Limits, allowed: &[PathBuf]) -> RootMap {
     let t0 = Instant::now();
     let mut map = RootMap {
@@ -597,7 +570,7 @@ pub fn scan_root(root: &Path, lim: &Limits, allowed: &[PathBuf]) -> RootMap {
                 queue.push_back((dir.join(d), depth + 1, false));
             }
         }
-        // Workspace members go next, even when deeper than the walk.
+
         if depth == 0 && !members_done {
             members_done = true;
             for m in expand_members(root, &root_members, lim.max_dirs / 2)
@@ -608,7 +581,7 @@ pub fn scan_root(root: &Path, lim: &Limits, allowed: &[PathBuf]) -> RootMap {
             }
         }
     }
-    // A member found by the walk first still counts as one.
+
     let member_dirs: HashSet<String> = expand_members(root, &root_members, lim.max_dirs / 2)
         .iter()
         .map(|p| rel_of(root, p))
@@ -623,15 +596,12 @@ pub fn scan_root(root: &Path, lim: &Limits, allowed: &[PathBuf]) -> RootMap {
     map
 }
 
-/// Nothing the map read has changed since.
 pub fn unchanged(map: &RootMap) -> bool {
     map.watched
         .iter()
         .all(|(p, m, l)| stamp(p) == Some((*m, *l)))
 }
 
-/// A folder worth mapping: there, not the home folder or above it, not
-/// private.
 pub fn good_root(p: &Path, allowed: &[PathBuf]) -> bool {
     let home = crate::config::home_dir();
     p.is_absolute()
@@ -641,8 +611,6 @@ pub fn good_root(p: &Path, allowed: &[PathBuf]) -> bool {
         && crate::guard::denied(p, allowed).is_none()
 }
 
-/// The repo a folder is in (the nearest ancestor with .git, at most 4
-/// levels up, never the home folder).
 pub fn repo_of(p: &Path) -> Option<PathBuf> {
     let home = crate::config::home_dir();
     let mut cur = p.parent();
@@ -659,10 +627,6 @@ pub fn repo_of(p: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Bring the index up to date for `roots` (most recent first): load it
-/// from disk once, keep maps whose folders and manifests have not
-/// changed, rescan the rest within the time budget (the rest wait for
-/// the next refresh), drop roots no longer known, save.
 pub fn refresh(shared: &Shared, roots: &[PathBuf], lim: &Limits, force: bool, allowed: &[PathBuf]) {
     let t0 = Instant::now();
     let (mut have, loaded) = {
@@ -706,7 +670,6 @@ pub fn refresh(shared: &Shared, roots: &[PathBuf], lim: &Limits, force: bool, al
                     st.scanned += 1;
                     Some(scan_root(r, lim, allowed))
                 } else {
-                    // Out of time: the old map (if any) until next time.
                     st.pending += 1;
                     other
                 }
@@ -739,9 +702,6 @@ pub fn refresh(shared: &Shared, roots: &[PathBuf], lim: &Limits, force: bool, al
     }
 }
 
-/// Refresh for every folder sessions ran in (most recent first, each
-/// with the repo it is in) and `extra` (tabs, tab history, saved
-/// descriptions).
 pub fn refresh_from_sessions(
     shared: &Shared,
     sessions: &crate::session_index::Shared,
@@ -774,9 +734,6 @@ pub fn refresh_from_sessions(
     refresh(shared, &all, &Limits::default(), force, allowed);
 }
 
-// ---- matching ----
-
-/// Words a spoken query carries that name nothing.
 const STOP: &[&str] = &[
     "the",
     "a",
@@ -823,8 +780,6 @@ const STOP: &[&str] = &[
     "were",
 ];
 
-/// Words of a name or path: spoken punctuation resolved, camelCase and
-/// separators split, lower case.
 pub fn tokens(s: &str) -> Vec<String> {
     let s = crate::fuzzy::spoken_punctuation(s);
     let mut out = vec![];
@@ -850,7 +805,6 @@ pub fn tokens(s: &str) -> Vec<String> {
     out
 }
 
-/// The query's words that carry meaning (all of them if none do).
 pub fn query_tokens(q: &str) -> Vec<String> {
     let all = tokens(q);
     let kept: Vec<String> = all
@@ -876,7 +830,6 @@ fn singular(w: &str) -> std::borrow::Cow<'_, str> {
         .into()
 }
 
-/// How well one query word matches one name word, 0 to 1.
 pub fn word_match(q: &str, c: &str) -> f64 {
     if q == c {
         return 1.0;
@@ -897,8 +850,6 @@ pub fn word_match(q: &str, c: &str) -> f64 {
     0.0
 }
 
-/// A name's words with each adjacent pair joined too ("web hooks" also
-/// as "webhooks").
 fn with_pairs(words: &[String]) -> Vec<String> {
     let mut v = words.to_vec();
     for w in words.windows(2) {
@@ -907,20 +858,14 @@ fn with_pairs(words: &[String]) -> Vec<String> {
     v
 }
 
-/// One thing a hit can match on, with its weight.
 pub struct Field<'a> {
     pub text: &'a str,
     pub tier: f64,
-    /// Counts toward coverage only (an ancestor folder's name): a hit
-    /// needs at least one word matched by a field of its own.
+
     pub context: bool,
     pub why: &'static str,
 }
 
-/// Score fields against query words: each word takes its best field
-/// (tier times match, joined pairs both ways), the mean of the matched
-/// ones scaled by how many matched. Returns (score, the field that
-/// carried it, coverage).
 pub fn score_fields(q: &[String], fields: &[Field]) -> Option<(f64, &'static str, f64)> {
     if q.is_empty() {
         return None;
@@ -940,7 +885,7 @@ pub fn score_fields(q: &[String], fields: &[Field]) -> Option<(f64, &'static str
                 .fold(0.0, f64::max);
             give(i, m * f.tier, fi);
         }
-        // Two spoken words for one name word ("fot mesh" for fotmesh).
+
         for i in 0..q.len().saturating_sub(1) {
             let joined = format!("{}{}", q[i], q[i + 1]);
             let m = toks[fi]
@@ -957,7 +902,7 @@ pub fn score_fields(q: &[String], fields: &[Field]) -> Option<(f64, &'static str
     }
     let cov = matched.len() as f64 / q.len() as f64;
     let mean = matched.iter().map(|(v, _)| v).sum::<f64>() / matched.len() as f64;
-    // The field carrying the most weight explains the hit.
+
     let mut by: HashMap<usize, f64> = HashMap::new();
     for (v, f) in &matched {
         if !fields[*f].context {
@@ -986,8 +931,6 @@ fn quote(s: &str) -> String {
     format!("\"{}\"", crate::sessions::snippet(s, 80))
 }
 
-/// Search every mapped root for the query: project names first, then
-/// subprojects, folders, and descriptions or READMEs.
 pub fn search(ix: &Index, query: &str, limit: usize) -> Vec<Hit> {
     let q = query_tokens(query);
     let mut hits: HashMap<PathBuf, Hit> = HashMap::new();
@@ -1134,8 +1077,6 @@ pub fn search(ix: &Index, query: &str, limit: usize) -> Vec<Hit> {
     v
 }
 
-/// How well a session's touched files answer the query: (score, the
-/// file that matched, shown relative to the session's folder).
 pub fn touched_score(q: &[String], cwd: &str, files: &[String]) -> Option<(f64, String)> {
     let mut best: Option<(f64, String)> = None;
     for f in files {
@@ -1167,8 +1108,6 @@ pub fn touched_score(q: &[String], cwd: &str, files: &[String]) -> Option<(f64, 
     }
     best
 }
-
-// ---- on demand: search_projects ----
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DeepHit {
@@ -1220,9 +1159,6 @@ const TEXT_EXT: &[&str] = &[
     "dart", "lua",
 ];
 
-/// Walk the roots (bounded) and match file and folder names, then, with
-/// `content`, grep text files for lines holding every query word, each
-/// within its time cap.
 pub fn deep_search(
     roots: &[PathBuf],
     query: &str,
@@ -1315,7 +1251,7 @@ pub fn deep_search(
     let mut content_hits = vec![];
     if content && !q.is_empty() {
         let t1 = Instant::now();
-        // A word's stem, so "retries" also finds "retry" and "retried".
+
         let words: Vec<String> = q
             .iter()
             .map(|w| {

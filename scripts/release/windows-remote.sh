@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-# Build the Windows artifacts on a Windows build machine over ssh, then copy
-# them into dist/.
-# Copies this tree (no .git; the commit is passed in), runs
-# scripts/release/windows.ps1 there, and pulls the zip and installer back.
-#
-#   scripts/release/windows-remote.sh            x64 zip + installer
-#   WIN_ARCHES="x64 arm64" scripts/release/windows-remote.sh
-#
-# Env (or ~/.config/godterm/release.env): WIN_HOST, WIN_USER, WIN_SSH_KEY.
-# The machine needs OpenSSH server, Rust (MSVC) and Inno Setup 6. ssh runs
-# with -F /dev/null so a local ~/.ssh/config cannot redirect the port.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 [[ -n "${WIN_HOST:-}" && -n "${WIN_USER:-}" ]] || die "set WIN_HOST and WIN_USER (the Windows build machine) in ~/.config/godterm/release.env"
@@ -20,7 +9,6 @@ SCP=(scp -P 22 -F /dev/null -i "$WIN_SSH_KEY" -o BatchMode=yes -o ConnectTimeout
 REMOTE='C:\Users\'"$WIN_USER"'\code\godterm'
 REMOTE_TARGET='C:\Users\'"$WIN_USER"'\code\godterm-target'
 
-# PowerShell from stdin, as -EncodedCommand (quoting through ssh mangles).
 winps() {
   local b64
   b64="$(iconv -t UTF-16LE | base64)"

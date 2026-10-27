@@ -1,9 +1,3 @@
-//! Git facts on real temp repos: a bare remote as a local path, a
-//! GitHub looking remote (never contacted), ahead and behind through a
-//! second clone, dirty files and stashes, credentials in URLs, a repo
-//! with no remote, a plain folder and a folder of repos. And that reading
-//! never writes into a repo.
-
 use super::*;
 use crate::config::testing::LOCK as ENV_LOCK;
 use serde_json::json;
@@ -12,11 +6,10 @@ fn base(tag: &str) -> PathBuf {
     let b = std::env::temp_dir().join(format!("godterm-git-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&b);
     std::fs::create_dir_all(&b).unwrap();
-    // Canonical: /var is /private/var on macOS, and git says the latter.
+
     crate::fspath::canonical(&b).unwrap()
 }
 
-/// Run git for the fixture (isolated from the user's own settings).
 fn g(dir: &Path, args: &[&str]) -> String {
     let home = std::env::temp_dir().join(format!("godterm-git-home-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
@@ -67,17 +60,17 @@ fn facts(dir: &Path) -> Facts {
 struct Fx {
     root: PathBuf,
     bare: PathBuf,
-    /// Pushed to the bare remote, then one more local commit.
+
     a: PathBuf,
-    /// A second clone that pushed a commit A has not fetched.
+
     b: PathBuf,
-    /// Remote URL on GitHub with a token in it; refs as if fetched.
+
     gh: PathBuf,
-    /// No remote at all.
+
     lonely: PathBuf,
-    /// Not in git.
+
     plain: PathBuf,
-    /// A folder of repos (not one itself) with a repo inside.
+
     shelf: PathBuf,
 }
 
@@ -99,7 +92,7 @@ fn fixture(tag: &str) -> Fx {
     commit(&b, "b.txt", "from beta\n", "beta work");
     g(&b, &["push", "-q", "origin", "main"]);
     commit(&a, "a.txt", "from alpha\n", "alpha work");
-    // Alpha's working tree: staged, modified, untracked, one stash.
+
     w(&a.join("stashme.txt"), "x\n");
     g(&a, &["add", "stashme.txt"]);
     g(&a, &["stash", "-q"]);
@@ -121,7 +114,7 @@ fn fixture(tag: &str) -> Fx {
             "https://alice:ghp_SECRET123@github.com/acme/ghproj.git",
         ],
     );
-    // As if fetched once: the remote has main and HEAD points at it.
+
     g(&gh, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
     g(
         &gh,
@@ -165,7 +158,6 @@ fn fixture(tag: &str) -> Fx {
     }
 }
 
-/// Every file under `dir` with its (mtime, size).
 fn snapshot(dir: &Path) -> Vec<(PathBuf, u128, u64)> {
     let mut out = vec![];
     let mut todo = vec![dir.to_path_buf()];
@@ -248,8 +240,7 @@ fn urls_lose_credentials_and_hosts_are_named() {
 #[test]
 fn facts_of_temp_repos() {
     let fx = fixture("facts");
-    // The bare remote as a local path; one commit ahead, behind unknown
-    // until a fetch (beta's push is not in alpha's refs).
+
     let a = facts(&fx.a);
     assert_eq!(a.error, None);
     assert_eq!(a.top, fx.a);
@@ -268,19 +259,17 @@ fn facts_of_temp_repos() {
     assert_eq!(last.subject, "alpha work");
     assert_eq!(last.author, "Test Person");
     assert!(last.hash.len() >= 7 && last.date.starts_with("20"));
-    // A clone was fetched at clone time? No FETCH_HEAD until a fetch.
+
     assert_eq!(
         a.state_word(),
         "1 unpushed, 1 staged, 1 modified, 1 untracked, 1 stash"
     );
 
-    // Beta pushed: clean and even.
     let b = facts(&fx.b);
     assert_eq!((b.ahead, b.behind, b.unpushed), (Some(0), Some(0), Some(0)));
     assert!(!b.dirty() && !b.has_unpushed());
     assert_eq!(b.state_word(), "clean");
 
-    // A fetch (the explicit refresh) makes alpha one behind as well.
     let (ok, failed) = fetch_all(std::slice::from_ref(&fx.a), Duration::from_secs(20));
     assert_eq!((ok, failed.len()), (1, 0), "{failed:?}");
     let a = facts(&fx.a);
@@ -293,8 +282,6 @@ fn facts_of_temp_repos() {
         a.fetch_word()
     );
 
-    // GitHub looking remote, never contacted: the token is gone, the
-    // feature branch is not on the remote, two commits are unpushed.
     let gh = facts(&fx.gh);
     assert_eq!(gh.remotes[0].url, "https://github.com/acme/ghproj.git");
     assert_eq!(gh.remotes[0].host, "github");
@@ -319,13 +306,11 @@ fn facts_of_temp_repos() {
     assert!(gh.line().contains("github acme/ghproj"), "{}", gh.line());
     assert!(gh.line().contains("2 unpushed, branch not on remote"));
 
-    // No remote.
     let l = facts(&fx.lonely);
     assert!(l.remotes.is_empty() && l.local_only() && !l.has_unpushed());
     assert_eq!(l.unpushed, None);
     assert_eq!(l.remote_word(), "no remote");
 
-    // Plain folders are in no repo; a subfolder resolves to its repo.
     assert!(locate(&fx.plain).is_none());
     assert!(locate(&fx.shelf).is_none());
     std::fs::create_dir_all(fx.gh.join("src/deep")).unwrap();
@@ -369,8 +354,7 @@ fn a_worktree_and_an_unborn_repo() {
 #[test]
 fn reading_never_writes_into_a_repo() {
     let fx = fixture("ro");
-    // A tracked file touched with the same content: plain `git status`
-    // would refresh (rewrite) the index here.
+
     let readme = fx.b.join("README.md");
     let text = std::fs::read(&readme).unwrap();
     std::thread::sleep(Duration::from_millis(1100));
@@ -382,7 +366,7 @@ fn reading_never_writes_into_a_repo() {
         let _ = facts(r);
     }
     let _ = facts(&fx.shelf.join("inner"));
-    // Through the cache and the pool too.
+
     let sh: crate::project_index::Shared = Default::default();
     let dirs: Vec<PathBuf> = repos.iter().map(|r| r.to_path_buf()).collect();
     update(&sh, Some(&dirs), &Limits::tool(), true);
@@ -403,14 +387,13 @@ fn the_cache_recomputes_only_what_changed() {
     assert_eq!((st.repos, st.computed, st.reused), (3, 3, 0));
     let st = update(&sh, Some(&dirs), &Limits::tool(), false);
     assert_eq!((st.computed, st.reused), (0, 3));
-    // A commit in beta changes its refs: only beta again.
+
     std::thread::sleep(Duration::from_millis(20));
     commit(&fx.b, "c.txt", "c\n", "more");
     let st = update(&sh, Some(&dirs), &Limits::tool(), false);
     assert_eq!((st.computed, st.reused), (1, 2));
     assert_eq!(sh.lock().unwrap().git[&fx.b].unpushed, Some(1));
-    // An edit in the work tree changes no git file: a tab finishing a
-    // turn there marks it stale.
+
     w(&fx.gh.join("edited.rs"), "\n");
     let st = update(&sh, Some(&dirs), &Limits::tool(), false);
     assert_eq!(st.computed, 0);
@@ -418,7 +401,7 @@ fn the_cache_recomputes_only_what_changed() {
     let st = update(&sh, Some(&dirs), &Limits::tool(), false);
     assert_eq!(st.computed, 1);
     assert_eq!(sh.lock().unwrap().git[&fx.gh].untracked, 1);
-    // Too old: recomputed even when nothing changed.
+
     let old = Limits {
         max_age: Duration::ZERO,
         ..Limits::tool()
@@ -430,14 +413,13 @@ fn the_cache_recomputes_only_what_changed() {
 #[test]
 fn a_hung_git_is_cut_off() {
     let fx = fixture("slow");
-    // Even a zero budget answers (with an error), never hangs.
+
     let (t, gd, c) = locate(&fx.b).unwrap();
     let f = compute(&t, &gd, &c, Duration::ZERO);
     assert!(f.error.is_some_and(|e| e.contains("timed out")));
     let _ = std::fs::remove_dir_all(&fx.root);
 }
 
-/// The fixture as the assistant sees it: roots from saved descriptions.
 fn app_with(fx: &Fx, tag: &str) -> (crate::app::App, PathBuf) {
     let home = std::env::temp_dir().join(format!("godterm-git-app-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
@@ -518,7 +500,6 @@ fn git_status_answers_which_projects_are_only_local() {
     let v = app.control_call("git_status", &json!({"filter": "bogus"}));
     assert_eq!(v["ok"], false);
 
-    // One project by name, with its details.
     let v = app.control_call("git_status", &json!({"project": "ghproj"}));
     let repos = v["result"]["repos"].as_array().cloned().unwrap_or_default();
     assert_eq!(repos.len(), 1, "{v}");
@@ -529,7 +510,6 @@ fn git_status_answers_which_projects_are_only_local() {
         .unwrap()
         .contains("feature/new, github acme/ghproj"));
 
-    // refresh fetches (tests: at once) and alpha is now behind.
     let v = app.control_call("git_status", &json!({"filter": "behind", "refresh": true}));
     assert!(
         v["result"]["fetch"]
@@ -544,7 +524,6 @@ fn git_status_answers_which_projects_are_only_local() {
         "{v}"
     );
 
-    // find and get_state carry the cached git line.
     let v = app.control_call("find", &json!({"query": "ghproj"}));
     let hit = v["result"]["hits"]
         .as_array()

@@ -1,18 +1,3 @@
-//! GodTerm Sync, Phase 2: this machine's state backed up to a private
-//! state repo (`<owner>/godterm-state`) plus monthly conversation repos
-//! (`<owner>/godterm-convos-YYYY-MM`), and restored on another machine
-//! (docs/SYNC.md sections 2, 3 and 5).
-//!
-//! The home is the source of truth: every sync fetches the state repo,
-//! applies what other machines changed (keyed merges, append-only
-//! transcripts, .env files), projects the home into the working copy
-//! through an allowlist and pushes, never with force. A rejected push
-//! fetches and runs again; nothing in the repos is ever rewritten.
-//!
-//! Everything takes a [`Ctx`] (home, GodTerm's home, config, machine), so
-//! tests run against fixture homes and local bare repos (file://) that
-//! stand in for GitHub.
-
 pub mod chunks;
 pub mod cli;
 pub mod collect;
@@ -47,55 +32,44 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// `[sync]` in config.toml. The whole table is machine local: it is
-/// never pushed and never applied from another machine.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SyncCfg {
-    /// The background worker runs (set by `godterm sync init` / `clone`).
     pub enabled: bool,
-    /// Sync is on but the background sync waits (Settings > Sync > Pause,
-    /// the assistant's sync_pause). A sync the user asks for still runs;
-    /// conversation leases keep working.
+
     pub paused: bool,
-    /// GitHub owner of the state and conversation repos.
+
     pub owner: String,
-    /// The gh account that reads and writes them.
+
     pub account: String,
-    /// The state repo's name.
+
     pub state_repo: String,
-    /// Conversation repos are `<convos_prefix>-YYYY-MM`.
+
     pub convos_prefix: String,
-    /// "github", or a `file:///folder` whose `<owner>/<name>.git` bare
-    /// repos stand in for GitHub (tests, a local mirror).
+
     pub remote: String,
-    /// Sessions written in the last N days are synced (besides the hot
-    /// set: open and closed tabs, the archive, jobs).
+
     pub window_days: u32,
-    /// A new machine places sessions of the last N days at once.
+
     pub hot_days: u32,
-    /// Seconds of quiet after a change before a sync.
+
     pub debounce_s: u64,
-    /// Largest transcript chunk (MB).
+
     pub chunk_mb: u64,
-    /// A conversation repo over this many GB starts a `-2` repo.
+
     pub shard_gb: u64,
-    /// Phase 3 (leases): heartbeat and lease expiry, seconds.
+
     pub heartbeat_s: u64,
     pub lease_s: u64,
-    /// New monthly conversation repos may be created without asking
-    /// (the yes given at `sync init` covers them; always private).
+
     pub auto_create_shards: bool,
-    /// Sessions synced although a rule would leave them out (vault
-    /// mentions), by id.
+
     pub include_sessions: Vec<String>,
-    /// Sessions never synced, by id.
+
     pub exclude_sessions: Vec<String>,
-    /// More config keys kept on this machine only ("voice.tts_speed",
-    /// "ui.*").
+
     pub machine_local: Vec<String>,
-    /// Absolute paths outside the home, by name: a path under one is
-    /// stored as `@name/rest` and placed under this machine's folder.
+
     pub paths: BTreeMap<String, String>,
 }
 
@@ -125,11 +99,8 @@ impl Default for SyncCfg {
     }
 }
 
-/// The vault: never read, never synced, also through symlinks.
 pub const VAULT: &str = "/Volumes/Private";
 
-/// This machine: a random id kept in `<app home>/machine.json`, never
-/// synced and never copied by a restore.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Machine {
     pub id: String,
@@ -144,7 +115,6 @@ impl Machine {
         app_home.join("machine.json")
     }
 
-    /// This machine's id, made (and saved) the first time.
     pub fn load_or_new(app_home: &Path) -> Machine {
         if let Some(m) = std::fs::read(Self::path(app_home))
             .ok()
@@ -187,13 +157,11 @@ impl Machine {
     }
 }
 
-/// The host name, without ".local".
 pub fn host_label() -> String {
     #[cfg(unix)]
     {
         let mut buf = [0u8; 256];
-        // SAFETY: the buffer is valid for its length; gethostname writes
-        // a NUL terminated name into it.
+
         let r = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
         if r == 0 {
             let n = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
@@ -207,10 +175,6 @@ pub fn host_label() -> String {
     std::env::var("COMPUTERNAME").unwrap_or_else(|_| "this machine".into())
 }
 
-/// Changes pulled for a store the running app holds in memory (archive,
-/// jobs): the app applies them to its own copy and saves, so a sync never
-/// writes such a file under it. Keys to set (entry in the file's local
-/// form) or remove (None).
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoreApply {
     pub store: &'static str,
@@ -218,9 +182,6 @@ pub struct StoreApply {
 }
 
 impl StoreApply {
-    /// A store's file contents with these changes in place: changed
-    /// entries where they were, new ones at the end, removed ones gone
-    /// (every other field of the file kept).
     pub fn apply_to(&self, whole: &serde_json::Value) -> serde_json::Value {
         use serde_json::Value;
         let Some(s) = merge::STORES.iter().find(|s| s.name == self.store) else {
@@ -254,17 +215,13 @@ impl StoreApply {
     }
 }
 
-/// The running app, as a sync sees it.
 pub struct AppLink {
-    /// Sessions whose CLI runs in a tab here now (never extended,
-    /// replaced or forked under it).
     pub running: Mutex<BTreeSet<String>>,
-    /// Hand pulled store changes to the app; true once it saved them.
+
     #[allow(clippy::type_complexity)]
     pub apply: Box<dyn Fn(StoreApply) -> bool + Send + Sync>,
 }
 
-/// The stores the running app saves itself.
 pub const APP_STORES: &[&str] = &["archive", "jobs"];
 
 #[derive(Clone)]
@@ -286,28 +243,24 @@ impl Link {
     }
 }
 
-/// Everything a sync step needs, passed explicitly.
 #[derive(Debug, Clone)]
 pub struct Ctx {
-    /// The user's home (what `~` means in portable paths).
     pub home: PathBuf,
-    /// GodTerm's home (`~/.godterm` or $GODTERM_HOME).
+
     pub app_home: PathBuf,
     pub cfg: crate::config::Config,
     pub machine: Machine,
-    /// Folders nothing is collected from or restored into (the vault, keys,
-    /// other private folders), canonical.
+
     pub never: Vec<PathBuf>,
-    /// This program, for the git credential helper.
+
     pub exe: PathBuf,
-    /// Milliseconds since 1970 (tests pin it).
+
     pub now_ms: i64,
-    /// The running app, when the sync runs inside it.
+
     pub link: Option<Link>,
 }
 
 impl Ctx {
-    /// The real one: the user's home and GodTerm's, the config on disk.
     pub fn from_env() -> anyhow::Result<Ctx> {
         let app_home = crate::config::app_home();
         let cfg = crate::config::Config::load_or_init()?;
@@ -334,12 +287,10 @@ impl Ctx {
         &self.cfg.sync
     }
 
-    /// The lease length in ms.
     pub fn lease_ms(&self) -> i64 {
         self.cfg.sync.lease_s.max(1) as i64 * 1000
     }
 
-    /// `<app home>/sync`: working copies, bases, the ledger.
     pub fn sync_dir(&self) -> PathBuf {
         self.app_home.join("sync")
     }
@@ -356,8 +307,6 @@ impl Ctx {
         git::Remote::from_cfg(&self.cfg.sync, &self.exe)
     }
 
-    /// Each account's harness and config dir (Claude and Grok only: the
-    /// harnesses whose sessions Phase 2 syncs).
     pub fn accounts(&self) -> Vec<Account> {
         self.cfg
             .accounts
@@ -381,7 +330,6 @@ impl Ctx {
             .collect()
     }
 
-    /// `~/x` under this context's home.
     pub fn expand(&self, p: &str) -> PathBuf {
         if p == "~" {
             self.home.clone()
@@ -392,25 +340,19 @@ impl Ctx {
         }
     }
 
-    /// Why `p` may not be synced (inside a never folder, also through a
-    /// symlink), if so.
     pub fn refused(&self, p: &Path) -> Option<String> {
         paths::refused(p, &self.never)
     }
 }
 
-/// One account whose sessions are synced.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Account {
     pub name: String,
-    /// "claude" or "grok".
+
     pub provider: &'static str,
     pub dir: PathBuf,
 }
 
-/// Folders never collected from and never restored into: the vault, the
-/// key stores, GodTerm's own home (only the allowlist reads there) and
-/// the main Claude Code and Grok installs.
 pub fn never_dirs(home: &Path, app_home: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = [
         ".ssh",
@@ -438,7 +380,6 @@ pub fn never_dirs(home: &Path, app_home: &Path) -> Vec<PathBuf> {
     v.into_iter().map(|p| paths::real(&p)).collect()
 }
 
-/// When the sync was last seen (for status lines): "3s ago".
 pub fn ago(ms: i64, now_ms: i64) -> String {
     let s = ((now_ms - ms).max(0) / 1000) as u64;
     match s {
@@ -449,7 +390,6 @@ pub fn ago(ms: i64, now_ms: i64) -> String {
     }
 }
 
-/// Write a file through a private temp file and a rename (parents made).
 pub fn write_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
@@ -464,7 +404,6 @@ pub fn write_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// Hex SHA-256 of some bytes.
 pub fn sha_hex(b: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     hex(&Sha256::digest(b))

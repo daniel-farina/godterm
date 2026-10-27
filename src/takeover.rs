@@ -1,18 +1,3 @@
-//! Bringing a session that runs somewhere else (a claude or grok in
-//! another terminal, on any config dir) into GodTerm.
-//!
-//! Detection: Claude Code writes `<config>/sessions/<pid>.json` for each
-//! interactive process (sessionId, cwd, status busy / idle / shell); grok
-//! keeps `<GROK_HOME>/active_sessions.json` (session_id, pid, cwd). Only
-//! live processes that really are claude or grok, and not GodTerm's own
-//! tabs, count.
-//!
-//! Take over: wait until it is idle (or interrupt it), stop it gracefully
-//! (SIGINT, a second SIGINT, then SIGTERM; never SIGKILL), wait for the
-//! transcript to settle, copy it into the target account, resume it there
-//! in the same folder, and set its loops up again (cron jobs live only in
-//! the old process's memory).
-
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -26,13 +11,13 @@ pub struct Live {
     pub harness: Harness,
     pub session_id: String,
     pub cwd: PathBuf,
-    /// The config dir (CLAUDE_CONFIG_DIR or GROK_HOME) it runs on.
+
     pub home: PathBuf,
     pub tty: Option<String>,
-    /// busy, idle or shell (claude's own word), else "running".
+
     pub status: String,
     pub name: Option<String>,
-    /// iTerm, Terminal, tmux... when it can be told.
+
     pub terminal: Option<String>,
 }
 
@@ -52,7 +37,6 @@ pub fn alive(pid: u32) -> bool {
     crate::platform::alive(pid)
 }
 
-/// One field of a process, as `ps -o` names them (args, ppid, comm, tty).
 #[cfg(windows)]
 fn ps(pid: u32, field: &str) -> Option<String> {
     let p = crate::procs::process(pid)?;
@@ -64,8 +48,6 @@ fn ps(pid: u32, field: &str) -> Option<String> {
     }
 }
 
-/// One field of a process (`ps -o FIELD= -p PID`), at most 1 s: the
-/// take-over checks run from the screen's thread.
 #[cfg(unix)]
 fn ps(pid: u32, field: &str) -> Option<String> {
     let o = crate::procs::output_timeout(
@@ -77,14 +59,13 @@ fn ps(pid: u32, field: &str) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// True when `pid` runs claude or grok (by its program name).
 pub fn is_agent(pid: u32, h: Harness) -> bool {
     let Some(args) = ps(pid, "args") else {
         return false;
     };
     let mut words = args.split_whitespace();
     let mut prog = words.next().unwrap_or("").trim_matches('"');
-    // Run through an interpreter (npm's node install, a wrapper script).
+
     if matches!(
         crate::procs::program_name(prog).as_str(),
         "node" | "bun" | "sh" | "bash" | "zsh" | "cmd"
@@ -104,14 +85,10 @@ pub fn is_agent(pid: u32, h: Harness) -> bool {
     }
 }
 
-/// `ps -o tty` for "no terminal": "??" on macOS, "?" on Linux.
 fn has_tty(t: &str) -> bool {
     !matches!(t.trim(), "" | "?" | "??" | "-")
 }
 
-/// After interrupt number `sent` (0 or 1): the next step. Delivered: the
-/// next interrupt; not deliverable: straight to the stop (`terminate`,
-/// forced on Windows), since waiting would change nothing.
 pub fn after_interrupt(sent: u8, delivered: bool) -> u8 {
     if delivered {
         sent + 1
@@ -120,10 +97,8 @@ pub fn after_interrupt(sent: u8, delivered: bool) -> u8 {
     }
 }
 
-/// The step of the Interrupt stage that terminates.
 pub const INTERRUPT_GIVE_UP: u8 = 2;
 
-/// The terminal app an agent runs in, from its parent chain.
 pub fn terminal_of(pid: u32) -> Option<String> {
     let mut p = pid;
     for _ in 0..12 {
@@ -158,7 +133,6 @@ pub fn terminal_of(pid: u32) -> Option<String> {
     None
 }
 
-/// Live sessions of these homes, leaving out GodTerm's own processes.
 pub fn find(homes: &[(Harness, PathBuf)], ours: &std::collections::HashSet<u32>) -> Vec<Live> {
     let mut out = vec![];
     for (h, home) in homes {
@@ -242,7 +216,6 @@ pub fn find(homes: &[(Harness, PathBuf)], ours: &std::collections::HashSet<u32>)
     out
 }
 
-/// The transcript of a live session (claude: the jsonl; grok: its folder).
 pub fn transcript_of(l: &Live) -> Option<PathBuf> {
     match l.harness {
         Harness::Claude => {
@@ -269,7 +242,6 @@ pub fn transcript_of(l: &Live) -> Option<PathBuf> {
     }
 }
 
-/// Size and mtime of a transcript (for grok, its newest file).
 pub fn stamp(p: &Path) -> (u64, SystemTime) {
     let one = |p: &Path| {
         std::fs::metadata(p)
@@ -291,7 +263,6 @@ pub fn stamp(p: &Path) -> (u64, SystemTime) {
     }
 }
 
-/// Mid turn: its own status says busy, or it wrote in the last few seconds.
 pub fn working(l: &Live, transcript: Option<&Path>) -> bool {
     if l.status == "busy" {
         return true;
@@ -301,9 +272,8 @@ pub fn working(l: &Live, transcript: Option<&Path>) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Mode {
-    /// Copy and resume here; the original keeps running (two branches).
     Copy,
-    /// Stop it there, continue here.
+
     Take,
 }
 
@@ -337,7 +307,7 @@ pub struct TakeOver {
     pub live: Live,
     pub target: usize,
     pub mode: Mode,
-    /// When it is mid turn: interrupt it (else wait until idle).
+
     #[allow(dead_code)]
     pub interrupt: bool,
     pub close_terminal: bool,
@@ -345,11 +315,10 @@ pub struct TakeOver {
     pub loops: Vec<crate::loops::Loop>,
     pub stage: Stage,
     pub started: Instant,
-    /// Rename the tab to this once it is open (take_over_session name).
+
     pub name: Option<String>,
 }
 
-/// A transcript from byte `from` on.
 fn read_from(p: &Path, from: u64) -> String {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(p) else {
@@ -363,11 +332,6 @@ fn read_from(p: &Path, from: u64) -> String {
     s
 }
 
-/// The prompt that makes sure the loops are armed in the resumed
-/// session. Recent claude brings session cron jobs back on --resume by
-/// itself ("resurrected N session cron task(s)"), older ones do not: so
-/// it checks with CronList first and recreates only what is missing (no
-/// duplicates either way).
 pub fn recreate_prompt(loops: &[crate::loops::Loop]) -> String {
     let mut jobs = vec![];
     let mut dynamic = vec![];
@@ -395,8 +359,6 @@ pub fn recreate_prompt(loops: &[crate::loops::Loop]) -> String {
     p
 }
 
-/// Loops of `loops` now armed in the transcript text written after the
-/// check: listed by CronList (same id) or created again.
 pub fn armed_after(text: &str, loops: &[crate::loops::Loop]) -> usize {
     let created = text.matches("\"name\":\"CronCreate\"").count();
     let listed = loops.iter().filter(|l| text.contains(&l.id)).count();
@@ -408,7 +370,6 @@ pub fn armed_after(text: &str, loops: &[crate::loops::Loop]) -> usize {
 }
 
 impl App {
-    /// Every config dir sessions may run on: the accounts, ~/.claude, ~/.grok.
     pub fn agent_homes(&self) -> Vec<(Harness, PathBuf)> {
         let mut v: Vec<(Harness, PathBuf)> = self
             .cfg
@@ -416,7 +377,7 @@ impl App {
             .iter()
             .map(|a| (a.harness(), a.config_dir()))
             .collect();
-        // Tests never look at (let alone signal) the user's own sessions.
+
         if crate::config::dirs().mains {
             v.push((Harness::Claude, crate::session_ops::main_dir()));
             v.push((Harness::Grok, Harness::Grok.main_home()));
@@ -424,7 +385,6 @@ impl App {
         v
     }
 
-    /// GodTerm's own agent processes (tabs and the assistant).
     pub fn own_pids(&self) -> std::collections::HashSet<u32> {
         let mut s: std::collections::HashSet<u32> = self
             .panes
@@ -442,7 +402,6 @@ impl App {
         find(&self.agent_homes(), &self.own_pids())
     }
 
-    /// Start bringing `live` here onto account `target`.
     pub fn start_takeover(
         &mut self,
         live: Live,
@@ -462,7 +421,7 @@ impl App {
             ));
         }
         let transcript = transcript_of(&live).ok_or("its transcript was not found")?;
-        // Loops it has now (they live only in that process).
+
         let mut sc = crate::loops::Scanner::default();
         if live.harness == Harness::Claude {
             sc.update(&transcript);
@@ -516,7 +475,6 @@ impl App {
         Ok(msg)
     }
 
-    /// Move every take-over along.
     pub fn takeover_tick(&mut self) {
         let mut ts = std::mem::take(&mut self.takeovers);
         let mut forced: Vec<String> = vec![];
@@ -555,8 +513,6 @@ impl App {
                             last: stamp(&t.transcript),
                         })
                     } else {
-                        // SIGINT stops a turn, a second one exits; SIGTERM
-                        // after 3 s; never SIGKILL.
                         let wait = match sent {
                             0 => Duration::ZERO,
                             1 => Duration::from_millis(700),
@@ -571,8 +527,7 @@ impl App {
                                         "takeover: Ctrl-C (SIGINT) to pid {pid}{}",
                                         if ok { "" } else { " (could not deliver it: no console to reach; stopping it by force)" }
                                     ));
-                                    // Not deliverable: the next tick goes to the
-                                    // confirmed stop at once (no point waiting).
+
                                     let next = after_interrupt(sent, ok);
                                     Some(Stage::Interrupt {
                                         at: if ok { Instant::now() } else { crate::clock::ago(Duration::from_secs(10)) },
@@ -580,10 +535,7 @@ impl App {
                                     })
                                 }
                                 2 => {
-                                    // Unix: SIGTERM, it can still clean up.
-                                    // Windows has no such step: this is
-                                    // TerminateProcess, after the confirmed
-                                    // take-over, and the reply says forced.
+
                                     crate::log::info(&format!(
                                         "takeover: {} pid {pid}",
                                         if crate::procs::TERMINATE_IS_FORCED {
@@ -606,7 +558,6 @@ impl App {
                     }
                 }
                 Stage::Flush { at, last } => {
-                    // Settled: same size and time for a second.
                     let now = stamp(&t.transcript);
                     if now != last {
                         Some(Stage::Flush {
@@ -631,7 +582,6 @@ impl App {
                         if self.panes[s].tabs[ti].is_running()
                             && self.panes[s].tabs[ti].activity == crate::pane::Activity::Ready =>
                     {
-                        // The rename asked with the take-over, now that the tab is here.
                         if let Some(n) = t.name.take() {
                             self.rename_tab(s, ti, &n);
                         }
@@ -723,7 +673,6 @@ impl App {
         }
     }
 
-    /// Copy the settled transcript into the target and resume it there.
     fn takeover_resume(&mut self, t: &TakeOver) -> Result<u64, String> {
         let to = self.cfg.accounts[t.target].config_dir();
         if to != t.live.home {
@@ -757,7 +706,7 @@ impl App {
                 _ => return Err("No transcript adapter for this CLI".into()),
             }
         }
-        // Resume in the same folder.
+
         let info = crate::sessions::SessionInfo {
             id: t.live.session_id.clone(),
             cwd: t.live.cwd.to_string_lossy().into_owned(),
@@ -785,7 +734,6 @@ impl App {
 }
 
 impl TakeOver {
-    /// claude's own status file says idle (or there is none).
     fn transcript_status_idle(&self) -> bool {
         let f = self
             .live
@@ -800,7 +748,6 @@ impl TakeOver {
     }
 }
 
-/// Close the terminal tab it ran in (iTerm or Terminal, by tty).
 pub fn close_terminal_tab(l: &Live) {
     let Some(tty) = &l.tty else { return };
     let dev = format!("/dev/{tty}");
@@ -818,8 +765,7 @@ pub fn close_terminal_tab(l: &Live) {
 
 #[cfg(test)]
 mod interrupt_tests {
-    /// An undeliverable interrupt (no console on Windows) goes straight
-    /// to the stop; a delivered one tries once more first.
+
     #[test]
     fn undeliverable_interrupt_goes_to_the_stop() {
         assert_eq!(super::after_interrupt(0, true), 1);
@@ -851,7 +797,7 @@ mod tests {
         let g = root.join("grok");
         std::fs::create_dir_all(c.join("sessions")).unwrap();
         std::fs::create_dir_all(&g).unwrap();
-        // A stub "claude" process that sleeps.
+
         let exe = crate::test_stub::claude(&root.join("bin"), &[("sleep_s", "30".into())]);
         let mut child = crate::test_stub::own_console(&mut std::process::Command::new(&exe))
             .arg("30")
@@ -860,7 +806,7 @@ mod tests {
         let pid = child.id();
         std::thread::sleep(std::time::Duration::from_millis(200));
         std::fs::write(c.join("sessions").join(format!("{pid}.json")), format!(r#"{{"pid":{pid},"sessionId":"s-1","cwd":"/tmp","status":"idle","kind":"interactive"}}"#)).unwrap();
-        // A dead pid and a non agent pid are ignored.
+
         std::fs::write(c.join("sessions/1.json"), r#"{"pid":999999,"sessionId":"dead","cwd":"/tmp","status":"idle","kind":"interactive"}"#).unwrap();
         let homes = vec![(Harness::Claude, c.clone()), (Harness::Grok, g.clone())];
         let found = find(&homes, &Default::default());
@@ -872,7 +818,7 @@ mod tests {
             vec!["s-1"]
         );
         assert_eq!(found[0].status, "idle");
-        // GodTerm's own processes never count.
+
         let ours: std::collections::HashSet<u32> = [pid].into_iter().collect();
         assert!(find(&homes, &ours).is_empty());
         let _ = child.kill();
@@ -905,7 +851,7 @@ mod tests {
                 && p.contains("\"say hello\"")
                 && p.contains("recurring")
         );
-        // Kept by claude (listed) or created again both count; nothing yet is 0.
+
         assert_eq!(
             armed_after(
                 "{\"name\":\"CronList\"} ... j1 every 5 minutes",

@@ -1,8 +1,3 @@
-//! Updates in the app: a background checker (at start and every few
-//! hours), the status bar chip, the toast, Settings > About, the
-//! assistant's mention, and Ctrl-a N: restart into the new version with
-//! every tab resumed.
-
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,15 +11,14 @@ pub enum Phase {
     Idle,
     Checking,
     UpToDate,
-    /// Newer, but this install updates another way (or downloads are off).
+
     Available,
     Downloading(u8),
-    /// Verified and waiting for a restart.
+
     Ready,
     Failed(String),
 }
 
-/// What the checker thread found.
 #[derive(Debug, Clone, Default)]
 pub struct Shared {
     pub phase: Phase,
@@ -32,7 +26,7 @@ pub struct Shared {
     pub checked_at: Option<chrono::DateTime<chrono::Local>>,
     pub method: Option<Method>,
     pub staged: Option<Staged>,
-    /// The releases newer than this build, newest first, with notes.
+
     pub between: Vec<Release>,
 }
 
@@ -40,15 +34,15 @@ pub struct Shared {
 pub struct UpdateUi {
     pub shared: Arc<Mutex<Shared>>,
     pub(crate) kick: Option<mpsc::Sender<()>>,
-    /// The version the toast was shown for.
+
     pub toasted: Option<String>,
-    /// A second Ctrl-a N within this window restarts despite the warning.
+
     pub confirm_until: Option<Instant>,
-    /// Restart once the assistant's turn is over.
+
     pub after_turn: bool,
-    /// "Later": no chip for this version until the next launch.
+
     pub later: Option<String>,
-    /// Download now even with auto_download off (the Updates "Download").
+
     pub force_download: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -60,7 +54,6 @@ impl UpdateUi {
             .clone()
     }
 
-    /// The newer version that is ready to restart into.
     pub fn ready(&self) -> Option<String> {
         let s = self.snapshot();
         (s.phase == Phase::Ready)
@@ -69,7 +62,6 @@ impl UpdateUi {
     }
 }
 
-/// One check (and download), as the thread runs it (tests).
 #[cfg(test)]
 pub fn run_once(
     shared: &Arc<Mutex<Shared>>,
@@ -81,7 +73,6 @@ pub fn run_once(
     run_once_with(shared, cfg, src, l, method, false)
 }
 
-/// `force`: download even with auto_download off.
 pub fn run_once_with(
     shared: &Arc<Mutex<Shared>>,
     cfg: &crate::config::UpdateCfg,
@@ -125,7 +116,7 @@ pub fn run_once_with(
         return;
     };
     let v = rel.version().to_string();
-    // The notes of every version between, for the Updates window.
+
     let mut cache = Cache::load(l);
     let between = update::notes_between(src, &mut cache, &rel, &cur);
     cache.save(l);
@@ -173,7 +164,6 @@ pub fn run_once_with(
 }
 
 impl App {
-    /// Start the checker once (never in tests: no network there).
     pub fn start_update_checker(&mut self) {
         if self.update.kick.is_some() || cfg!(test) || !self.cfg.update.enabled {
             return;
@@ -189,7 +179,7 @@ impl App {
             .spawn(move || {
                 let l = Layout::default();
                 let src = update::Source::github(cfg.require_signature);
-                // Let the start settle first.
+
                 let mut wait = Duration::from_secs(15);
                 loop {
                     match rx.recv_timeout(wait) {
@@ -198,7 +188,7 @@ impl App {
                     }
                     let now = force.swap(false, std::sync::atomic::Ordering::SeqCst);
                     run_once_with(&shared, &cfg, &src, &l, update::detect_self(&l), now);
-                    // A failed check (offline, rate limited) tries again sooner.
+
                     let failed = matches!(
                         shared.lock().unwrap_or_else(|e| e.into_inner()).phase,
                         Phase::Failed(_)
@@ -212,7 +202,6 @@ impl App {
             });
     }
 
-    /// "Check now".
     pub fn check_for_update(&mut self) {
         if !self.cfg.update.enabled {
             self.flash("Update checks are off (Settings > General > Updates)");
@@ -225,10 +214,9 @@ impl App {
         }
     }
 
-    /// Every second: the one time toast when a version becomes ready.
     pub fn update_tick(&mut self) {
         let s = self.update.snapshot();
-        // A development build hears about releases in Settings > About only.
+
         let dev = matches!(s.method, Some(Method::Dev { .. }));
         let v = s.latest.as_ref().map(|r| r.version().to_string());
         let note = match (&s.phase, &v) {
@@ -253,7 +241,6 @@ impl App {
         }
     }
 
-    /// The status bar chip: "UPDATE v0.2.2 · RESTART".
     pub fn update_chip(&self) -> Option<String> {
         let s = self.update.snapshot();
         if matches!(s.method, Some(Method::Dev { .. })) {
@@ -267,7 +254,6 @@ impl App {
         }
     }
 
-    /// What stands in the way of restarting now.
     pub fn restart_blockers(&self) -> Vec<String> {
         let mut why = vec![];
         if !self.pending_confirms.is_empty() {
@@ -294,9 +280,6 @@ impl App {
         why
     }
 
-    /// Ctrl-a N and the chip: restart into the ready version; ask first
-    /// when something is in progress (a second press within 10 s goes on).
-    /// Without a ready version it checks (or says how this install updates).
     pub fn restart_to_update(&mut self, force: bool) {
         let s = self.update.snapshot();
         let Some(staged) = s.staged.clone().filter(|_| s.phase == Phase::Ready) else {
@@ -354,7 +337,6 @@ impl App {
         }
     }
 
-    /// "Skip this version".
     pub fn skip_update(&mut self) {
         let s = self.update.snapshot();
         let Some(v) = s.latest.map(|r| r.version().to_string()) else {
@@ -371,7 +353,6 @@ impl App {
         self.flash(format!("Skipping v{v}; a newer release will show again"));
     }
 
-    /// Settings > About: the update lines.
     pub fn update_lines(&self) -> Vec<String> {
         let s = self.update.snapshot();
         let cur = Version::current();
@@ -415,7 +396,6 @@ impl App {
         v
     }
 
-    /// The state block line for the assistant.
     pub fn update_state_line(&self) -> String {
         if let Some(v) = self.update.ready() {
             return format!("update_ready: v{v} (mention it once, briefly; \"update now\" is restart_to_update; what's new: update_info)\n");
@@ -437,7 +417,6 @@ impl App {
         format!("update_available: v{v}, {how}; what's new: update_info\n")
     }
 
-    /// For the assistant's update_info.
     pub fn update_info_json(&self) -> serde_json::Value {
         let s = self.update.snapshot();
         let cur = Version::current();

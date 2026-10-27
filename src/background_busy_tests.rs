@@ -1,16 +1,9 @@
-//! A tab at its prompt with subagents, shells or tasks still running is
-//! busy, not idle: get_state, the assistant's snapshot, the idle selector,
-//! archive sweeps, the memory saver, moves and quick closes all treat it
-//! so. It still takes prompts (that is "ready for a prompt", a separate
-//! thing).
-
 use crate::app::{App, Modal};
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::confirm_click_tests::test_app;
 use crate::pane::{Activity, PaneState};
 use serde_json::json;
 
-/// A running tab at its prompt on pane `s`, with a session.
 fn ready_tab(app: &mut App, s: usize, name: &str) -> usize {
     let dir = app.cfg.accounts[app.panes[s].account.unwrap()].work_dir();
     let t = app.panes[s].add_tab(dir);
@@ -22,7 +15,6 @@ fn ready_tab(app: &mut App, s: usize, name: &str) -> usize {
     t
 }
 
-/// What runs under the tab, as its activity found it (the 2 s cache).
 fn background(app: &App, s: usize, t: usize, what: Option<&str>) {
     app.bg_cache.borrow_mut().insert(
         app.panes[s].tabs[t].uid,
@@ -62,14 +54,14 @@ fn background_work_is_busy_in_state_and_snapshot() {
     let r = tab_row(&v, iu);
     assert_eq!(r["state"], "ready", "{r}");
     assert!(r["busy"].is_null() && r["background_work"].is_null(), "{r}");
-    // The assistant's snapshot says busy, never "ready, background".
+
     let p = app.state_preamble();
     assert!(
         p.contains("WORKING in background (2 subagents, 1 shell), not idle"),
         "{p}"
     );
     assert!(!p.contains("ready, background"), "{p}");
-    // The system prompt says background tabs are busy.
+
     let sp = crate::sysprompt::SECTIONS
         .iter()
         .map(|s| s.default)
@@ -94,7 +86,7 @@ fn claude_footer_alone_counts_as_background_work() {
     );
     assert!(app.tab_busy(0, t));
     assert_eq!(app.state_word(0, t), "background");
-    // Working is busy too, without counting as background work.
+
     app.panes[0].tabs[t].bg_wait = false;
     app.panes[0].tabs[t].activity = Activity::Working;
     assert!(app.tab_busy(0, t) && app.tab_background_work(0, t).is_none());
@@ -166,7 +158,7 @@ fn memory_saver_and_quick_close_leave_background_tabs_alone() {
     let (mut app, home) = test_app("bgbusy-saver");
     let bg = ready_tab(&mut app, 0, "bgtab");
     let idle = ready_tab(&mut app, 0, "idletab");
-    // Neither is the active tab, so neither is on screen.
+
     let other = ready_tab(&mut app, 0, "front");
     app.panes[0].active = other;
     background(&app, 0, bg, Some("1 shell"));
@@ -177,7 +169,7 @@ fn memory_saver_and_quick_close_leave_background_tabs_alone() {
         !app.suspendable(0, bg, zero),
         "pausing would kill its shell"
     );
-    // "close it" closes an idle tab at once, but asks for a busy one.
+
     app.assistant.last_user = "close it".into();
     assert!(!app.closes_without_a_yes((0, bg)));
     let _ = std::fs::remove_dir_all(home);
@@ -194,11 +186,11 @@ fn moves_wait_for_background_work() {
     assert!(matches!(app.modal, Modal::MoveBusy(_)), "asks first");
     app.move_busy_choice(false);
     assert_eq!(app.queued_moves.len(), 1);
-    // Still running in the background: the queued move waits.
+
     app.tabmove_tick();
     assert_eq!(app.queued_moves.len(), 1);
     assert!(app.find_tab(uid).is_some());
-    // The move tool queues it too.
+
     app.queued_moves.clear();
     let v = app.control_call("move_tab", &json!({"tab": format!("t{uid}"), "to": 2}));
     assert_eq!(app.queued_moves.len(), 1, "{v}");

@@ -1,7 +1,3 @@
-//! The assistant's own prompt in the app: its tools (with the checks that
-//! an edit comes from the user and leaves the safety rules alone), and
-//! the System prompt view (Settings > Assistant).
-
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -12,7 +8,6 @@ fn ok(v: Value) -> Value {
 }
 
 impl App {
-    /// The conversation turn, for the history ("<conversation>#<turn>").
     fn prompt_turn(&self) -> String {
         format!(
             "{}#{}",
@@ -25,9 +20,6 @@ impl App {
         )
     }
 
-    /// An edit must come from the user's own words in this turn: a turn
-    /// they started that asks to change behavior or the prompt, and that
-    /// read no tab or file contents (which could have planted it).
     pub fn check_prompt_source(&self) -> Result<(), String> {
         let said = self.assistant.last_user.trim();
         if said.is_empty() || self.assistant.conv.is_none() {
@@ -44,8 +36,6 @@ impl App {
         Ok(())
     }
 
-    /// get_system_prompt, prompt_history, revert_prompt, reset_section;
-    /// None for other tools (edit_system_prompt goes through a plan).
     pub fn prompt_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
         let r = match tool {
@@ -93,7 +83,6 @@ impl App {
         Some(r)
     }
 
-    /// The plan for edit_system_prompt: the new text and its question.
     pub fn plan_prompt_edit(&mut self, args: &Value) -> Result<(Value, String, bool), String> {
         self.check_prompt_source()?;
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
@@ -127,8 +116,6 @@ impl App {
         Ok(ok(json!({"section": sec, "revision": rev, "say": say})))
     }
 
-    /// The prompt changed: a note, and the brain restarts with it at the
-    /// next turn boundary.
     pub fn prompt_changed(&mut self, say: &str) {
         self.assistant.prompt_dirty = true;
         self.assistant.log.push(crate::app_assistant::Entry::new(
@@ -139,13 +126,12 @@ impl App {
     }
 }
 
-/// Settings > Assistant > System prompt.
 #[derive(Debug, Clone, Default)]
 pub struct PromptUi {
     pub sel: usize,
-    /// Showing the revision history instead of the sections.
+
     pub history: bool,
-    /// Editing the selected section (Enter is a new line, Ctrl-S saves).
+
     pub edit: Option<String>,
 }
 
@@ -236,7 +222,6 @@ impl App {
     }
 }
 
-/// Wrap `t` to `w` columns (words kept whole where they fit).
 fn wrap(t: &str, w: usize) -> Vec<String> {
     let mut out = vec![];
     for para in t.split('\n') {
@@ -349,7 +334,7 @@ pub fn draw(f: &mut ratatui::Frame, app: &App, area: ratatui::layout::Rect) {
                 },
             );
         }
-        // The selected section's text.
+
         let Some(s) = sysprompt::SECTIONS.get(ui.sel) else {
             return;
         };

@@ -1,32 +1,15 @@
-//! `godterm --demo`: GodTerm on made up accounts and sessions, for demos
-//! and the promo video.
-//!
-//! Everything lives in its own home (`~/.godterm-demo`, or
-//! `$GODTERM_DEMO_HOME`): six fake accounts (four Claude, two Grok) with
-//! fake logins, usage read from fixture files (one burns down live),
-//! sixteen tabs running the demo agent (`demo_agent`) instead of claude
-//! or grok, and a scripted assistant brain. `--demo-harnesses` builds a
-//! world with one account per agent CLI (Claude Code, Grok Build, Codex,
-//! Cursor, Antigravity, OpenCode) instead. The user's real `~/.godterm`,
-//! `~/.claude`, `~/.grok`, keychain and accounts are never read or
-//! written: the lookups that would reach them check `assert_safe` and
-//! panic in demo mode.
-
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-/// Set (to "1") for the demo GodTerm and everything it starts.
 pub const ENV: &str = "GODTERM_DEMO";
-/// The marker beside the demo agent links in `<home>/bin`.
+
 pub const AGENT_MARKER: &str = ".godterm-demo-agent";
 
-/// Demo mode is on (this process was started with `--demo`).
 pub fn active() -> bool {
     std::env::var(ENV).is_ok_and(|v| v == "1")
 }
 
-/// Where the demo keeps everything.
 pub fn home() -> PathBuf {
     std::env::var("GODTERM_DEMO_HOME")
         .ok()
@@ -35,8 +18,6 @@ pub fn home() -> PathBuf {
         .unwrap_or_else(|| crate::config::home_dir().join(".godterm-demo"))
 }
 
-/// Panics when any of the dirs points at the user's real data. Called by
-/// `config::dirs()` in demo mode, so nothing can reach it.
 pub fn assert_safe(d: &crate::config::Dirs) {
     for p in [&d.app_home, &d.main_claude, &d.main_grok] {
         assert!(
@@ -47,7 +28,6 @@ pub fn assert_safe(d: &crate::config::Dirs) {
     }
 }
 
-/// The keychain is never read in demo mode (fake logins are files).
 pub fn keychain_allowed() -> bool {
     debug_assert!(!active(), "demo isolation: keychain read in demo mode");
     !active()
@@ -59,10 +39,6 @@ fn arg(args: &[String], name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
-/// `godterm __demo-say`: Kokoro to WAV files, never played. For the video
-/// narration. `--voice V --speed S --out F.wav TEXT`, or `--batch F.json
-/// --outdir D` with `[{"id", "text", "voice"?, "speed"?}]`. Uses the
-/// stock voice settings, not the user's config.
 pub fn say_command(args: &[String]) -> Result<()> {
     use crate::voice::kokoro::{self, Kokoro, Provider};
     let cfg = crate::config::VoiceCfg::default();
@@ -111,8 +87,7 @@ pub fn say_command(args: &[String]) -> Result<()> {
     let mut report = vec![];
     for (path, text, voice, speed) in jobs {
         let t = kokoro::apply_fixes(&text, &fx);
-        // Sentence by sentence (Kokoro's input limit), joined with a short
-        // breath between them.
+
         let mut all: Vec<f32> = vec![];
         for s in crate::voice::tts::chunk_sentences(&t) {
             let (samples, _) = k.synth(&s, &voice, speed)?;
@@ -135,14 +110,6 @@ pub fn say_command(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------
-// Starting the demo
-
-/// `godterm --demo`: build the demo world and point this process (and
-/// everything it starts) at it. Options: `--demo-manual` (no automatic
-/// usage burn; a driver script sets usage over the control socket),
-/// `--demo-no-external` (no external session in tmux), `--demo-harnesses`
-/// (the one account per agent CLI world).
 pub fn enter(args: &[String]) -> Result<()> {
     let home = home();
     let world = if args.iter().any(|a| a == "--demo-harnesses") {
@@ -156,9 +123,9 @@ pub fn enter(args: &[String]) -> Result<()> {
     std::env::set_var("GODTERM_MAIN_DIR", &p.main_claude);
     std::env::set_var("GODTERM_MAIN_GROK_DIR", &p.main_grok);
     std::env::set_var("GODTERM_USAGE_FIXTURE", &p.usage);
-    // The driver script and godterm mcp may change things (sandboxed).
+
     std::env::set_var("GODTERM_CONTROL_RW", "1");
-    // Nothing opens on the desktop (Finder, editors, the browser).
+
     std::env::set_var("GODTERM_NO_OPEN", "1");
     for v in [
         "CLAUDEGO_HOME",
@@ -167,11 +134,10 @@ pub fn enter(args: &[String]) -> Result<()> {
     ] {
         std::env::remove_var(v);
     }
-    // Checked now, before anything else looks.
+
     assert_safe(&crate::config::dirs());
     let manual = args.iter().any(|a| a == "--demo-manual");
     if !manual {
-        // Work burns from 40% to 0 over 90 s, starting 20 s in.
         start_burn(crate::demo_seed::BURN_ACCOUNT, 40.0, 0.0, 90.0, 20.0);
     }
     if !args.iter().any(|a| a == "--demo-no-external") {
@@ -180,11 +146,8 @@ pub fn enter(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The tmux server the external session runs in.
 const TMUX_SOCKET: &str = "godterm-demo";
 
-/// A claude "in another terminal": the demo agent on the main dir in a
-/// tmux session of its own (`tmux -L godterm-demo attach` to watch it).
 fn start_external(p: &crate::demo_seed::Paths) {
     if crate::voice::tts::which("tmux").is_none() {
         return;
@@ -208,7 +171,6 @@ fn start_external(p: &crate::demo_seed::Paths) {
         .status();
 }
 
-/// On the way out: stop the external session.
 pub fn leave() {
     if active() {
         let _ = std::process::Command::new("tmux")
@@ -219,16 +181,11 @@ pub fn leave() {
     }
 }
 
-/// Demo touches on the app: the voice strip shows the wake word mode
-/// (no mic is opened and nothing is ever spoken aloud).
 pub fn tune(app: &mut crate::app::App) {
     app.voice.always_on = true;
     app.voice.status = crate::voice::VoiceStatus::Idle;
     app.flash("Demo mode: made up accounts and sessions (~/.godterm-demo)");
 }
-
-// ---------------------------------------------------------------------
-// Usage over time
 
 struct Burn {
     account: String,
@@ -251,12 +208,8 @@ fn acct(name: &str) -> Option<&'static crate::demo_seed::Acct> {
     })
 }
 
-/// Where the Browser button and dialog look in demo mode: the demo's made
-/// up Chrome profiles, no `bsk`, no skill folders. The real Chrome folder
-/// is never read.
 pub fn browser_env() -> crate::browser::Env {
     crate::browser::Env {
-        // No bsk, unless an end to end test hands the demo a fake one.
         bin_dirs: crate::config::env_var("DEMO_BSK_DIR")
             .map(|d| vec![std::path::PathBuf::from(d)])
             .unwrap_or_default(),
@@ -266,7 +219,6 @@ pub fn browser_env() -> crate::browser::Env {
     }
 }
 
-/// Write an account's usage fixture now.
 pub fn set_usage(name: &str, five_left: Option<f64>, week_left: Option<f64>) -> Result<()> {
     let a = acct(name).with_context(|| format!("no demo account {name}"))?;
     let dir = PathBuf::from(crate::config::env_var("USAGE_FIXTURE").context("no fixture dir")?);
@@ -277,8 +229,6 @@ pub fn set_usage(name: &str, five_left: Option<f64>, week_left: Option<f64>) -> 
     Ok(())
 }
 
-/// Burn `account`'s 5 hour window from `from` to `to` % left over `secs`,
-/// after `delay` seconds.
 pub fn start_burn(account: &str, from: f64, to: f64, secs: f64, delay: f64) {
     {
         let mut b = BURNS.lock().unwrap_or_else(|e| e.into_inner());
@@ -311,12 +261,8 @@ pub fn start_burn(account: &str, from: f64, to: f64, secs: f64, delay: f64) {
     });
 }
 
-// ---------------------------------------------------------------------
-// The control API's demo tools (only in demo mode)
-
 static SCREEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(vec![]);
 
-/// Keep the last drawn frame as text (for `demo_screen`).
 pub fn capture(buf: &ratatui::buffer::Buffer) {
     let a = buf.area;
     let mut lines = Vec::with_capacity(a.height as usize);
@@ -338,8 +284,6 @@ pub fn capture(buf: &ratatui::buffer::Buffer) {
     *SCREEN.lock().unwrap_or_else(|e| e.into_inner()) = lines;
 }
 
-/// demo_state, demo_screen, demo_usage, demo_burn, demo_voice. None for
-/// other tools.
 pub fn control_tool(
     app: &mut crate::app::App,
     tool: &str,

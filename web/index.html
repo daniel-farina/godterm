@@ -9,7 +9,6 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="GodTerm">
-<!-- The theme (Dark, Light or the system's) before anything paints. -->
 <script src="js/theme.js"></script>
 <title>GodTerm</title>
 <link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">
@@ -19,8 +18,6 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="stylesheet" href="vendor/xterm.css">
 <link rel="stylesheet" href="app.css">
-<!-- Every module the first screen needs, fetched at once instead of one
-     import at a time. -->
 <link rel="modulepreload" href="js/main.js">
 <link rel="modulepreload" href="js/util.js">
 <link rel="modulepreload" href="js/debuglog.js">
@@ -54,6 +51,8 @@
    <button class="ib tb" id="b-find" aria-label="Find a tab" title="Find a tab" data-i="search"><span class="lb">Find</span></button>
    <button class="ib tb" id="b-sessions" aria-label="Sessions" title="Sessions" data-i="history"><span class="lb">Sessions</span></button>
    <button class="ib tb" id="b-newtab" aria-label="New tab" title="New tab" data-i="plus"><span class="lb">New tab</span></button>
+   <button class="ib tb" id="b-loops" aria-label="Loops" title="Loops" data-i="clock"><span class="lb">Loops</span><span class="cnt">0</span></button>
+   <button class="ib tb" id="b-jobs" aria-label="Scheduled jobs" title="Scheduled jobs" data-i="history"><span class="lb">Scheduled</span><span class="cnt">0</span></button>
    <button class="ib tb desk" id="b-split" aria-label="Split panes" title="Split panes" data-i="split"><span class="lb">Layout</span></button>
    <button class="ib tb" id="b-more" aria-label="Manage: usage, jobs, loops" title="Manage: usage, jobs, loops" data-i="usage"><span class="lb">Manage</span></button>
    <span class="tr2-gap"></span>
@@ -93,6 +92,7 @@
    <b>Assistant</b>
    <span id="voice-note" class="dim"></span>
    <button class="tog" id="b-openmic" aria-pressed="false">Open mic</button>
+   <button class="ib" id="b-agear" aria-label="Assistant settings" title="Assistant settings: model, account, how much is read aloud" data-i="gear"></button>
    <button class="ib" id="b-voice" aria-label="Voice settings" title="Voice settings" data-i="filter"></button>
    <button class="ib" id="b-chat-x" aria-label="Close" title="Close the assistant" data-i="x"></button>
   </div>
@@ -100,8 +100,10 @@
   <div id="chat-sr" class="sr-only" aria-live="polite"></div>
   <button type="button" id="jump" class="jump" hidden aria-label="Scroll to the end"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg><span></span></button>
   <div id="att" hidden aria-label="Attached images"></div>
+  <div id="scope" class="scope" role="group" aria-label="What the assistant looks at"><span>Context</span><button type="button" data-v="all" aria-pressed="true">All tabs</button><button type="button" data-v="tab" aria-pressed="false">This tab</button></div>
   <form id="composer">
    <button type="button" class="ib" id="b-ptt2" aria-label="Hold to talk" title="Hold to talk" data-i="mic"></button>
+   <button type="button" class="ib" id="b-tts" aria-pressed="false" aria-label="Read answers aloud" title="Read answers aloud (TTS)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg></button>
    <button type="button" class="ib" id="b-img" aria-label="Attach an image" title="Attach an image" data-i="image"></button>
    <input type="file" id="f-img" accept="image/*" multiple hidden>
    <textarea id="say" rows="1" placeholder="Ask the assistant" aria-label="Message to the assistant" enterkeyhint="send"></textarea>

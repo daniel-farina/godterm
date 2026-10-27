@@ -1,9 +1,5 @@
-//! Command palette (Ctrl-a :): fuzzy pick an action, or type a voice style
-//! command such as "in account two approve".
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// Same as Ctrl-a followed by this key.
     Key(char),
     Broadcast,
     VoicePushToTalk,
@@ -23,27 +19,27 @@ pub enum Action {
     StopTalking,
     AccountMenu,
     ToggleTrust,
-    /// A long-lived token for the focused pane's account (setup-token).
+
     CreateToken,
-    /// The focused pane a step wider or narrower, or all equal.
+
     PaneWidth(i8),
-    /// Permission mode for the focused pane's account.
+
     Perm(&'static str),
-    /// Update mode on or off.
+
     UpdateMode,
-    /// An update roundup now.
+
     UpdatesNow,
-    /// The voice onboarding again.
+
     VoiceOnboarding,
-    /// The phrases card of the voice onboarding.
+
     VoicePhrases,
-    /// Settings > Setup: install agent CLIs and the voice pieces.
+
     Setup,
-    /// Bring up the focused tab's Chrome profile.
+
     BrowserOpenTab,
-    /// Jump to the open tab with this id, in any pane.
+
     GoTab(u64),
-    /// Find text in every tab's recent output.
+
     FindAll,
 }
 
@@ -191,8 +187,6 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("quit", Action::Key('q')),
 ];
 
-/// Plain words people type for an action, beyond its name (matched as
-/// word prefixes, so "sign in" finds "log in account").
 pub const ALIASES: &[(&str, &str)] = &[
     ("new tab", "open start session project folder create"),
     (
@@ -254,7 +248,6 @@ fn aliases(name: &str) -> &'static str {
         .unwrap_or("")
 }
 
-/// Every query word starts a word of the name or its aliases.
 fn words_match(query: &str, name: &str) -> bool {
     let hay: Vec<String> = name
         .split(|c: char| !c.is_alphanumeric())
@@ -268,7 +261,6 @@ fn words_match(query: &str, name: &str) -> bool {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
     {
-        // Small words never decide a match.
         if matches!(q, "a" | "an" | "the" | "my" | "to" | "i") {
             continue;
         }
@@ -280,7 +272,6 @@ fn words_match(query: &str, name: &str) -> bool {
     any
 }
 
-/// The shortcut shown next to an action, if it has one.
 pub fn key_hint(a: Action) -> Option<String> {
     match a {
         Action::Key(' ') | Action::VoicePushToTalk => Some("Ctrl-a space".into()),
@@ -292,9 +283,6 @@ pub fn key_hint(a: Action) -> Option<String> {
     }
 }
 
-/// Match score (lower is better), None if no match: the typed text in
-/// the name, then plain words (the name's or its aliases), then its
-/// letters in order.
 pub fn fuzzy_score(query: &str, item: &str) -> Option<usize> {
     let q: Vec<char> = query
         .to_lowercase()
@@ -344,13 +332,8 @@ impl Palette {
     }
 }
 
-/// How many open tabs the palette lists at most.
 const TAB_ITEMS: usize = 12;
 
-/// What the palette lists: its actions and, once something is typed, the
-/// open tabs whose name, account or folder matches ("go to tab: billing ·
-/// Work · ready"), best first; on a tie the action comes first. Hidden
-/// panes count (going there shows the pane); closed accounts do not.
 pub fn items(app: &crate::app::App, pl: &Palette) -> Vec<(String, Action)> {
     let mut v: Vec<(usize, u8, String, Action)> = ACTIONS
         .iter()

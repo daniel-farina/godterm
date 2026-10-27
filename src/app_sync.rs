@@ -1,22 +1,3 @@
-//! GodTerm Sync in the app: the background worker (started once sync is
-//! on; never on the UI thread), the reload after a sync wrote into
-//! GodTerm's home, the Sync section's lines, and the tools the web's
-//! Settings > Sync and the assistant share:
-//!
-//! - `sync_status` (read only): on or off, paused, last and next sync,
-//!   errors, the repos and their privacy, machines, leases, warnings, and
-//!   a setup that runs (init or clone);
-//! - `sync_plan` (read only): the dry run with the owner, gh account,
-//!   repos and warnings (no gh login, a repo there already or not
-//!   private, secret files). Runs off the UI thread;
-//! - `sync_init` and `sync_clone`: through `control::planned`, so they
-//!   ask once (needs_confirmation, the web's confirm dialog) and run only
-//!   on the user's yes in a later turn; init also needs a fresh plan.
-//!   They run in the background (`op` in sync_status);
-//! - `sync_now` and `sync_pause` (no confirmation: they only touch
-//!   GodTerm's own state repos and its `[sync]` keys, never a project
-//!   repo).
-
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -35,12 +16,10 @@ pub const TOOL_NAMES: &[&str] = &[
     "sync_pause",
 ];
 
-/// Planned (asked first): their halves are in plan_for / run_plan.
 pub const PLANNED: &[&str] = &["sync_init", "sync_clone"];
 
-/// A plan older than this does not back an init.
 const PLAN_FOR: Duration = Duration::from_secs(600);
-/// A repo's visibility is asked again after this.
+
 const VIS_FOR: Duration = Duration::from_secs(300);
 
 static WORKER: OnceLock<Mutex<Option<Worker>>> = OnceLock::new();
@@ -50,7 +29,6 @@ fn worker() -> &'static Mutex<Option<Worker>> {
     WORKER.get_or_init(|| Mutex::new(None))
 }
 
-/// What the worker saw last, if it runs.
 fn snapshot() -> Option<crate::sync::worker::Shared> {
     worker()
         .lock()
@@ -59,37 +37,32 @@ fn snapshot() -> Option<crate::sync::worker::Shared> {
         .map(Worker::snapshot)
 }
 
-/// The running app as the sync sees it (made once, with the worker).
 static LINK: OnceLock<crate::sync::Link> = OnceLock::new();
 
-/// A fresh context for a sync or a lease step, linked to the app.
 fn make_ctx() -> anyhow::Result<crate::sync::Ctx> {
     let mut c = crate::sync::Ctx::from_env()?;
     c.link = LINK.get().cloned();
     Ok(c)
 }
 
-/// The last dry run, which a `sync_init` stands on.
 #[derive(Debug, Clone)]
 pub struct PlanCache {
     pub at: Instant,
     pub owner: String,
     pub account: String,
-    /// Set for a join check (`sync_plan {repo}`): owner/name.
+
     pub repo: Option<String>,
     pub value: Value,
 }
 
-/// A setup running in the background, or its outcome.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SyncOp {
-    /// "init" or "clone".
     pub kind: String,
-    /// The state repo (owner/name).
+
     pub target: String,
     pub started_ms: i64,
     pub finished_ms: Option<i64>,
-    /// None while it runs.
+
     pub ok: Option<bool>,
     pub error: Option<String>,
     pub summary: Value,
@@ -99,18 +72,16 @@ pub struct SyncOp {
 pub struct VisCache {
     at: Option<Instant>,
     checking: bool,
-    /// repo name (owner/name) -> PRIVATE, PUBLIC, INTERNAL or unknown.
+
     repos: Vec<(String, Option<String>)>,
 }
 
-/// The app's side of the sync setup (Settings > Sync, the tools).
 #[derive(Debug, Default)]
 pub struct SyncUi {
     pub plan: Arc<Mutex<Option<PlanCache>>>,
     pub op: Arc<Mutex<Option<SyncOp>>>,
     pub vis: Arc<Mutex<VisCache>>,
-    /// Tests: the fixture home and GodTerm home the sync works on (a test
-    /// never reaches the real ones: without this the tools refuse).
+
     pub test_home: Option<(PathBuf, PathBuf)>,
 }
 
@@ -118,7 +89,6 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// "in 2 min", "in 40 s", "now".
 fn in_words(ms: i64) -> String {
     let s = ms.max(0) / 1000;
     match s {
@@ -133,8 +103,6 @@ fn now_ms() -> i64 {
 }
 
 impl App {
-    /// Each tick: start the workers once sync is on (the sync and the
-    /// lease worker, each on its own thread).
     pub fn sync_tick(&mut self) {
         if cfg!(test) || crate::demo::active() || !self.cfg.sync.enabled {
             return;
@@ -147,13 +115,10 @@ impl App {
         }
         let applied = w.as_ref().map(|x| x.snapshot().applied).unwrap_or(0);
         drop(w);
-        // The archive and jobs come in through AppEvent::SyncApply (the
-        // app saves them itself); config.toml reloads on its own.
+
         SEEN.store(applied, Ordering::Relaxed);
     }
 
-    /// The running app as the sync sees it, made once: pulled archive and
-    /// jobs changes come to the app as AppEvent::SyncApply.
     fn sync_link(&mut self) -> Option<crate::sync::Link> {
         if cfg!(test) {
             return self.lease.link.clone();
@@ -177,7 +142,6 @@ impl App {
         self.lease.link.clone()
     }
 
-    /// The link and the lease worker, once.
     pub(crate) fn lease_start(&mut self) {
         if cfg!(test) || self.lease.cmd.is_some() || !self.cfg.sync.enabled {
             return;
@@ -192,15 +156,12 @@ impl App {
         self.lease.cmd = Some(tx);
     }
 
-    /// A turn ended or something changed: sync soon.
     pub fn sync_poke(&self, why: &'static str) {
         if let Some(w) = worker().lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             w.poke(why);
         }
     }
 
-    /// The context the tools work on: GodTerm's home (a fixture's in
-    /// tests), linked to the app.
     pub(crate) fn sync_ctx(&self) -> anyhow::Result<crate::sync::Ctx> {
         if let Some((home, app)) = &self.sync_ui.test_home {
             let text = std::fs::read_to_string(app.join("config.toml")).unwrap_or_default();
@@ -216,7 +177,6 @@ impl App {
         make_ctx()
     }
 
-    /// The Sync section's lines.
     pub fn sync_lines(&self) -> Vec<String> {
         let s = &self.cfg.sync;
         if !s.enabled {
@@ -263,7 +223,6 @@ impl App {
         v
     }
 
-    /// The sync tools; None when `tool` is not one of them.
     pub fn sync_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         if PLANNED.contains(&tool) {
             return Some(self.planned(tool, args));
@@ -272,8 +231,6 @@ impl App {
             return None;
         }
         Some(match tool {
-            // The user's own press (the web's buttons), never the
-            // assistant's.
             "sync_lease" => {
                 let user = self.web_caller;
                 self.sync_lease_tool(args, user)
@@ -301,7 +258,6 @@ impl App {
         })
     }
 
-    /// The setup running or last finished, if any.
     pub fn sync_op(&self) -> Option<SyncOp> {
         lock(&self.sync_ui.op).clone()
     }
@@ -310,7 +266,6 @@ impl App {
         self.sync_op().is_some_and(|o| o.ok.is_none())
     }
 
-    /// `sync_status`.
     pub fn sync_status_json(&self) -> Value {
         let s = self.cfg.sync.clone();
         let lines = self.sync_lines();
@@ -326,7 +281,6 @@ impl App {
         let mut repos: Vec<Value> = vec![];
         let mut next: Option<Value> = None;
         if s.enabled {
-            // Repos: the state repo, then the monthly conversation repos.
             let mut names = vec![(state_repo.clone(), "state", None, false)];
             for sh in rep.as_ref().map(|r| r.shards.clone()).unwrap_or_default() {
                 names.push((
@@ -357,7 +311,7 @@ impl App {
                     "size": bytes.map(crate::sync::plan::mb), "sealed": sealed,
                     "visibility": v}));
             }
-            // When the next sync runs.
+
             let hb = s.heartbeat_s.clamp(30, 3600) as i64 * 1000;
             next = Some(if s.paused {
                 json!({"paused": true, "words": "paused"})
@@ -441,8 +395,6 @@ impl App {
         }})
     }
 
-    /// The repos' visibility, as last checked (GitHub: asked off the UI
-    /// thread at most every 5 minutes; "CHECKING" until the first answer).
     fn sync_visibility(
         &self,
         ctx: &crate::sync::Ctx,
@@ -454,7 +406,6 @@ impl App {
             (o.to_string(), r.to_string())
         };
         if !remote.is_github() {
-            // A folder of bare repos: its marker files, read at once.
             return names
                 .into_iter()
                 .map(|n| {
@@ -502,9 +453,6 @@ impl App {
             .collect()
     }
 
-    /// `sync_plan {owner?, account?, repo?}`: the dry run and the checks,
-    /// built off the UI thread (the reply waits for it). With `repo`
-    /// (owner/name) it checks a state repo to join instead.
     fn sync_plan_tool(&mut self, args: &Value) -> Result<Value, String> {
         let ctx = self.sync_ctx().map_err(|e| format!("{e:#}"))?;
         let s = |k: &str| {
@@ -538,7 +486,6 @@ impl App {
         )
     }
 
-    /// `sync_pause {pause}`: the background sync waits (true) or goes on.
     fn sync_pause_tool(&mut self, args: &Value) -> Result<Value, String> {
         if !self.cfg.sync.enabled {
             return Err("sync is off on this machine: nothing to pause".into());
@@ -561,7 +508,6 @@ impl App {
         Ok(json!({"ok": true, "result": {"paused": pause, "say": say}}))
     }
 
-    /// sync_init / sync_clone: the exact plan and its question.
     pub(crate) fn sync_plan_for(
         &mut self,
         tool: &str,
@@ -641,7 +587,7 @@ impl App {
                     true,
                 ));
             }
-            // sync_clone
+
             let repo = s("repo").ok_or("repo: the state repo to join, as OWNER/NAME")?;
             let (owner, _) = repo
                 .split_once('/')
@@ -651,7 +597,7 @@ impl App {
             if !crate::sync::git::valid_account(&account) {
                 return Err("bad gh account name".into());
             }
-            // A join check for it said no: say why now.
+
             if let Some(c) = cache.filter(|c| {
                 c.repo.as_deref() == Some(&repo)
                     && c.account == account
@@ -681,7 +627,6 @@ impl App {
         })())
     }
 
-    /// sync_init / sync_clone after the yes: started in the background.
     pub(crate) fn sync_run_plan(
         &mut self,
         tool: &str,
@@ -698,8 +643,7 @@ impl App {
                 return Err("a sync setup is running already".into());
             }
             let mut ctx = self.sync_ctx().map_err(|e| format!("{e:#}"))?;
-            // The sessions running here are never written under their CLI,
-            // and pulled archive and jobs changes go through the app.
+
             ctx.link = self.sync_link().or(ctx.link);
             if let Some(l) = &ctx.link {
                 let running: std::collections::BTreeSet<String> = self
@@ -763,7 +707,6 @@ impl App {
     }
 }
 
-/// The plan and the checks (off the UI thread), cached for sync_init.
 fn build_plan(
     ctx: &crate::sync::Ctx,
     enabled: bool,
@@ -790,7 +733,6 @@ fn build_plan(
         None => {
             let mut sc = ctx.sync().clone();
             if let Some(o) = &owner {
-                // As `sync init --owner O`: that account too, unless given.
                 sc.owner = o.clone();
                 sc.account = o.clone();
             }
@@ -805,16 +747,14 @@ fn build_plan(
     };
     let mut pf = plan::preflight(ctx, &o, &name, &a, &gh);
     if repo.is_some() {
-        // A join check: being there is the point.
         pf.warnings.retain(|w| !w.contains("is there already"));
     }
     if enabled {
-        // On already: the checks only say what is there.
         pf.warnings.retain(|w| !w.contains("is there already"));
         pf.can_init = false;
         pf.can_clone = false;
     }
-    // A join check is about the repo; this machine's plan is for init.
+
     let p = repo.is_none().then(|| plan::plan(ctx));
     let mut warnings = pf.warnings.clone();
     if let Some(p) = &p {
@@ -873,12 +813,11 @@ fn build_plan(
     v
 }
 
-/// `sync init` after the user's yes (asked by sync_init).
 fn run_init(ctx: &crate::sync::Ctx, owner: String, account: String) -> Result<Value, String> {
     let mut sc = ctx.sync().clone();
     sc.owner = owner;
     sc.account = account;
-    // The yes was the user's answer to sync_init's question.
+
     let rep = crate::sync::restore::init(ctx, sc, &|_| true).map_err(|e| format!("{e:#}"))?;
     let c = crate::sync::restore::reload(ctx).map_err(|e| format!("{e:#}"))?;
     Ok(
@@ -887,7 +826,6 @@ fn run_init(ctx: &crate::sync::Ctx, owner: String, account: String) -> Result<Va
     )
 }
 
-/// `sync clone` after the user's yes (asked by sync_clone).
 fn run_clone(
     ctx: &crate::sync::Ctx,
     full: &str,

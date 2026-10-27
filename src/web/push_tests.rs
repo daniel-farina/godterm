@@ -1,6 +1,3 @@
-//! Web Push: the RFC 8291 example, a round trip, the VAPID JWT, the
-//! subscription file, what the watcher pushes for, and a delivery to a
-//! fake push service on loopback.
 #![allow(deprecated)]
 
 use super::*;
@@ -13,7 +10,6 @@ fn b(s: &str) -> Vec<u8> {
     unb64u(&s.split_whitespace().collect::<String>()).unwrap()
 }
 
-// RFC 8291 section 5 and appendix A.
 const PLAIN: &str = "When I grow up, I want to be a watermelon";
 const AUTH: &str = "BTBZMqHH6r4Tts7J_aSIgg";
 const UA_PRIV: &str = "q1dXpw3UpT5VOmu_cf_v6ih07Aems3njxI-JWgLcM94";
@@ -55,14 +51,12 @@ fn push_rfc8291_intermediate_values() {
     )
     .unwrap();
     assert_eq!(body, b(BODY));
-    // (The RFC's example says Content-Length 145; its body is 144 bytes.)
+
     assert_eq!(body.len(), 144);
 }
 
 #[test]
 fn push_rfc8291_example_with_the_senders_key() {
-    // The ephemeral key and the salt come from a fixed "random" source:
-    // the whole message must be the RFC's, byte for byte.
     let (k, s) = (b(AS_PRIV), b(SALT));
     let rng = ring::test::rand::FixedSliceSequenceRandom {
         bytes: &[&k, &s],
@@ -83,7 +77,7 @@ fn push_encryption_round_trips_to_the_receiver() {
     assert_eq!(me.compute_public_key().unwrap().as_ref(), &b(UA_PUB)[..]);
     let msg = br#"{"title":"GodTerm","body":"api: finished"}"#;
     let body = encrypt(&b(UA_PUB), &b(AUTH), msg, &SystemRandom::new()).unwrap();
-    // Header: salt, rs 4096, a 65 byte key.
+
     assert_eq!(&body[16..20], &4096u32.to_be_bytes());
     assert_eq!(body[20], 65);
     assert_eq!(body.len(), 86 + msg.len() + 1 + 16);
@@ -95,16 +89,16 @@ fn push_encryption_round_trips_to_the_receiver() {
     )
     .unwrap();
     assert_eq!(open(&ecdh, &b(AUTH), &b(UA_PUB), &body).unwrap(), msg);
-    // A wrong auth secret does not open it.
+
     assert!(open(&ecdh, &[7u8; 16], &b(UA_PUB), &body).is_none());
-    // Two messages never share a salt or a key.
+
     let again = encrypt(&b(UA_PUB), &b(AUTH), msg, &SystemRandom::new()).unwrap();
     assert_ne!(again[..86], body[..86]);
-    // A key that is not on the curve is refused.
+
     let mut bad = b(UA_PUB);
     bad[40] ^= 1;
     assert!(encrypt(&bad, &b(AUTH), msg, &SystemRandom::new()).is_err());
-    // Too big for one record.
+
     assert!(encrypt(&b(UA_PUB), &b(AUTH), &[b'x'; 4080], &SystemRandom::new()).is_err());
 }
 
@@ -151,7 +145,7 @@ fn push_vapid_jwt_shape_and_signature() {
     )
     .verify(input.as_bytes(), &sig)
     .unwrap();
-    // No secret in the token: only its three claims.
+
     assert_eq!(claims.as_object().unwrap().len(), 3);
 }
 
@@ -169,7 +163,6 @@ fn mode(p: &Path) -> u32 {
     std::fs::metadata(p).unwrap().permissions().mode() & 0o777
 }
 
-// Windows has no Unix permission bits; the private mode is checked on Unix.
 #[cfg(not(unix))]
 fn mode(_p: &Path) -> u32 {
     0o600
@@ -189,7 +182,7 @@ fn push_vapid_key_is_made_once_and_private() {
         vapid().unwrap().public_key().as_ref(),
         a.public_key().as_ref()
     );
-    // A broken file is replaced.
+
     std::fs::write(&p, b"junk").unwrap();
     let c = load_or_create_vapid(&p).unwrap();
     assert_ne!(c.public_key().as_ref(), a.public_key().as_ref());
@@ -219,14 +212,14 @@ fn push_subscriptions_are_checked_kept_and_forgotten() {
     assert_eq!(s.id(), sub_id(ep));
     assert_eq!(s.id().len(), 16);
     assert_eq!(mode(&subs_path()), 0o600);
-    // Kinds chosen; then a plain re-subscribe (a page load) keeps them.
+
     let s2 = subscribe(&browser_sub(ep), "iPhone", Some(vec!["approval".into()])).unwrap();
     assert_eq!(s2.kinds, vec!["approval"]);
     assert_eq!(s2.created, s.created);
     let s3 = subscribe(&browser_sub(ep), "iPhone", None).unwrap();
     assert_eq!(s3.kinds, vec!["approval"]);
     assert_eq!(subs().len(), 1);
-    // On disk, read back fresh.
+
     let f: Value = serde_json::from_slice(&std::fs::read(subs_path()).unwrap()).unwrap();
     assert_eq!(f["subs"][0]["endpoint"], ep);
     assert_eq!(f["subs"][0]["kinds"], json!(["approval"]));
@@ -294,10 +287,10 @@ fn push_visible_pages_are_skipped_while_fresh() {
     let l = looking(&[1001, 1002], now);
     assert!(l.contains("aaaa"));
     assert!(!l.contains("bbbb"));
-    // 1003 is not connected: dropped.
+
     assert!(!l.contains("cccc"));
     assert!(!looking(&[1001, 1002, 1003], now).contains("cccc"));
-    // A page that stopped saying so (iOS froze it) no longer counts.
+
     assert!(!looking(&[1001], now + VISIBLE_FOR + Duration::from_secs(1)).contains("aaaa"));
 }
 
@@ -316,10 +309,10 @@ fn push_watcher_notices_approvals_turns_and_errors() {
     let t0 = Instant::now();
     let mut w = Watch::default();
     let tab = |a: Activity| vec![(12u64, "api-server".to_string(), seen(a))];
-    // The first look only records, even a tab that already waits.
+
     assert!(w.observe(&tab(Activity::Permission), false, t0).is_empty());
     assert!(w.observe(&tab(Activity::Working), false, t0).is_empty());
-    // Asked for approval.
+
     let n = w.observe(
         &tab(Activity::Permission),
         false,
@@ -333,7 +326,7 @@ fn push_watcher_notices_approvals_turns_and_errors() {
             name: "api-server".into()
         }]
     );
-    // Again within 30 s: coalesced.
+
     w.observe(&tab(Activity::Working), false, t0 + Duration::from_secs(2));
     assert!(w
         .observe(
@@ -342,12 +335,12 @@ fn push_watcher_notices_approvals_turns_and_errors() {
             t0 + Duration::from_secs(3)
         )
         .is_empty());
-    // A real turn (working for 1.5 s or more) ends.
+
     w.observe(&tab(Activity::Working), false, t0 + Duration::from_secs(4));
     let n = w.observe(&tab(Activity::Ready), false, t0 + Duration::from_secs(8));
     assert_eq!(n.len(), 1);
     assert_eq!(n[0].kind, "finished");
-    // A flicker is not a turn.
+
     w.observe(&tab(Activity::Working), false, t0 + Duration::from_secs(60));
     assert!(w
         .observe(
@@ -356,7 +349,7 @@ fn push_watcher_notices_approvals_turns_and_errors() {
             t0 + Duration::from_millis(60_500)
         )
         .is_empty());
-    // Background work holds "finished" until it is done.
+
     w.observe(
         &tab(Activity::Working),
         false,
@@ -370,12 +363,12 @@ fn push_watcher_notices_approvals_turns_and_errors() {
         .is_empty());
     let n = w.observe(&tab(Activity::Ready), false, t0 + Duration::from_secs(120));
     assert_eq!(n[0].kind, "finished");
-    // A crash.
+
     let mut c = seen(Activity::Exited);
     c.crashed = true;
     let n = w.observe(&row(c), false, t0 + Duration::from_secs(130));
     assert_eq!(n[0].kind, "error");
-    // The assistant asks.
+
     let n = w.observe(&row(c), true, t0 + Duration::from_secs(131));
     assert_eq!(
         n,
@@ -426,8 +419,6 @@ fn push_payload_holds_only_the_name_and_kind() {
     assert_eq!(e.payload()["body"], "docs: ended with an error");
 }
 
-/// A one request push service on loopback: the request's head and body,
-/// answered with `code`.
 fn fake_service(code: u16) -> (String, std::thread::JoinHandle<(String, Vec<u8>)>) {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
@@ -477,8 +468,6 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 
 #[test]
 fn push_delivery_end_to_end_decrypts_at_the_receiver() {
-    // The receiver: the RFC's user agent key (fixed, so it can be used
-    // after the message arrives).
     let ua_priv = b(UA_PRIV);
     let me = agreement::EphemeralPrivateKey::generate(
         &agreement::ECDH_P256,

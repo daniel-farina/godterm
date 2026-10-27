@@ -1,17 +1,3 @@
-//! Direct mode: the voice goes to one tab. Every utterance is typed into
-//! that tab (paste, then Enter once it shows, with receipts), never to the
-//! assistant; the tab's replies are said when its turns end (code and
-//! tables named, not read); its approval prompts are announced and a yes
-//! or no answers them by the usual rules. "Back to the assistant", the
-//! wake word, Ctrl-a K or a click ends it, and so does the tab closing;
-//! the assistant then gets a short note of what was said.
-//!
-//! What is caught here before anything reaches the tab is kept small: a
-//! short list of exit phrases, the wake word, "talk to <tab>" (switch the
-//! target, only when it names exactly one other tab), yes/no while the tab
-//! waits for approval, and the instant commands (stop, mute, pause).
-//! Anything unclear goes to the tab.
-
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -21,35 +7,33 @@ use crate::app_assistant::{Entry, Who};
 use crate::control::tab_id;
 use crate::pane::Activity;
 
-/// A yes asked about an approval stays answerable this long.
 const CONFIRM_TTL: Duration = Duration::from_secs(120);
-/// After a turn ends, how long its reply is looked for in the transcript
-/// before the screen is read instead.
+
 const REPLY_WAIT: Duration = Duration::from_secs(4);
 
 #[derive(Default)]
 pub struct DirectState {
     pub on: Option<DirectMode>,
-    /// What direct mode said out loud, newest last (the panel and tests).
+
     pub said: Vec<String>,
 }
 
 pub struct DirectMode {
     pub uid: u64,
-    /// How the tab is named out loud (kept: the name lookup reads a file).
+
     pub name: String,
     pub since: chrono::DateTime<chrono::Local>,
-    /// What was said both ways: (from the user, text).
+
     pub log: Vec<(bool, String)>,
-    /// The tab's activity at the last tick.
+
     pub last_act: Activity,
-    /// Its last reply already said (or there when direct mode began).
+
     pub last_reply: Option<String>,
-    /// A turn ended at this time: its reply is being looked for.
+
     pub reply_wait: Option<Instant>,
-    /// The last thing typed in (to find the reply on a Grok screen).
+
     pub last_sent: Option<String>,
-    /// An approval answer waiting for a yes.
+
     pub confirm: Option<DirectConfirm>,
 }
 
@@ -60,12 +44,10 @@ pub struct DirectConfirm {
     pub at: Instant,
 }
 
-/// Whether direct mode can start with this tab.
 fn tab_can_direct(tab: &crate::pane::Pane) -> bool {
     (tab.suspended || tab.pending.is_some() || tab.is_running()) && tab.activity != Activity::Exited
 }
 
-/// The live state on the mic badge: muted, listening or nothing.
 pub fn mic_state(app: &App) -> Option<&'static str> {
     if app.voice.muted {
         Some("muted")
@@ -76,8 +58,6 @@ pub fn mic_state(app: &App) -> Option<&'static str> {
     }
 }
 
-/// Lower case words, as `grammar::normalize` gives them, without fillers
-/// at either end.
 pub(crate) fn core_words(norm: &str) -> Vec<String> {
     let mut w: Vec<String> = norm
         .split_whitespace()
@@ -98,9 +78,6 @@ pub(crate) fn core_words(norm: &str) -> Vec<String> {
     w
 }
 
-/// "back to the assistant", "hand me back", "exit direct mode": the user
-/// wants the assistant again. Short utterances only; anything else is for
-/// the tab.
 pub fn is_exit_phrase(norm: &str) -> bool {
     let w = core_words(norm);
     if w.is_empty() || w.len() > 9 {
@@ -125,8 +102,7 @@ pub fn is_exit_phrase(norm: &str) -> bool {
     }
     let has = |x: &str| w.iter().any(|y| y == x);
     let n = w.len();
-    // "... the assistant" / "... main assistant" at the end, with a word
-    // that asks to go there.
+
     let to_assistant = w[n - 1] == "assistant"
         && n >= 2
         && matches!(w[n - 2].as_str(), "the" | "main" | "global" | "my");
@@ -134,12 +110,11 @@ pub fn is_exit_phrase(norm: &str) -> bool {
     if to_assistant && go {
         return true;
     }
-    // "... direct mode" at the end with an exit verb.
+
     let direct = n >= 2 && w[n - 2] == "direct" && w[n - 1] == "mode";
     direct && (has("exit") || has("end") || has("leave") || has("stop") || has("quit"))
 }
 
-/// "talk to <name>": the tab named, as said (None: not a switch).
 pub fn switch_target(norm: &str) -> Option<String> {
     let w = core_words(norm);
     let s = w.join(" ");
@@ -160,7 +135,7 @@ pub fn switch_target(norm: &str) -> Option<String> {
         .trim_end_matches(" tab")
         .trim_end_matches(" agent")
         .trim();
-    // "talk to it" or "talk to me about..." is conversation, not a tab.
+
     let first = rest.split(' ').next().unwrap_or("");
     if rest.is_empty()
         || rest.split(' ').count() > 5
@@ -174,11 +149,9 @@ pub fn switch_target(norm: &str) -> Option<String> {
     Some(rest.to_string())
 }
 
-/// Remove markdown marks from one line: emphasis, inline code ticks and
-/// links (their text stays), bare URLs (said as "a link").
 fn clean_inline(line: &str) -> String {
     let mut s = line.replace("**", "").replace("__", "").replace('`', "");
-    // [text](url) -> text
+
     while let Some(a) = s.find("](") {
         let Some(open) = s[..a].rfind('[') else {
             break;
@@ -201,8 +174,6 @@ fn clean_inline(line: &str) -> String {
         .join(" ")
 }
 
-/// A tab's reply as it can be said: code blocks and tables are named, not
-/// read; headings, bullets and markdown marks are dropped.
 pub fn speakable(text: &str) -> String {
     let mut out: Vec<String> = vec![];
     let mut in_code = false;
@@ -227,7 +198,7 @@ pub fn speakable(text: &str) -> String {
             continue;
         }
         in_table = false;
-        // Indented code (four spaces or a tab).
+
         if line.starts_with("    ") || line.starts_with('\t') {
             if out.last().map(String::as_str) != Some("It showed some code.") {
                 out.push("It showed some code.".into());
@@ -240,7 +211,7 @@ pub fn speakable(text: &str) -> String {
                 t = r.trim();
             }
         }
-        // "1. text" -> "text"
+
         if let Some((n, r)) = t.split_once(". ") {
             if !n.is_empty() && n.len() <= 2 && n.chars().all(|c| c.is_ascii_digit()) {
                 t = r.trim();
@@ -261,16 +232,12 @@ pub fn speakable(text: &str) -> String {
     out.join(" ")
 }
 
-/// What is said of a reply: at most `n` sentences of its speakable text.
-/// Returns (said, whether more was left out).
 pub fn spoken_reply(text: &str, n: usize) -> (String, bool) {
     let sp = speakable(text);
     let (say, _, rest) = crate::assistant::spoken_part(&sp, n.max(1));
     (say, rest.is_some())
 }
 
-/// The reply on a screen, for a tab with no transcript to read (Grok):
-/// the lines under the last echo of what was typed, up to the input box.
 pub fn screen_reply(screen: &str, sent: &str) -> Option<String> {
     let head: String = sent
         .split_whitespace()
@@ -313,7 +280,6 @@ pub fn screen_reply(screen: &str, sent: &str) -> Option<String> {
 }
 
 impl App {
-    /// Start talking to tab (s, t) directly. Returns the line to say.
     pub fn enter_direct(&mut self, s: usize, t: usize) -> Result<String, String> {
         let tab = self
             .panes
@@ -331,7 +297,7 @@ impl App {
                 "You're already talking to {name} directly. Say 'back to the assistant' to return."
             ));
         }
-        // Another tab: that conversation ends (its note is kept).
+
         if self.direct.on.is_some() {
             self.end_direct("switched", false);
         }
@@ -361,8 +327,6 @@ impl App {
         ))
     }
 
-    /// Tabs the mic can move to from here: every other tab direct mode
-    /// could start with, as (uid, "account · name").
     pub fn mic_targets(&self) -> Vec<(u64, String)> {
         let cur = self.direct.on.as_ref().map(|d| d.uid);
         self.all_tabs()
@@ -388,7 +352,6 @@ impl App {
             .collect()
     }
 
-    /// The mic menu's pick: talk to that tab directly.
     pub fn mic_move_to(&mut self, uid: u64) {
         match self.find_tab(uid) {
             Some((s, t)) => self.direct_on_tab(s, t),
@@ -396,7 +359,6 @@ impl App {
         }
     }
 
-    /// The talk_to_tab tool.
     pub fn talk_to_tab_tool(&mut self, args: &Value) -> Result<Value, String> {
         let (s, t) = self.one_tab(args)?;
         let uid = self.panes[s].tabs[t].uid;
@@ -409,8 +371,6 @@ impl App {
         }}))
     }
 
-    /// Ctrl-a K, the tab menu and the status chip: on for the focused (or
-    /// given) tab, off when it is on.
     pub fn toggle_direct(&mut self) {
         if self.direct.on.is_some() {
             self.end_direct("by key", true);
@@ -420,7 +380,6 @@ impl App {
         self.direct_on_tab(s, t);
     }
 
-    /// Start direct mode on tab (s, t) from the UI: said and flashed.
     pub fn direct_on_tab(&mut self, s: usize, t: usize) {
         match self.enter_direct(s, t) {
             Ok(say) => {
@@ -437,13 +396,10 @@ impl App {
         }
     }
 
-    /// Whether direct mode is on with this tab.
     pub fn direct_with(&self, uid: u64) -> bool {
         self.direct.on.as_ref().is_some_and(|d| d.uid == uid)
     }
 
-    /// End direct mode: the assistant gets a note of what was said; with
-    /// `say`, "Back to the assistant." is said.
     pub fn end_direct(&mut self, why: &str, say: bool) {
         let Some(d) = self.direct.on.take() else {
             return;
@@ -468,7 +424,6 @@ impl App {
         }
     }
 
-    /// Say a line in direct mode (queued after what is being said).
     pub fn direct_say(&mut self, text: &str) {
         let text = text.trim();
         if text.is_empty() {
@@ -486,7 +441,6 @@ impl App {
         self.speak_assistant(text);
     }
 
-    /// A dim line in the panel for a direct exchange.
     pub(crate) fn direct_line(&mut self, text: String) {
         self.assistant.log.push(Entry::new(Who::Preamble, text));
         let n = self.assistant.log.len();
@@ -495,7 +449,6 @@ impl App {
         }
     }
 
-    /// An utterance while direct mode is on (after mute and pause).
     pub fn direct_heard(
         &mut self,
         text: &str,
@@ -505,7 +458,6 @@ impl App {
         stats: crate::voice::wake_profile::UttStats,
         table: &[(String, crate::instant::Instant)],
     ) {
-        // The wake word: back to the assistant, with what followed it.
         if let Some(rest) = woke {
             self.end_direct("wake word", false);
             if rest.trim().is_empty() {
@@ -522,7 +474,7 @@ impl App {
         } else {
             crate::app_openmic::hands_free_filter(norm, stats, table)
         };
-        // A short answer to the agent ("Yes.", "Do it.") is not noise.
+
         let why = why.filter(|w| {
             !(*w == "too short"
                 && (waiting
@@ -539,13 +491,11 @@ impl App {
         self.direct_route(text.trim(), norm);
     }
 
-    /// Where the direct tab is now.
     pub fn direct_tab(&self) -> Option<(usize, usize)> {
         let d = self.direct.on.as_ref()?;
         self.locate_uid(d.uid)
     }
 
-    /// Route one utterance in direct mode.
     pub fn direct_route(&mut self, text: &str, norm: &str) {
         if self.direct.on.is_none() {
             return;
@@ -555,7 +505,7 @@ impl App {
             self.end_direct("exit phrase", true);
             return;
         }
-        // "talk to <other tab>": switch, only on a sure match.
+
         if let Some(name) = switch_target(norm) {
             if let Some((s, t)) = self.direct_switch_target(&name) {
                 crate::log::info(&format!("direct: switching to {name}"));
@@ -576,7 +526,7 @@ impl App {
             .as_ref()
             .map(|d| d.name.clone())
             .unwrap_or_default();
-        // A yes asked about an approval.
+
         if let Some(c) = self.direct.on.as_mut().and_then(|d| d.confirm.take()) {
             if c.at.elapsed() < CONFIRM_TTL {
                 if crate::instant::negative(text) {
@@ -589,14 +539,14 @@ impl App {
                 }
             }
         }
-        // The tab asks for approval: yes, no or always answers it.
+
         if self.panes[s].tabs[t].activity == Activity::Permission {
             if let Some(choice) = approval_word(norm, &self.cfg.voice.instant) {
                 self.direct_answer(s, t, choice);
                 return;
             }
         }
-        // stop, mute, pause and the like still work.
+
         if self.cfg.voice.instant_commands {
             let table = crate::instant::table(&self.cfg.voice.instant);
             if let Some(i) = crate::instant::match_instant(text, &table) {
@@ -642,8 +592,6 @@ impl App {
         }
     }
 
-    /// The tab "talk to <name>" names, when it names exactly one tab
-    /// other than the current one.
     fn direct_switch_target(&self, name: &str) -> Option<(usize, usize)> {
         let cur = self.direct.on.as_ref()?.uid;
         let tries = [name.to_string(), name.replace(' ', "-")];
@@ -660,8 +608,6 @@ impl App {
         None
     }
 
-    /// Answer the direct tab's approval prompt by the usual rules: a no, a
-    /// risky command or the confirm policy asks for a yes first.
     fn direct_answer(&mut self, s: usize, t: usize, choice: &'static str) {
         let tid = tab_id(self.panes[s].tabs[t].uid);
         let args = json!({"tab": tid, "choice": choice});
@@ -684,8 +630,6 @@ impl App {
         }
     }
 
-    /// A yes to the question about an approval: the same plan runs, if the
-    /// prompt is still the one asked about.
     fn direct_answer_confirmed(&mut self, s: usize, t: usize, c: DirectConfirm) {
         let tid = tab_id(self.panes[s].tabs[t].uid);
         let args = json!({"tab": tid, "choice": c.choice});
@@ -714,8 +658,6 @@ impl App {
         }
     }
 
-    /// Every tick: follow the tab (closed or ended ends direct mode), say
-    /// its approval prompts and its replies when its turns end.
     pub fn direct_tick(&mut self) {
         let Some(uid) = self.direct.on.as_ref().map(|d| d.uid) else {
             return;
@@ -750,8 +692,7 @@ impl App {
             return;
         }
         let act = tab.activity;
-        // Its own announcements ("needs approval", "finished") are said
-        // here instead.
+
         self.attention.retain(|a| a.uid != now_uid);
         let Some(d) = self.direct.on.as_mut() else {
             return;
@@ -779,7 +720,7 @@ impl App {
                 }
             }
         }
-        // A pending yes for a prompt that is gone is dropped.
+
         if act != Activity::Permission {
             if let Some(d) = self.direct.on.as_mut() {
                 if d.confirm
@@ -793,7 +734,6 @@ impl App {
         self.direct_reply_tick(s, t);
     }
 
-    /// Look for the reply of the turn that just ended and say it.
     fn direct_reply_tick(&mut self, s: usize, t: usize) {
         let Some(d) = self.direct.on.as_ref() else {
             return;
@@ -804,7 +744,7 @@ impl App {
         if self.panes[s].tabs[t].activity != Activity::Ready {
             return;
         }
-        // Background agents still running: the turn is not over.
+
         let screen = self.tab_screen(s, t);
         if crate::app_continue::background_busy(&screen) {
             return;
@@ -819,7 +759,7 @@ impl App {
         let reply = match fresh {
             Some(r) => Some(r),
             None if since.elapsed() < REPLY_WAIT => return,
-            // No transcript to read (Grok), or nothing new in it: the screen.
+
             None => sent
                 .as_deref()
                 .and_then(|x| screen_reply(&screen, x))
@@ -838,8 +778,6 @@ impl App {
         self.direct_say_reply(&name, &reply);
     }
 
-    /// Say a tab's reply: as it is when short, else summed up by the
-    /// assistant (direct_reply auto) or its first sentences.
     pub fn direct_say_reply(&mut self, name: &str, reply: &str) {
         let n = self.cfg.voice.direct_sentences.clamp(1, 10);
         let (say, long) = spoken_reply(reply, n);
@@ -856,8 +794,6 @@ impl App {
         self.direct_say(&say);
     }
 
-    /// Have the assistant sum up a long reply (the tab-answer report
-    /// shape). False when it cannot take a turn now.
     fn direct_summarize(&mut self, name: &str, reply: &str) -> bool {
         if !self.assistant_on() || self.assistant.busy {
             return false;
@@ -878,7 +814,6 @@ impl App {
     }
 }
 
-/// yes / always / no for an approval prompt, from the words said.
 fn approval_word(norm: &str, instant: &[String]) -> Option<&'static str> {
     let s = core_words(norm).join(" ");
     if matches!(
@@ -900,7 +835,6 @@ fn approval_word(norm: &str, instant: &[String]) -> Option<&'static str> {
     }
 }
 
-/// What the assistant is told when direct mode ends.
 fn direct_note(d: &DirectMode) -> String {
     let id = tab_id(d.uid);
     let from = d.since.format("%H:%M");
@@ -940,7 +874,6 @@ fn direct_note(d: &DirectMode) -> String {
     )
 }
 
-/// The status bar chip and the panel line while direct mode is on.
 pub fn indicator(app: &App) -> Option<String> {
     app.direct
         .on

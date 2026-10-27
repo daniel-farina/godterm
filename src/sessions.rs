@@ -1,5 +1,3 @@
-//! Scanning Claude Code transcripts in `<configDir>/projects/*/*.jsonl`.
-
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -12,17 +10,14 @@ pub struct Tokens {
     pub input: u64,
     pub output: u64,
     pub cache_creation: u64,
-    /// Cache reads repeat the whole context on every turn: kept apart,
-    /// never added into a headline figure.
+
     pub cache_read: u64,
-    /// The largest context one turn had (input + cache read + cache write).
+
     #[serde(default)]
     pub context: u64,
 }
 
 impl Tokens {
-    /// New tokens: fresh input (with cache writes) and output. Cache reads
-    /// are left out, they count the same context again every turn.
     pub fn total(&self) -> u64 {
         self.input + self.cache_creation + self.output
     }
@@ -36,7 +31,7 @@ impl Tokens {
             g("input_tokens") + g("cache_creation_input_tokens") + g("cache_read_input_tokens"),
         );
     }
-    /// A subagent's tokens into its parent (its context is its own).
+
     pub fn add(&mut self, o: &Tokens) {
         self.input += o.input;
         self.output += o.output;
@@ -49,8 +44,7 @@ impl Tokens {
 pub struct SessionInfo {
     pub id: String,
     pub path: PathBuf,
-    /// Working directory recorded in the transcript, or decoded from the
-    /// project dir name as a fallback.
+
     pub cwd: String,
     pub modified: Option<SystemTime>,
     pub messages: usize,
@@ -58,37 +52,31 @@ pub struct SessionInfo {
     pub title: Option<String>,
     pub model: Option<String>,
     pub tokens: Tokens,
-    /// The most recent prompt (for search and "what was I doing").
+
     pub last_prompt: Option<String>,
-    /// Subagent (Task / Agent tool) transcripts under this session; their
-    /// tokens are rolled into `tokens`.
+
     pub subagents: usize,
-    /// For a subagent row (include_subagents): the parent session id.
+
     pub parent: Option<String>,
-    /// Counts estimated from the start and end of a very large transcript.
+
     #[serde(default)]
     pub approx: bool,
-    /// When it started (the first timestamp in it).
+
     #[serde(default)]
     pub created: Option<SystemTime>,
-    /// The name the user gave the session (/rename, "VARIUM REFACTOR"):
-    /// it wins over the generated title.
+
     #[serde(default)]
     pub name: Option<String>,
-    /// Run without a person at a terminal: claude -p / the SDK
-    /// (entrypoint "sdk-cli") or grok's headless mode.
+
     #[serde(default)]
     pub headless: bool,
-    /// Files its tool calls named (Read, Edit, Write...), at most
-    /// `MAX_FILES`, for finding a session by what it worked on.
+
     #[serde(default)]
     pub files: Vec<String>,
 }
 
-/// Touched files kept per session.
 pub const MAX_FILES: usize = 40;
 
-/// Keep a file path a tool call named, once, up to `MAX_FILES`.
 fn note_file(files: &mut Vec<String>, p: &str) {
     if files.len() < MAX_FILES
         && p.len() < 400
@@ -109,8 +97,6 @@ impl SessionInfo {
     }
 }
 
-/// Best effort reverse of Claude's project dir encoding (every non
-/// alphanumeric char becomes '-'). Lossy, so the jsonl `cwd` is preferred.
 pub fn decode_project_dir(name: &str) -> String {
     if name.starts_with('-') {
         name.replace('-', "/")
@@ -146,7 +132,6 @@ fn text_of_content(c: &Value) -> Option<String> {
     }
 }
 
-/// Collapse whitespace and truncate to `max` chars.
 pub fn snippet(s: &str, max: usize) -> String {
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= max {
@@ -166,14 +151,11 @@ fn is_noise_prompt(s: &str) -> bool {
         || t.starts_with("[Request interrupted")
 }
 
-/// Parse one transcript from any reader. Unparsable lines are skipped.
 #[cfg(test)]
 pub fn parse_transcript<R: BufRead>(reader: R, id: &str) -> SessionInfo {
     parse_transcript_as(reader, id, false)
 }
 
-/// A file under `<session>/subagents/`: every line there is a sidechain
-/// line, and they are its own prompts and replies.
 pub fn is_subagent_file(p: &Path) -> bool {
     p.parent()
         .and_then(Path::file_name)
@@ -185,8 +167,7 @@ pub fn parse_transcript_as<R: BufRead>(reader: R, id: &str, subagent: bool) -> S
         id: id.to_string(),
         ..Default::default()
     };
-    // Streaming writes one line per content block, all sharing message.id and
-    // repeating usage. Keep the last usage seen per id.
+
     let mut usage_by_id: HashMap<String, Value> = HashMap::new();
     let mut anon_usage: Vec<Value> = vec![];
     let mut assistant_ids: HashSet<String> = HashSet::new();
@@ -196,8 +177,7 @@ pub fn parse_transcript_as<R: BufRead>(reader: R, id: &str, subagent: bool) -> S
         if line.trim().is_empty() {
             continue;
         }
-        // Big tool results (file dumps, command output) are neither prompts
-        // nor usage: skip parsing them, they are most of the time spent.
+
         if line.len() > 16 * 1024 && line.contains("\"tool_result\"") && !line.contains("\"usage\"")
         {
             continue;
@@ -313,9 +293,6 @@ pub fn parse_transcript_as<R: BufRead>(reader: R, id: &str, subagent: bool) -> S
     info
 }
 
-/// Like `parse_file`, but a very large transcript (over 24 MB) is read
-/// only at its start (prompts, cwd) and end (latest prompts, title,
-/// context), with message and token counts scaled up from those parts.
 pub fn parse_file_quick(path: &Path) -> Option<SessionInfo> {
     use std::io::{Read, Seek, SeekFrom};
     const BIG: u64 = 24 << 20;
@@ -387,13 +364,11 @@ pub fn parse_file(path: &Path) -> Option<SessionInfo> {
     Some(info)
 }
 
-/// Cache keyed by path, invalidated by (mtime, len).
 #[derive(Default)]
 pub struct SessionCache {
     entries: HashMap<PathBuf, (SystemTime, u64, SessionInfo)>,
 }
 
-/// Parsed sessions kept per cache (`transcript_cache`).
 static CACHE_LIMIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(50);
 
 pub fn set_cache_limit(n: usize) {
@@ -401,8 +376,6 @@ pub fn set_cache_limit(n: usize) {
 }
 
 impl SessionCache {
-    /// All sessions for one config dir, newest first. Empty transcripts
-    /// (no messages) are dropped.
     pub fn scan(&mut self, config_dir: &Path) -> Vec<SessionInfo> {
         let mut out = vec![];
         let Ok(projects) = fs::read_dir(config_dir.join("projects")) else {
@@ -412,7 +385,7 @@ impl SessionCache {
             if !proj.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
             }
-            // The assistant's own kept session is not one of the user's.
+
             if crate::app_resume::is_assistant_project(&proj.file_name().to_string_lossy()) {
                 continue;
             }
@@ -445,8 +418,7 @@ impl SessionCache {
             }
         }
         out.sort_by_key(|s| std::cmp::Reverse(s.modified));
-        // Keep only the newest parsed entries; older ones are parsed again
-        // when needed.
+
         let limit = CACHE_LIMIT.load(std::sync::atomic::Ordering::Relaxed);
         if self.entries.len() > limit {
             let keep: std::collections::HashSet<PathBuf> =
@@ -457,9 +429,6 @@ impl SessionCache {
     }
 }
 
-/// Lines of a reader, tolerating invalid UTF-8 (replaced) instead of
-/// stopping, and skipping absurdly long lines (over 64 MB) without holding
-/// them in memory twice.
 pub fn lossy_lines<R: BufRead>(mut reader: R) -> impl Iterator<Item = String> {
     std::iter::from_fn(move || {
         let mut buf = Vec::new();
@@ -479,13 +448,10 @@ pub fn lossy_lines<R: BufRead>(mut reader: R) -> impl Iterator<Item = String> {
     })
 }
 
-/// Text of the last assistant message in a transcript (main chain only).
-/// Streaming writes one line per content block, so text blocks sharing a
-/// message id are joined.
 pub fn last_assistant_text(path: &Path) -> Option<String> {
     use std::io::{Seek, SeekFrom};
     let mut f = fs::File::open(path).ok()?;
-    // Only the tail matters; skip most of a huge transcript.
+
     const TAIL: u64 = 4 * 1024 * 1024;
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     let skip_partial = len > TAIL;
@@ -540,25 +506,19 @@ pub fn last_assistant_text(path: &Path) -> Option<String> {
         .filter(|t| !t.trim().is_empty())
 }
 
-/// One exchange in a transcript: what was asked, and the last text the
-/// assistant wrote for it (its answer when the turn is over).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Turn {
     pub user: String,
     pub reply: Option<String>,
     pub at: Option<String>,
-    /// Its last message is text with no tool call after it (the turn is
-    /// over, not paused between tools).
+
     pub finished: bool,
-    /// Messages typed while this turn ran, which claude took into it
-    /// instead of starting a turn of their own (a queued command
-    /// attachment, or the queue entry it absorbed mid turn).
+
     pub queued: Vec<String>,
-    /// When the reply's last text was written.
+
     pub reply_at: Option<String>,
 }
 
-/// The last `n` exchanges of a transcript (main chain only), oldest first.
 pub fn recent_turns(path: &Path, n: usize) -> Vec<Turn> {
     let mut turns = scan_turns(path);
     turns.retain(|t| !t.user.is_empty());
@@ -566,10 +526,6 @@ pub fn recent_turns(path: &Path, n: usize) -> Vec<Turn> {
     turns.split_off(k)
 }
 
-/// Like recent_turns, but a turn whose start is before the part of a big
-/// transcript that is read is kept too (with an empty `user`): its
-/// queued messages and reply still count when following up on a
-/// question sent while it ran.
 pub fn follow_turns(path: &Path, n: usize) -> Vec<Turn> {
     let mut turns = scan_turns(path);
     let k = turns.len().saturating_sub(n);
@@ -599,7 +555,7 @@ fn scan_turns(path: &Path) -> Vec<Turn> {
         return vec![];
     }
     let mut turns: Vec<Turn> = vec![];
-    // The message id the current reply text belongs to.
+
     let mut msg_id = String::new();
     for (i, line) in lossy_lines(BufReader::new(f)).enumerate() {
         if i == 0 && skip_partial {
@@ -642,7 +598,7 @@ fn scan_turns(path: &Path) -> Vec<Turn> {
                         });
                         msg_id.clear();
                     }
-                    // A tool result: the turn goes on.
+
                     None => {
                         if let Some(turn) = turns.last_mut() {
                             turn.finished = false;
@@ -688,7 +644,7 @@ fn scan_turns(path: &Path) -> Vec<Turn> {
                 }
                 msg_id = id;
             }
-            // A message sent while the turn ran, taken into it.
+
             Some("attachment") | Some("queue-operation") => {
                 let Some(text) = queued_text(&v) else {
                     continue;
@@ -701,7 +657,7 @@ fn scan_turns(path: &Path) -> Vec<Turn> {
                     if !turn.queued.iter().any(|q| key(q) == key(&text)) {
                         turn.queued.push(text);
                     }
-                    // The turn goes on to answer it.
+
                     turn.finished = false;
                 }
             }
@@ -711,10 +667,6 @@ fn scan_turns(path: &Path) -> Vec<Turn> {
     turns
 }
 
-/// The text of a message claude took into a running turn: a
-/// `queued_command` attachment, or a queue entry removed as
-/// `absorbed_mid_turn`. A queued entry claude later starts a turn of its
-/// own for (dequeue) is a plain user message, not this.
 fn queued_text(v: &Value) -> Option<String> {
     let text = match v.get("type").and_then(Value::as_str)? {
         "attachment" => {
@@ -746,28 +698,21 @@ fn queued_text(v: &Value) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
-/// Where a conversation is right now, from the tail of its transcript:
-/// the last text its assistant wrote, the tool it is in when its turn is
-/// not over, and when it was last written.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TailStatus {
-    /// The last text the assistant wrote (shortened by the caller).
     pub last_text: Option<String>,
-    /// The last prompt (the user's, not a tool result).
+
     pub last_user: Option<String>,
-    /// The tool the turn is in, when its last message is a tool call or
-    /// a tool result ("Bash").
+
     pub tool: Option<String>,
-    /// A short argument of that tool (the command, the file).
+
     pub tool_arg: Option<String>,
-    /// The turn is over: its last message is text with no tool call.
+
     pub finished: bool,
-    /// Timestamp (RFC 3339) of the last message.
+
     pub last_at: Option<String>,
 }
 
-/// The tail of a transcript (main chain), see `TailStatus`. Reads the
-/// last 256 KB only.
 pub fn tail_status(path: &Path) -> Option<TailStatus> {
     use std::io::{Seek, SeekFrom};
     let mut f = fs::File::open(path).ok()?;
@@ -821,8 +766,6 @@ pub fn tail_status(path: &Path) -> Option<TailStatus> {
                     st.tool = None;
                     st.tool_arg = None;
                 } else if result {
-                    // The model is answering the result: the tool is over,
-                    // the turn is not.
                     st.finished = false;
                 }
                 if at.is_some() {
@@ -872,8 +815,6 @@ pub fn tail_status(path: &Path) -> Option<TailStatus> {
     Some(st)
 }
 
-/// The one argument of a tool call worth saying: the command, the file,
-/// the pattern, the prompt's start.
 pub fn tool_brief(input: &Value) -> Option<String> {
     for k in [
         "command",
@@ -894,8 +835,6 @@ pub fn tool_brief(input: &Value) -> Option<String> {
     None
 }
 
-/// Text of the last prompt typed into a transcript (main chain, not tool
-/// results or meta lines).
 pub fn last_user_text(path: &Path) -> Option<String> {
     use std::io::{Seek, SeekFrom};
     let mut f = fs::File::open(path).ok()?;
@@ -940,7 +879,6 @@ pub fn last_user_text(path: &Path) -> Option<String> {
     last
 }
 
-/// The first sentences of `text`, up to about `max` characters.
 pub fn first_sentences(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
@@ -961,8 +899,6 @@ pub fn first_sentences(text: &str, max: usize) -> String {
     out.trim().to_string()
 }
 
-/// A duration in seconds as a person says it: "45 s", "36 min",
-/// "2 h 5 min", "3 d".
 pub fn rel_secs(s: u64) -> String {
     if s < 60 {
         format!("{s} s")
@@ -996,13 +932,12 @@ mod tests {
 
     #[test]
     fn cache_reads_never_make_the_headline() {
-        // 100 turns, each reading a 100k token context from the cache.
         let mut t = String::from(
             "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n",
         );
         for i in 0..100 {
             t.push_str(&format!("{{\"type\":\"assistant\",\"message\":{{\"id\":\"m{i}\",\"content\":[{{\"type\":\"text\",\"text\":\"ok\"}}],\"usage\":{{\"input_tokens\":10,\"cache_read_input_tokens\":100000,\"cache_creation_input_tokens\":200,\"output_tokens\":50}}}}}}\n"));
-            // Streaming repeats the same message id: counted once.
+
             t.push_str(&format!("{{\"type\":\"assistant\",\"message\":{{\"id\":\"m{i}\",\"content\":[{{\"type\":\"text\",\"text\":\"ok\"}}],\"usage\":{{\"input_tokens\":10,\"cache_read_input_tokens\":100000,\"cache_creation_input_tokens\":200,\"output_tokens\":50}}}}}}\n"));
         }
         let info = parse_transcript(std::io::Cursor::new(t), "x");
@@ -1033,10 +968,9 @@ mod tests {
         );
         assert_eq!(s.title.as_deref(), Some("Parser empty line handling"));
         assert_eq!(s.model.as_deref(), Some("claude-opus-5-5"));
-        // 3 user prompts (the slash command counts, meta and tool results do
-        // not) plus 2 unique main chain assistant messages.
+
         assert_eq!(s.messages, 5);
-        // msg_A counted once (last block), plus msg_B, plus sidechain msg_S.
+
         assert_eq!(
             s.tokens,
             Tokens {
@@ -1076,7 +1010,7 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, "11111111-2222-3333-4444-555555555555");
         assert!(found[0].modified.is_some());
-        // Second scan hits the cache.
+
         assert_eq!(cache.scan(&root).len(), 1);
         fs::remove_dir_all(&root).unwrap();
     }
@@ -1107,8 +1041,6 @@ mod tests {
 
     #[test]
     fn survives_bad_bytes_and_huge_lines() {
-        // Invalid UTF-8, a 3 MB garbage line and truncated JSON before a good
-        // record: parsing keeps going and still finds it.
         let mut data: Vec<u8> = vec![0xff, 0xfe, b'{', b'\n'];
         data.extend(std::iter::repeat_n(b'x', 3_000_000));
         data.push(b'\n');
@@ -1124,7 +1056,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("godterm-huge-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let p = root.join("big.jsonl");
-        // Over the 4 MB tail window: the last reply is still found.
+
         let mut big = vec![b'y'; 5_000_000];
         big.push(b'\n');
         big.extend_from_slice(FIXTURE.as_bytes());
@@ -1133,7 +1065,6 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// Fuzz style: random bytes never panic the transcript parser.
     #[test]
     fn fuzz_transcript_parser() {
         let mut seed: u64 = 0x1234_5678_9abc_def1;
@@ -1182,11 +1113,6 @@ mod tests {
     }
 }
 
-/// A Claude conversation file that exists but holds no message: only
-/// bookkeeping records (title, mode, cost). `claude --resume` cannot open
-/// it ("No conversation found with session ID"), so a tab pointing at one
-/// starts a fresh conversation instead. None when there is no such file
-/// (it may still be arriving), so only a file proven empty counts.
 pub fn claude_session_is_empty(config_dir: &Path, id: &str) -> bool {
     if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
         return false;

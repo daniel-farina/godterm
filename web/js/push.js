@@ -1,12 +1,3 @@
-// Push notifications (docs/WEB_APP.md, "Push notifications"): Manage >
-// This browser > Notifications subscribes this device with the push
-// service and hands the subscription to GodTerm (`push` frames), which
-// then notifies it when a tab waits for approval, finishes or ends with
-// an error. Permission is asked only from a tap. While the page is
-// visible it says so every 15 s, so GodTerm does not notify a device
-// that is looking. A tapped notification opens `#tab=12`, `#approvals`
-// or both; this module takes the hash (also from the service worker's
-// message when the app is already open) and shows that tab or sheet.
 import { h, on, emit, toast, store, li } from './util.js';
 import { send, conn } from './conn.js';
 import { device, standalone, dlog } from './debuglog.js';
@@ -17,7 +8,6 @@ const ios = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platf
 const st = { on: false, sub: '', kinds: store.get('push-kinds', KINDS.map((k) => k[0])), busy: false, key: null };
 let box = null, seq = 0;
 
-// Requests to GodTerm: `push` frames, answered with the same id.
 const waiting = new Map();
 on('msg:push', (m) => { const p = waiting.get(m.id); if (p) { waiting.delete(m.id); clearTimeout(p.t); p.resolve(m); } });
 function ask(op, args = {}, ms = 15000) {
@@ -29,7 +19,6 @@ function ask(op, args = {}, ms = 15000) {
   });
 }
 
-// Why notifications cannot work here, or '' when they can.
 function why() {
   if (!window.isSecureContext) return 'Needs the https link (tailscale serve): a plain http page cannot get notifications';
   const has = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
@@ -56,16 +45,13 @@ function took(r) {
   if (Array.isArray(r.kinds)) { st.kinds = r.kinds; store.set('push-kinds', r.kinds); }
 }
 
-// On every connect: a subscription this device has goes to GodTerm again
-// (it keeps the kinds chosen), so a new Mac side file or a rotated
-// subscription heals itself.
 async function sync() {
   if (why() || Notification.permission !== 'granted') { st.on = false; return paint(); }
   try {
     const reg = await ready();
     let s = await reg.pushManager.getSubscription();
     const k = await key().catch(() => null);
-    // Made for another key (GodTerm's key file was replaced): renew.
+
     if (s && k && s.options?.applicationServerKey && b64u(s.options.applicationServerKey) !== k) {
       await s.unsubscribe().catch(() => {});
       s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(k) });
@@ -77,8 +63,6 @@ async function sync() {
   paint();
 }
 
-// The toggle, from a tap: the permission prompt comes first (iOS wants
-// it straight from the gesture), then the subscription.
 async function enable() {
   const no = why();
   if (no) { toast(no, 'warn'); return paint(); }
@@ -133,7 +117,6 @@ async function test() {
   else { toast(r.error || 'The test did not go out', 'error'); if (/no longer knows|not subscribed/.test(r.error || '')) { st.on = false; paint(); } }
 }
 
-// "This page is looking": no push for this device meanwhile.
 function visible() {
   if (st.sub && conn.open) send({ t: 'push', op: 'visible', on: !document.hidden, sub: st.sub });
 }
@@ -141,7 +124,6 @@ document.addEventListener('visibilitychange', visible);
 setInterval(() => { if (!document.hidden) visible(); }, 15000);
 on('conn', (s) => { if (s === 'live') sync(); });
 
-// Settings > This browser: the toggle, what it notifies about, a test.
 function rows() {
   const no = why();
   const tog = h('input', { type: 'checkbox', checked: st.on, disabled: st.busy || (!!no && !st.on) });
@@ -165,8 +147,6 @@ export function pushCard() {
   return box;
 }
 
-// A tapped notification: `#tab=12` shows the tab, `#approvals` the
-// approvals sheet (once the state is here).
 function route(hash) {
   const q = new URLSearchParams(String(hash || '').replace(/^#/, ''));
   if (!q.has('tab') && !q.has('approvals')) return;
@@ -182,7 +162,7 @@ function route(hash) {
 }
 route(location.hash);
 addEventListener('hashchange', () => route(location.hash));
-// Loaded after hello (main.js): as if the socket had just opened.
+
 if (conn.open) sync();
 navigator.serviceWorker?.addEventListener('message', (e) => {
   if (e.data?.gt === 'open') { try { route(new URL(e.data.url, location.href).hash); } catch {} }

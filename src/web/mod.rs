@@ -1,13 +1,3 @@
-//! GodTerm Web: the whole interface in a browser, served by this process
-//! (docs/WEB_APP.md has the plan and the protocol).
-//!
-//! Plain threads: one accepts connections on 127.0.0.1 (and one on the
-//! tailnet IPv4, kept bound by another as the address comes and goes; see
-//! tailnet.rs for signing in there), one per HTTP
-//! request, and two per WebSocket (a reader and a writer with a bounded
-//! queue). The UI thread pushes state from its loop (app_web.rs); tab
-//! output goes straight from each PTY reader to the browsers (tap.rs).
-
 pub mod app_web;
 pub mod assets;
 pub mod assist;
@@ -30,83 +20,81 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-/// The protocol version in `hello`.
 pub const PROTO: u32 = 1;
-/// How long a kept-alive connection waits for its next request before
-/// it is closed (a browser keeps a few idle ones open after a page load;
-/// each holds a thread here meanwhile).
+
 pub const KEEP_IDLE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// What a browser asks of the UI thread.
 #[derive(Debug)]
 pub enum ToApp {
-    /// A new client: send it `hello`.
     Hello(u64),
-    /// A user turn to the assistant, with images pasted into it (their
-    /// bytes).
+
     Say {
         client: u64,
         text: String,
         images: Vec<Vec<u8>>,
     },
-    /// An approval answered: its id, the choice.
+
     Answer {
         client: u64,
         id: String,
         choice: String,
     },
-    /// Bytes were typed into a tab (they went to its PTY already).
+
     Typed(u64),
-    /// Take (rows, cols) for a tab, or release it with None.
+
     Resize {
         client: u64,
         uid: u64,
         size: Option<(u16, u16)>,
-        /// Who took it, in a word for the pane's header ("iPhone").
+
         by: Option<String>,
     },
-    /// A client left: sizes it took go back to the panes.
+
     Gone(u64),
-    /// Voice from a browser: `on` makes its mic and speakers GodTerm's
-    /// (mode push or open) or gives them back; `talk` presses or releases
-    /// push to talk.
+
     Voice {
         client: u64,
         on: Option<bool>,
         mode: String,
         talk: Option<bool>,
     },
-    /// A `voice` frame for direct mode, brainstorm, stopping the speech or
-    /// the page going to the background (voice.rs, web_voice_ctl).
-    VoiceCtl { client: u64, v: serde_json::Value },
-    /// A `git` frame from a tab's Git sheet (app_gitpanel::web_git).
-    Git { client: u64, v: serde_json::Value },
-    /// A `bview` frame from a tab's live browser view (browser_view.rs).
-    BrowserView { client: u64, v: serde_json::Value },
-    /// An `accounts` frame from the Accounts screen (app_accounts.rs).
-    Accounts { client: u64, v: serde_json::Value },
+
+    VoiceCtl {
+        client: u64,
+        v: serde_json::Value,
+    },
+
+    Git {
+        client: u64,
+        v: serde_json::Value,
+    },
+
+    BrowserView {
+        client: u64,
+        v: serde_json::Value,
+    },
+
+    Accounts {
+        client: u64,
+        v: serde_json::Value,
+    },
 }
 
-/// One connected browser.
 pub struct Client {
     pub id: u64,
     pub out: Arc<tap::Outbox>,
-    /// Sent `hello`: state pushes go to it.
+
     pub ready: AtomicBool,
-    /// Its `subscribe` said `gz: true`: big snapshots go gzipped
-    /// (ws::KIND_SNAPSHOT_GZ).
+
     pub gz: AtomicBool,
-    /// Its mic, while it is GodTerm's voice input (binary kind 3 goes here).
+
     pub mic: Mutex<Option<Arc<crate::voice::audio::WebMic>>>,
-    /// What it shows, as its last `view` frame said (device, panes, tabs,
-    /// open sheet): the assistant's context for a turn typed there.
+
     pub view: Mutex<serde_json::Value>,
-    /// The talk back voice it chose (`voice {web_tts}`); None: never sent,
-    /// Kokoro af_heart (crate::voice::web_tts).
+
     pub tts: Mutex<Option<crate::voice::web_tts::WebTts>>,
 }
 
-/// The server's shared side.
 pub struct Hub {
     pub port: u16,
     token: String,
@@ -115,43 +103,37 @@ pub struct Hub {
     next: AtomicU64,
     clients: Mutex<Vec<Arc<Client>>>,
     limiter: Mutex<auth::Limiter>,
-    /// Stopped (the web app turned off or moved): the listener closes.
+
     stopped: AtomicBool,
-    /// Tailnet sign in (`[web] tailnet_sign_in`); None: token only.
+
     tailnet: Option<Arc<tailnet::Tailnet>>,
-    /// The app's files (embedded, or a folder reloaded when it changes).
+
     pub assets: Arc<assets::Assets>,
 }
 
-/// Which listener a connection came in on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Via {
-    /// 127.0.0.1: local browsers and `tailscale serve`.
     Loopback,
-    /// This Mac's tailnet address.
+
     Tailnet,
 }
 
-/// How to start the server.
 #[derive(Default)]
 pub struct Opts {
-    /// `[web] hosts`.
     pub hosts: Vec<String>,
     pub tailnet: Option<Arc<tailnet::Tailnet>>,
-    /// Listen on the tailnet IPv4 too, on this port.
+
     pub ip_port: Option<u16>,
-    /// Serve the app from this folder, watched (`[web] assets_dir`).
+
     pub assets_dir: Option<std::path::PathBuf>,
 }
 
 impl Opts {
-    /// From `[web]`, asking tailscale.
     pub fn from_config(cfg: &crate::config::WebCfg) -> Opts {
         let tailnet = cfg
             .tailnet_sign_in
             .then(|| Arc::new(tailnet::Tailnet::system(&cfg.tailnet_users)));
-        // A demo instance never binds the tailnet address: it would race
-        // the real GodTerm for its port.
+
         let ip = cfg.tailnet_ip && tailnet.is_some() && !crate::demo::active();
         Opts {
             hosts: cfg.hosts.clone(),
@@ -189,8 +171,6 @@ impl Hub {
         self.tailnet.as_ref()
     }
 
-    /// A Host we answer to: loopback, *.ts.net, `[web] hosts`, or this
-    /// Mac's tailnet addresses as tailscale gives them now.
     fn host_ok(&self, host: &str) -> bool {
         auth::host_ok(host, &self.hosts)
             || self.tailnet.as_ref().is_some_and(|t| {
@@ -199,7 +179,6 @@ impl Hub {
             })
     }
 
-    /// The tailnet identity of a request with no cookie.
     fn identity(&self, req: &http::Request, peer: SocketAddr, via: Via) -> tailnet::Who {
         use tailnet::Who;
         let Some(t) = &self.tailnet else {
@@ -217,8 +196,7 @@ impl Hub {
                 let [login] = logins[..] else {
                     return Who::Unknown;
                 };
-                // Serve's header, on the name serve answers for, from a
-                // connection only tailscaled could have made.
+
                 if !peer.ip().is_loopback() || !auth::ts_net_host(req.header("host").unwrap_or(""))
                 {
                     crate::log::info(
@@ -232,9 +210,7 @@ impl Hub {
                     );
                     return Who::Unknown;
                 }
-                // Serve names the device in X-Forwarded-For. This Mac's own
-                // address could be any local program, a tab's agent too,
-                // so it needs the token like the IP listener does.
+
                 let from = req
                     .header("x-forwarded-for")
                     .and_then(|v| v.split(',').next())
@@ -252,8 +228,6 @@ impl Hub {
         }
     }
 
-    /// Stop serving: every browser is disconnected and the port is freed
-    /// (the accept loop is woken by one last connection).
     pub fn stop(&self) {
         if self.stopped.swap(true, Ordering::SeqCst) {
             return;
@@ -291,7 +265,6 @@ impl Hub {
             .any(|c| c.ready.load(Ordering::Relaxed))
     }
 
-    /// A text frame to every client that has its hello.
     pub fn broadcast(&self, frame: &str) {
         for c in self.clients() {
             if c.ready.load(Ordering::Relaxed) {
@@ -333,7 +306,6 @@ impl Hub {
         &self.tx
     }
 
-    /// The cookie check for a request.
     pub fn authed(&self, req: &http::Request) -> bool {
         let want = auth::cookie_value(&self.token);
         req.header("cookie")
@@ -341,7 +313,6 @@ impl Hub {
             .is_some_and(|v| auth::same(v.as_bytes(), want.as_bytes()))
     }
 
-    /// One HTTP connection: a login, a file, or the WebSocket.
     pub fn handle(self: &Arc<Self>, s: TcpStream, via: Via) {
         let Ok(peer) = s.peer_addr() else {
             return;
@@ -349,19 +320,15 @@ impl Hub {
         self.handle_from(s, peer, via);
     }
 
-    /// `handle` with the peer address given (tests stand in a tailnet
-    /// peer this way).
     pub fn handle_from(self: &Arc<Self>, mut s: TcpStream, peer: SocketAddr, via: Via) {
         let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(15)));
         let _ = s.set_nodelay(true);
-        // The tailnet listener answers tailnet addresses only.
+
         if via == Via::Tailnet && !tailnet::in_tailnet(peer.ip()) {
             crate::log::info("web: refused a non-tailnet peer on the tailnet address");
             return;
         }
-        // One request after another on the same connection (keep-alive)
-        // until the client closes it or asks for a close, the socket
-        // became a WebSocket, or nothing more comes within KEEP_IDLE.
+
         let mut first = true;
         loop {
             let Some(req) = http::read_head(&mut s) else {
@@ -381,8 +348,6 @@ impl Hub {
         }
     }
 
-    /// The peer is on this machine: loopback, or this Mac's own tailnet
-    /// address.
     fn local_peer(&self, ip: IpAddr) -> bool {
         ip.is_loopback()
             || self
@@ -398,22 +363,18 @@ impl Hub {
         peer: SocketAddr,
         via: Via,
     ) -> std::io::Result<()> {
-        // DNS rebinding: only our own names.
         let host = req.header("host").unwrap_or("").to_string();
         if !self.host_ok(&host) {
             return http::text(s, "421 Misdirected Request", "unknown host");
         }
-        // A photo shared to the installed app goes to its service worker;
-        // one that reaches here (no worker yet) just opens the app.
+
         if req.method == "POST" && req.path == "/share" {
             return http::respond(s, "303 See Other", &[("Location", "/".into())], &[], false);
         }
         if req.method != "GET" && req.method != "HEAD" {
             return http::text(s, "405 Method Not Allowed", "GET only");
         }
-        // A login link: the token for a cookie, then the same page
-        // without the token in the address bar (or history).
-        // GodTerm's own tabs may not sign in or open the socket.
+
         let inside = || {
             let i = auth::from_inside(peer, self.local_peer(peer.ip()));
             if i {
@@ -468,15 +429,14 @@ impl Hub {
                 false,
             );
         }
-        // What installing the app needs, without a cookie.
+
         if http::public(&req.path) && !self.authed(&req) {
             if http::serve_static(s, &req, &self.assets.current(), &[])? {
                 return Ok(());
             }
             return http::text(s, "404 Not Found", "not found");
         }
-        // No cookie: a tailnet user the owner allows signs in now (the
-        // cookie is set on this answer, so the next requests are quick).
+
         let mut signed_in = None;
         if !self.authed(&req) {
             match self.identity(&req, peer, via) {
@@ -489,8 +449,6 @@ impl Hub {
                     return http::text(s, "403 Forbidden", &tailnet::refused_text(&login));
                 }
                 tailnet::Who::Unknown => {
-                    // The page itself: a sign in form (a home screen app
-                    // starts with no cookie and no address bar).
                     let page = req.path == "/" || req.path == "/index.html";
                     if page
                         && req
@@ -518,13 +476,12 @@ impl Hub {
             if !req.wants_upgrade() {
                 return http::text(s, "426 Upgrade Required", "websocket only");
             }
-            // Cross site WebSocket hijacking: the page must be ours.
+
             if !auth::origin_ok(req.header("origin"), &host, req.header("x-forwarded-host")) {
                 crate::log::info("web: a WebSocket from another origin was refused");
                 return http::text(s, "403 Forbidden", "bad origin");
             }
-            // The socket is the WebSocket's now (handle_from keeps its
-            // own handle until the session ends).
+
             return ws::accept(self, s.try_clone()?, &req);
         }
         let cookie: Vec<(&str, String)> = if signed_in.is_some() {
@@ -542,14 +499,10 @@ impl Hub {
     }
 }
 
-/// Over https: through `tailscale serve` (a *.ts.net Host or the proxy
-/// says so). The tailnet IP listener is plain http.
 fn https(req: &http::Request, via: Via) -> bool {
     via == Via::Loopback && req.https()
 }
 
-/// Listen on 127.0.0.1:`port` with `[web] hosts` only (token sign in);
-/// connections are served on their own threads.
 #[cfg(test)]
 pub fn start(port: u16, hosts: Vec<String>, tx: Sender<AppEvent>) -> anyhow::Result<Arc<Hub>> {
     start_with(
@@ -562,8 +515,6 @@ pub fn start(port: u16, hosts: Vec<String>, tx: Sender<AppEvent>) -> anyhow::Res
     )
 }
 
-/// Listen on 127.0.0.1:`port`, and on the tailnet IPv4 when `opts` says
-/// (made once the port is ours: it may ask tailscale).
 pub fn start_with(
     port: u16,
     opts: impl FnOnce() -> Opts,
@@ -576,8 +527,6 @@ pub fn start_with(
     let opts = opts();
     let mut hosts = opts.hosts;
     if opts.tailnet.is_none() {
-        // The Mac's own tailnet addresses: a link by IP for browsers that
-        // cannot resolve *.ts.net (a secure DNS setting bypasses MagicDNS).
         hosts.extend(tailscale_ips());
     }
     let mut hub = Hub::new(port, token, hosts, opts.tailnet, tx);
@@ -604,8 +553,6 @@ pub fn start_with(
     Ok(hub)
 }
 
-/// Check the served folder every `every` while the server runs; a new
-/// build goes to every browser at once (its "Update available" banner).
 pub fn watch_assets(hub: std::sync::Weak<Hub>, every: std::time::Duration) {
     loop {
         std::thread::sleep(every);
@@ -633,14 +580,10 @@ fn accept_loop(h: Arc<Hub>, listener: TcpListener, via: Via, alive: Option<Arc<A
     }
 }
 
-/// A busy tailnet port is tried again this often.
 pub const IP_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
-/// The tailnet address is checked again this often while bound.
+
 pub const IP_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Keep a listener on the tailnet IPv4:`port` until the hub stops: bound
-/// when tailscale has an address and the port is free (tried again every
-/// `retry`), moved when the address changes (checked every `recheck`).
 pub fn keep_ip_listener(
     h: Arc<Hub>,
     port: u16,
@@ -654,7 +597,7 @@ pub fn keep_ip_listener(
     let mut said = false;
     let close = |b: (SocketAddr, Arc<AtomicBool>)| {
         b.1.store(false, Ordering::SeqCst);
-        // Wake its accept so it sees it is done.
+
         let _ = TcpStream::connect_timeout(&b.0, std::time::Duration::from_millis(300));
     };
     let mut first = true;
@@ -708,12 +651,10 @@ pub fn keep_ip_listener(
     }
 }
 
-/// The web app is on: `[web] enabled`, or `--web` at start.
 pub fn wanted(cfg: &crate::config::Config) -> bool {
     cfg.web.enabled || std::env::args().any(|a| a == "--web")
 }
 
-/// The port: GODTERM_WEB_PORT, `--web-port N`, else `[web] port`.
 pub fn port(cfg: &crate::config::Config) -> u16 {
     let args: Vec<String> = std::env::args().collect();
     args.iter()
@@ -724,7 +665,6 @@ pub fn port(cfg: &crate::config::Config) -> u16 {
         .unwrap_or(cfg.web.port)
 }
 
-/// `godterm web-url`: the links that sign a browser in.
 pub fn url_command() -> anyhow::Result<()> {
     let cfg = crate::config::Config::load_or_init().unwrap_or_default();
     let port = port(&cfg);
@@ -773,14 +713,12 @@ pub fn url_command() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// This Mac's tailnet name (Self.DNSName), without the trailing dot.
 fn tailscale_name() -> Option<String> {
     let v = tailscale_self()?;
     let name = v["DNSName"].as_str()?.trim_end_matches('.');
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// This Mac's tailnet addresses (Self.TailscaleIPs).
 fn tailscale_ips() -> Vec<String> {
     tailscale_self()
         .and_then(|v| v["TailscaleIPs"].as_array().cloned())
@@ -790,7 +728,6 @@ fn tailscale_ips() -> Vec<String> {
         .collect()
 }
 
-/// `tailscale status --json`'s Self, from the first tailscale that answers.
 fn tailscale_self() -> Option<serde_json::Value> {
     let mut v = tailnet::cli(&["status", "--json"])?;
     Some(v["Self"].take())

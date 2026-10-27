@@ -1,15 +1,11 @@
-//! Translate crossterm key events into the byte sequences a terminal sends.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// Encode a key for the child PTY. `app_cursor` is DECCKM (application cursor
-/// keys) as reported by the child's screen state.
 pub fn encode_key(key: &KeyEvent, app_cursor: bool) -> Vec<u8> {
     let m = key.modifiers;
     let ctrl = m.contains(KeyModifiers::CONTROL);
     let alt = m.contains(KeyModifiers::ALT);
     let shift = m.contains(KeyModifiers::SHIFT);
-    // xterm modifier parameter: 1 + shift + 2*alt + 4*ctrl
+
     let modp = 1 + shift as u8 + 2 * alt as u8 + 4 * ctrl as u8;
 
     let csi_mod = |base: &str, fin: char| -> Vec<u8> {
@@ -48,7 +44,6 @@ pub fn encode_key(key: &KeyEvent, app_cursor: bool) -> Vec<u8> {
             }
         }
         KeyCode::Enter => {
-            // Shift+Enter inserts a newline in Claude Code when sent as ESC CR.
             if shift || alt {
                 return b"\x1b\r".to_vec();
             }
@@ -91,7 +86,7 @@ pub fn encode_key(key: &KeyEvent, app_cursor: bool) -> Vec<u8> {
         },
         _ => vec![],
     };
-    // Alt as meta prefix for plain characters and a few control keys.
+
     if alt
         && matches!(
             key.code,
@@ -118,7 +113,6 @@ fn ctrl_byte(c: char) -> Option<u8> {
     }
 }
 
-/// Wrap pasted text for the child, honoring bracketed paste mode.
 pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     let body = text.replace("\r\n", "\r").replace('\n', "\r");
     if bracketed {
@@ -167,8 +161,6 @@ mod tests {
         assert_eq!(encode_key(&k(KeyCode::Backspace, n), false), [0x7f]);
     }
 
-    /// Property style: thousands of random key events never panic and keep
-    /// basic invariants.
     #[test]
     fn random_keys_keep_invariants() {
         let mut seed: u64 = 0x2545F4914F6CDD1D;
@@ -207,7 +199,6 @@ mod tests {
             let code = if r % 3 == 0 {
                 codes[(r as usize >> 16) % codes.len()]
             } else {
-                // Random unicode scalar values, including control and wide chars.
                 let c = char::from_u32(((r >> 20) % 0x2_0000) as u32).unwrap_or('x');
                 KeyCode::Char(c)
             };

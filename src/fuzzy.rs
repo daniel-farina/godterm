@@ -1,11 +1,3 @@
-//! Names said aloud: speech recognition splits, merges and mishears them
-//! ("fot mesh", "vod mesh", "fought mesh" for fotmesh) and spells out
-//! punctuation ("code forward slash fotmesh"). The tools match what they
-//! are given against the names they know with an edit distance and a
-//! rough sound key, so a near miss still finds the right thing.
-
-/// Spoken punctuation to symbols, case kept: "code forward slash fotmesh"
-/// -> "code/fotmesh", "index dot html" -> "index.html".
 pub fn spoken_punctuation(s: &str) -> String {
     let words: Vec<&str> = s.split_whitespace().collect();
     let mut out = String::new();
@@ -45,8 +37,6 @@ pub fn spoken_punctuation(s: &str) -> String {
     out
 }
 
-/// Compare key: spoken punctuation resolved, lower case, without spaces,
-/// hyphens, underscores and dots ("Fot-Mesh" and "fot mesh" are equal).
 pub fn key(s: &str) -> String {
     spoken_punctuation(s)
         .to_lowercase()
@@ -55,9 +45,6 @@ pub fn key(s: &str) -> String {
         .collect()
 }
 
-/// A rough sound key: consonants by how they sound (b/p, d/t, g/k/c/q,
-/// f/v/ph, s/z/sh/ch), silent "gh", vowels dropped after the first letter,
-/// repeats folded. "fotmesh", "vodmesh", "fought mesh", "fotmash" share one.
 pub fn sound(s: &str) -> String {
     let w: Vec<char> = key(s)
         .chars()
@@ -126,8 +113,6 @@ fn levenshtein(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
-/// How alike two names are, 0 to 1: spelling (edit distance on the keys)
-/// and sound (the same sound key).
 pub fn similarity(a: &str, b: &str) -> f64 {
     let (ka, kb) = (key(a), key(b));
     if ka.is_empty() || kb.is_empty() {
@@ -147,25 +132,20 @@ pub fn similarity(a: &str, b: &str) -> f64 {
     (0.45 * spell + 0.55 * snd).clamp(0.0, 0.99)
 }
 
-/// A candidate and how well it matches.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Candidate {
     pub value: String,
     pub score: f64,
 }
 
-/// The outcome of matching a spoken name.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Match {
-    /// One candidate is clearly the one (exact, or well ahead of the rest).
     Sure(String),
-    /// Several are about as likely: ranked.
+
     Unsure(Vec<Candidate>),
     None,
 }
 
-/// Rank `candidates` against `query`; `label` gives the text compared
-/// for each (e.g. the last path components of a folder).
 pub fn best<'a, I>(query: &str, candidates: I) -> Match
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
@@ -187,7 +167,7 @@ where
     match v.as_slice() {
         [] => Match::None,
         [one] if one.score >= 0.6 => Match::Sure(one.value.clone()),
-        // An exact match (same key) wins over near ones.
+
         [first, second, ..] if first.score >= 1.0 && second.score < 1.0 => {
             Match::Sure(first.value.clone())
         }
@@ -204,7 +184,6 @@ where
     }
 }
 
-/// The last `n` components of a path ("/Users/x/code/fotmesh", 2 -> "code/fotmesh").
 pub fn tail(path: &str, n: usize) -> String {
     let parts: Vec<&str> = path
         .trim_end_matches('/')
@@ -214,8 +193,6 @@ pub fn tail(path: &str, n: usize) -> String {
     parts[parts.len().saturating_sub(n)..].join("/")
 }
 
-/// Match a spoken folder ("code slash vod mesh") against known folders,
-/// comparing with as many trailing components as the query has.
 pub fn best_folder<'a>(query: &str, folders: impl IntoIterator<Item = &'a str>) -> Match {
     let q = spoken_punctuation(query);
     let n = q.trim_matches('/').split('/').count().max(1);

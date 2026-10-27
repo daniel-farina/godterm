@@ -179,7 +179,6 @@ def main():
                         if ch.encode() in seen:
                             break
                 times.append((time.time() - t0) * 1000)
-            # Clear what was typed (Ctrl-U).
             ws.send_input(uid, b"\x15")
             return f"echo median {statistics.median(times):.1f} ms, max {max(times):.1f} ms (demo agent redraws)"
 
@@ -247,9 +246,6 @@ def main():
         step("a turn to the assistant", say)
 
         def stall():
-            # The PTY readers and the UI never wait on a browser that stops
-            # reading: subscribe a second client to every tab, read
-            # nothing, and time the UI thread from the first.
             lazy = WS("127.0.0.1", a.port, st["cookie"])
             lazy.send_json({"t": "subscribe", "tabs": [t["uid"] for t in st["hello"]["state"]["tabs"]]})
             time.sleep(3)

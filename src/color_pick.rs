@@ -1,7 +1,3 @@
-//! Picking a color: an account's (account ▾ > Color…, saved to its
-//! `color` in config.toml) or one tab's accent (tab menu > Accent color…,
-//! saved in state.json). Default plus the muted swatches.
-
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -14,13 +10,12 @@ use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Account(usize),
-    /// A tab, by uid.
+
     Tab(u64),
-    /// A tab group: (pane, group).
+
     Group(usize, usize),
 }
 
-/// Choices: 0 is Default, then theme::SWATCHES.
 pub fn count() -> usize {
     theme::SWATCHES.len() + 1
 }
@@ -45,13 +40,11 @@ impl App {
         self.modal = Modal::ColorPick(t, sel);
     }
 
-    /// Apply choice `i` (0: Default) to the target.
     pub fn apply_color(&mut self, t: Target, i: usize) {
         self.modal = Modal::None;
         self.set_color(t, i);
     }
 
-    /// Apply choice `i` and leave the dialogs as they are (the tab panel).
     pub fn set_color(&mut self, t: Target, i: usize) {
         let pick =
             (i > 0).then(|| theme::SWATCHES[(i - 1).min(theme::SWATCHES.len() - 1)].to_string());
@@ -106,7 +99,6 @@ impl App {
             KeyCode::Enter => self.apply_color(t, sel),
             KeyCode::Char('d') => self.apply_color(t, 0),
             KeyCode::Char(c @ '0'..='9') => {
-                // 1..9 the first swatches, 0 the tenth.
                 let i = if c == '0' {
                     10
                 } else {

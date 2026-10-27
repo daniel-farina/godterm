@@ -1,5 +1,3 @@
-//! Native CLI launches use stand-ins only, never the user's real agents.
-
 use crate::config::{AccountCfg, Config};
 use crate::harness::Harness;
 use crate::pane::LaunchKind;
@@ -35,8 +33,7 @@ fn native_flags_and_registry() {
         Harness::Antigravity.permission_args("accept-edits"),
         ["--mode", "accept-edits"]
     );
-    // opencode 2.0.32 rejects `--agent` ("Unrecognized flag"): plan mode is
-    // a per-launch config file, not a flag.
+
     assert!(Harness::OpenCode.permission_args("plan").is_empty());
     assert_eq!(Harness::OpenCode.permission_args("bypass"), ["--auto"]);
     assert_eq!(Harness::OpenCode.login_args().unwrap(), ["auth", "login"]);
@@ -117,7 +114,7 @@ fn native_pty_launch_resume_login_and_autostart() {
     };
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = crate::app::App::new(cfg, tx);
-    // Plain launches here; the tab tools have their own tests below.
+
     app.cfg.tabs.jobs_tools = false;
     for h in [
         Harness::Codex,
@@ -144,8 +141,7 @@ fn native_pty_launch_resume_login_and_autostart() {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             let actual = std::fs::read_to_string(&args).expect("stand-in received args");
-            // OpenCode has no plan flag: plan mode is its own config file,
-            // read only by a private (--standalone) server.
+
             let own: Vec<String> = if h == Harness::OpenCode {
                 vec!["--standalone".into()]
             } else {
@@ -174,7 +170,7 @@ fn native_pty_launch_resume_login_and_autostart() {
             app.panes[0].kill_all();
         }
     }
-    // A CLI-managed login is enough to start an idle slot automatically.
+
     let a = account(Harness::Codex);
     app.cfg.accounts[0] = a;
     app.accounts[0].login = crate::app::snapshot_of(&app.cfg.accounts[0], false).login;
@@ -185,14 +181,10 @@ fn native_pty_launch_resume_login_and_autostart() {
     let _ = std::fs::remove_dir_all(home);
 }
 
-// ---- integration with the tab-scoped tools, move, archive, approvals ----
-
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::pane::{Activity, PaneState};
 use serde_json::json;
 
-/// An app whose pane 0 runs `h` (a stand-in, never the real CLI), with
-/// one running, idle tab that has a session id; returns (app, tab index).
 fn native_app(tag: &str, h: Harness) -> (crate::app::App, usize, std::path::PathBuf) {
     let (mut app, home) = crate::confirm_click_tests::test_app(tag);
     app.cfg.accounts[0].harness = h.name().into();
@@ -246,7 +238,6 @@ fn tab_tools_use_each_clis_per_launch_mcp_and_never_a_global_config() {
     let shared = "shared-secret";
     let token = crate::tab_jobs::tab_token(shared, 7);
 
-    // Codex: -c overrides, identity from the environment, hint appended.
     let (_app, _t, home) = native_app("tt-codex", Harness::Codex);
     let slot = home.join("slot-home");
     std::fs::create_dir_all(&slot).unwrap();
@@ -284,7 +275,7 @@ fn tab_tools_use_each_clis_per_launch_mcp_and_never_a_global_config() {
         dev.contains("Be brief.") && dev.contains("create_job"),
         "{dev}"
     );
-    // The token and tab are in the environment, not on the command line.
+
     assert!(!args.iter().any(|a| a.contains(&token)));
     assert_eq!(
         x.env,
@@ -293,10 +284,9 @@ fn tab_tools_use_each_clis_per_launch_mcp_and_never_a_global_config() {
             ("GODTERM_TOKEN".to_string(), token.clone())
         ]
     );
-    // Nothing was written into the slot's home.
+
     assert_eq!(std::fs::read_dir(&slot).unwrap().count(), 1);
 
-    // Cursor: a plugin directory that carries only the MCP server.
     let mut args = vec![];
     let x = crate::tab_jobs::extend_launch_for(
         Harness::Cursor,
@@ -326,7 +316,6 @@ fn tab_tools_use_each_clis_per_launch_mcp_and_never_a_global_config() {
     assert_eq!(s["env"]["GODTERM_TAB"], json!("7"));
     assert_eq!(s["env"]["GODTERM_TOKEN"], json!(token));
 
-    // OpenCode: a config file the private server reads; plan mode in it.
     std::env::remove_var("OPENCODE_CONFIG");
     let mut args = vec!["--auto".to_string()];
     let x = crate::tab_jobs::extend_launch_for(
@@ -349,7 +338,7 @@ fn tab_tools_use_each_clis_per_launch_mcp_and_never_a_global_config() {
     assert_eq!(srv["type"], json!("local"));
     assert_eq!(srv["command"], json!(["/opt/godterm/godterm", "mcp"]));
     assert_eq!(srv["environment"]["GODTERM_TAB"], json!("7"));
-    // Not in plan mode: no default agent.
+
     let mut a2 = vec![];
     let x = crate::tab_jobs::extend_launch_for(
         Harness::OpenCode,
@@ -364,7 +353,7 @@ fn tab_tools_use_each_clis_per_launch_mcp_and_never_a_global_config() {
     let cfg: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&x.env[0].1).unwrap()).unwrap();
     assert!(cfg.get("default_agent").is_none());
-    // The user's own OPENCODE_CONFIG is never replaced.
+
     std::env::set_var("OPENCODE_CONFIG", "/somewhere/mine.json");
     let mut a3 = vec![];
     let x =
@@ -374,8 +363,6 @@ fn tab_tools_use_each_clis_per_launch_mcp_and_never_a_global_config() {
     assert!(a3.is_empty() && x.env.is_empty());
     let _ = std::fs::remove_dir_all(home);
 
-    // Antigravity can only take MCP servers from its global config: it
-    // gets nothing, and its tab tools refuse with that reason.
     let h = Harness::Antigravity;
     assert!(!h.has_tab_tools());
     let reason = h.no_tab_tools_reason().unwrap();
@@ -399,7 +386,7 @@ fn tab_tools_use_each_clis_per_launch_mcp_and_never_a_global_config() {
             "{e}"
         );
     }
-    // The Browser dialog does not open and says why.
+
     app.open_browser_dialog(0);
     assert!(matches!(app.modal, crate::app::Modal::None));
     assert!(app
@@ -431,7 +418,7 @@ fn a_launch_carries_the_tab_tools_of_codex_cursor_and_opencode() {
             Harness::OpenCode => assert_eq!(args[0], "--standalone"),
             _ => assert_eq!(args[0], "--plugin-dir"),
         }
-        // Switched off: no flags, no files.
+
         let mut app = app;
         app.cfg.tabs.jobs_tools = false;
         let mut none = vec![];
@@ -439,7 +426,7 @@ fn a_launch_carries_the_tab_tools_of_codex_cursor_and_opencode() {
             .tab_jobs_launch(h, uid, &dir, &mut none, false)
             .is_empty());
         assert!(none.is_empty());
-        // Plan mode is OpenCode's config file even then.
+
         let mut plan = vec![];
         let env = app.tab_jobs_launch(h, uid, &dir, &mut plan, true);
         if h == Harness::OpenCode {
@@ -463,10 +450,10 @@ fn the_bar_of_a_cli_without_a_model_picker_keeps_the_loops_and_browser_buttons()
         let (mut app, t, home) = native_app(&format!("bar-{}", h.name()), h);
         assert!(app.bar_models(0).is_empty());
         assert!(app.model_bar_on(0, 30), "{} has the bar", h.name());
-        // Nothing is read off their screens as a model, effort or box.
+
         assert_eq!(crate::app_tabmodel::screen_model(h, "gpt-5 · high"), None);
         assert_eq!(crate::app_tabmodel::screen_effort(h, "gpt-5 (high)"), None);
-        // A drawn frame has the Browser and loops buttons and no model keys.
+
         let mut term = crate::confirm_click_tests::term();
         crate::confirm_click_tests::draw(&mut app, &mut term);
         let regions = &app.last_hits.regions;
@@ -479,7 +466,7 @@ fn the_bar_of_a_cli_without_a_model_picker_keeps_the_loops_and_browser_buttons()
         assert!(!regions
             .iter()
             .any(|r| matches!(r.action, crate::hits::UiAction::TabModel(0, _))));
-        // The Browser button says what is unsupported when it is.
+
         if let Some(why) = h.no_tab_tools_reason() {
             let r = regions
                 .iter()
@@ -487,7 +474,7 @@ fn the_bar_of_a_cli_without_a_model_picker_keeps_the_loops_and_browser_buttons()
                 .unwrap();
             assert!(r.hint.contains(&why), "{}", r.hint);
         }
-        // The tool and the key say why.
+
         let uid = app.panes[0].tabs[t].uid;
         let v = app.control_call(
             "set_tab_model",
@@ -501,7 +488,7 @@ fn the_bar_of_a_cli_without_a_model_picker_keeps_the_loops_and_browser_buttons()
         assert!(app.flash.as_ref().unwrap().0.contains("inside the CLI"));
         let _ = std::fs::remove_dir_all(home);
     }
-    // Claude keeps its model picker.
+
     let (app, _t, home) = native_app("bar-claude", Harness::Claude);
     assert!(Harness::Claude.has_model_picker() && !app.bar_models(0).is_empty());
     let _ = std::fs::remove_dir_all(home);
@@ -512,7 +499,7 @@ fn native_tabs_are_not_moved_copied_or_archived_blind() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     for h in NEW {
         let (mut app, t, home) = native_app(&format!("move-{}", h.name()), h);
-        // A second slot of the same CLI: still no move target.
+
         app.cfg.accounts[1].harness = h.name().into();
         app.accounts[1].login = crate::app::snapshot_of(&app.cfg.accounts[1], false).login;
         let targets = app.move_targets(0);
@@ -528,7 +515,7 @@ fn native_tabs_are_not_moved_copied_or_archived_blind() {
         assert!(app.flash.as_ref().unwrap().0.contains("cannot be moved"));
         let after: usize = app.panes.iter().map(|p| p.tabs.len()).sum();
         assert_eq!(before, after, "no tab opened or closed");
-        // Archive: refused while GodTerm has no session id to resume by.
+
         app.panes[0].tabs[t].session_id = None;
         app.panes[0].tabs[t].state = PaneState::Running;
         let blocks = app.archive_blockers(0, t);
@@ -543,7 +530,7 @@ fn native_tabs_are_not_moved_copied_or_archived_blind() {
             before,
             app.panes.iter().map(|p| p.tabs.len()).sum::<usize>()
         );
-        // With an explicit session id nothing hard stops it.
+
         app.panes[0].tabs[t].session_id = Some("sess-1".into());
         assert!(app.archive_blockers(0, t).iter().all(|b| !b.hard));
         let _ = std::fs::remove_dir_all(home);
@@ -556,12 +543,12 @@ fn native_approvals_are_only_answered_with_keys_read_from_their_prompt() {
     for h in NEW {
         let (mut app, t, home) = native_app(&format!("ans-{}", h.name()), h);
         app.panes[0].tabs[t].activity = Activity::Permission;
-        // Nothing parseable on the screen: no guessed Claude keys.
+
         let say = app.answer_tab(0, t, crate::prompt::Choice::Approve);
         assert!(say.contains(h.label()) && say.contains("keyboard"), "{say}");
         let _ = std::fs::remove_dir_all(home);
     }
-    // Claude keeps its 1 / 2 / Esc fallback.
+
     let (mut app, t, home) = native_app("ans-claude", Harness::Claude);
     app.panes[0].tabs[t].activity = Activity::Permission;
     let say = app.answer_tab(0, t, crate::prompt::Choice::Approve);
@@ -590,16 +577,14 @@ fn web_approvals_offer_only_the_answers_a_prompt_can_take() {
         let (mut app, t, home) = native_app(&format!("webans-{}", h.name()), h);
         app.panes[0].tabs[t].activity = Activity::Permission;
         let uid = app.panes[0].tabs[t].uid;
-        // A screen GodTerm cannot read (the Codex update menu, OpenCode's
-        // prompt): no buttons, and an answer from the browser is an error,
-        // not "answered" with nothing pressed.
+
         let v = entry(&app, uid);
         assert_eq!(v["choices"], json!([]), "{v}");
         let e = app.web_answer(&format!("tab:{uid}"), "yes").unwrap_err();
         assert!(e.contains("keyboard"), "{e}");
         let _ = std::fs::remove_dir_all(home);
     }
-    // Antigravity's folder trust: yes and no, no "always".
+
     let (mut app, t, home) = native_app("webans-agy", Harness::Antigravity);
     app.panes[0].tabs[t].activity = Activity::Permission;
     let uid = app.panes[0].tabs[t].uid;
@@ -611,7 +596,7 @@ fn web_approvals_offer_only_the_answers_a_prompt_can_take() {
     assert_eq!(entry(&app, uid)["choices"], json!(["yes", "no"]));
     assert!(app.web_answer(&format!("tab:{uid}"), "always").is_err());
     let _ = std::fs::remove_dir_all(home);
-    // Codex's command approval has all three.
+
     let (mut app, t, home) = native_app("webans-codex", Harness::Codex);
     app.panes[0].tabs[t].activity = Activity::Permission;
     let uid = app.panes[0].tabs[t].uid;
@@ -622,7 +607,7 @@ fn web_approvals_offer_only_the_answers_a_prompt_can_take() {
         .process(fixture("codex_approval").as_bytes());
     assert_eq!(entry(&app, uid)["choices"], json!(["yes", "always", "no"]));
     let _ = std::fs::remove_dir_all(home);
-    // Claude keeps all three (its 1 / 2 / Esc fallback).
+
     let (mut app, t, home) = native_app("webans-claude", Harness::Claude);
     app.panes[0].tabs[t].activity = Activity::Permission;
     let uid = app.panes[0].tabs[t].uid;
@@ -633,7 +618,7 @@ fn web_approvals_offer_only_the_answers_a_prompt_can_take() {
 #[test]
 fn the_web_state_lists_each_accounts_tab_models() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Claude's bar, Fable included: what the web app's Switch model offers.
+
     let (app, _t, home) = native_app("webmodels-claude", Harness::Claude);
     let st = app.web_state();
     let labels: Vec<&str> = st["accounts"][0]["models"]
@@ -644,7 +629,7 @@ fn the_web_state_lists_each_accounts_tab_models() {
         .collect();
     assert_eq!(labels, ["Haiku", "Sonnet", "Opus", "Fable"]);
     let _ = std::fs::remove_dir_all(home);
-    // A CLI that picks its own model: none (the sheet says so).
+
     for h in NEW {
         let (app, _t, home) = native_app(&format!("webmodels-{}", h.name()), h);
         assert_eq!(app.web_state()["accounts"][0]["models"], json!([]));
@@ -667,7 +652,7 @@ fn the_web_state_gives_a_tabs_repo_in_numbers_for_the_status_bar() {
             .unwrap()
     };
     let st = app.web_state();
-    // Outside a repo (or before the first git pass): no facts.
+
     assert!(tab(&st).get("git_facts").is_none(), "{}", tab(&st));
     let repo = std::env::temp_dir().join(format!("godterm-webgit-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
@@ -700,8 +685,7 @@ fn the_web_state_gives_a_tabs_repo_in_numbers_for_the_status_bar() {
 #[test]
 fn the_move_tool_refuses_another_harness_and_the_native_clis() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // A Claude tab, account 2 made a Grok account: refused, nothing moved
-    // or queued (it moved the conversation onto Grok before).
+
     let (mut app, t, home) = native_app("move-tool-claude", Harness::Claude);
     app.cfg.accounts[1].harness = "grok".into();
     let uid = app.panes[0].tabs[t].uid;
@@ -715,8 +699,7 @@ fn the_move_tool_refuses_another_harness_and_the_native_clis() {
         app.panes.iter().map(|p| p.tabs.len()).sum::<usize>()
     );
     let _ = std::fs::remove_dir_all(home);
-    // Codex and the others: refused even while busy (it was queued, and
-    // the tool said it would move once done).
+
     for h in NEW {
         let (mut app, t, home) = native_app(&format!("move-tool-{}", h.name()), h);
         app.cfg.accounts[1].harness = h.name().into();
@@ -764,7 +747,7 @@ fn a_quit_tab_keeps_the_session_its_farewell_names() {
         let tab = &mut app.panes[0].tabs[t];
         tab.session_id = None;
         tab.harness = h;
-        // The farewell as the terminal draws it (CRLF line ends).
+
         tab.parser
             .lock()
             .unwrap()
@@ -778,7 +761,7 @@ fn a_quit_tab_keeps_the_session_its_farewell_names() {
         assert!(resume.iter().any(|a| a == &id));
         let _ = std::fs::remove_dir_all(home);
     }
-    // A tab still showing its work learns nothing.
+
     let (mut app, t, home) = native_app("exit-none", Harness::Codex);
     app.panes[0].tabs[t].session_id = None;
     app.panes[0].tabs[t].harness = Harness::Codex;

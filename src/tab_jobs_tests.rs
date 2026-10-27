@@ -1,9 +1,3 @@
-//! Jobs for the agents inside tabs (tab_jobs.rs): the tab client's token,
-//! its scoping to its own tab's jobs and loops, the assistant-only tools
-//! staying out of reach, the user's yes in GodTerm's own dialog, and the
-//! launch arguments of Claude and Grok tabs. Nothing real runs: tabs are
-//! stubs and homes are test homes.
-
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -21,14 +15,12 @@ use serde_json::{json, Value};
 
 const SHARED: &str = "shared-rw-token";
 
-/// A call from the agent of tab `uid`, the way the socket hands it over.
 fn tab_call(app: &mut App, uid: u64, tool: &str, args: Value) -> Value {
     let mut a = args;
     a["_client"] = json!(format!("tab:{uid}"));
     app.control_call(tool, &a)
 }
 
-/// Two running tabs on pane 0: (app, home, uid of billing, uid of web).
 fn two_tabs(tag: &str) -> (App, std::path::PathBuf, u64, u64) {
     let (mut app, home) = setup(tag);
     let a = running(&mut app, 0, "billing", "sess-b");
@@ -37,19 +29,16 @@ fn two_tabs(tag: &str) -> (App, std::path::PathBuf, u64, u64) {
     (app, home, ua, ub)
 }
 
-/// A job of the tab `uid` has.
 fn job_of(app: &mut App, uid: u64, name: &str, prompt: &str) -> String {
     let (s, t) = app.find_tab(uid).unwrap();
     add(app, s, t, name, prompt, 15)
 }
 
-/// A session loop of the tab `uid`.
 fn loop_of(app: &App, uid: u64, id: &str, prompt: &str) -> crate::app_loops::LoopRow {
     let (s, t) = app.find_tab(uid).unwrap();
     loop_row(app, s, t, session_loop(id, "*/15 * * * *", prompt))
 }
 
-/// The user answers the dialog on screen.
 fn answer(app: &mut App, yes: bool) {
     app.tab_jobs_tick();
     let Modal::ConfirmTabJob(tok) = std::mem::replace(&mut app.modal, Modal::None) else {
@@ -57,8 +46,6 @@ fn answer(app: &mut App, yes: bool) {
     };
     app.tab_ask_answer(&tok, yes);
 }
-
-// ---- the token and the socket ----
 
 #[test]
 fn a_tab_token_names_one_tab_of_one_launch() {
@@ -87,12 +74,12 @@ fn authorize_checks_the_token_the_tab_and_the_tool() {
         )
     };
     assert_eq!(ok("create_job", 7, &t7), Ok(7));
-    // Another tab's id with this tab's token, or no tab at all.
+
     assert_eq!(ok("create_job", 8, &t7), Err("bad token".into()));
     assert_eq!(ok("create_job", 0, &t7), Err("bad token".into()));
-    // The control tokens are not tab tokens.
+
     assert_eq!(ok("create_job", 7, SHARED), Err("bad token".into()));
-    // Tools of the assistant, the settings, the keychain: no.
+
     for tool in [
         "get_state",
         "set_setting",
@@ -104,7 +91,7 @@ fn authorize_checks_the_token_the_tab_and_the_tool() {
         let e = ok(tool, 7, &t7).unwrap_err();
         assert!(e.contains("not available to a tab"), "{tool}: {e}");
     }
-    // A tab cannot answer a confirmation by itself.
+
     let r = tab_jobs::authorize(
         SHARED,
         &json!({"client": "tab", "tab": 7, "token": t7, "tool": "create_job", "user_says": "yes"}),
@@ -125,20 +112,19 @@ fn the_socket_hands_a_tab_call_over_as_that_tab_and_refuses_the_rest() {
         line
     };
     let t7 = tab_jobs::tab_token(SHARED, 7);
-    // The control token (read-write or read-only) is no tab token.
+
     for token in [SHARED, "ro"] {
         let l = ask(
             json!({"client": "tab", "tab": 7, "token": token, "tool": "create_job", "args": {}}),
         );
         assert!(l.contains("bad token"), "{l}");
     }
-    // A tab token does not work as another client kind either.
+
     let l = ask(json!({"client": "brain", "token": t7, "tool": "get_state", "args": {}}));
     assert!(l.contains("bad token"), "{l}");
     let l = ask(json!({"token": t7, "tool": "get_state", "args": {}}));
     assert!(l.contains("bad token"), "{l}");
-    // Its own tab's token, a tool it has: handed on, as that tab, with
-    // whatever `_client` the agent put in its arguments replaced.
+
     let answer = std::thread::spawn(move || {
         let AppEvent::Control(tool, args, reply) = rx.recv().unwrap() else {
             panic!("not a control event")
@@ -156,14 +142,12 @@ fn the_socket_hands_a_tab_call_over_as_that_tab_and_refuses_the_rest() {
     let args = answer.join().unwrap();
     assert_eq!(args["_client"], json!("tab:7"), "{args}");
     assert_eq!(args["status"], json!("active"));
-    // A tool a tab does not have never reaches the app.
+
     let l = ask(json!({"client": "tab", "tab": 7, "token": t7, "tool": "get_state", "args": {}}));
     assert!(l.contains("not available to a tab"), "{l}");
     drop(ask);
     t.join().unwrap();
 }
-
-// ---- scoping ----
 
 #[test]
 fn a_tab_creates_a_job_for_itself_after_the_users_yes() {
@@ -178,7 +162,7 @@ fn a_tab_creates_a_job_for_itself_after_the_users_yes() {
     assert_eq!(v["ok"], json!(true), "{v}");
     assert_eq!(v["result"]["state"], json!("waiting_for_user"), "{v}");
     assert!(app.jobs.jobs.is_empty(), "nothing before the yes");
-    // Shown against that tab.
+
     app.tab_jobs_tick();
     let Modal::ConfirmTabJob(tok) = app.modal.clone() else {
         panic!("{:?}", app.modal)
@@ -195,9 +179,9 @@ fn a_tab_creates_a_job_for_itself_after_the_users_yes() {
     assert_eq!(j.target.uid, Some(ua));
     assert_eq!(j.created_by, "tab");
     assert_eq!(j.every_min, Some(30));
-    // It outlives the call: persisted for the next launch.
+
     assert_eq!(crate::jobs::Store::load().jobs.len(), 1);
-    // And the agent can see it, with the answer it got.
+
     let l = tab_call(&mut app, ua, "list_jobs", json!({}));
     assert_eq!(l["result"]["jobs"][0]["name"], json!("poll"), "{l}");
     assert!(l["result"]["your_requests"][0]
@@ -219,7 +203,7 @@ fn a_no_or_a_closed_dialog_creates_nothing_and_the_agent_hears_it() {
     );
     answer(&mut app, false);
     assert!(app.jobs.jobs.is_empty());
-    // The dialog closed another way (the Cancel button) counts as a no.
+
     tab_call(
         &mut app,
         ua,
@@ -260,7 +244,7 @@ fn naming_another_tab_or_anything_outside_the_tab_is_rejected() {
             "{args}: nothing was even asked"
         );
     }
-    // Its own id (any case) or "this" is fine, and means the same tab.
+
     for t in [tab_id(ua), tab_id(ua).to_uppercase(), "this".to_string()] {
         let v = tab_call(
             &mut app,
@@ -301,11 +285,10 @@ fn only_the_five_job_tools_work_for_a_tab() {
             "{tool}: {v}"
         );
     }
-    // Not a tab that is gone, either.
+
     let v = tab_call(&mut app, 999_999, "list_jobs", json!({}));
     assert_eq!(v["error"], json!("this tab is gone"));
-    // The tab's own MCP server lists exactly the five, trimmed of the
-    // arguments that name another tab or confirm.
+
     let list = tab_jobs::tab_tool_list();
     let names: Vec<&str> = list.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert_eq!(names.len(), TAB_TOOLS.len(), "{names:?}");
@@ -359,7 +342,7 @@ fn the_tab_mcp_server_lists_five_tools_and_refuses_the_others_before_the_socket(
     .unwrap();
     assert_eq!(r["result"]["isError"], json!(false), "{r}");
     assert_eq!(calls.get(), 1, "only the job tool went on");
-    // The assistant's server is unchanged: it has every tool.
+
     let all = crate::mcp::handle(
         &json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list"}),
         &mut call,
@@ -389,7 +372,7 @@ fn list_jobs_shows_only_the_tabs_own_jobs_and_loops() {
         "{all}"
     );
     assert!(!all.contains(&tab_id(ub)), "no other tab id: {all}");
-    // The assistant still sees both.
+
     let a = app
         .control_call("list_jobs", &json!({"_client": "brain"}))
         .to_string();
@@ -403,8 +386,7 @@ fn update_and_delete_reach_only_the_tabs_own_jobs() {
     let (mut app, home, ua, ub) = two_tabs("tabjobs-edit");
     let mine = job_of(&mut app, ua, "billing poll", "mine");
     let theirs = job_of(&mut app, ub, "web poll", "theirs");
-    // Another tab's job, by id, prefix or name: the same "no such job",
-    // which says nothing about it.
+
     for key in [theirs.clone(), theirs[..4].to_string(), "web".to_string()] {
         for (tool, args) in [
             ("update_job", json!({"job": key, "action": "pause"})),
@@ -423,7 +405,7 @@ fn update_and_delete_reach_only_the_tabs_own_jobs() {
         }
     }
     assert!(app.jobs.find(&theirs).unwrap().enabled);
-    // Its own: pause applies at once, a new prompt and a delete ask.
+
     let v = tab_call(
         &mut app,
         ua,
@@ -442,7 +424,7 @@ fn update_and_delete_reach_only_the_tabs_own_jobs() {
     assert_eq!(app.jobs.find(&mine).unwrap().prompt, "mine");
     answer(&mut app, true);
     assert_eq!(app.jobs.find(&mine).unwrap().prompt, "new words");
-    // Moving it to another tab is not something it can ask for.
+
     let v = tab_call(
         &mut app,
         ua,
@@ -467,13 +449,13 @@ fn adopt_loop_takes_only_the_tabs_own_session_loop() {
         loop_of(&app, ua, "aaaaaaaa", "my loop"),
         loop_of(&app, ub, "bbbbbbbb", "their loop"),
     ];
-    // Their loop id, or their tab: no.
+
     let v = tab_call(&mut app, ua, "adopt_loop", json!({"loop": "bbbbbbbb"}));
     assert_eq!(v["ok"], json!(false), "{v}");
     let v = tab_call(&mut app, ua, "adopt_loop", json!({"tab": tab_id(ub)}));
     assert_eq!(v["ok"], json!(false), "{v}");
     assert!(app.tab_jobs.asks.is_empty());
-    // Its own: asks, then the job is made for this tab from that loop.
+
     let v = tab_call(&mut app, ua, "adopt_loop", json!({}));
     assert_eq!(v["result"]["state"], json!("waiting_for_user"), "{v}");
     answer(&mut app, true);
@@ -531,7 +513,7 @@ fn a_waiting_request_does_not_cover_another_dialog_and_expires() {
     app.modal = Modal::None;
     app.tab_jobs_tick();
     assert!(matches!(app.modal, Modal::ConfirmTabJob(_)));
-    // An unanswered one expires.
+
     app.tab_jobs.asks[0].at = std::time::Instant::now() - std::time::Duration::from_secs(700);
     app.tab_jobs_tick();
     assert!(app.tab_jobs.asks.is_empty());
@@ -539,8 +521,6 @@ fn a_waiting_request_does_not_cover_another_dialog_and_expires() {
     assert!(app.jobs.jobs.is_empty());
     let _ = std::fs::remove_dir_all(home);
 }
-
-// ---- the launch ----
 
 fn exe() -> std::path::PathBuf {
     "/usr/local/bin/godterm".into()
@@ -576,7 +556,7 @@ fn a_claude_launch_gets_the_server_the_tools_and_the_hint() {
     assert_eq!(args[k + 1], "mcp__godterm__create_job");
     assert!(args.contains(&"mcp__godterm__adopt_loop".to_string()));
     assert!(!args.iter().any(|a| a == "mcp__godterm__get_state"));
-    // The file holds a token: private.
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -608,7 +588,7 @@ fn the_users_own_flags_and_a_resume_are_left_as_they_were() {
     .collect();
     let mut args = before.clone();
     tab_jobs::extend_launch(Harness::Claude, &exe(), SHARED, 3, &mut args).unwrap();
-    // Everything that was there is still there, in place, ahead of ours.
+
     let mut merged = before.clone();
     merged[6] = format!("be brief\n\n{HINT}");
     assert_eq!(&args[..before.len()], &merged[..], "{args:?}");
@@ -624,7 +604,7 @@ fn the_users_own_flags_and_a_resume_are_left_as_they_were() {
         "theirs and ours"
     );
     assert!(args.iter().any(|a| a == "/home/me/mine.json"));
-    // The `=` form is merged too.
+
     let mut args: Vec<String> = vec!["--append-system-prompt=be brief".into()];
     tab_jobs::extend_launch(Harness::Claude, &exe(), SHARED, 3, &mut args).unwrap();
     assert_eq!(
@@ -673,7 +653,7 @@ fn a_grok_launch_gets_the_hint_its_identity_and_the_server_in_its_slot_config() 
     let (mut app, home) = setup("tabjobs-grok");
     let slot = home.join("grok-slot");
     std::fs::create_dir_all(&slot).unwrap();
-    // The user's own servers and settings in that slot are kept.
+
     std::fs::write(
         slot.join("config.toml"),
         "[ui]\nscreen_mode = \"minimal\"\n\n[mcp_servers.mine]\ncommand = \"/bin/mine\"\n",
@@ -710,12 +690,12 @@ fn a_grok_launch_gets_the_hint_its_identity_and_the_server_in_its_slot_config() 
     let g = &doc["mcp_servers"]["godterm"];
     assert_eq!(g["args"][0].as_str(), Some("mcp"));
     assert_eq!(g["env"]["GODTERM_CLIENT"].as_str(), Some("tab"));
-    // The tab's token is not in the shared config file, only in its env.
+
     assert!(g["env"].get("GODTERM_TOKEN").is_none());
     assert!(!std::fs::read_to_string(slot.join("config.toml"))
         .unwrap()
         .contains(&get("GODTERM_TOKEN").unwrap()));
-    // Switched off: our entry goes, theirs stays.
+
     app.cfg.tabs.jobs_tools = false;
     let mut args: Vec<String> = vec![];
     assert!(app
@@ -754,7 +734,7 @@ fn SHARED_TEST() -> &'static str {
 #[test]
 fn the_tab_server_entry_matches_what_the_socket_expects() {
     let s = tab_jobs::mcp_server(Path::new("/x/godterm"), SHARED, 9);
-    // The client kind and tab it sends are what `authorize` checks.
+
     let token = s["env"]["GODTERM_TOKEN"].as_str().unwrap();
     let req = json!({"client": s["env"]["GODTERM_CLIENT"], "tab": 9, "token": token, "tool": "list_jobs"});
     assert_eq!(tab_jobs::authorize(SHARED, &req), Ok(9));

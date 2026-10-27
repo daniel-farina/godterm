@@ -1,6 +1,3 @@
-//! Tab groups, pins and sorting: the tools (with groups as targets), the
-//! list's rendering, persistence and dragging a tab onto a group.
-
 use serde_json::json;
 
 use crate::config::testing::LOCK as ENV_LOCK;
@@ -46,9 +43,6 @@ fn screen(app: &mut crate::app::App) -> String {
     s
 }
 
-/// The voice examples: "group these three tabs as api", "pin the
-/// dashboard tab", "color the api group green", "sort account two by
-/// most recent", "close everything except pinned"; and groups as targets.
 #[test]
 fn tools_with_groups_pins_and_sorts() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -80,7 +74,7 @@ fn tools_with_groups_pins_and_sorts() {
     let v = app.control_call("sort_tabs", &json!({"account": 2, "by": "most recent"}));
     assert_eq!(v["result"]["sort"], json!("recent"), "{v}");
     assert_eq!(app.panes[1].sort, crate::tab_groups::TabSort::Recent);
-    // get_state carries group, pinned and color.
+
     let st = app.control_call("get_state", &json!({}));
     let tabs = st["result"]["tabs"].as_array().cloned().unwrap_or_default();
     let api = tabs.iter().find(|t| t["name"] == "api").unwrap();
@@ -91,17 +85,17 @@ fn tools_with_groups_pins_and_sorts() {
     assert!(tabs
         .iter()
         .any(|t| t["name"] == "dashboard" && t["pinned"] == true));
-    // Close everything except pinned: the question leaves dashboard out.
+
     say(&mut app, "close everything except pinned");
     let before = app.panes[1].tabs.len();
     let v = app.control_call("close_tabs", &json!({"account": 2}));
     let q = v["question"].as_str().unwrap();
     assert!(q.contains(&(before - 1).to_string()), "{q}");
-    // A pinned tab named alone still asks.
+
     say(&mut app, "close the dashboard tab");
     let v = app.control_call("close_tabs", &json!({"tab": id(&app, "dashboard")}));
     assert_eq!(v["needs_confirmation"], json!(true), "{v}");
-    // A group as the target: one question, then all of it.
+
     say(&mut app, "close the experiments group");
     let v = app.control_call("close_tabs", &json!({"group": "experiments"}));
     assert!(
@@ -112,7 +106,7 @@ fn tools_with_groups_pins_and_sorts() {
     say(&mut app, "yes");
     let v = app.control_call("close_tabs", &json!({"confirm_token": tok}));
     assert_eq!(v["result"]["closed"], json!(2), "{v}");
-    // Collapse, rename, ungroup; unknown group names say what there is.
+
     app.control_call("collapse_group", &json!({"group": "api"}));
     assert!(app.panes[1].groups[0].collapsed);
     app.control_call("rename_group", &json!({"group": "api", "name": "backend"}));
@@ -143,7 +137,7 @@ fn tools_with_groups_pins_and_sorts() {
             .as_deref(),
         Some("clay")
     );
-    // Moving a group: its tabs go, and the group with them.
+
     say(&mut app, "move the backend group to account one");
     let v = app.control_call("move_tab", &json!({"group": "backend", "to": 1}));
     assert!(v["error"].is_null(), "{v}");
@@ -155,9 +149,6 @@ fn tools_with_groups_pins_and_sorts() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Groups, pins and the sort survive a restart; the list renders headers
-/// (collapsed and expanded), the pin marker and color bars; dropping a
-/// dragged tab on a header adds it to the group.
 #[test]
 fn list_renders_persists_and_takes_drops() {
     use crossterm::event::{MouseButton, MouseEventKind};
@@ -179,7 +170,7 @@ fn list_renders_persists_and_takes_drops() {
     app.panes[1].groups[0].collapsed = true;
     let t = screen(&mut app);
     assert!(t.contains("▸ api work (2)"), "{t}");
-    // Persisted.
+
     let st = app.snapshot_state();
     let (mut fresh, h2) = test_app("render2");
     crate::config::testing::set_home(&home);
@@ -196,7 +187,7 @@ fn list_renders_persists_and_takes_drops() {
             .count(),
         2
     );
-    // Drag "worker" onto the group's header.
+
     app.panes[1].groups[0].collapsed = false;
     screen(&mut app);
     let find = |app: &crate::app::App, f: &dyn Fn(&crate::hits::UiAction) -> bool| {
@@ -234,7 +225,7 @@ fn list_renders_persists_and_takes_drops() {
     app.handle(ev(MouseEventKind::Drag(MouseButton::Left), to.x + 4, to.y));
     app.handle(ev(MouseEventKind::Up(MouseButton::Left), to.x + 4, to.y));
     assert_eq!(app.panes[1].tabs[worker].group.as_deref(), Some("api work"));
-    // Right click on the header: its menu; Ungroup.
+
     app.handle(ev(MouseEventKind::Down(MouseButton::Right), to.x + 4, to.y));
     assert_eq!(app.modal, crate::app::Modal::GroupMenu(1, 0, 0));
     app.group_menu_run(1, 0, 5);
@@ -265,9 +256,6 @@ fn tab_rows(app: &crate::app::App, s: usize) -> Vec<String> {
         .collect()
 }
 
-/// The search field atop a tab list: Ctrl-a / or a click, typing
-/// filters (names, the session's own title, folder, status, fuzzy), "2
-/// of 7", Up / Down pick, Esc clears; and by voice.
 #[test]
 fn search_filters_the_list_and_counts() {
     use crossterm::event::{KeyCode, KeyModifiers};
@@ -279,7 +267,7 @@ fn search_filters_the_list_and_counts() {
     let t = screen(&mut app);
     assert!(t.contains("⌕ search"), "{t}");
     assert!(t.contains("↓manual ▾"), "{t}");
-    // Ctrl-a / gives the field the keys; typing filters.
+
     app.on_command(crossterm::event::KeyEvent::new(
         KeyCode::Char('/'),
         KeyModifiers::NONE,
@@ -290,20 +278,19 @@ fn search_filters_the_list_and_counts() {
     assert_eq!(tab_rows(&app, 1), ["exp1", "exp2"]);
     let t = screen(&mut app);
     assert!(t.contains("2 of 7"), "{t}");
-    // The keys stay out of the terminal; Down picks a match, Enter
-    // keeps it and gives the keys back.
+
     key(&mut app, KeyCode::Down);
     let picked = app.panes[1].cur().name();
     assert!(picked.starts_with("exp"), "{picked}");
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.tab_search, None);
     assert_eq!(app.panes[1].filter, "exp", "the filter stays until cleared");
-    // Esc in the field clears it.
+
     app.focus_tab_search(1);
     key(&mut app, KeyCode::Esc);
     assert!(app.panes[1].filter.is_empty() && app.tab_search.is_none());
     assert_eq!(tab_rows(&app, 1).len(), 7);
-    // Fuzzy: a misspelling, the status, the folder.
+
     app.panes[1].filter = "dashbord".into();
     assert_eq!(tab_rows(&app, 1), ["dashboard"]);
     let w = app.panes[1]
@@ -314,7 +301,7 @@ fn search_filters_the_list_and_counts() {
     app.panes[1].tabs[w].activity = crate::pane::Activity::Working;
     app.panes[1].filter = "working".into();
     assert_eq!(tab_rows(&app, 1), ["worker"]);
-    // The session's own title (Claude's or Grok's) is searched too.
+
     let api = app.panes[1]
         .tabs
         .iter()
@@ -327,7 +314,7 @@ fn search_filters_the_list_and_counts() {
     );
     app.panes[1].filter = "fotmesh".into();
     assert_eq!(tab_rows(&app, 1), ["api"]);
-    // A click on the field focuses it; the × clears.
+
     app.panes[1].filter.clear();
     let _ = screen(&mut app);
     let field = app
@@ -352,7 +339,7 @@ fn search_filters_the_list_and_counts() {
         .find(&crate::hits::UiAction::TabSearchClear(1))
         .is_some());
     key(&mut app, KeyCode::Esc);
-    // Voice: "find the tab about fotmesh".
+
     let v = app.control_call("search_tabs", &json!({"text": "fot mesh"}));
     assert_eq!(v["result"]["tabs"].as_array().unwrap().len(), 1, "{v}");
     assert!(v["result"]["say"].as_str().unwrap().starts_with("Found it"));
@@ -363,8 +350,6 @@ fn search_filters_the_list_and_counts() {
     let _ = std::fs::remove_dir_all(home);
 }
 
-/// Pinned tabs first in every sort; each sort mode; sorting inside
-/// groups; the dropdown and the sort_tabs tool use the same modes.
 #[test]
 fn pins_sort_modes_and_groups() {
     use crate::pane::Activity;
@@ -379,7 +364,7 @@ fn pins_sort_modes_and_groups() {
             .position(|t| t.name() == n)
             .unwrap()
     };
-    // The first tab (the account's folder) out of the way: closed.
+
     let first = app.panes[1].tabs[0].name();
     let _ = first;
     app.panes[1].close_tab(0, home.clone());
@@ -399,7 +384,7 @@ fn pins_sort_modes_and_groups() {
     app.panes[1].tabs[e1].activity = Activity::Permission;
     app.panes[1].tabs[dash].pinned = true;
     let order = |app: &crate::app::App| tab_rows(app, 1);
-    // Manual: the pinned one first, then the drag order.
+
     assert_eq!(
         order(&app),
         ["dashboard", "api", "web", "worker", "exp1", "exp2"]
@@ -409,25 +394,25 @@ fn pins_sort_modes_and_groups() {
         order(&app),
         ["dashboard", "api", "exp1", "exp2", "web", "worker"]
     );
-    // Status: blocked, then working, then idle.
+
     app.set_tab_sort(1, TabSort::State);
     assert_eq!(order(&app)[1..3], ["exp1", "worker"]);
-    // Most active: working first.
+
     app.set_tab_sort(1, TabSort::Active);
     assert_eq!(order(&app)[1], "worker");
-    // Created: newest first.
+
     app.set_tab_sort(1, TabSort::Opened);
     assert_eq!(
         order(&app),
         ["dashboard", "exp2", "exp1", "worker", "web", "api"]
     );
-    // Most recent: the last input first.
+
     app.set_tab_sort(1, TabSort::Recent);
     app.panes[1].tabs[web].last_input =
         std::time::Instant::now() + std::time::Duration::from_secs(60);
     *app.panes[1].order_cache.borrow_mut() = None;
     assert_eq!(order(&app)[1], "web");
-    // Groups are sorted inside; the pinned one stays on top.
+
     app.panes[1].group_tabs(&[e1, e2, api], "lab", None);
     app.set_tab_sort(1, TabSort::Name);
     let rows = app.list_rows(1, false);
@@ -441,7 +426,7 @@ fn pins_sort_modes_and_groups() {
             crate::tab_groups::Row::Tab(e2)
         ]
     );
-    // A search inside a folded group shows its matches.
+
     app.panes[1].groups[0].collapsed = true;
     app.panes[1].filter = "exp2".into();
     assert_eq!(
@@ -452,7 +437,7 @@ fn pins_sort_modes_and_groups() {
         ]
     );
     app.panes[1].filter.clear();
-    // The dropdown atop the list opens the sort menu for this pane.
+
     app.focus = 0;
     let _ = screen(&mut app);
     let r = app
@@ -487,7 +472,7 @@ fn pins_sort_modes_and_groups() {
         assert!(labels.iter().any(|l| l.starts_with(want)), "{labels:?}");
     }
     app.modal = crate::app::Modal::None;
-    // The tool takes the same modes, as said.
+
     for (by, want) in [
         ("most recent", TabSort::Recent),
         ("most active", TabSort::Active),
@@ -503,9 +488,6 @@ fn pins_sort_modes_and_groups() {
     let _ = std::fs::remove_dir_all(home);
 }
 
-/// The side list's width: Ctrl-a < / > in steps, kept between the minimum
-/// and the maximum; wide enough, each tab shows the session's own title
-/// under our name; narrow rows stay as they were; by voice too.
 #[test]
 fn sidebar_resize_keys_and_wide_details() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -526,13 +508,13 @@ fn sidebar_resize_keys_and_wide_details() {
         ),
     );
     app.panes[1].select(api);
-    // Narrow (the automatic width): today's rows, no session title.
+
     let t = screen(&mut app);
     let w0 = app.sidebar_now(1);
     assert!(w0 < crate::ui::SIDEBAR_WIDE_AT, "{w0}");
     assert!(!t.contains("Refactor the"), "{t}");
     assert!(t.lines().any(|l| l.contains(" api")), "{t}");
-    // Ctrl-a > widens by 4, Ctrl-a < narrows, within the bounds.
+
     let cmd = |app: &mut crate::app::App, c: char| {
         app.on_command(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
     };
@@ -548,12 +530,12 @@ fn sidebar_resize_keys_and_wide_details() {
         cmd(&mut app, '<');
     }
     assert_eq!(app.panes[1].sidebar_w, Some(crate::ui::SIDEBAR_MIN));
-    // Kept per pane in the saved state.
+
     assert_eq!(
         app.snapshot_state().slots[1].sidebar_w,
         Some(crate::ui::SIDEBAR_MIN)
     );
-    // "show tab details": wide, our name and the session's title.
+
     let v = app.control_call(
         "resize_tab_list",
         &json!({"width": "details", "account": 2}),
@@ -570,7 +552,7 @@ fn sidebar_resize_keys_and_wide_details() {
         .position(|l| l.contains("Refactor the fotmesh"))
         .unwrap_or_else(|| panic!("{t}"));
     assert!(rows[at - 1].contains("api"), "{t}");
-    // "make the tab list wider" / "narrower", and back to automatic.
+
     let before = app.panes[1].sidebar_w.unwrap();
     app.control_call("resize_tab_list", &json!({"width": "narrower"}));
     assert_eq!(app.panes[1].sidebar_w, Some(before - 8));
@@ -580,7 +562,7 @@ fn sidebar_resize_keys_and_wide_details() {
     assert_eq!(app.panes[1].sidebar_w, None);
     let t = screen(&mut app);
     assert!(!t.contains("Refactor the"), "{t}");
-    // A collapsed list opens with Ctrl-a >.
+
     app.panes[1].sidebar_collapsed = true;
     cmd(&mut app, '>');
     assert!(!app.panes[1].sidebar_collapsed);

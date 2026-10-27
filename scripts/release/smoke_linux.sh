@@ -1,16 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test a GodTerm Linux package ON a Linux host (a VM, a droplet, a
-# container). Installs it, runs the TUI under tmux against a fake claude in
-# a throwaway home, opens a tab, quits, and checks the exit code.
-#
-#   smoke_linux.sh deb      ./godterm_0.2.0_amd64.deb
-#   smoke_linux.sh rpm      ./godterm-0.2.0-1.x86_64.rpm
-#   smoke_linux.sh appimage ./GodTerm-0.2.0-x86_64.AppImage
-#   smoke_linux.sh tar      ./godterm-0.2.0-x86_64-unknown-linux-gnu.tar.gz
-#
-# Needs root for deb/rpm (apt/dnf), and tmux (installed if missing).
 set -euo pipefail
-# our own test runs must never show up in godterm.com's install counts
 export GODTERM_NO_TELEMETRY=1 DO_NOT_TRACK=1
 kind="$1"; pkg="$(readlink -f "$2")"
 pass=0; fail=0

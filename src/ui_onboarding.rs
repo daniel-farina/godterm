@@ -1,7 +1,3 @@
-//! The voice onboarding on screen: the full screen welcome and audio
-//! setup (before any UI), the lesson card over the normal UI, and the
-//! phrases card. Calm slate and sand on a dark ground, no glow.
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -16,10 +12,8 @@ use crate::onboarding::{self, StepId, STEPS};
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG};
 use crate::voice::VoiceStatus;
 
-/// The welcome's ground: a deep, quiet slate.
 const GROUND: Color = Color::Rgb(22, 25, 30);
 
-/// Draw what the onboarding shows now (after everything else).
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     match app.onb_phase() {
@@ -81,9 +75,7 @@ fn bold(t: impl Into<String>, c: Color) -> Span<'static> {
     )
 }
 
-/// The welcome, the pieces, the mic and the speaker checks.
 fn draw_full(f: &mut Frame, app: &mut App, p: Phase, area: Rect) {
-    // Nothing of the UI under it can be clicked, and no cursor shows.
     app.hits.borrow_mut().clear();
     app.want_cursor.set(None);
     f.render_widget(Clear, area);
@@ -93,7 +85,7 @@ fn draw_full(f: &mut Frame, app: &mut App, p: Phase, area: Rect) {
     let h = 22u16.min(area.height);
     let top = area.y + area.height.saturating_sub(h) / 2;
     let limit = x + w;
-    // The wordmark, then where we are.
+
     let step = match p {
         Phase::Welcome if app.cfg.accounts.is_empty() => crate::first_run::step_label(1),
         Phase::Welcome => String::new(),
@@ -124,7 +116,7 @@ fn draw_full(f: &mut Frame, app: &mut App, p: Phase, area: Rect) {
         Phase::Mic => mic(f, app, body, limit),
         _ => speaker(f, app, body, limit),
     }
-    // The bottom line: what it promises.
+
     let foot = Rect::new(x, (area.y + area.height).saturating_sub(2), w, 1);
     para(
         f,
@@ -136,7 +128,6 @@ fn draw_full(f: &mut Frame, app: &mut App, p: Phase, area: Rect) {
     );
 }
 
-/// The mic as it hears now: a meter, and "hearing you" during speech.
 fn meter_line(app: &App) -> Option<Line<'static>> {
     let v = app.voice.engine.as_ref()?;
     let (db, _, _, _) = v.levels.read();
@@ -208,7 +199,7 @@ fn welcome(f: &mut Frame, app: &mut App, r: Rect, limit: u16) {
     if let Some(m) = meter_line(app) {
         para(f, Rect::new(r.x, y + 4, r.width, 1), vec![m]);
     }
-    // A brand new home: what comes after this screen.
+
     if app.onb.on.as_ref().is_some_and(|o| o.login_walk) || app.cfg.accounts.is_empty() {
         para(
             f,
@@ -503,9 +494,7 @@ fn speaker(f: &mut Frame, app: &mut App, r: Rect, limit: u16) {
     }
 }
 
-/// The step list, bottom left over the grid.
 fn draw_lesson(f: &mut Frame, app: &mut App) {
-    // A dialog it opened (Add account, a confirmation) stays readable.
     if app.modal != crate::app::Modal::None {
         return;
     }
@@ -607,7 +596,6 @@ fn draw_lesson(f: &mut Frame, app: &mut App) {
     );
 }
 
-/// The example for a step, fitted to this machine.
 fn example(app: &App, st: StepId) -> String {
     use crate::harness::Harness;
     let out = |h: Harness| {
@@ -630,7 +618,6 @@ fn example(app: &App, st: StepId) -> String {
     }
 }
 
-/// The recap, or the phrases card reopened.
 fn draw_phrases(f: &mut Frame, app: &mut App, area: Rect, recap: bool) {
     let w = area.width.saturating_sub(4).min(78);
     let h = (onboarding::RECAP.len() as u16) + 9;

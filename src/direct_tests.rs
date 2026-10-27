@@ -1,10 +1,3 @@
-//! Direct mode end to end: a stub claude in a real PTY (ready, working or
-//! asking for approval from a `mode` file in its folder; it records what
-//! is submitted and which key answered a prompt) while the test writes the
-//! transcript records claude would. Utterances come in as the voice
-//! engine's Heard events; nothing opens a mic, no brain runs (the
-//! assistant is off), and what would be said is read from direct.said.
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -92,8 +85,6 @@ impl Drop for Rig {
     }
 }
 
-/// An app whose tab "claudego" runs the stub (with a transcript), and
-/// with `second`, a tab "fotmesh" too.
 fn rig(tag: &str, mode: &str, second: bool) -> Option<Rig> {
     use crate::creds::CredSource;
     if !have_python() {
@@ -124,7 +115,7 @@ fn rig(tag: &str, mode: &str, second: bool) -> Option<Rig> {
         auto_trust: false,
         ..Default::default()
     };
-    // No brain: nothing may reach one, and none is started.
+
     cfg.assistant.mode = "off".into();
     cfg.voice.direct_reply = "sentences".into();
     cfg.voice.direct_sentences = 2;
@@ -237,7 +228,6 @@ impl Rig {
         self.app.direct.said.join(" | ")
     }
 
-    /// The voice engine heard this (push to talk).
     fn hear(&mut self, text: &str) {
         self.app.on_voice(VoiceEvent::Heard {
             text: text.into(),
@@ -267,8 +257,6 @@ impl Rig {
     }
 }
 
-/// The assistant's tool starts it, with one line to say; utterances are
-/// typed into the tab (paste, then Enter) and never reach the brain.
 #[test]
 fn the_tool_starts_it_and_speech_goes_to_the_tab() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -295,7 +283,7 @@ fn the_tool_starts_it_and_speech_goes_to_the_tab() {
         .log
         .iter()
         .any(|e| e.text.contains("you → claudego: Please run the unit tests")));
-    // A request with a receipt, like any other.
+
     assert!(r
         .app
         .deliveries
@@ -303,7 +291,6 @@ fn the_tool_starts_it_and_speech_goes_to_the_tab() {
         .any(|d| d.uid == r.uid && d.text.contains("unit tests")));
 }
 
-/// "Back to the assistant" is caught here: never typed into the tab.
 #[test]
 fn an_exit_phrase_is_not_typed_into_the_tab() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -320,12 +307,12 @@ fn an_exit_phrase_is_not_typed_into_the_tab() {
     assert!(!r.submitted().contains("assistant"), "{}", r.submitted());
     assert!(r.app.deliveries.is_empty());
     assert!(!r.app.modes_line().contains("DIRECT MODE"));
-    // Ctrl-a K turns it on for the focused tab and off again.
+
     r.app.toggle_direct();
     assert!(r.app.direct_with(r.uid));
     r.app.toggle_direct();
     assert!(r.app.direct.on.is_none());
-    // So does the tab's menu row.
+
     use crate::app_tabopts::TabAct;
     let row = r
         .app
@@ -340,8 +327,6 @@ fn an_exit_phrase_is_not_typed_into_the_tab() {
     assert!(r.app.direct.on.is_none());
 }
 
-/// When the turn ends its reply is said: the first sentences, code and
-/// tables named, not read.
 #[test]
 fn the_reply_is_said_when_the_turn_ends() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -361,14 +346,12 @@ fn the_reply_is_said_when_the_turn_ends() {
         r.said()
             .contains("The parser now skips blank lines. It showed some code.")
     });
-    // Two sentences (direct_sentences): the table and the rest are not said.
+
     assert!(!r.said().contains("table"), "{}", r.said());
     assert!(!r.said().contains("fn skip"), "{}", r.said());
     r.brain_untouched();
 }
 
-/// A busy tab: the utterance waits in the queue ("Queued." is said) and
-/// is typed in once the tab is ready.
 #[test]
 fn a_busy_tab_queues_it() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -386,8 +369,6 @@ fn a_busy_tab_queues_it() {
     r.until(20, "the paste", |r| r.submitted().contains("changelog"));
 }
 
-/// An approval prompt is announced; "yes" answers it (a safe command at
-/// once); "no" asks first, as answer_prompt does, then a yes denies it.
 #[test]
 fn approval_prompts_are_answered_by_voice() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -402,7 +383,7 @@ fn approval_prompts_are_answered_by_voice() {
     r.until(5, "answered", |r| r.answered().contains("'1'"));
     assert!(r.said().contains("Approved."), "{}", r.said());
     assert!(!r.submitted().contains("Yes"), "not typed in");
-    // A no asks first.
+
     r.until(10, "working on", |r| {
         r.app.panes[0].tabs[0].activity == crate::pane::Activity::Working
     });
@@ -419,7 +400,6 @@ fn approval_prompts_are_answered_by_voice() {
     r.brain_untouched();
 }
 
-/// Closing the tab ends direct mode and says so.
 #[test]
 fn closing_the_tab_ends_it() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -446,8 +426,6 @@ fn closing_the_tab_ends_it() {
         .is_some_and(|n| n.contains("claudego")));
 }
 
-/// On the way out the assistant gets a short note of what was said, with
-/// the next request (and the wake word with a request ends it too).
 #[test]
 fn the_assistant_gets_a_summary_on_exit() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -477,7 +455,6 @@ fn the_assistant_gets_a_summary_on_exit() {
     assert!(!r.submitted().contains("usage"));
 }
 
-/// "talk to fotmesh" switches the target; the next utterance goes there.
 #[test]
 fn talk_to_another_tab_switches() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -508,7 +485,7 @@ fn talk_to_another_tab_switches() {
         !r.submitted().contains("fotmesh"),
         "the switch is not typed in"
     );
-    // The first tab's part is kept for the assistant.
+
     assert!(r
         .app
         .assistant
@@ -517,8 +494,6 @@ fn talk_to_another_tab_switches() {
         .is_some_and(|n| n.contains("claudego")));
 }
 
-/// Brainstorm mode in direct mode: the draft is for the tab, nothing is
-/// typed until "send it", then it goes in as one request.
 #[test]
 fn brainstorm_drafts_for_the_tab() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

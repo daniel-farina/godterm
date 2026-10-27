@@ -58,8 +58,6 @@ class Demo:
             if not data:
                 break
             text = dec.decode(data)
-            # Answer the terminal queries crossterm makes (cursor position,
-            # keyboard enhancement, colors) like a real terminal would.
             if "\x1b[6n" in text:
                 self.send("\x1b[1;1R")
             if "\x1b[?u" in text:
@@ -85,7 +83,6 @@ class Demo:
                 self.cast.write(json.dumps([round(self.now(), 4), "m", json.dumps(m)]) + "\n")
         return m
 
-    # keys
     def key(self, k, wait=0.0):
         self.send(k)
         if wait:
@@ -102,7 +99,6 @@ class Demo:
             self.send(ch)
             time.sleep(1.0 / cps)
 
-    # mouse (cells are 0 based; SGR is 1 based)
     def move(self, x, y):
         self.send(f"\x1b[<35;{x+1};{y+1}M")
 
@@ -122,7 +118,6 @@ class Demo:
             self.send(f"\x1b[<{64 if up else 65};{x+1};{y+1}M")
             time.sleep(0.05)
 
-    # control socket
     def control(self, tool, args=None, home=None):
         home = home or os.path.expanduser("~/.godterm-demo/app")
         info = json.load(open(os.path.join(home, "control.json")))
@@ -156,7 +151,6 @@ class Demo:
                 if i < 0:
                     break
                 if n == nth:
-                    # character index -> cell column (wide chars are rare here)
                     return (i, y)
                 n += 1
                 start = i + 1

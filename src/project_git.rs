@@ -1,36 +1,14 @@
-//! The git state of every known project, so the assistant can answer
-//! "are all my projects on GitHub?", "which ones are only local?",
-//! "anything unpushed or uncommitted?" without asking a tab.
-//!
-//! For each project root (and each subproject that is a repo of its own)
-//! the repo it is in gets a set of facts: branch, upstream, ahead and
-//! behind, uncommitted counts, stashes, the last commit, the remotes
-//! (credentials stripped, with their host kind), whether the branch is on
-//! a remote, unpushed commits and when it was last fetched. Everything
-//! comes from local refs ("as of the last fetch"); only an explicit
-//! refresh the user asked for runs `git fetch`, in the background and
-//! never prompting for credentials.
-//!
-//! Read only: every git call runs with --no-optional-locks (no index
-//! refresh written), fsmonitor off and a short timeout, from a small
-//! pool. Facts are cached in the project index with the mtimes of the
-//! repo's HEAD, index and refs, and recomputed when one changes, when
-//! they are older than the caller allows, or when a tab working in that
-//! repo finishes a turn.
-
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// One remote: its name, its URL with any credentials stripped, the kind
-/// of host and the repo path on it ("acme/platform").
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Remote {
     pub name: String,
     pub url: String,
-    /// github, gitlab, bitbucket, other or local.
+
     pub host: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
@@ -44,10 +22,8 @@ pub struct Commit {
     pub author: String,
 }
 
-/// What git says about one repo.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Facts {
-    /// The work tree's top level.
     pub top: PathBuf,
     pub git_dir: PathBuf,
     pub common_dir: PathBuf,
@@ -70,51 +46,46 @@ pub struct Facts {
     pub last: Option<Commit>,
     #[serde(default)]
     pub remotes: Vec<Remote>,
-    /// The remote's default branch (from refs/remotes/<remote>/HEAD).
+
     pub default_branch: Option<String>,
-    /// The current branch has a remote tracking ref of the same name.
+
     pub branch_on_remote: Option<bool>,
-    /// The default branch exists locally and on the remote.
+
     pub default_on_remote: Option<bool>,
-    /// Commits on HEAD that no remote ref has (capped at UNPUSHED_CAP).
+
     pub unpushed: Option<u32>,
-    /// FETCH_HEAD's mtime, unix seconds: when it was last fetched.
+
     pub last_fetch: Option<i64>,
-    /// The newest remote tracking ref file, unix seconds: what a clone
-    /// or a push left when there was never a fetch.
+
     #[serde(default)]
     pub remote_refs_at: Option<i64>,
     pub error: Option<String>,
-    /// Files whose (mtime ns, size) a change of shows up in.
+
     #[serde(default)]
     pub stamps: Vec<(PathBuf, u128, u64)>,
-    /// When these facts were computed, unix seconds.
+
     #[serde(default)]
     pub computed: i64,
     #[serde(default)]
     pub took_ms: u64,
-    /// Marked for a recompute (a tab in it finished a turn).
+
     #[serde(skip)]
     pub stale: bool,
 }
 
-/// rev-list counts stop here: "1000+" unpushed commits.
 pub const UNPUSHED_CAP: u32 = 1000;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
-    /// Facts older than this are recomputed even when no stamp changed
-    /// (edits in the work tree change no git file).
     pub max_age: Duration,
-    /// Per git command.
+
     pub per_cmd: Duration,
-    /// For the whole update; repos left over keep their old facts.
+
     pub total: Duration,
     pub threads: usize,
 }
 
 impl Limits {
-    /// The index schedule's background pass.
     pub fn background() -> Self {
         Limits {
             max_age: Duration::from_secs(600),
@@ -124,7 +95,6 @@ impl Limits {
         }
     }
 
-    /// A tool call: fresh enough to answer about uncommitted work.
     pub fn tool() -> Self {
         Limits {
             max_age: Duration::from_secs(120),
@@ -135,7 +105,6 @@ impl Limits {
     }
 }
 
-/// A small pool: half the cores, 2 to 6.
 pub fn pool_size() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get() / 2)
@@ -158,10 +127,6 @@ fn stamp(p: &Path) -> Option<(u128, u64)> {
     Some((t, m.len()))
 }
 
-// ---- finding the repo ----
-
-/// The repo `p` is in: (top level, git dir, common dir), found on disk
-/// (nearest ancestor with .git, never the home folder or above it).
 pub fn locate(p: &Path) -> Option<(PathBuf, PathBuf, PathBuf)> {
     let home = crate::config::home_dir();
     let mut cur = Some(p);
@@ -174,7 +139,6 @@ pub fn locate(p: &Path) -> Option<(PathBuf, PathBuf, PathBuf)> {
             let git_dir = if md.is_dir() {
                 Some(dot)
             } else if md.is_file() {
-                // A worktree or submodule: "gitdir: <path>".
                 std::fs::read_to_string(&dot).ok().and_then(|t| {
                     let g = t
                         .lines()
@@ -209,12 +173,10 @@ pub fn locate(p: &Path) -> Option<(PathBuf, PathBuf, PathBuf)> {
     None
 }
 
-/// The repo's top level, if `p` is in one.
 pub fn repo_top(p: &Path) -> Option<PathBuf> {
     locate(p).map(|(t, _, _)| t)
 }
 
-/// Files whose change means the facts may have changed.
 fn stamp_paths(git_dir: &Path, common: &Path, branch: Option<&str>) -> Vec<PathBuf> {
     let mut v = vec![
         git_dir.join("HEAD"),
@@ -249,7 +211,6 @@ fn take_stamps(paths: &[PathBuf]) -> Vec<(PathBuf, u128, u64)> {
         .collect()
 }
 
-/// Nothing git keeps for this repo has changed since the facts.
 pub fn unchanged(f: &Facts) -> bool {
     !f.stamps.is_empty()
         && f.stamps
@@ -257,11 +218,6 @@ pub fn unchanged(f: &Facts) -> bool {
             .all(|(p, m, l)| stamp(p).unwrap_or((0, 0)) == (*m, *l))
 }
 
-// ---- running git ----
-
-/// The environment every GodTerm git call runs with: never prompting,
-/// ssh in batch mode, plain C messages, no repo above home, none of the
-/// caller's GIT_DIR. Tests never read the user's own git settings.
 pub(crate) fn quiet_env(c: &mut Command) {
     c.env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -283,7 +239,6 @@ pub(crate) fn quiet_env(c: &mut Command) {
     }
 }
 
-/// A git command that can never write into the repo or prompt.
 fn git(top: &Path) -> Command {
     let mut c = Command::new("git");
     let top = crate::fspath::plain(top);
@@ -298,9 +253,6 @@ fn git(top: &Path) -> Command {
     c
 }
 
-/// Run a prepared command: Ok((success, stdout, stderr)), killed at
-/// `limit`. Polled from 1 ms up (git answers in a few ms), so a repo's
-/// handful of calls costs little more than the calls themselves.
 pub(crate) fn exec(
     mut c: Command,
     limit: Duration,
@@ -321,7 +273,7 @@ pub(crate) fn exec(
     }
     let mut so = child.stdout.take();
     let mut se = child.stderr.take();
-    // Both pipes on their own threads so a full pipe cannot stall git.
+
     let reader = std::thread::spawn(move || {
         let mut v = vec![];
         if let Some(s) = so.as_mut() {
@@ -364,7 +316,6 @@ pub(crate) fn exec(
     ))
 }
 
-/// Run git; Ok(stdout) on success, Err(why) otherwise. Killed at `limit`.
 fn run(top: &Path, args: &[&str], limit: Duration) -> Result<String, String> {
     let mut c = git(top);
     c.args(args);
@@ -380,11 +331,6 @@ fn run(top: &Path, args: &[&str], limit: Duration) -> Result<String, String> {
     }
 }
 
-// ---- remotes ----
-
-/// A remote URL without credentials: "https://user:token@host/x" and
-/// "https://token@host/x" become "https://host/x"; ssh keeps a plain user
-/// name ("git@github.com:acme/x.git").
 pub fn clean_url(url: &str) -> String {
     let url = url.trim();
     if let Some((scheme, rest)) = url.split_once("://") {
@@ -406,7 +352,7 @@ pub fn clean_url(url: &str) -> String {
         }
         return strip_query(url);
     }
-    // scp form: user@host:path (a password cannot be written here).
+
     if let Some((auth, rest)) = url.split_once(':') {
         if let Some((user, host)) = auth.rsplit_once('@') {
             if !host.contains('/') && !user.contains('/') {
@@ -421,7 +367,6 @@ fn strip_query(u: &str) -> String {
     u.split(['?', '#']).next().unwrap_or(u).to_string()
 }
 
-/// A local path remote (a folder or file:// URL, no host).
 pub fn is_local(url: &str) -> bool {
     let u = url.trim();
     if crate::fspath::is_drive_path(u) {
@@ -433,7 +378,7 @@ pub fn is_local(url: &str) -> bool {
     if u.contains("://") {
         return false;
     }
-    // scp form needs a colon before any slash.
+
     match (u.find(':'), u.find('/')) {
         (Some(c), Some(s)) => s < c,
         (Some(_), None) => false,
@@ -441,7 +386,6 @@ pub fn is_local(url: &str) -> bool {
     }
 }
 
-/// (host kind, repo path) of a remote URL.
 pub fn host_kind(url: &str) -> (&'static str, Option<String>) {
     if is_local(url) {
         return ("local", None);
@@ -466,7 +410,7 @@ pub fn host_kind(url: &str) -> (&'static str, Option<String>) {
         .trim_start_matches('~')
         .to_string();
     let repo = (!repo.is_empty()).then_some(repo);
-    // Host aliases from ~/.ssh/config ("github.com-work") still count.
+
     let kind = if host.contains("github") {
         "github"
     } else if host.contains("gitlab") {
@@ -502,14 +446,11 @@ fn parse_remotes(cfg: &str) -> Vec<Remote> {
             repo,
         });
     }
-    // origin first.
+
     v.sort_by_key(|r| r.name != "origin");
     v
 }
 
-// ---- computing ----
-
-/// Parse `git status --porcelain=v2 --branch --show-stash`.
 fn parse_status(text: &str, f: &mut Facts) {
     for l in text.lines() {
         if let Some(h) = l.strip_prefix("# branch.head ") {
@@ -546,7 +487,6 @@ fn parse_status(text: &str, f: &mut Facts) {
     }
 }
 
-/// Compute one repo's facts (read only, local refs only).
 pub fn compute(top: &Path, git_dir: &Path, common: &Path, per_cmd: Duration) -> Facts {
     let t0 = Instant::now();
     let mut f = Facts {
@@ -556,7 +496,7 @@ pub fn compute(top: &Path, git_dir: &Path, common: &Path, per_cmd: Duration) -> 
         computed: now_unix(),
         ..Default::default()
     };
-    // Stamps first: a change during the run means a recompute next time.
+
     let pre = take_stamps(&stamp_paths(git_dir, common, None));
     match run(
         top,
@@ -572,7 +512,7 @@ pub fn compute(top: &Path, git_dir: &Path, common: &Path, per_cmd: Duration) -> 
         Ok(t) => parse_status(&t, &mut f),
         Err(e) => {
             f.error = Some(e);
-            // A broken repo still says where it pushes to.
+
             if let Ok(t) = run(
                 top,
                 &["config", "--get-regexp", r"^remote\..*\.url$"],
@@ -678,8 +618,7 @@ pub fn compute(top: &Path, git_dir: &Path, common: &Path, per_cmd: Duration) -> 
         f.remote_refs_at = newest_mtime(&common.join("logs/refs/remotes"), 3, 200)
             .max(newest_mtime(&common.join("refs/remotes"), 3, 200));
     }
-    // Re-stamp with the branch's own ref, keeping the earlier values for
-    // the rest so a change mid run is noticed.
+
     let all = stamp_paths(git_dir, common, f.branch.as_deref());
     let mut st = pre;
     for p in all {
@@ -693,7 +632,6 @@ pub fn compute(top: &Path, git_dir: &Path, common: &Path, per_cmd: Duration) -> 
     f
 }
 
-/// The newest file mtime below `dir` (unix seconds), bounded.
 fn newest_mtime(dir: &Path, depth: usize, cap: usize) -> Option<i64> {
     let mut best: Option<i64> = None;
     let mut todo = vec![(dir.to_path_buf(), 0)];
@@ -725,10 +663,6 @@ fn newest_mtime(dir: &Path, depth: usize, cap: usize) -> Option<i64> {
     best
 }
 
-// ---- the index ----
-
-/// The folders whose repos matter: every root (and the repo it is in)
-/// and every subproject found to be a repo of its own.
 pub fn folders(ix: &crate::project_index::Index) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = vec![];
     let mut roots: Vec<&PathBuf> = ix.roots.keys().collect();
@@ -753,9 +687,6 @@ pub struct UpdateStats {
     pub took_ms: u128,
 }
 
-/// Bring the git facts up to date for `folders` (None: every folder the
-/// index knows): recompute repos that changed, are stale or older than
-/// `lim.max_age`; keep the rest. `force` recomputes all.
 pub fn update(
     shared: &crate::project_index::Shared,
     only: Option<&[PathBuf]>,
@@ -771,7 +702,7 @@ pub fn update(
         };
         (dirs, ix.git.clone())
     };
-    // Each folder to its repo, once per repo.
+
     let mut repos: Vec<(PathBuf, PathBuf, PathBuf)> = vec![];
     let mut seen = HashSet::new();
     for d in &dirs {
@@ -830,7 +761,6 @@ pub fn update(
             ix.git.insert(f.top.clone(), f);
         }
         if only.is_none() {
-            // Repos no longer known go.
             let keep: HashSet<&PathBuf> = repos.iter().map(|(t, _, _)| t).collect();
             ix.git.retain(|k, _| keep.contains(k));
         }
@@ -847,7 +777,6 @@ pub fn update(
     st
 }
 
-/// A tab worked in `dir`: its repo's facts are recomputed next time.
 pub fn mark_stale(shared: &crate::project_index::Shared, dir: &Path) -> Option<PathBuf> {
     let top = repo_top(dir)?;
     let mut ix = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -857,9 +786,6 @@ pub fn mark_stale(shared: &crate::project_index::Shared, dir: &Path) -> Option<P
     Some(top)
 }
 
-/// `git fetch` every repo with a remote (the user asked to check the
-/// remotes now): in parallel, each with a timeout, never prompting.
-/// Returns (fetched, failed with why).
 pub fn fetch_all(tops: &[PathBuf], per_repo: Duration) -> (usize, Vec<(PathBuf, String)>) {
     let queue = std::sync::Mutex::new(tops.iter().cloned());
     let res: std::sync::Mutex<(usize, Vec<(PathBuf, String)>)> = Default::default();
@@ -884,8 +810,6 @@ pub fn fetch_all(tops: &[PathBuf], per_repo: Duration) -> (usize, Vec<(PathBuf, 
     res.into_inner().unwrap_or_default()
 }
 
-// ---- what to say ----
-
 impl Facts {
     pub fn dirty(&self) -> bool {
         self.staged + self.modified + self.untracked + self.conflicts > 0
@@ -895,13 +819,10 @@ impl Facts {
         self.remotes.iter().any(|r| r.host == "github")
     }
 
-    /// No remote, or only remotes that are folders on this machine.
     pub fn local_only(&self) -> bool {
         self.remotes.iter().all(|r| r.host == "local")
     }
 
-    /// Work a remote does not have: commits ahead or unpushed, or a
-    /// branch the remote has never seen.
     pub fn has_unpushed(&self) -> bool {
         self.ahead.unwrap_or(0) > 0
             || self.unpushed.unwrap_or(0) > 0
@@ -912,7 +833,6 @@ impl Facts {
         self.behind.unwrap_or(0) > 0
     }
 
-    /// "github acme/platform" or "no remote".
     pub fn remote_word(&self) -> String {
         match self.remotes.first() {
             None => "no remote".into(),
@@ -939,7 +859,6 @@ impl Facts {
         }
     }
 
-    /// "2 unpushed, 3 modified, 1 untracked" ("clean" when nothing).
     pub fn state_word(&self) -> String {
         let mut v: Vec<String> = vec![];
         if let Some(e) = &self.error {
@@ -995,7 +914,6 @@ impl Facts {
         }
     }
 
-    /// "fetched 3 days ago" / "never fetched".
     pub fn fetch_word(&self) -> String {
         if self.remotes.is_empty() {
             return String::new();
@@ -1007,8 +925,6 @@ impl Facts {
         }
     }
 
-    /// One line: "master, github acme/x, 2 unpushed, 3 modified (as of
-    /// the fetch 2 h ago)".
     pub fn line(&self) -> String {
         let mut s = format!(
             "{}, {}, {}",
@@ -1056,7 +972,6 @@ impl Facts {
     }
 }
 
-/// "just now", "5 min ago", "3 h ago", "2 days ago".
 pub fn ago(secs: i64) -> String {
     let s = secs.max(0);
     if s < 60 {
@@ -1071,8 +986,6 @@ pub fn ago(secs: i64) -> String {
     }
 }
 
-/// The one line for `dir` from the cache ("not a git repo" when it is
-/// in none; None when its repo has no facts yet). Never runs git.
 pub fn line_for(ix: &crate::project_index::Index, dir: &Path) -> Option<String> {
     match repo_top(dir) {
         None => Some("not a git repo".into()),
@@ -1091,15 +1004,13 @@ pub fn line_for(ix: &crate::project_index::Index, dir: &Path) -> Option<String> 
     }
 }
 
-/// One project row: a repo (with the known folders in it) or a folder
-/// that is in no repo.
 #[derive(Debug, Clone)]
 pub struct Row {
     pub path: PathBuf,
     pub facts: Option<Facts>,
-    /// Known folders inside this repo besides its top.
+
     pub inside: Vec<PathBuf>,
-    /// For a non-repo folder: how many repos are below it.
+
     pub holds: usize,
 }
 
@@ -1119,7 +1030,6 @@ impl Row {
     }
 }
 
-/// Every project as rows: repos once each, then the folders in no repo.
 pub fn rows(ix: &crate::project_index::Index) -> Vec<Row> {
     let mut by_top: HashMap<PathBuf, Row> = HashMap::new();
     let mut plain: Vec<PathBuf> = vec![];
@@ -1141,9 +1051,8 @@ pub fn rows(ix: &crate::project_index::Index) -> Vec<Row> {
     }
     let mut v: Vec<Row> = by_top.into_values().collect();
     for p in plain {
-        // A folder of repos (~/code): say so instead of "not a repo".
         let holds = v.iter().filter(|r| r.path.starts_with(&p)).count();
-        // A plain folder inside another plain folder is the same project.
+
         v.push(Row {
             path: p,
             facts: None,
@@ -1155,7 +1064,6 @@ pub fn rows(ix: &crate::project_index::Index) -> Vec<Row> {
     v
 }
 
-/// Counts over every row, for the summary.
 pub fn summary(rows: &[Row]) -> serde_json::Value {
     let repos: Vec<&Facts> = rows.iter().filter_map(|r| r.facts.as_ref()).collect();
     let pending = rows
@@ -1184,7 +1092,6 @@ pub fn summary(rows: &[Row]) -> serde_json::Value {
     })
 }
 
-/// Rows as a compact aligned table.
 pub fn table(rows: &[&Row]) -> String {
     let cells: Vec<[String; 4]> = rows
         .iter()
@@ -1236,10 +1143,8 @@ pub fn table(rows: &[&Row]) -> String {
     out
 }
 
-/// A table cell's widest.
 const WIDTH: usize = 44;
 
-/// The end of a long cell ("...code/alpha"): paths differ at the end.
 fn tail(s: &str, n: usize) -> String {
     let k = s.chars().count();
     if k <= n {

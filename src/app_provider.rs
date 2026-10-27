@@ -1,15 +1,9 @@
-//! Choosing the assistant's provider, account and model at any time (the
-//! title menu, voice, set_setting), keeping the conversation across the
-//! switch, the Grok brain's own login, and falling back to Claude when a
-//! provider's login is refused.
-
 use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::providers::{self, PROVIDERS};
 
 impl App {
-    /// The recent exchanges, carried into a new brain.
     pub fn conversation_carry(&self) -> Option<String> {
         use crate::app_assistant::Who;
         let last: Vec<String> = self
@@ -27,8 +21,6 @@ impl App {
         (!last.is_empty()).then(|| last.into_iter().rev().collect::<Vec<_>>().join(" / "))
     }
 
-    /// Switch provider / account / model (each optional); the next turn
-    /// starts the new brain with the conversation so far.
     pub fn switch_assistant(
         &mut self,
         provider: Option<&str>,
@@ -55,8 +47,7 @@ impl App {
             }
             None => providers::by_id(&cur),
         };
-        // Only another account of the same provider ("move yourself to
-        // account two"): the conversation and Remote Control move along.
+
         if p.id == cur && model.is_none_or(|m| m.trim().is_empty()) {
             if let (Some(h), Some(a)) = (p.harness, account.filter(|a| !a.is_null())) {
                 let i = self.account_arg(a)?;
@@ -138,7 +129,7 @@ impl App {
         if had_remote.is_some() {
             self.remote_lost("the assistant switched");
         }
-        // The conversation goes along.
+
         if let Some(c) = self.conversation_carry() {
             self.assistant.carry = Some(c);
         }
@@ -181,7 +172,6 @@ impl App {
         Ok(say)
     }
 
-    /// The state block's line on the assistant itself.
     pub fn provider_state_line(&self) -> String {
         let p = providers::by_id(&self.cfg.assistant.provider);
         let model = providers::model_for(p, &self.cfg.assistant);
@@ -200,7 +190,6 @@ impl App {
         )
     }
 
-    /// The providers, their accounts and models (for get_state and menus).
     pub fn providers_json(&self) -> Value {
         json!(PROVIDERS
             .iter()
@@ -227,7 +216,6 @@ impl App {
             .collect::<Vec<_>>())
     }
 
-    /// A provider's login was refused: say so once and go back to Claude.
     pub fn provider_refused(&mut self, why: &str) {
         let p = providers::by_id(&self.cfg.assistant.provider);
         if p.id == "claude" {
@@ -248,8 +236,6 @@ impl App {
         self.flash(msg);
     }
 
-    /// The Grok brain's own login: `grok login` in its home, the sign in
-    /// page opened when grok cannot, progress spoken.
     pub fn assistant_grok_login(&mut self) -> Result<String, String> {
         let home = providers::grok::home();
         std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
@@ -260,19 +246,14 @@ impl App {
     }
 }
 
-/// One piece of a usage line: its text and tone (0 dim, 1 the binding
-/// bucket, 2 a warning).
 pub type Part = (String, u8);
 
-/// "Tue 08:00" in local time.
 pub fn reset_word(t: chrono::DateTime<chrono::Utc>) -> String {
     t.with_timezone(&chrono::Local)
         .format("%a %H:%M")
         .to_string()
 }
 
-/// The buckets as parts: "5h 89% · wk 3%", the binding one marked (a
-/// warning when low).
 pub fn bucket_parts(b: &[providers::Bucket]) -> Vec<Part> {
     let mut v: Vec<Part> = vec![];
     for (i, k) in b.iter().enumerate() {
@@ -290,21 +271,17 @@ pub fn bucket_parts(b: &[providers::Bucket]) -> Vec<Part> {
 }
 
 impl App {
-    /// An account's usage buckets, by its provider's reading of the last
-    /// fetched usage (None: nothing fetched yet).
     pub fn account_buckets(&self, a: usize) -> Option<Vec<providers::Bucket>> {
         let p = providers::for_harness(self.cfg.accounts.get(a)?.harness())?;
         let u = self.accounts.get(a)?.usage.as_ref()?;
         Some((p.usage)(u))
     }
 
-    /// A provider's own login's buckets (Grok's), from its last fetch.
     pub fn own_buckets(&self, p: &providers::Provider) -> Option<Vec<providers::Bucket>> {
         let u = self.own_usage.get(p.id)?.as_ref().ok()?;
         Some((p.usage)(u))
     }
 
-    /// The buckets of what the assistant runs on now.
     pub fn assistant_buckets(&self) -> Option<Vec<providers::Bucket>> {
         let p = providers::by_id(&self.cfg.assistant.provider);
         match p.own_home {
@@ -321,7 +298,6 @@ impl App {
         }
     }
 
-    /// Why an account cannot run the assistant now, if it cannot.
     pub fn account_unusable(&self, a: usize, p: &providers::Provider) -> Option<String> {
         let c = &self.cfg.accounts[a];
         if p.harness != Some(c.harness()) {
@@ -347,8 +323,6 @@ impl App {
         None
     }
 
-    /// The assistant's own Grok login's usage, on the usage cadence
-    /// (only while Grok runs the assistant and is signed in).
     pub fn maybe_fetch_own_usage(&mut self) {
         let p = providers::by_id(&self.cfg.assistant.provider);
         let Some(home) = p.own_home else {

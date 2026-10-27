@@ -1,21 +1,12 @@
-//! Paths across machines and the config split (docs/SYNC.md 2.3, 2.4).
-//!
-//! A path under the home is stored as `~/rest`; one under a folder named
-//! in `[sync.paths]` as `@name/rest`; anything else as is. config.toml is
-//! split into portable keys (pushed, newest change per key wins) and
-//! machine local ones (never pushed, never applied). Pulled values are
-//! data: keys that run programs or open the machine up are refused.
-
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item};
 
-/// Maps paths between this machine and portable form.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathMap {
     pub home: PathBuf,
-    /// (name, folder), longest folder first.
+
     pub named: Vec<(String, PathBuf)>,
 }
 
@@ -32,7 +23,6 @@ impl PathMap {
         }
     }
 
-    /// The portable form of an absolute path.
     pub fn to_portable(&self, p: &Path) -> String {
         for (name, dir) in &self.named {
             if let Ok(rest) = p.strip_prefix(dir) {
@@ -45,8 +35,6 @@ impl PathMap {
         p.to_string_lossy().into_owned()
     }
 
-    /// This machine's path for a portable one (None: a `@name` this
-    /// machine has no folder for).
     pub fn to_local(&self, s: &str) -> Option<PathBuf> {
         if s == "~" {
             return Some(self.home.clone());
@@ -66,7 +54,6 @@ impl PathMap {
         Some(PathBuf::from(s))
     }
 
-    /// A path written in config (maybe already `~/...`) made portable.
     pub fn portable_text(&self, s: &str) -> String {
         if s.starts_with('~') || s.starts_with('@') || !is_abs_text(s) {
             return s.to_string();
@@ -74,7 +61,6 @@ impl PathMap {
         self.to_portable(Path::new(s))
     }
 
-    /// A portable path as config text on this machine: `~/...` stays.
     pub fn local_text(&self, s: &str) -> String {
         if s.starts_with('~') || !s.starts_with('@') {
             return s.to_string();
@@ -84,7 +70,6 @@ impl PathMap {
             .unwrap_or_else(|| s.to_string())
     }
 
-    /// Claude's project folder name for a portable cwd on this machine.
     #[cfg(test)]
     pub fn project_dir_name(&self, portable_cwd: &str) -> Option<String> {
         Some(crate::state::encode_project_dir(
@@ -93,8 +78,6 @@ impl PathMap {
     }
 }
 
-/// A portable `a/b` tail in this platform's separators (Windows paths
-/// stay `C:\x\a\b`, not `C:\x\a/b`, so they compare equal).
 fn native_rest(r: &str) -> String {
     if cfg!(windows) {
         r.replace('/', "\\")
@@ -103,8 +86,6 @@ fn native_rest(r: &str) -> String {
     }
 }
 
-/// Whether config text is an absolute path on any platform: `/x`,
-/// `C:\x`, `C:/x` or a UNC path.
 fn is_abs_text(s: &str) -> bool {
     let b = s.as_bytes();
     s.starts_with('/')
@@ -116,7 +97,6 @@ fn is_abs_text(s: &str) -> bool {
 }
 
 fn join_rest(head: &str, rest: &Path) -> String {
-    // Portable form always uses `/`, whatever the platform's separator.
     let mut r = rest.to_string_lossy().into_owned();
     if cfg!(windows) {
         r = r.replace('\\', "/");
@@ -128,7 +108,6 @@ fn join_rest(head: &str, rest: &Path) -> String {
     }
 }
 
-/// A short stable key for a portable path: a slug plus 8 hex of its hash.
 pub fn path_key(portable: &str) -> String {
     let slug: String = portable
         .trim_start_matches(['~', '@', '/'])
@@ -151,10 +130,8 @@ pub fn path_key(portable: &str) -> String {
     }
 }
 
-/// Not a config key: the order of the `[[account]]` tables.
 pub const ACCOUNT_ORDER: &str = "account_order";
 
-/// Machine local config keys, besides `[sync] machine_local`.
 const LOCAL: &[&str] = &[
     "web",
     "supervisor",
@@ -179,7 +156,6 @@ const LOCAL: &[&str] = &[
     "voice.local",
 ];
 
-/// Keys holding paths, mapped both ways.
 fn path_valued(key: &str) -> bool {
     key == "trusted_dirs"
         || key == "new_tab_base"
@@ -192,7 +168,6 @@ fn prefix_match(key: &str, pat: &str) -> bool {
     key == pat || key.starts_with(&format!("{pat}."))
 }
 
-/// Whether a config key stays on this machine.
 pub fn is_local_key(key: &str, extra: &[String]) -> bool {
     let last = key.rsplit('.').next().unwrap_or(key);
     last.ends_with("_bin")
@@ -201,8 +176,6 @@ pub fn is_local_key(key: &str, extra: &[String]) -> bool {
         || extra.iter().any(|p| prefix_match(key, p))
 }
 
-/// Why a pulled value may not be applied here, if so: a key that would run
-/// a program, open the machine up, or pass shell syntax to a CLI.
 pub fn unsafe_pulled(key: &str, v: &Value) -> Option<String> {
     if is_local_key(key, &[]) {
         return Some(format!("{key} is machine local"));
@@ -219,8 +192,6 @@ pub fn unsafe_pulled(key: &str, v: &Value) -> Option<String> {
     None
 }
 
-/// The portable keys of a config.toml text, flattened: `voice.tts_speed`,
-/// `account.<name>.label`, paths in portable form.
 pub fn flatten(
     text: &str,
     map: &PathMap,
@@ -245,12 +216,12 @@ pub fn flatten(
                     }
                     put(&mut out, &format!("account.{name}.{f}"), fv, map, extra);
                 }
-                // Present even with no other key, so a new account arrives.
+
                 out.entry(format!("account.{name}.name"))
                     .or_insert(Value::String(name.to_string()));
                 order.push(Value::String(name.to_string()));
             }
-            // The order matters (the grid shows the first ones).
+
             out.insert(ACCOUNT_ORDER.to_string(), Value::Array(order));
             continue;
         }
@@ -333,18 +304,14 @@ fn to_toml(v: &Value) -> Option<toml_edit::Value> {
     })
 }
 
-/// What applying pulled keys did.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Applied {
     pub changed: Vec<String>,
     pub refused: Vec<String>,
-    /// The keys behind `refused`.
+
     pub refused_keys: Vec<String>,
 }
 
-/// Apply pulled portable keys onto a local config.toml text (comments and
-/// local keys kept): `set` writes values, `removed` deletes keys (back to
-/// their default). The result must still parse as a Config.
 pub fn apply(
     text: &str,
     set: &BTreeMap<String, Value>,
@@ -391,7 +358,6 @@ pub fn apply(
     Ok((out, ap))
 }
 
-/// Put the named accounts first, in that order (others keep theirs).
 fn reorder_accounts(doc: &mut DocumentMut, names: &[&str]) -> bool {
     let Some(arr) = doc
         .get_mut("account")
@@ -448,7 +414,6 @@ fn account_table<'a>(
     arr.get_mut(i)
 }
 
-/// Set one key; true when the value changed.
 fn set_key(doc: &mut DocumentMut, key: &str, v: toml_edit::Value) -> anyhow::Result<bool> {
     let (t, last): (&mut dyn toml_edit::TableLike, String) = if let Some(r) =
         key.strip_prefix("account.")
@@ -492,7 +457,7 @@ fn set_key(doc: &mut DocumentMut, key: &str, v: toml_edit::Value) -> anyhow::Res
     if let Some(d) = decor {
         *v.decor_mut() = d;
     }
-    // In place: the key (and the comment above it) stays.
+
     match t.get_mut(&last) {
         Some(item) => *item = Item::Value(v),
         None => {
@@ -523,7 +488,6 @@ fn remove_key(doc: &mut DocumentMut, key: &str) -> bool {
     t.remove(last[0]).is_some()
 }
 
-/// The portable keys as a readable TOML file (config/portable.toml).
 pub fn render(keys: &BTreeMap<String, Value>) -> String {
     let mut s = String::from(
         "# GodTerm portable config: every key except machine local ones.\n\
@@ -662,8 +626,6 @@ config_dir = "/Users/alice/.claude-work"
         }
         assert_eq!(keys["trusted_dirs"], serde_json::json!(["~/code"]));
 
-        // Pulled from another machine: a new speed, a new account, a
-        // trusted dir, and keys that must never apply.
         let mut pulled = BTreeMap::new();
         pulled.insert("voice.tts_speed".to_string(), serde_json::json!(1.25));
         pulled.insert("account.home.name".to_string(), serde_json::json!("home"));
@@ -702,7 +664,7 @@ config_dir = "/Users/alice/.claude-work"
         assert_eq!(ap.refused.len(), 5, "{:?}", ap.refused);
         let cfg = crate::config::Config::parse(&out).unwrap();
         assert_eq!(cfg.accounts.len(), 2);
-        // A second apply of the same values changes nothing.
+
         let (out2, ap2) = apply(&out, &pulled, &[], &other).unwrap();
         assert_eq!(out2, out);
         assert!(ap2.changed.is_empty());

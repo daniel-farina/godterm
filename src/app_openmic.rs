@@ -1,14 +1,8 @@
-//! Open mic: always listening, every utterance a command (no wake word),
-//! with guards against noise and whisper hallucinations, a visible
-//! indicator, and an automatic return to wake word mode after a while.
-
 use std::time::{Duration, Instant};
 
 use crate::app::App;
 use crate::voice::wake_profile::UttStats;
 
-/// What whisper writes for silence, noise or background chatter, and
-/// lone filler words: never a request.
 const HALLUCINATIONS: &[&str] = &[
     "thank you",
     "thanks",
@@ -60,8 +54,6 @@ const HALLUCINATIONS: &[&str] = &[
     "nice",
 ];
 
-/// Drop audio whisper itself thinks is not speech, or decoded with low
-/// confidence (no_speech_prob over 0.6, mean log probability under -1).
 pub fn confidence_gate(stats: UttStats) -> Option<&'static str> {
     if stats.no_speech.is_some_and(|n| n > 0.6) {
         return Some("no speech");
@@ -72,13 +64,10 @@ pub fn confidence_gate(stats: UttStats) -> Option<&'static str> {
     None
 }
 
-/// Empty, a stock transcription of silence ("Thank you."), or a sound tag.
 pub fn is_noise(norm: &str) -> bool {
     hands_free_filter(norm, UttStats::default(), &[]) == Some("noise")
 }
 
-/// Why an utterance heard without a wake word (open mic, or the follow up
-/// window) is ignored, or None to act on it.
 pub fn hands_free_filter(
     norm: &str,
     stats: UttStats,
@@ -105,7 +94,7 @@ pub fn hands_free_filter(
         }
     }
     let words = bare.split(' ').count();
-    // Too little speech energy, or one word, is not a request.
+
     let short = (stats.ms > 0 && stats.ms < 600)
         || (stats.speech_ms > 0 && stats.speech_ms < 350)
         || words < 2;
@@ -127,9 +116,7 @@ impl App {
         self.speak("open mic");
     }
 
-    /// The Voice dropdown: 0 off, 1 push to talk, 2 wake word, 3 open mic.
     pub fn set_voice_mode(&mut self, m: u8) {
-        // Muted means the mic is off: the mode waits for the unmute.
         if self.voice.muted && m > 0 {
             self.voice.muted_prev = m;
             crate::log::info(&format!(
@@ -163,7 +150,6 @@ impl App {
         }
     }
 
-    /// The current voice mode, as set_voice_mode numbers it.
     pub fn voice_mode(&self) -> u8 {
         match (
             &self.voice.engine,
@@ -171,7 +157,7 @@ impl App {
             self.voice.open_mic,
         ) {
             (_, _, true) => 3,
-            // Demo mode: the wake word mode is shown, no mic is opened.
+
             (None, true, false) if crate::demo::active() => 2,
             (None, _, _) => 0,
             (Some(_), true, false) => 2,
@@ -179,9 +165,7 @@ impl App {
         }
     }
 
-    /// Back to the wake word (true) or voice off.
     pub fn leave_open_mic(&mut self, to_wake: bool) {
-        // Left on purpose (the auto sleep sets it again right after).
         self.voice.open_mic_asleep = false;
         self.voice.open_mic = false;
         self.stop_voice();
@@ -202,11 +186,9 @@ impl App {
         });
     }
 
-    /// Auto sleep after a long silence.
     pub fn open_mic_tick(&mut self) {
         let min = self.cfg.voice.open_mic_sleep_min;
-        // Never in the middle of a brainstorm (long silences are fine).
-        // Nor while the voice browser has its mic muted (only silence comes).
+
         if !self.voice.open_mic
             || self.brainstorm_on()
             || self.web_mic_is_muted()
@@ -224,7 +206,7 @@ impl App {
             .unwrap_or_else(|| "the wake word".into());
         self.speak(&format!("going to sleep, say {ww} to wake me"));
         self.leave_open_mic(true);
-        // Still open mic underneath: a restart or the wake word brings it back.
+
         self.voice.open_mic_asleep = true;
     }
 }
@@ -275,7 +257,7 @@ mod tests {
                 "{n}"
             );
         }
-        // whisper's own doubts.
+
         let doubt = UttStats {
             no_speech: Some(0.8),
             ..long
@@ -301,7 +283,7 @@ mod tests {
             hands_free_filter("close all tabs in all accounts", sure, &ctx()),
             None
         );
-        // Little speech energy in a long recording.
+
         let faint = UttStats {
             speech_ms: 200,
             ..long
@@ -320,7 +302,7 @@ mod tests {
             Some("noise")
         );
         assert_eq!(hands_free_filter("you", long, &ctx()), Some("noise"));
-        // One word or a blip: only an exact command gets through.
+
         assert_eq!(hands_free_filter("approve", blip, &ctx()), None);
         assert_eq!(hands_free_filter("next tab", blip, &ctx()), None);
         assert_eq!(hands_free_filter("banana", long, &ctx()), Some("too short"));

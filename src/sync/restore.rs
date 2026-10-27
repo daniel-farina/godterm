@@ -1,11 +1,3 @@
-//! `godterm sync init` (the first machine) and `godterm sync clone` (a
-//! new one), and `sync doctor` (docs/SYNC.md 3).
-//!
-//! init on GitHub creates `<owner>/godterm-state` private, only after an
-//! explicit typed yes on a terminal. clone never copies a machine id,
-//! OAuth login or keychain item: accounts arrive with no login, each
-//! logged in again from GodTerm.
-
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -15,8 +7,6 @@ use std::path::{Path, PathBuf};
 use super::state_repo::{self, Report};
 use super::{git, Ctx, Machine, SyncCfg};
 
-/// Ask a yes on the terminal: only a typed "yes" counts, and there is no
-/// yes without a terminal.
 pub fn ask_yes(question: &str) -> bool {
     if !std::io::stdin().is_terminal() {
         eprintln!("{question}\n(no terminal to answer on: nothing done)");
@@ -29,8 +19,6 @@ pub fn ask_yes(question: &str) -> bool {
     l.trim() == "yes"
 }
 
-/// Write `[sync]` keys into config.toml (comments kept), making the file
-/// when there is none yet.
 pub fn save_sync_cfg(app_home: &Path, s: &SyncCfg) -> Result<()> {
     let p = app_home.join("config.toml");
     let text = match std::fs::read_to_string(&p) {
@@ -47,14 +35,13 @@ pub fn save_sync_cfg(app_home: &Path, s: &SyncCfg) -> Result<()> {
     Ok(())
 }
 
-/// The context again after config.toml changed.
 pub fn reload(ctx: &Ctx) -> Result<Ctx> {
     let text = std::fs::read_to_string(ctx.app_home.join("config.toml"))?;
     let cfg = crate::config::Config::parse(&text)?;
     let mut c = Ctx::new(ctx.home.clone(), ctx.app_home.clone(), cfg);
     c.exe = ctx.exe.clone();
     c.now_ms = ctx.now_ms;
-    // Still inside the running app: its stores keep going through it.
+
     c.link = ctx.link.clone();
     c.never.extend(ctx.never.iter().cloned());
     c.never.sort();
@@ -62,8 +49,6 @@ pub fn reload(ctx: &Ctx) -> Result<Ctx> {
     Ok(c)
 }
 
-/// No owner or account set: the one given, else the first gh login
-/// (`gh`, as `gh auth status` lists them).
 pub fn resolve_owner(sc: &mut SyncCfg, gh: &[String]) {
     if sc.account.trim().is_empty() {
         sc.account = if sc.owner.trim().is_empty() {
@@ -77,8 +62,6 @@ pub fn resolve_owner(sc: &mut SyncCfg, gh: &[String]) {
     }
 }
 
-/// The first machine: create the state repo (private, after a yes) and
-/// push the first collection.
 pub fn init(ctx: &Ctx, sc: SyncCfg, yes: &dyn Fn(&str) -> bool) -> Result<Report> {
     let mut sc = sc;
     sc.enabled = true;
@@ -131,17 +114,15 @@ pub fn init(ctx: &Ctx, sc: SyncCfg, yes: &dyn Fn(&str) -> bool) -> Result<Report
     state_repo::sync_now(&c)
 }
 
-/// Options for `sync clone`.
 #[derive(Debug, Clone, Default)]
 pub struct CloneOpts {
     pub label: Option<String>,
-    /// Start with that machine's tabs (its label or id; "" asks none).
+
     pub tabs_from: Option<String>,
     pub account: Option<String>,
     pub remote: Option<String>,
 }
 
-/// What a clone did, for the summary.
 #[derive(Debug, Clone, Default)]
 pub struct Cloned {
     pub report: Report,
@@ -152,7 +133,6 @@ pub struct Cloned {
     pub missing_paths: Vec<String>,
 }
 
-/// A new machine: clone the state repo and restore from it.
 pub fn clone(ctx: &Ctx, full: &str, o: &CloneOpts) -> Result<Cloned> {
     let (owner, name) = full
         .split_once('/')
@@ -166,7 +146,7 @@ pub fn clone(ctx: &Ctx, full: &str, o: &CloneOpts) -> Result<Cloned> {
     if let Some(r) = &o.remote {
         sc.remote = r.clone();
     }
-    // A fresh id for this machine, never a copied one.
+
     let mut m = Machine::load_or_new(&ctx.app_home);
     if let Some(l) = &o.label {
         m.label = l.clone();
@@ -181,8 +161,7 @@ pub fn clone(ctx: &Ctx, full: &str, o: &CloneOpts) -> Result<Cloned> {
             sc.account
         );
     }
-    // A state repo that reads as anything but private is never used: it
-    // holds .env files and conversations as is.
+
     if let Some(v) = c.remote().visibility(owner, name) {
         if v != "PRIVATE" {
             bail!("{owner}/{name} is {v}, not private: GodTerm only syncs with a private repo (make it private on GitHub first)");
@@ -191,10 +170,10 @@ pub fn clone(ctx: &Ctx, full: &str, o: &CloneOpts) -> Result<Cloned> {
     let wc = state_repo::open_wc(&c)?;
     save_sync_cfg(&ctx.app_home, &sc)?;
     let mut c = reload(&c)?;
-    // The pulled config wins over this fresh machine's defaults.
+
     trust_remote(&c, &wc)?;
     let mut out = Cloned::default();
-    // Paths: every @name the other machines use needs a folder here.
+
     let map = c.paths();
     let mut missing: BTreeSet<String> = BTreeSet::new();
     for m in state_repo::all_manifests(&wc) {
@@ -205,7 +184,7 @@ pub fn clone(ctx: &Ctx, full: &str, o: &CloneOpts) -> Result<Cloned> {
         }
     }
     out.missing_paths = missing.into_iter().collect();
-    // First pass: config, accounts, stores (projects listed).
+
     let r1 = state_repo::sync_now(&c)?;
     c = reload(&c)?;
     for a in c.accounts() {
@@ -215,10 +194,9 @@ pub fn clone(ctx: &Ctx, full: &str, o: &CloneOpts) -> Result<Cloned> {
             a.name, a.provider
         ));
     }
-    // Projects with a repo: cloned to their mapped folder (read only for
-    // existing ones: fetch, never anything else).
+
     out.projects = clone_projects(&c, &wc);
-    // Conversations: the hot set now, the rest on demand.
+
     let hot = hot_ids(&c, &wc);
     for m in state_repo::all_manifests(&wc) {
         let recent = chrono::DateTime::parse_from_rfc3339(&m.updated)
@@ -234,12 +212,12 @@ pub fn clone(ctx: &Ctx, full: &str, o: &CloneOpts) -> Result<Cloned> {
             Err(e) => out.report.errors.push(format!("{}: {e:#}", m.session)),
         }
     }
-    // Tabs of another machine (fresh tab ids, so nothing clashes).
+
     if let Some(from) = &o.tabs_from {
         out.tabs = take_tabs(&c, &wc, from)?;
     }
     state_repo::write_heartbeat(&c, &wc)?;
-    // Second pass: .env files (projects are there now), this machine.
+
     let mut r2 = state_repo::sync_now(&c)?;
     r2.applied.splice(0..0, r1.applied);
     r2.errors.append(&mut out.report.errors);
@@ -247,8 +225,6 @@ pub fn clone(ctx: &Ctx, full: &str, o: &CloneOpts) -> Result<Cloned> {
     Ok(out)
 }
 
-/// Mark this machine's config as "synced as is", so every key the state
-/// repo has wins over a fresh machine's defaults.
 fn trust_remote(c: &Ctx, wc: &Path) -> Result<()> {
     let Ok(text) = std::fs::read_to_string(c.app_home.join("config.toml")) else {
         return Ok(());
@@ -272,7 +248,6 @@ fn trust_remote(c: &Ctx, wc: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Sessions in the other machines' tabs, the archive and jobs.
 fn hot_ids(c: &Ctx, wc: &Path) -> BTreeSet<String> {
     let mut v: BTreeSet<String> = super::collect::hot_set(&c.app_home)
         .into_iter()
@@ -298,9 +273,6 @@ fn hot_ids(c: &Ctx, wc: &Path) -> BTreeSet<String> {
     v
 }
 
-/// Clone bound projects to their mapped folders. An existing folder with
-/// the same remote is only fetched; anything else there is reported and
-/// left alone. Nothing is ever committed or pushed.
 fn clone_projects(c: &Ctx, wc: &Path) -> Vec<String> {
     let mut out = vec![];
     let doc = super::merge::load_doc(&wc.join("git/bindings.json"));
@@ -378,8 +350,6 @@ fn clone_projects(c: &Ctx, wc: &Path) -> Vec<String> {
     out
 }
 
-/// Start with another machine's tabs: its state.json with paths mapped
-/// here and fresh tab ids. Only into a machine with no tabs yet.
 pub fn take_tabs(c: &Ctx, wc: &Path, from: &str) -> Result<usize> {
     let here = c.app_home.join("state.json");
     let cur: Value = std::fs::read(&here)
@@ -459,7 +429,6 @@ pub fn take_tabs(c: &Ctx, wc: &Path, from: &str) -> Result<usize> {
     Ok(n)
 }
 
-/// `sync doctor`: what is set up and what is missing.
 pub fn doctor(c: &Ctx) -> Vec<(bool, String)> {
     let mut v = vec![];
     let have = |p: &str| {

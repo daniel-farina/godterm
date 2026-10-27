@@ -1,22 +1,5 @@
-// The mic's samples, by one of three methods, tried in this order until one
-// gives sound (voice.js decides, from what each gives in its first moment):
-//
-//   worklet   an AudioWorklet on an AudioContext made after the mic opened
-//   script    a ScriptProcessorNode on a fresh AudioContext
-//   recorder  MediaRecorder (AAC in MP4 on iOS, Opus in WebM elsewhere) in
-//             quarter second pieces, decoded by GodTerm with ffmpeg
-//
-// On an iPhone home screen app the Web Audio graph can run while the mic
-// source gives it nothing at all (no input channels): the recorder does
-// not go through Web Audio, so it still hears.
-//
-// The graph ends in the destination directly (the processing node's output
-// is silence), never in a gain of 0, which Safari may optimise away along
-// with the node before it.
-
 export const METHODS = ['worklet', 'script', 'recorder'];
 
-// The recording type: what iOS records (AAC in MP4) or Opus elsewhere.
 export function recorderType() {
   if (!window.MediaRecorder) return '';
   const want = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
@@ -26,20 +9,16 @@ export function recorderType() {
 
 const wait = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(r, ms))]);
 
-// (GodTerm's build adds ?v=<build> to './x.js' names: the service worker
-// serves the same build's copy.)
 const WORKLET = new URL('./mic-worklet.js', import.meta.url).href;
 
 function newContext(stream) {
   const C = window.AudioContext || window.webkitAudioContext;
   if (!C) throw new Error('no Web Audio');
-  // At the mic's own rate when it says (a rate mismatch gave silence on
-  // some Safari versions).
+
   const rate = stream.getAudioTracks()[0]?.getSettings?.().sampleRate;
   try { return rate ? new C({ sampleRate: rate }) : new C(); } catch { return new C(); }
 }
 
-// ScriptProcessor resampling to 16 kHz.
 function scriptNode(c, onPcm, diag) {
   const p = c.createScriptProcessor(2048, 1, 1);
   const ratio = c.sampleRate / 16000;
@@ -64,9 +43,6 @@ function scriptNode(c, onPcm, diag) {
   return p;
 }
 
-// Open `method` on `stream`. Callbacks: onPcm(ArrayBuffer of PCM16 16 kHz),
-// onChunk(Uint8Array, mime) for the recorder, onDiag({calls, empty, peak}).
-// `broken`: drop its samples (to test the fallbacks, ?micbreak=worklet).
 export async function openCapture(method, stream, { onPcm, onChunk, onDiag, broken, log }) {
   if (method === 'recorder') return openRecorder(stream, { onChunk, log, broken });
   const ctx = newContext(stream);
@@ -104,8 +80,6 @@ export async function openCapture(method, stream, { onPcm, onChunk, onDiag, brok
   }
 }
 
-// MediaRecorder in quarter second pieces. A recording is one file: for push
-// to talk one per press (start() again), for hands free one long one.
 function openRecorder(stream, { onChunk, log, broken }) {
   if (!window.MediaRecorder) throw new Error('no MediaRecorder here');
   const type = recorderType();
@@ -117,7 +91,7 @@ function openRecorder(stream, { onChunk, log, broken }) {
     get what() { return `recorder, ${cap.mime || 'default type'}, ${n} pieces ${Math.round(bytes / 1024)} KB`; },
     resume: () => Promise.resolve(),
     recording: () => !!rec && rec.state === 'recording',
-    // A new recording; `begin(mime)` is called before its first piece.
+
     start(begin) {
       if (cap.recording()) return;
       const r = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 64000 } : undefined);
@@ -129,7 +103,7 @@ function openRecorder(stream, { onChunk, log, broken }) {
       ended = new Promise((res) => (done = res));
       r.ondataavailable = (e) => {
         if (!e.data || !e.data.size) return;
-        // In order, whatever order the reads finish in.
+
         chain = chain.then(() => e.data.arrayBuffer()).then((b) => {
           n++;
           bytes += b.byteLength;
@@ -140,7 +114,7 @@ function openRecorder(stream, { onChunk, log, broken }) {
       r.onerror = (e) => log?.('recorder error: ' + (e?.error?.message || e?.error?.name || 'unknown'));
       r.start(250);
     },
-    // End the recording; resolves once its last piece went out.
+
     stop() {
       const r = rec;
       rec = null;

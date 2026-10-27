@@ -1,9 +1,3 @@
-//! Archiving tabs in the app: stop a tab's session and what it owns,
-//! close its pane tab and keep it in the Archived group (the tab list's
-//! last rows) to come back with a double click; restoring resumes the
-//! very session in its folder on its account. The assistant has the same
-//! through archive_tabs, list_archived and restore_archived.
-
 use serde_json::{json, Value};
 
 use crate::app::{App, Modal};
@@ -11,27 +5,20 @@ use crate::archive::{unsent_input, Archived};
 use crate::control::{plural, tab_id};
 use crate::pane::Activity;
 
-/// Most restored by one call (each starts a claude process).
 pub const RESTORE_MAX: usize = 10;
 
-/// Why a tab cannot be archived right now.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
-    /// A hard reason `force` does not override.
     pub hard: bool,
     pub why: String,
 }
 
 impl App {
-    /// Unix seconds now (a test may fix it).
     pub fn archive_now(&self) -> i64 {
         self.archive_clock
             .unwrap_or_else(|| chrono::Utc::now().timestamp())
     }
 
-    /// When a tab last did anything, Unix seconds: its conversation file's
-    /// last write when it has one (so a tab resumed at startup counts from
-    /// its real last turn), else the last output, input or state change.
     pub fn tab_last_activity(&self, s: usize, t: usize) -> i64 {
         let now = self.archive_now();
         let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
@@ -45,17 +32,15 @@ impl App {
             .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
             .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64);
-        // (The real clock: only `now` can be fixed by a test.)
+
         let live = chrono::Utc::now().timestamp()
             - crate::clock::age(tab.last_activity()).as_secs() as i64;
         match from_file {
-            // (A prompt sent just now is in the file already.)
             Some(f) => f,
             None => live,
         }
     }
 
-    /// What stops tab (s, t) from being archived now.
     pub fn archive_blockers(&self, s: usize, t: usize) -> Vec<Block> {
         let mut v = vec![];
         let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
@@ -78,8 +63,6 @@ impl App {
                 .account
                 .is_some_and(|a| !self.cfg.accounts[a].harness().integrated())
         {
-            // Nothing to resume by: archiving would stop the tab and keep
-            // only an empty record.
             v.push(hard(
                 "GodTerm cannot see this CLI's session id, so it could not resume it; resume it from the CLI's own picker",
             ));
@@ -105,7 +88,7 @@ impl App {
             if q > 0 {
                 v.push(soft(format!("{} on the way to it", plural(q, "prompt"))));
             }
-            // Busy, not idle: archiving would stop that work.
+
             if let Some(bg) = self.tab_background_work(s, t) {
                 v.push(soft(format!(
                     "it is busy: work still runs in the background ({bg})"
@@ -122,9 +105,6 @@ impl App {
             .join("; ")
     }
 
-    /// Who a control tool call is acting for, as tab history and the
-    /// archive record it: "web" for the web app (the user in a browser),
-    /// else "assistant".
     pub fn tool_caller(&self) -> &'static str {
         if self.web_caller {
             "web"
@@ -133,9 +113,6 @@ impl App {
         }
     }
 
-    /// Archive tab (s, t) now: stop its session and what it owns, record
-    /// it, close the pane tab. Refused for hard reasons, and for soft ones
-    /// (busy, unsent text...) unless `force`. Returns the entry.
     pub fn archive_tab(
         &mut self,
         s: usize,
@@ -179,8 +156,7 @@ impl App {
             archived_at: self.archive_now(),
             by: by.to_string(),
         };
-        // A background run holding the session: stop it properly, so
-        // nothing keeps working (or holding the session) in the dark.
+
         if let Some(lock) = bg_lock {
             let dir = self.cfg.accounts[a].config_dir();
             let (bin, pass) = (self.cfg.claude_bin(), self.cfg.pass_env.clone());
@@ -206,8 +182,6 @@ impl App {
         self.archive.find(&id).cloned().ok_or("not saved".into())
     }
 
-    /// Ctrl-a f, the menus and the tab options: archive a tab, asking
-    /// first when it is busy or has unsent text (a yes forces it).
     pub fn request_archive(&mut self, s: usize, t: usize) {
         let Some(uid) = self.panes.get(s).and_then(|p| p.tabs.get(t)).map(|x| x.uid) else {
             return;
@@ -223,7 +197,6 @@ impl App {
         }
     }
 
-    /// Archive from the UI and say so.
     pub fn archive_now_flash(&mut self, s: usize, t: usize, force: bool) {
         let jobs = self.jobs_wake_note(self.panes[s].tabs[t].uid);
         match self.archive_tab(s, t, "user", force) {
@@ -239,7 +212,6 @@ impl App {
         }
     }
 
-    /// The dialog's yes.
     pub fn confirm_archive(&mut self, uid: u64) {
         self.modal = Modal::None;
         if let Some((s, t)) = self.find_tab(uid) {
@@ -247,7 +219,6 @@ impl App {
         }
     }
 
-    /// Lines for the archive dialog.
     pub fn archive_lines(&self, uid: u64) -> Vec<String> {
         let Some((s, t)) = self.find_tab(uid) else {
             return vec!["That tab is gone.".into()];
@@ -266,8 +237,6 @@ impl App {
         .collect()
     }
 
-    /// Restore archived entry `id`: resume it in its account's pane (or
-    /// on `onto`), and drop the entry. Returns what to say.
     pub fn restore_archived(&mut self, id: &str, onto: Option<usize>) -> Result<String, String> {
         let e = self
             .archive
@@ -300,7 +269,6 @@ impl App {
         Ok(msg)
     }
 
-    /// Forget an archive entry (never the session's own files).
     pub fn forget_archived(&mut self, id: &str) -> Option<String> {
         let e = self.archive.remove(id)?;
         if self.archive_sel.as_deref() == Some(id) {
@@ -312,10 +280,6 @@ impl App {
         Some(e.label)
     }
 
-    // ---- the Archived group in a tab list ----
-
-    /// The archived conversations pane `p`'s tab list shows (its account's,
-    /// narrowed by its search), newest archived first.
     pub fn archive_for_pane(&self, p: usize) -> Vec<Archived> {
         let Some(a) = self.panes.get(p).and_then(|s| s.account) else {
             return vec![];
@@ -331,8 +295,6 @@ impl App {
             .collect()
     }
 
-    /// The Archived rows at the end of pane `p`'s list: the header, and the
-    /// entries when it is open (or a search is typed).
     pub fn archive_rows(&self, p: usize) -> Vec<crate::tab_groups::Row> {
         use crate::tab_groups::Row;
         let list = self.archive_for_pane(p);
@@ -356,7 +318,6 @@ impl App {
         self.modal = Modal::ArchMenu(id, 0);
     }
 
-    /// Rows of an archived entry's menu: (label, key, hint).
     pub fn archive_menu_rows() -> [(&'static str, char, &'static str); 2] {
         [
             (
@@ -389,8 +350,6 @@ impl App {
         }
     }
 
-    // ---- the assistant's tools ----
-
     fn archived_json(&self, e: &Archived) -> Value {
         let now = self.archive_now();
         let label = self
@@ -419,8 +378,6 @@ impl App {
         })
     }
 
-    /// The archived conversations matching `args` (account, provider,
-    /// name contains, older_than / idle_for_hours since archived).
     fn archived_matching(&self, args: &Value) -> Result<Vec<&Archived>, String> {
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
         let acct = match args.get("account") {
@@ -453,7 +410,6 @@ impl App {
         Ok(v)
     }
 
-    /// "2 days", "36 hours", "yesterday" as the Unix time that long ago.
     fn cutoff(&self, w: &str) -> Result<i64, String> {
         let now = chrono::DateTime::from_timestamp(self.archive_now(), 0)
             .ok_or("bad clock")?
@@ -466,7 +422,6 @@ impl App {
             })
     }
 
-    /// list_archived.
     pub fn list_archived_json(&self, args: &Value) -> Result<Value, String> {
         let limit = args
             .get("limit")
@@ -488,8 +443,6 @@ impl App {
         Ok(json!({"ok": true, "result": {"archived": rows, "total": total, "say": say}}))
     }
 
-    /// restore_archived: by id (one, a list, "all") and/or filters; onto
-    /// `onto` (an account) when asked.
     pub fn restore_archived_tool(&mut self, args: &Value) -> Result<Value, String> {
         let onto = match args.get("onto").or(args.get("open_on")) {
             Some(v) if !v.is_null() => Some(self.account_arg(v)?),
@@ -510,15 +463,14 @@ impl App {
                     "say which: id (from list_archived), a list of ids, \"all\", or name".into(),
                 );
             }
-            // The account filter selects what to restore here; `onto` is
-            // where it opens.
+
             ids = self
                 .archived_matching(args)?
                 .iter()
                 .map(|e| e.id.clone())
                 .collect();
         }
-        // An id may be a unique prefix, or a tab name.
+
         let mut resolved = vec![];
         for i in &ids {
             let hit = self
@@ -574,9 +526,6 @@ impl App {
         )
     }
 
-    /// The tabs archive_tabs selects, and those it leaves with why.
-    /// Selectors: tab (ids, "all"), group, account, provider, name,
-    /// idle_for_hours / older_than (no activity that long).
     #[allow(clippy::type_complexity)]
     pub fn archive_select(
         &self,
@@ -611,7 +560,6 @@ impl App {
             || args.get("group").is_some()
             || args.get("account").is_some()
         {
-            // `tab` "all" with other filters means every tab, filtered.
             let mut a = args.clone();
             if let Some(o) = a.as_object_mut() {
                 if matches!(o.get("tab"), Some(Value::String(x)) if x == "all" || x == "idle" || x == "ready")
@@ -659,7 +607,7 @@ impl App {
                 }
             }
             let blocks = self.archive_blockers(sl, t);
-            // A tab that never ran is not worth a line in a sweep.
+
             if !named && !tab.is_running() && tab.session_id.is_none() {
                 continue;
             }
@@ -689,7 +637,6 @@ impl App {
             .collect()
     }
 
-    /// (plan, question, needs a yes) for archive_tabs.
     pub(crate) fn archive_plan_for(
         &mut self,
         args: &Value,
@@ -728,7 +675,7 @@ impl App {
                     .join(", ")
             ));
         }
-        // One tab named by id, nothing in the way: no question.
+
         let single = ok.len() == 1
             && matches!(args.get("tab"), Some(Value::String(x)) if x != "all")
             && self.archive_blockers(ok[0].0, ok[0].1).is_empty()
@@ -736,7 +683,6 @@ impl App {
         Ok((json!({"uids": self.uids(&ok), "force": force}), q, !single))
     }
 
-    /// dry_run: what archive_tabs would do, without asking or doing it.
     pub fn archive_dry_run(&mut self, args: &Value) -> Result<Value, String> {
         let (ok, skipped) = self.archive_select(args)?;
         let now = self.archive_now();
@@ -765,7 +711,6 @@ impl App {
         )
     }
 
-    /// Run a confirmed archive plan.
     pub(crate) fn archive_run(&mut self, plan: &Value) -> Result<Value, String> {
         let force = plan["force"].as_bool().unwrap_or(false);
         let uids: Vec<u64> = plan["uids"]
@@ -835,7 +780,6 @@ impl App {
             .unwrap_or_else(|| account.to_string())
     }
 
-    /// get_state: how many are archived, and the latest.
     pub fn archive_state_json(&self) -> Value {
         let list = self.archive.newest_first();
         json!({

@@ -1,55 +1,47 @@
-//! Calm, muted palette. No saturated or glowing hues.
-
 use ratatui::style::Color;
 
 pub const FG: Color = Color::Rgb(208, 204, 196);
-/// Secondary text: about 4.7:1 on BAR_BG (readable, WCAG AA).
+
 pub const DIM: Color = Color::Rgb(148, 145, 138);
-/// Hints, borders and the least needed text: about 2.7:1 on BAR_BG, still
-/// legible (it was 2:1, too faint to read).
+
 pub const FAINT: Color = Color::Rgb(104, 106, 110);
 pub const BAR_BG: Color = Color::Rgb(38, 40, 43);
 pub const SEL_BG: Color = Color::Rgb(50, 53, 57);
-/// Selected text in a pane: a quiet slate, the text stays readable.
+
 pub const SELECT_BG: Color = Color::Rgb(66, 78, 94);
 
 pub const SAGE: Color = Color::Rgb(138, 160, 128);
 pub const SAND: Color = Color::Rgb(196, 176, 134);
 pub const SLATE: Color = Color::Rgb(128, 148, 170);
-/// Mic muted: a clear red, not neon.
+
 pub const MUTED_RED: Color = Color::Rgb(178, 52, 46);
 pub const CLAY: Color = Color::Rgb(184, 128, 106);
 pub const MAUVE: Color = Color::Rgb(158, 134, 156);
 pub const STONE: Color = Color::Rgb(160, 156, 144);
-/// A soft blue-grey (a question the assistant waits on).
+
 pub const MIST: Color = Color::Rgb(146, 158, 172);
-/// A muted rust (something ended badly).
+
 pub const RUST: Color = Color::Rgb(170, 106, 86);
-/// The one accent for live work (a tab running a turn): a muted teal,
-/// clear against the calm palette without glowing.
+
 pub const ACTIVE: Color = Color::Rgb(104, 176, 166);
 
-/// Needs your approval, lit phase: a muted brick red fill (not neon).
 pub const ATTN_RED: Color = Color::Rgb(184, 74, 71);
-/// Needs your approval, quiet phase of the blink: a darker brick, the text
-/// stays readable and the button never disappears.
+
 pub const ATTN_RED_DIM: Color = Color::Rgb(112, 54, 52);
-/// Text on the red fill.
+
 pub const ATTN_TEXT: Color = Color::Rgb(246, 236, 230);
-/// Text on the dim red fill.
+
 pub const ATTN_TEXT_DIM: Color = Color::Rgb(226, 204, 198);
-/// A red glyph on the dark bar (a tab's waiting marker), lit and quiet.
+
 pub const ATTN_GLYPH: Color = Color::Rgb(206, 98, 92);
 pub const ATTN_GLYPH_DIM: Color = Color::Rgb(146, 72, 68);
 
 pub const ROTATION: [&str; 6] = ["sage", "sand", "slate", "clay", "mauve", "stone"];
 
-/// Account colors to pick from: the rotation plus four more muted ones.
 pub const SWATCHES: [&str; 10] = [
     "sage", "sand", "slate", "clay", "mauve", "stone", "moss", "teal", "rose", "dusk",
 ];
 
-/// Palette name or "#rrggbb". Unknown values fall back to stone.
 pub fn parse_color(s: &str) -> Color {
     match s.trim().to_ascii_lowercase().as_str() {
         "sage" | "green" => SAGE,
@@ -75,10 +67,8 @@ fn parse_hex(s: &str) -> Option<Color> {
     Some(Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
 }
 
-/// How usage is colored (`usage_colors`): 0 gradient, 1 bands, 2 mono.
 static USAGE_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-/// The terminal shows 24 bit color (COLORTERM); otherwise the nearest of
-/// the 256 color palette is used.
+
 static TRUECOLOR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 pub fn set_usage_colors(mode: &str) {
@@ -95,14 +85,13 @@ pub fn detect_truecolor() {
         .unwrap_or_default()
         .to_lowercase();
     let term = std::env::var("TERM_PROGRAM").unwrap_or_default();
-    // Terminal.app has no 24 bit color; iTerm2, kitty, WezTerm, Ghostty do.
+
     let tc = ct.contains("truecolor")
         || ct.contains("24bit")
         || (term != "Apple_Terminal" && !term.is_empty());
     TRUECOLOR.store(tc, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Usage anchors by percent LEFT: muted sage, olive, sand, amber, clay.
 const ANCHORS: [(f64, (u8, u8, u8)); 5] = [
     (100.0, (138, 160, 128)),
     (62.5, (166, 168, 122)),
@@ -111,7 +100,6 @@ const ANCHORS: [(f64, (u8, u8, u8)); 5] = [
     (5.0, (184, 106, 90)),
 ];
 
-/// Band index by percent left: 75+, 50 to 75, 25 to 50, 10 to 25, under 10.
 pub fn band(left: f64) -> usize {
     match left {
         l if l >= 75.0 => 0,
@@ -138,7 +126,6 @@ fn gradient(left: f64) -> (u8, u8, u8) {
     ANCHORS[4].1
 }
 
-/// Nearest xterm 256 color for an RGB value (the 6x6x6 cube or the grays).
 pub fn to_256(r: u8, g: u8, b: u8) -> u8 {
     let level = |v: u8| -> u8 {
         if v < 48 {
@@ -173,8 +160,6 @@ pub fn rgb(c: (u8, u8, u8)) -> Color {
     }
 }
 
-/// Color for the percentage LEFT in a window, by `usage_colors`: a smooth
-/// gradient from sage through sand to clay, five flat bands, or mono.
 pub fn remaining(left: f64) -> Color {
     match USAGE_MODE.load(std::sync::atomic::Ordering::Relaxed) {
         1 => rgb(ANCHORS[band(left)].1),
@@ -189,7 +174,6 @@ pub fn remaining(left: f64) -> Color {
     }
 }
 
-/// `remaining` plus bold under 10% left.
 pub fn remaining_style(left: f64) -> ratatui::style::Style {
     let s = ratatui::style::Style::default().fg(remaining(left));
     if left < 10.0 {
@@ -199,7 +183,6 @@ pub fn remaining_style(left: f64) -> ratatui::style::Style {
     }
 }
 
-/// A marker for nearly empty windows (under 5% left).
 pub fn low_marker(left: f64) -> &'static str {
     if left < 5.0 {
         " ▼"
@@ -208,7 +191,6 @@ pub fn low_marker(left: f64) -> &'static str {
     }
 }
 
-/// Tests that switch the usage color mode take turns.
 #[cfg(test)]
 pub static MODE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -222,7 +204,7 @@ mod tests {
         assert_eq!(to_256(255, 255, 255), 231);
         assert_eq!(to_256(255, 0, 0), 196);
         assert_eq!(to_256(128, 128, 128), 244);
-        // The usage anchors land on distinct palette entries.
+
         let mut v: Vec<u8> = ANCHORS.iter().map(|(_, c)| to_256(c.0, c.1, c.2)).collect();
         v.dedup();
         assert_eq!(v.len(), 5, "{v:?}");
@@ -247,7 +229,7 @@ mod tests {
         assert_eq!(band(10.0), 3);
         assert_eq!(band(9.9), 4);
         set_usage_colors("gradient");
-        // Anchors are hit exactly and the gradient moves smoothly between.
+
         assert_eq!(remaining(100.0), Color::Rgb(138, 160, 128));
         assert_eq!(remaining(37.5), Color::Rgb(196, 176, 134));
         assert_eq!(remaining(0.0), Color::Rgb(184, 106, 90));

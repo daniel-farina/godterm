@@ -1,20 +1,13 @@
-//! Choosing the talk back voice: "use the Bella voice", "use the local
-//! voice", "use chatterbox", "use Kokoro", "use the Grok voice"; and the
-//! local voices' install, remove and clip picker in Settings (the engines
-//! themselves are in voice/local_tts.rs).
-
 use crate::app::{App, Modal};
 use crate::settings::Key;
 use crate::voice::{catalog, local_tts};
 
-/// What a voice phrase asks for.
 #[derive(Debug, Clone, PartialEq)]
 pub enum VoicePick {
-    /// An engine: kokoro, chatterbox, ming, say or grok.
     Engine(&'static str),
-    /// A Kokoro voice id (af_heart).
+
     Kokoro(&'static str),
-    /// A Ming-3.0 voice (US_Emma).
+
     Ming(&'static str),
 }
 
@@ -30,8 +23,6 @@ fn engine_word(w: &str) -> Option<&'static str> {
     })
 }
 
-/// The voice phrase this whole utterance is, if any. `engine` is the
-/// engine now (a name both Kokoro and Ming have goes to the one in use).
 pub fn parse_voice_phrase(raw: &str, engine: &str) -> Option<VoicePick> {
     let n = crate::voice::grammar::normalize(&raw.replace(['\u{2019}', '\u{2018}'], "'"));
     let w = crate::app_direct::core_words(&n);
@@ -62,7 +53,7 @@ pub fn parse_voice_phrase(raw: &str, engine: &str) -> Option<VoicePick> {
         None => (rest.trim(), false),
     };
     let body = body.strip_prefix("the ").unwrap_or(body);
-    // Engines. Grok needs "voice" ("use grok" is the agent).
+
     if let Some(e) = engine_word(body) {
         if e == "grok" && !said_voice {
             return None;
@@ -82,7 +73,7 @@ pub fn parse_voice_phrase(raw: &str, engine: &str) -> Option<VoicePick> {
     if !said_voice {
         return None;
     }
-    // A voice by name: "Bella", "af heart", "UK George".
+
     let key: String = body.replace([' ', '_'], "");
     let ming = local_tts::MING_VOICES
         .iter()
@@ -105,7 +96,6 @@ pub fn parse_voice_phrase(raw: &str, engine: &str) -> Option<VoicePick> {
     }
 }
 
-/// The ask before an install (or a remove).
 pub fn confirm_lines(id: &str, remove: bool) -> Vec<String> {
     let Some(i) = local_tts::info(id) else {
         return vec![];
@@ -125,11 +115,9 @@ pub fn confirm_lines(id: &str, remove: bool) -> Vec<String> {
     ]
 }
 
-/// The file the clip picker returned (None: cancelled).
 static PICKED: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex::new(None);
 
 impl App {
-    /// Before an utterance is routed: a voice choice. True when handled.
     pub fn voice_choice_intercept(&mut self, command: &str) -> bool {
         let Some(p) = parse_voice_phrase(command, &self.cfg.voice.tts_engine) else {
             return false;
@@ -151,7 +139,6 @@ impl App {
         .map_err(|e| format!("{e:#}"))
     }
 
-    /// Switch as asked; what to say back.
     pub fn apply_voice_pick(&mut self, p: &VoicePick) -> String {
         let (engine, extra): (&'static str, Option<(&'static str, String)>) = match p {
             VoicePick::Engine(e) => (e, None),
@@ -201,7 +188,6 @@ impl App {
         }
     }
 
-    /// Settings: Enter on a local voice's row (install or remove asks first).
     pub fn ask_local_voice(&mut self, id: &'static str) {
         if !local_tts::supported() {
             return self.flash("Local voices need a Mac with Apple Silicon.");
@@ -213,7 +199,6 @@ impl App {
         self.modal = Modal::ConfirmLocalVoice(id, installed);
     }
 
-    /// The yes: install in the background, or remove now.
     pub fn local_voice_yes(&mut self, id: &'static str, remove: bool) {
         let name = local_tts::info(id).map(|i| i.name).unwrap_or(id);
         if remove {
@@ -231,7 +216,6 @@ impl App {
         }
     }
 
-    /// Notes from the speech worker, install results, the picked clip.
     pub fn local_voices_tick(&mut self) {
         for n in local_tts::take_notes() {
             self.flash(n);
@@ -256,7 +240,6 @@ impl App {
         }
     }
 
-    /// Settings: Choose… beside the Chatterbox clip (the macOS file dialog).
     pub fn pick_voice_clip(&mut self) {
         if cfg!(test) || !cfg!(target_os = "macos") {
             return self.flash("Type the clip's path in the row (Enter).");
@@ -308,7 +291,7 @@ mod tests {
             e("okay use the Michael voice"),
             Some(VoicePick::Kokoro("am_michael"))
         );
-        // Emma and George are in both: the engine in use decides.
+
         assert_eq!(
             e("use the George voice"),
             Some(VoicePick::Kokoro("bm_george"))
@@ -321,7 +304,7 @@ mod tests {
             e("use the Stella voice"),
             Some(VoicePick::Ming("US_Stella"))
         );
-        // Not voice choices.
+
         for s in [
             "use grok",
             "use the tests",

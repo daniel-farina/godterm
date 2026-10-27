@@ -49,9 +49,9 @@ def keygen(sec_path, pub_path):
     cksum = hashlib.blake2b(b"Ed" + key_id + sk64, digest_size=32).digest()
     blob = (
         b"Ed"
-        + b"\x00\x00"  # kdf: none (unencrypted)
+        + b"\x00\x00"
         + b"B2"
-        + bytes(32)  # salt
+        + bytes(32)
         + struct.pack("<Q", 0)
         + struct.pack("<Q", 0)
         + key_id

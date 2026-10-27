@@ -1,14 +1,8 @@
-//! The working directory shown for each tab: its live cwd (the claude
-//! process's, or the latest `cwd` in its transcript), formatted to fit a
-//! pane header next to the label and the email, and the actions on it
-//! (copy, Finder, a terminal there).
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::app::App;
 
-/// A process's current directory (macOS: proc_pidinfo VNODEPATHINFO).
 #[cfg(target_os = "macos")]
 pub fn cwd_of_pid(pid: u32) -> Option<PathBuf> {
     use std::ffi::CStr;
@@ -40,8 +34,6 @@ pub fn cwd_of_pid(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
-/// Windows: our own folder; another process's is not readable without
-/// its PEB (callers fall back to the tab's launch folder).
 #[cfg(windows)]
 pub fn cwd_of_pid(pid: u32) -> Option<PathBuf> {
     (pid == std::process::id())
@@ -49,7 +41,6 @@ pub fn cwd_of_pid(pid: u32) -> Option<PathBuf> {
         .flatten()
 }
 
-/// The newest `"cwd"` recorded in a transcript (where claude's shell is).
 pub fn transcript_cwd(path: &Path) -> Option<PathBuf> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).ok()?;
@@ -66,14 +57,10 @@ pub fn transcript_cwd(path: &Path) -> Option<PathBuf> {
     p.is_dir().then_some(p)
 }
 
-/// "~/code/api" for paths under home.
 pub fn tilde(p: &Path) -> String {
     crate::config::tilde(p)
 }
 
-/// The first `n` bytes of `s`, or fewer so the cut falls between chars
-/// (`&s[..n]` panics inside a char; ids and dates from files on disk are
-/// usually ASCII, but nothing makes them so).
 pub fn head(s: &str, n: usize) -> &str {
     if n >= s.len() {
         return s;
@@ -85,7 +72,6 @@ pub fn head(s: &str, n: usize) -> &str {
     &s[..end]
 }
 
-/// Cut `s` to `max` chars in the middle: "godterm-fe…auth-login".
 pub fn middle(s: &str, max: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= max {
@@ -103,15 +89,12 @@ pub fn middle(s: &str, max: usize) -> String {
     out
 }
 
-/// Shorten a path to `max` chars by dropping middle components, keeping
-/// the first one and the last one whole: "~/code/…/calculator". When even
-/// "…/last" is too long, the last component is cut in the middle.
 pub fn shorten_path(path: &str, max: usize) -> String {
     let n = path.chars().count();
     if n <= max {
         return path.to_string();
     }
-    // Split on the separator the path uses (\\ for Windows folders).
+
     let sep = if path.contains('\\') && !path.contains('/') {
         '\\'
     } else {
@@ -119,7 +102,7 @@ pub fn shorten_path(path: &str, max: usize) -> String {
     };
     let parts: Vec<&str> = path.split(sep).collect();
     let last = parts.last().copied().unwrap_or("");
-    // Keep a head of 1..k components and the last one.
+
     for keep in (1..parts.len().saturating_sub(1)).rev() {
         let cand = format!("{}{sep}…{sep}{last}", parts[..keep].join(&sep.to_string()));
         if cand.chars().count() <= max {
@@ -136,16 +119,12 @@ pub fn shorten_path(path: &str, max: usize) -> String {
     crate::app_privacy::middle_truncate(last, max)
 }
 
-/// What fits after the label in `room` columns: (path, email), each with
-/// its " · " separator counted. The label is never touched; the path's
-/// last component comes next; the email goes (cut, then dropped) before
-/// the path shrinks below its last component.
 pub fn header_fit(
     path: Option<&str>,
     email: Option<&str>,
     room: usize,
 ) -> (Option<String>, Option<String>) {
-    const SEP: usize = 3; // " · "
+    const SEP: usize = 3;
     let w = |s: &str| s.chars().count();
     let Some(path) = path.filter(|p| !p.is_empty()) else {
         let e = email
@@ -160,7 +139,7 @@ pub fn header_fit(
     if room < SEP + 3 {
         return (None, None);
     }
-    // Path whole, plus as much email as fits (at least 10 chars of it).
+
     if let Some(e) = email {
         let left = room.saturating_sub(SEP + w(path));
         if left >= SEP + w(e) {
@@ -172,7 +151,7 @@ pub fn header_fit(
                 Some(crate::app_privacy::middle_truncate(e, left - SEP)),
             );
         }
-        // Shorter path with 10 chars of email, if the path keeps its last part.
+
         let for_path = room.saturating_sub(SEP + SEP + 10);
         if for_path >= min_path {
             return (
@@ -184,15 +163,13 @@ pub fn header_fit(
             );
         }
     }
-    // No email: the path, shortened from the middle.
+
     (Some(shorten_path(path, room - SEP)), None)
 }
 
 const POLL: Duration = Duration::from_secs(2);
 
 impl App {
-    /// Refresh the live directory of each visible pane's shown tab, at
-    /// most every 2 s per tab.
     pub fn refresh_paths(&mut self) {
         if !self.cfg.show_path {
             return;
@@ -220,7 +197,6 @@ impl App {
         }
     }
 
-    /// The folder shown for a tab: its live cwd, else where it started.
     pub fn tab_dir(&self, s: usize, t: usize) -> PathBuf {
         let tab = &self.panes[s].tabs[t];
         tab.live_cwd.clone().unwrap_or_else(|| tab.cwd.clone())
@@ -229,10 +205,9 @@ impl App {
     pub fn copy_path(&mut self, s: usize) {
         let d = self.tab_dir(s, self.panes[s].active);
         let text = d.to_string_lossy().into_owned();
-        // (Demo mode leaves the user's clipboard alone.)
+
         let quiet = cfg!(test) || crate::demo::active();
         if !quiet {
-            // (In the background: the screen never waits on pbcopy.)
             crate::procs::copy_to_clipboard(text);
         }
         self.flash(format!("Copied {}", tilde(&d)));
@@ -248,7 +223,6 @@ impl App {
         self.flash(format!("Opened {} in Finder", tilde(&d)));
     }
 
-    /// A new iTerm tab (or Terminal window) in the tab's folder.
     pub fn terminal_here(&mut self, s: usize) {
         let d = self.tab_dir(s, self.panes[s].active);
         if !cfg!(test) && !crate::demo::active() {
@@ -283,7 +257,7 @@ mod tests {
         assert_eq!(head("abcdefgh-1234", 8), "abcdefgh");
         assert_eq!(head("abc", 8), "abc");
         assert_eq!(head("", 8), "");
-        // Byte 8 is inside the é: the cut moves back to before it.
+
         assert_eq!(head("abcdefgé.jsonl", 8), "abcdefg");
         assert_eq!(head("日本語", 4), "日");
         assert_eq!(head("🚀🚀", 3), "");
@@ -321,7 +295,7 @@ mod tests {
     fn label_then_path_then_email() {
         let p = Some("~/code/clients/calculator");
         let e = Some("someone@example.com");
-        // Plenty of room: both whole.
+
         assert_eq!(
             header_fit(p, e, 80),
             (
@@ -329,20 +303,20 @@ mod tests {
                 Some("someone@example.com".into())
             )
         );
-        // The email is cut first.
+
         let (pp, ee) = header_fit(p, e, 3 + 25 + 3 + 12);
         assert_eq!(pp.as_deref(), Some("~/code/clients/calculator"));
         assert_eq!(ee.unwrap().chars().count(), 12);
-        // Then the path shrinks from the middle, the email kept at 10.
+
         let (pp, ee) = header_fit(p, e, 3 + 20 + 3 + 10);
         assert_eq!(pp.as_deref(), Some("~/code/…/calculator"));
         assert_eq!(ee.unwrap().chars().count(), 10 + 1);
-        // Then the email goes before the last component does.
+
         let (pp, ee) = header_fit(p, e, 3 + 14);
         assert_eq!((pp.as_deref(), ee), (Some("~/…/calculator"), None));
         let (pp, ee) = header_fit(p, e, 3 + 10);
         assert_eq!((pp.as_deref(), ee), (Some("calculator"), None));
-        // Privacy mode: no email, the path stays.
+
         assert_eq!(
             header_fit(p, None, 40),
             (Some("~/code/clients/calculator".into()), None)

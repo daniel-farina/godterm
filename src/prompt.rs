@@ -1,19 +1,13 @@
-//! Read the selection prompt claude is showing (permission, folder trust,
-//! plan approval, login method...) so voice and keys can pick the right
-//! option instead of assuming fixed numbers.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
-    /// "Do you want to proceed?" / "Do you want to make this edit...".
     Permission,
-    /// "Accessing workspace: ... Yes, I trust this folder".
+
     Trust,
-    /// "Claude has written up a plan and is ready to execute".
+
     Plan,
-    /// The one time "WARNING: Claude Code running in Bypass Permissions
-    /// mode" dialog (Yes, I accept / No, exit).
+
     Bypass,
-    /// Any other picker (theme, login method, ...).
+
     Other,
 }
 
@@ -27,14 +21,11 @@ pub struct PromptOption {
 pub struct Prompt {
     pub kind: PromptKind,
     pub options: Vec<PromptOption>,
-    /// Index of the highlighted option.
+
     pub selected: usize,
-    /// Keys that pick an option directly, by index (a shortcut the CLI
-    /// shows next to it, such as Codex "(y)"); empty or `None`: the
-    /// number, or arrows and Enter.
+
     pub hotkeys: Vec<Option<Vec<u8>>>,
-    /// Which option means approve, always and deny, when the CLI's own
-    /// wording is not what `index_for` reads.
+
     pub pick: Option<[Option<usize>; 3]>,
 }
 
@@ -45,7 +36,6 @@ pub enum Choice {
     Deny,
 }
 
-/// Strip box drawing borders a screen line may have on either side.
 fn unbox(line: &str) -> &str {
     let t = line.trim_end();
     let t = t.strip_prefix('│').unwrap_or(t);
@@ -58,7 +48,6 @@ fn is_rule(line: &str) -> bool {
     !t.is_empty() && t.chars().all(|c| matches!(c, '─' | '━' | '╌' | '-' | '═'))
 }
 
-/// Split "  3. No, and tell..." into (indent cols, number, label).
 fn option_parts(s: &str) -> Option<(usize, Option<u32>, String)> {
     let indent = s.chars().take_while(|c| *c == ' ').count();
     let rest: String = s.chars().skip(indent).collect();
@@ -77,8 +66,7 @@ fn option_parts(s: &str) -> Option<(usize, Option<u32>, String)> {
 
 pub fn parse_prompt(screen: &str) -> Option<Prompt> {
     let lines: Vec<&str> = screen.lines().map(unbox).collect();
-    // The highlighted option: a line with the pointer that is not the
-    // prompt input box (which sits right under a horizontal rule).
+
     let sel = (0..lines.len()).rev().find(|&i| {
         let t = lines[i].trim_start();
         let Some(rest) = t
@@ -93,7 +81,7 @@ pub fn parse_prompt(screen: &str) -> Option<Prompt> {
     })?;
     let sel_line = lines[sel];
     let pointer_col = sel_line.chars().take_while(|c| *c == ' ').count();
-    // Text column: after the pointer and its space.
+
     let text_col = pointer_col + 2;
     let parse_at = |l: &str, selected: bool| -> Option<PromptOption> {
         let chars: Vec<char> = l.chars().collect();
@@ -124,7 +112,6 @@ pub fn parse_prompt(screen: &str) -> Option<Prompt> {
                 above.push(o)
             }
             _ => {
-                // Wrapped continuation lines are indented deeper; skip them.
                 let deeper = lines[i].chars().take_while(|c| *c == ' ').count() > text_col;
                 if deeper && numbered {
                     continue;
@@ -134,8 +121,7 @@ pub fn parse_prompt(screen: &str) -> Option<Prompt> {
         }
     }
     above.reverse();
-    // For unnumbered prompts, text above the options can look like options;
-    // keep only lines that read like choices.
+
     if !numbered {
         above.retain(|o| looks_like_choice(&o.label));
     }
@@ -207,7 +193,6 @@ fn looks_like_choice(label: &str) -> bool {
 }
 
 impl Prompt {
-    /// Which option a spoken or typed answer means.
     pub fn index_for(&self, c: Choice) -> Option<usize> {
         if let Some(p) = self.pick {
             return match c {
@@ -233,7 +218,7 @@ impl Prompt {
                 })
                 .or_else(|| find(&|l| l.starts_with("yes")))
             }),
-            // grok: "Always allow this command" (this one), before "on all sessions".
+
             Choice::Always => find(&|l| l.starts_with("always allow this"))
                 .or_else(|| find(&|l| l.starts_with("always allow")))
                 .or_else(|| {
@@ -249,8 +234,6 @@ impl Prompt {
         }
     }
 
-    /// Key bytes that select option `idx`: its number when shown, otherwise
-    /// arrow presses from the highlighted option followed by Enter.
     pub fn keys_for(&self, idx: usize, app_cursor: bool) -> Vec<u8> {
         if let Some(Some(k)) = self.hotkeys.get(idx) {
             return k.clone();
@@ -280,14 +263,12 @@ impl Prompt {
     }
 }
 
-/// What a waiting prompt is asking for, for the approvals queue.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
-    /// "Bash command", "Edit file", "Trust folder", "Plan"...
     pub tool: String,
-    /// The command, file or folder, when shown.
+
     pub detail: String,
-    /// The question line ("Do you want to proceed?").
+
     pub question: String,
 }
 
@@ -301,8 +282,6 @@ impl Request {
     }
 }
 
-/// Read the tool and command or file a prompt is about from the lines above
-/// its question.
 pub fn describe_request(screen: &str) -> Option<Request> {
     let p = parse_prompt(screen)?;
     let lines: Vec<&str> = screen.lines().map(unbox).collect();
@@ -310,7 +289,7 @@ pub fn describe_request(screen: &str) -> Option<Request> {
     match p.kind {
         PromptKind::Trust => {
             let i = lines.iter().position(|l| l.contains("Accessing workspace"));
-            // The path may wrap; join following lines that have no spaces.
+
             let mut detail = i
                 .and_then(|i| lines.get(i + 1))
                 .map(|l| clean(l))
@@ -361,7 +340,7 @@ pub fn describe_request(screen: &str) -> Option<Request> {
     }
     let q = lines.iter().rposition(|l| l.contains("Do you want to"))?;
     let question = clean(lines[q]);
-    // Walk up to the top of the dialog: a box top, a rule, or 15 lines.
+
     let mut block: Vec<String> = vec![];
     let mut i = q;
     while i > 0 && q - i < 15 {
@@ -376,13 +355,12 @@ pub fn describe_request(screen: &str) -> Option<Request> {
         }
     }
     block.reverse();
-    // Edits show a diff between rules; the tool title sits above it.
+
     if block.is_empty()
         || block
             .iter()
             .all(|l| l.chars().next().is_some_and(|c| c.is_ascii_digit()))
     {
-        // Skip the diff up to its opening rule, then read the title lines.
         let open = lines[..i].iter().rposition(|l| is_rule(l)).unwrap_or(i);
         let top = lines[..open]
             .iter()
@@ -400,7 +378,6 @@ pub fn describe_request(screen: &str) -> Option<Request> {
         .unwrap_or_else(|| "Permission".into());
     let mut detail = block.get(1).cloned().unwrap_or_default();
     if detail.is_empty() {
-        // "Do you want to make this edit to main.rs?" names the file.
         if let Some(rest) = question
             .split(" to ")
             .last()
@@ -430,7 +407,6 @@ mod tests {
 
     #[test]
     fn real_trust_prompt() {
-        // Captured from claude 2.1.291 with a throwaway config dir.
         let p = parse_prompt(&screen("trust_prompt")).unwrap();
         assert_eq!(p.kind, PromptKind::Trust);
         let labels: Vec<&str> = p.options.iter().map(|o| o.label.as_str()).collect();
@@ -438,7 +414,7 @@ mod tests {
         assert_eq!(p.selected, 0);
         let yes = p.index_for(Choice::Approve).unwrap();
         assert_eq!(yes, 1);
-        // Unnumbered: one Down then Enter.
+
         assert_eq!(p.keys_for(yes, false), b"\x1b[B\r");
         let moved = parse_prompt(&screen("trust_prompt_moved")).unwrap();
         assert_eq!(moved.selected, 1);
@@ -450,7 +426,6 @@ mod tests {
 
     #[test]
     fn real_bypass_warning() {
-        // Captured from claude 2.1.291 started with --dangerously-skip-permissions.
         let p = parse_prompt(&screen("bypass_warning")).unwrap();
         assert_eq!(p.kind, PromptKind::Bypass);
         assert_eq!(p.options[p.selected].label, "No, exit");
@@ -473,15 +448,13 @@ mod tests {
         assert_eq!(p.kind, PromptKind::Other);
         assert_eq!(p.options.len(), 3);
         assert_eq!(p.options[2].number, Some(3));
-        // The ready input box ("❯ " under a rule) is not a prompt.
+
         assert!(parse_prompt(&screen("input_ready")).is_none());
         assert!(parse_prompt(&screen("security_notes")).is_none());
-        // The theme picker is not a yes/no prompt.
+
         assert!(parse_prompt(&screen("theme")).is_none_or(|p| p.kind == PromptKind::Other));
     }
 
-    /// A question dialog (AskUserQuestion) is waiting for a pick: it is not
-    /// "ready for a prompt", so nothing may be pasted into it.
     #[test]
     fn a_question_dialog_is_not_ready() {
         let q = screen("ask_question");
@@ -527,7 +500,7 @@ mod tests {
         let p = parse_prompt(&screen("plan_approval")).unwrap();
         assert_eq!(p.kind, PromptKind::Plan);
         assert_eq!(p.options.len(), 3);
-        // The plan's own numbered steps above are not options.
+
         assert_eq!(p.options[0].label, "Yes, and auto-accept edits");
         assert_eq!(p.index_for(Choice::Approve), Some(1));
         assert_eq!(p.index_for(Choice::Always), Some(0));
@@ -557,8 +530,6 @@ mod tests {
         assert!(describe_request(&screen("input_ready")).is_none());
     }
 
-    /// Fuzz style: random screens with pointers, digits, box drawing, wide
-    /// and combining characters never panic the prompt reader.
     #[test]
     fn fuzz_prompt_parser() {
         let mut seed: u64 = 0xdead_beef_cafe_f00d;

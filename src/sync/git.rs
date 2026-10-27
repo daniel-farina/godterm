@@ -1,30 +1,14 @@
-//! git and gh for the sync repos. Every call is non-interactive (the
-//! settings of `project_git::git()`), https remotes on github.com get
-//! GodTerm's own credential helper for one gh account (the token comes
-//! from `gh auth token --user <acct>` at the moment git asks: never on a
-//! command line, never logged, never written to disk; `gh auth switch`
-//! is never run), and no push can ever force: [`check_args`] refuses
-//! every argument list that would, and a test runs it over every call.
-//!
-//! Phase 1's git_cred will own the credential helper for project repos;
-//! this one is the minimal version the sync needs, to be unified then.
-
 use anyhow::{anyhow, bail, Context, Result};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Where the sync repos live: GitHub through gh, or a folder of bare
-/// repos standing in for it (`file:///...`, tests and local mirrors).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Remote {
     GitHub { account: String, exe: PathBuf },
     Local { base: PathBuf },
 }
 
-/// A folder as a `file://` URL git and the config accept: `file:///tmp/x`
-/// on unix, `file:///C:/x/y` on Windows (forward slashes, no backslashes,
-/// which TOML strings and git both mangle).
 pub fn file_url(p: &Path) -> String {
     let s = p.to_string_lossy().replace('\\', "/");
     if s.starts_with('/') {
@@ -34,8 +18,6 @@ pub fn file_url(p: &Path) -> String {
     }
 }
 
-/// The folder behind a `file://` URL (the inverse of `file_url`); a
-/// Windows drive path loses the slash in front of its drive letter.
 pub fn from_file_url(u: &str) -> Option<PathBuf> {
     let p = u.strip_prefix("file://")?;
     let b = p.as_bytes();
@@ -65,7 +47,6 @@ impl Remote {
         matches!(self, Remote::GitHub { .. })
     }
 
-    /// The credential helper for git calls on this remote.
     pub fn cred(&self) -> Option<Cred> {
         match self {
             Remote::GitHub { account, exe } => Some(Cred {
@@ -76,7 +57,6 @@ impl Remote {
         }
     }
 
-    /// Whether the repo exists.
     pub fn exists(&self, owner: &str, name: &str) -> Result<bool> {
         match self {
             Remote::Local { base } => Ok(base
@@ -100,15 +80,13 @@ impl Remote {
         }
     }
 
-    /// Create a private repo (GitHub: `gh repo create --private`, then
-    /// checked private; there is no public path). Callers ask first.
     pub fn create_private(&self, owner: &str, name: &str) -> Result<()> {
         match self {
             Remote::Local { base } => {
                 let d = base.join(owner).join(format!("{name}.git"));
                 std::fs::create_dir_all(&d)?;
                 run(&d, &["init", "-q", "--bare", "-b", "main"], None)?;
-                // Partial clones of it work like GitHub's.
+
                 run(&d, &["config", "uploadpack.allowFilter", "true"], None)?;
                 run(
                     &d,
@@ -142,9 +120,6 @@ impl Remote {
 }
 
 impl Remote {
-    /// A repo's visibility ("PRIVATE", "PUBLIC", "INTERNAL"); None when it
-    /// cannot be told. A folder remote reads a `visibility` file in the
-    /// bare repo (tests, local mirrors): no file is unknown.
     pub fn visibility(&self, owner: &str, name: &str) -> Option<String> {
         match self {
             Remote::Local { base } => {
@@ -159,7 +134,6 @@ impl Remote {
     }
 }
 
-/// `gh repo create` arguments: always private, never pushed by gh.
 pub fn create_args(full: &str) -> Vec<String> {
     vec![
         "repo".into(),
@@ -171,7 +145,6 @@ pub fn create_args(full: &str) -> Vec<String> {
     ]
 }
 
-/// The credential helper for one gh account.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cred {
     pub account: String,
@@ -179,8 +152,6 @@ pub struct Cred {
 }
 
 impl Cred {
-    /// `-c` settings that make git ask this program, and only for
-    /// https://github.com.
     pub fn config_args(&self) -> Vec<String> {
         let exe = self.exe.to_string_lossy().replace('\'', "'\\''");
         vec![
@@ -197,7 +168,6 @@ impl Cred {
     }
 }
 
-/// A gh account name as GitHub allows them.
 pub fn valid_account(a: &str) -> bool {
     !a.is_empty()
         && a.len() <= 39
@@ -205,7 +175,6 @@ pub fn valid_account(a: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Arguments that would force a push, or rewrite a remote ref.
 pub fn check_args(args: &[String]) -> Result<()> {
     let is_push = args.iter().any(|a| a == "push");
     for a in args {
@@ -227,10 +196,10 @@ pub fn check_args(args: &[String]) -> Result<()> {
 
 #[cfg(test)]
 pub mod record {
-    //! Every argument list the sync built, for the no-force test.
+
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
-    /// (the repo folder, the arguments).
+
     pub static CALLS: Mutex<Vec<(PathBuf, Vec<String>)>> = Mutex::new(Vec::new());
     pub fn push(dir: &Path, a: &[String]) {
         CALLS
@@ -243,12 +212,8 @@ pub mod record {
     }
 }
 
-/// The mark of GodTerm's own sync repos (the state repo's working copy,
-/// the conversation repos). Only these are ever committed to or pushed:
-/// project repos are touched only by the user from the Git section.
 pub const MARK: &str = "godterm-sync";
 
-/// Mark a sync repo (its git dir gets the mark file).
 pub fn mark(dir: &Path) -> Result<()> {
     let gd = if dir.join(".git").is_dir() {
         dir.join(".git")
@@ -263,7 +228,6 @@ pub fn is_sync_repo(dir: &Path) -> bool {
     dir.join(".git").join(MARK).is_file() || dir.join(MARK).is_file()
 }
 
-/// Subcommands that write history or remote refs.
 const WRITES: &[&str] = &[
     "commit",
     "commit-tree",
@@ -274,7 +238,6 @@ const WRITES: &[&str] = &[
     "tag",
 ];
 
-/// A non-interactive git in `dir`.
 pub fn git(dir: &Path, cred: Option<&Cred>, args: &[String]) -> Result<Command> {
     check_args(args)?;
     if let Some(sub) = args.iter().find(|a| !a.starts_with('-')) {
@@ -319,7 +282,6 @@ pub fn git(dir: &Path, cred: Option<&Cred>, args: &[String]) -> Result<Command> 
         .env_remove("GIT_INDEX_FILE")
         .stdin(Stdio::null());
     if cfg!(test) {
-        // Tests never read the user's own git settings.
         c.env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1");
     }
@@ -330,7 +292,6 @@ fn owned(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| s.to_string()).collect()
 }
 
-/// Run git; stdout on success, stderr in the error.
 pub fn run(dir: &Path, args: &[&str], cred: Option<&Cred>) -> Result<String> {
     run_env(dir, args, cred, &[])
 }
@@ -356,7 +317,6 @@ pub fn run_env(
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Bytes on stdout (cat-file).
 pub fn run_bytes(dir: &Path, args: &[&str], cred: Option<&Cred>) -> Result<Vec<u8>> {
     let out = git(dir, cred, &owned(args))?.output()?;
     if !out.status.success() {
@@ -369,7 +329,6 @@ pub fn run_bytes(dir: &Path, args: &[&str], cred: Option<&Cred>) -> Result<Vec<u
     Ok(out.stdout)
 }
 
-/// Write bytes into the object store, returning the blob id.
 pub fn hash_object(dir: &Path, data: &[u8]) -> Result<String> {
     let mut c = git(dir, None, &owned(&["hash-object", "-w", "--stdin"]))?;
     c.stdin(Stdio::piped())
@@ -390,15 +349,13 @@ pub fn hash_object(dir: &Path, data: &[u8]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// How a push went.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pushed {
     Done,
-    /// Someone else pushed first (not a fast forward): fetch and redo.
+
     Rejected,
 }
 
-/// `git push <remote> <src>:refs/heads/<branch>`, never forced.
 pub fn push(
     dir: &Path,
     remote: &str,
@@ -421,8 +378,6 @@ pub fn push(
         || all.contains("non-fast-forward")
         || all.contains("fetch first")
         || all.contains("stale info")
-        // The ref moved between our read and our write (two pushes at
-        // once): the atomic update refused ours.
         || all.contains("incorrect old value")
         || all.contains("cannot lock ref")
         || all.contains("failed to update ref")
@@ -432,7 +387,6 @@ pub fn push(
     bail!("git push: {}", all.trim())
 }
 
-/// The commit a ref names, if it exists.
 pub fn rev(dir: &Path, r: &str) -> Option<String> {
     run(
         dir,
@@ -444,8 +398,6 @@ pub fn rev(dir: &Path, r: &str) -> Option<String> {
     .filter(|s| !s.is_empty())
 }
 
-/// Fetch `branch` from origin into `refs/remotes/origin/<branch>`. A
-/// missing branch (a new empty repo) is not an error.
 pub fn fetch(dir: &Path, branch: &str, cred: Option<&Cred>) -> Result<()> {
     let spec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
     match run(dir, &["fetch", "-q", "--no-tags", "origin", &spec], cred) {
@@ -455,9 +407,6 @@ pub fn fetch(dir: &Path, branch: &str, cred: Option<&Cred>) -> Result<()> {
     }
 }
 
-/// `godterm sync git-credential --account <acct> get|store|erase`: git's
-/// credential protocol. `get` for https://github.com answers with the
-/// account's gh token; everything else answers nothing.
 pub fn credential_command(args: &[String]) -> Result<()> {
     let acct = args
         .iter()
@@ -481,8 +430,6 @@ pub fn credential_command(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The answer to one credential request (`gh` is the program to ask,
-/// a stub in tests).
 pub fn credential_answer(op: &str, acct: &str, input: &str, gh_prog: &str) -> Result<String> {
     if op != "get" || !valid_account(acct) {
         return Ok(String::new());
@@ -501,7 +448,6 @@ pub fn credential_answer(op: &str, acct: &str, input: &str, gh_prog: &str) -> Re
     Ok(format!("username=x-access-token\npassword={token}\n"))
 }
 
-/// One account's gh token (from the keyring through gh). Never logged.
 #[cfg_attr(test, allow(dead_code))]
 pub fn gh_token(acct: &str) -> Result<String> {
     gh_token_with("gh", acct)
@@ -527,8 +473,6 @@ fn gh_token_with(prog: &str, acct: &str) -> Result<String> {
     Ok(t)
 }
 
-/// Run gh as one account: its token in GH_TOKEN (the child's environment,
-/// never its arguments), prompts off.
 fn gh(acct: &str, args: &[&str]) -> Result<std::process::Output> {
     #[cfg(test)]
     {
@@ -549,8 +493,6 @@ fn gh(acct: &str, args: &[&str]) -> Result<std::process::Output> {
     }
 }
 
-/// A repo's visibility on GitHub ("PRIVATE", "PUBLIC", "INTERNAL") as
-/// `account` sees it; None when gh cannot say.
 pub fn visibility(account: &str, full: &str) -> Option<String> {
     let out = gh(account, &["repo", "view", full, "--json", "visibility"]).ok()?;
     if !out.status.success() {
@@ -560,7 +502,6 @@ pub fn visibility(account: &str, full: &str) -> Option<String> {
     v["visibility"].as_str().map(str::to_uppercase)
 }
 
-/// Which gh accounts are logged in on github.com (`gh auth status`).
 pub fn gh_accounts() -> Vec<String> {
     if cfg!(test) {
         return vec![];
@@ -611,7 +552,7 @@ mod tests {
             "abc:refs/heads/main"
         ]))
         .is_ok());
-        // Fetches may update their own tracking refs.
+
         assert!(check_args(&owned(&[
             "fetch",
             "origin",
@@ -643,8 +584,7 @@ mod tests {
         let d = std::env::temp_dir().join(format!("gt-sync-cred-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let stub = d.join("gh");
-        // The stub prints a token only for the right account and records
-        // its arguments (never the token's).
+
         std::fs::write(
             &stub,
             format!(

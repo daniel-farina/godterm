@@ -1,7 +1,3 @@
-//! The Settings screen model: what can be set, how it is shown, and how a
-//! change is written to config.toml (with toml_edit, so comments and layout
-//! survive).
-
 use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 use toml_edit::{value, Array, DocumentMut, Item};
@@ -19,7 +15,7 @@ pub enum Section {
     Setup,
     Browser,
     Sync,
-    /// GitHub accounts and repos (owners, folder rules, bindings).
+
     Git,
     Keys,
     About,
@@ -43,40 +39,28 @@ pub const SECTIONS: &[(Section, &str)] = &[
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
     Toggle,
-    /// Cycles through these values.
+
     Choice(&'static [&'static str]),
-    /// Integer with bounds and step.
-    Number {
-        min: i64,
-        max: i64,
-        step: i64,
-    },
-    /// Float with bounds and step.
-    Float {
-        min: f64,
-        max: f64,
-        step: f64,
-    },
-    /// Cycles through values found at runtime (devices, models, voices).
+
+    Number { min: i64, max: i64, step: i64 },
+
+    Float { min: f64, max: f64, step: f64 },
+
     Pick(Vec<String>),
-    /// Free text; lists are comma separated.
+
     Text,
-    /// Comma separated list of strings.
+
     List,
-    /// A secret kept outside config.toml (the Keychain): typed masked,
-    /// shown only as saved or not.
+
     Secret,
 }
 
-/// The xAI API key row: never written to config.toml.
 pub const XAI_KEY: &str = "voice.grok.api_key";
 
-/// Where a setting lives in config.toml.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Key {
-    /// A top level key, or `voice.x`.
     Global(&'static str),
-    /// A key inside the `[[account]]` table at this index.
+
     Account(usize, &'static str),
 }
 
@@ -86,13 +70,13 @@ pub struct Setting {
     pub label: String,
     pub kind: Kind,
     pub help: &'static str,
-    /// Wired to config but the feature is not built yet.
+
     pub soon: bool,
-    /// Per account overrides may be unset ("inherit").
+
     pub inherit: bool,
-    /// The header it sits under in its section ("" for none).
+
     pub group: &'static str,
-    /// Set in a search for a row the current choices hide: why.
+
     pub hidden: Option<String>,
 }
 
@@ -119,7 +103,6 @@ pub const MODES: &[&str] = &[
     "dont-ask",
 ];
 
-/// Every row of `sec`, the hidden ones too (marked with why), for search.
 pub fn all_settings(sec: Section, cfg: &Config) -> Vec<Setting> {
     match sec {
         Section::Voice => voice_rows(cfg, true),
@@ -128,8 +111,6 @@ pub fn all_settings(sec: Section, cfg: &Config) -> Vec<Setting> {
     }
 }
 
-/// Rows matching a search across every section (hidden ones included):
-/// each with its section and header as the group.
 pub fn search(cfg: &Config, query: &str) -> Vec<(Section, Setting)> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
@@ -151,7 +132,6 @@ pub fn search(cfg: &Config, query: &str) -> Vec<(Section, Setting)> {
     out
 }
 
-/// Settings shown in `sec`. Account rows are generated per account.
 pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
     match sec {
         Section::General => vec![
@@ -209,8 +189,8 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("tab_list_columns", "Tab list width (columns)", Kind::Number { min: 0, max: 64, step: 2 }, "Width of the side tab lists, 22 to 64 columns (0: a share of the pane). From 36 each tab also shows its session's own title. A list dragged or resized with Ctrl-a < / > keeps its own width."),
             g("expand_collapsed_on_focus", "Expand collapsed panes on focus", Kind::Toggle, "A collapsed pane (a one row strip, Ctrl-a _, or a sideways column, Ctrl-a \\) expands when it gets the focus from keys or the assistant. Off: only a click on its strip or Ctrl-a _ expands it."),
             g("tab_model_bar", "Model bar in each pane", Kind::Toggle, "A row under each pane's tab with its harness's top models (Haiku, Sonnet, Opus; Grok's for Grok tabs), the current one highlighted. A click switches the tab with its own /model command, at once when it is idle, else after its turn (Ctrl-a # then a number). Hidden on panes under 12 rows. Codex, Cursor, Antigravity and OpenCode panes have no bar: pick their model inside the CLI."),
-            g("tab_models.claude", "Model bar: Claude models", Kind::List, "Models for Claude tabs' model bar, comma separated (/model aliases, name=Label for a label), at most 4. Empty: Haiku, Sonnet, Opus. Note: Claude Code's /model also saves the model as the account's default for new sessions."),
-            g("tab_models.grok", "Model bar: Grok models", Kind::List, "Models for Grok tabs' model bar, comma separated (model ids, id=Label for a label), at most 4. Empty: grok-4.7-build-fast, grok-4.7, grok-4.6."),
+            g("tab_models.claude", "Model bar: Claude models", Kind::List, "Models for Claude tabs' model bar, comma separated (/model aliases, name=Label for a label), at most 4. Empty: the newest of each family Claude Code lists (Haiku, Sonnet, Opus, Fable). Note: Claude Code's /model also saves the model as the account's default for new sessions."),
+            g("tab_models.grok", "Model bar: Grok models", Kind::List, "Models for Grok tabs' model bar, comma separated (model ids, id=Label for a label), at most 4. Empty: the first models `grok models` lists."),
             g("ungrouped_tabs", "Ungrouped tabs", Kind::Choice(&["bottom", "top"]), "Where tabs outside any group sit in a tab list: under the groups, or above them (pinned tabs are always first)."),
             g("usage_colors", "Usage colors", Kind::Choice(&["gradient", "bands", "mono"]), "By percent left: gradient blends sage, sand and clay; bands uses five steps (75+, 50, 25, 10, under 10); mono is gray, bright under 10%. Under 10% is bold, under 5% gets a ▼."),
         ],
@@ -266,7 +246,6 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
     }
 }
 
-/// The current value of a setting as config.toml would hold it.
 pub fn current(cfg: &Config, s: &Setting) -> Option<toml::Value> {
     let root = toml::Value::try_from(cfg).ok()?;
     match &s.key {
@@ -281,7 +260,6 @@ pub fn current(cfg: &Config, s: &Setting) -> Option<toml::Value> {
     }
 }
 
-/// How the value reads on screen.
 pub fn display(cfg: &Config, s: &Setting) -> String {
     if s.kind == Kind::Secret {
         return match crate::voice::grok_tts::key_saved() {
@@ -310,7 +288,6 @@ pub fn display(cfg: &Config, s: &Setting) -> String {
     }
 }
 
-/// A dim note beside the value: what an engine or a voice is.
 pub fn describe(cfg: &Config, s: &Setting) -> Option<String> {
     let v = display(cfg, s);
     match s.key {
@@ -325,7 +302,6 @@ pub fn describe(cfg: &Config, s: &Setting) -> Option<String> {
     }
 }
 
-/// Floats as typed: f32 settings come back as 0.800000011920929.
 pub fn fmt_float(f: f64) -> String {
     let s = format!("{f:.3}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
@@ -336,12 +312,10 @@ pub fn fmt_float(f: f64) -> String {
     }
 }
 
-/// The value after one step of a click or Right (`dir` +1) / Left (-1).
 pub fn stepped(cfg: &Config, s: &Setting, dir: i64) -> Option<Item> {
     let cur = current(cfg, s);
     Some(match &s.kind {
         Kind::Toggle => {
-            // Inherited overrides start from the global value.
             let b = match &cur {
                 Some(toml::Value::Boolean(b)) => *b,
                 _ => match &s.key {
@@ -388,8 +362,6 @@ fn cycle(opts: &[String], cur: Option<&toml::Value>, dir: i64) -> Option<String>
     Some(opts[next].clone())
 }
 
-/// Device, model and voice lists for the Voice and Audio section, found in
-/// the background when Settings opens (listing devices takes a moment).
 #[derive(Debug, Clone, Default)]
 pub struct AudioLists {
     pub inputs: Vec<String>,
@@ -397,20 +369,18 @@ pub struct AudioLists {
     pub models: Vec<String>,
     pub kokoro_voices: Vec<String>,
     pub say_voices: Vec<String>,
-    /// xAI voices (fetched when a Grok credential works, else the known
-    /// list).
+
     pub grok_voices: Vec<String>,
 }
 
 pub static AUDIO_LISTS: std::sync::Mutex<Option<AudioLists>> = std::sync::Mutex::new(None);
 
-/// Where the device lists stand, for the Settings screen.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ListState {
     NotStarted,
     Detecting,
     Done,
-    /// Something did not answer in time (it was stopped).
+
     Failed(String),
 }
 
@@ -420,8 +390,6 @@ pub fn list_state() -> ListState {
     LIST_STATE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// Detect the device and voice lists in the background, once (Settings
-/// opened); `retry` runs it again. Never blocks the caller.
 pub fn start_audio_lists(vc: &crate::config::VoiceCfg, retry: bool) {
     {
         let mut st = LIST_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -436,8 +404,6 @@ pub fn start_audio_lists(vc: &crate::config::VoiceCfg, retry: bool) {
     std::thread::spawn(move || detect_audio_lists(&vc));
 }
 
-/// Something that lists devices, at most LIST_TIMEOUT (it runs on a
-/// thread of its own; a call that never returns is left behind).
 fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -446,11 +412,9 @@ fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T
     rx.recv_timeout(crate::voice::LIST_TIMEOUT).ok()
 }
 
-/// Tests: a device lister that never answers.
 #[cfg(test)]
 pub static HANG_LISTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Fill AUDIO_LISTS (blocking, with timeouts; call from a thread).
 pub fn detect_audio_lists(vc: &crate::config::VoiceCfg) {
     #[cfg(test)]
     if HANG_LISTS.load(std::sync::atomic::Ordering::SeqCst) {
@@ -518,7 +482,6 @@ fn with_default(first: &str, rest: &[String]) -> Vec<String> {
     v
 }
 
-/// A picker when the list is known, free text until then.
 fn pick_or_text(list: Option<Vec<String>>) -> Kind {
     match list {
         Some(v) if v.len() > 1 => Kind::Pick(v),
@@ -530,9 +493,6 @@ const NOISE_FLOORS: &[&str] = &[
     "auto", "-75", "-70", "-65", "-60", "-55", "-50", "-45", "-40",
 ];
 
-/// Rows of one section, grouped under headers. Rows that do not apply
-/// to the current choices are left out, or with `all` (search) kept and
-/// marked with why they are hidden.
 struct Rows {
     v: Vec<Setting>,
     all: bool,
@@ -557,7 +517,6 @@ impl Rows {
         self.v.push(s);
     }
 
-    /// Shown when `cond`; in a search, kept as "hidden: applies when ...".
     fn when(&mut self, cond: bool, applies: &str, s: Setting) {
         if cond {
             self.add(s);
@@ -569,11 +528,8 @@ impl Rows {
     }
 }
 
-/// The section headers that start collapsed.
 pub const COLLAPSED_BY_DEFAULT: &[&str] = &["Advanced and debugging"];
 
-/// Settings > Voice and Audio > Talk back: the engine (local or cloud),
-/// its fallbacks, and only the chosen engine's panel.
 fn talk_back_rows(r: &mut Rows, cfg: &Config, l: Option<&AudioLists>) {
     let vc = &cfg.voice;
     let on = vc.tts && vc.tts_engine != "off";
@@ -585,7 +541,7 @@ fn talk_back_rows(r: &mut Rows, cfg: &Config, l: Option<&AudioLists>) {
         Kind::Toggle,
         "Spoken confirmations, read backs and announcements.",
     ));
-    r.when(vc.tts, "talk back is on", g("voice.tts_engine", "Engine", Kind::Choice(crate::voice::catalog::engine_choices()), "kokoro: built in, the default and recommended, local. chatterbox and ming: optional local voices on Apple Silicon (install below). say: the macOS voices, local. grok: xAI's cloud voices (the spoken text is sent to xAI). off: silent."));
+    r.when(vc.tts, "talk back is on", g("voice.tts_engine", "Voice engine", Kind::Choice(crate::voice::catalog::engine_choices()), "kokoro: built in, the default and recommended, local. chatterbox and ming: optional local voices on Apple Silicon (install below). say: the macOS voices, local. grok: xAI's cloud voices (the spoken text is sent to xAI). off: silent."));
     let others: Vec<&str> = ["kokoro", "say", "grok"]
         .into_iter()
         .filter(|e| *e != eng)
@@ -616,7 +572,7 @@ fn talk_back_rows(r: &mut Rows, cfg: &Config, l: Option<&AudioLists>) {
             "Where talk back plays.",
         ),
     );
-    // The chosen engine's panel only.
+
     let grok = on && eng == "grok";
     let sources = crate::voice::grok_tts::sources(cfg);
     let mut ids: Vec<String> = vec!["auto".into()];
@@ -728,14 +684,11 @@ fn talk_back_rows(r: &mut Rows, cfg: &Config, l: Option<&AudioLists>) {
     );
 }
 
-/// The install rows of the local voices (not config keys: their value is
-/// the install status, Enter installs or removes after a yes).
 pub const LOCAL_INSTALL: &[(&str, &str)] = &[
     ("chatterbox", "voice.local_install.chatterbox"),
     ("ming", "voice.local_install.ming"),
 ];
 
-/// The local engine an install row is for.
 pub fn local_install_row(key: &Key) -> Option<&'static str> {
     LOCAL_INSTALL
         .iter()
@@ -743,8 +696,6 @@ pub fn local_install_row(key: &Key) -> Option<&'static str> {
         .map(|(id, _)| *id)
 }
 
-/// Settings > Voice and Audio > Local voices: install or remove each
-/// (Apple Silicon only), and the chosen one's voice.
 fn local_voice_rows(r: &mut Rows, cfg: &Config) {
     use crate::voice::local_tts;
     let vc = &cfg.voice;
@@ -881,7 +832,7 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
     ));
 
     r.group("Speech recognition");
-    r.add(g("voice.engine", "Engine", Kind::Choice(&["auto", "apple", "whisper", "grok"]), "apple: Apple's on-device recognizer (macOS 26+); whisper: whisper.cpp, local; auto: Apple when available, else whisper; grok: xAI's cloud recognizer: your microphone audio (each utterance, after the speaker lock) is sent to xAI."));
+    r.add(g("voice.engine", "Recognizer", Kind::Choice(&["auto", "apple", "whisper", "grok"]), "apple: Apple's on-device recognizer (macOS 26+); whisper: whisper.cpp, local; auto: Apple when available, else whisper; grok: xAI's cloud recognizer: your microphone audio (each utterance, after the speaker lock) is sent to xAI."));
     let whisper = vc.engine == "whisper" || vc.engine == "auto";
     let grok = vc.engine == "grok";
     r.add(g(
@@ -936,7 +887,7 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
     );
     r.when(whisper, "engine = whisper or auto", g("voice.beam_size", "Beam size", Kind::Number { min: 1, max: 8, step: 1 }, "1 to 8: beam search for final transcripts (5 is more accurate; 1 is greedy and quicker)."));
     r.when(whisper, "engine = whisper or auto", g("voice.whisper_vad", "Whisper VAD", Kind::Toggle, "whisper.cpp's own voice activity detection trims non speech inside each utterance (a 1 MB model, fetched once)."));
-    // Grok: the xAI login is shared with Grok talk back.
+
     let sources = crate::voice::grok_tts::sources(cfg);
     let mut ids: Vec<String> = vec!["auto".into()];
     ids.extend(sources.iter().map(|s| s.id.clone()));
@@ -1228,7 +1179,24 @@ fn assistant_rows(cfg: &Config, all: bool) -> Vec<Setting> {
     );
     r.add(g("assistant.mode", "Mode", Kind::Choice(&["always", "off"]), "always: the assistant understands everything you say or type (apart from the instant one word commands); off: only the instant commands work. About your sessions it only gets metadata and short snippets, never whole transcripts."));
     r.when(on, why, g("assistant.account", "Account", Kind::Pick(accts), "Whose quota it spends. best: the logged in account with the most 5 hour quota left (it moves when that one runs low)."));
-    r.when(on, why, g("assistant.model", "Model", Kind::Text, "claude-haiku-4-5 (default, quickest and lightest on quota), or sonnet / opus for harder requests."));
+
+    let mut models: Vec<String> = crate::model_list::assistant_models(&cfg.assistant.provider, cfg)
+        .unwrap_or_else(|| {
+            crate::providers::by_id(&cfg.assistant.provider)
+                .models
+                .iter()
+                .map(|m| m.0.to_string())
+                .collect()
+        });
+    if !models.contains(&cfg.assistant.model) && !cfg.assistant.model.is_empty() {
+        models.push(cfg.assistant.model.clone());
+    }
+    let model_kind = if models.len() > 1 {
+        Kind::Pick(models)
+    } else {
+        Kind::Text
+    };
+    r.when(on, why, g("assistant.model", "Model", model_kind, "claude-sonnet-5-5 (default, balanced), claude-haiku-4-5 (quickest and lightest on quota), opus or fable for harder requests."));
     r.when(
         on,
         why,
@@ -1435,7 +1403,6 @@ fn floats_read_well() {
     assert_eq!(fmt_float(0.0), "0");
 }
 
-/// Parse typed text for a Text or List setting.
 pub fn from_text(s: &Setting, text: &str) -> Item {
     match s.kind {
         Kind::List => {
@@ -1449,7 +1416,6 @@ pub fn from_text(s: &Setting, text: &str) -> Item {
     }
 }
 
-/// Add an `[[account]]` table at the end of config.toml, keeping comments.
 pub fn append_account(path: &Path, a: &crate::config::AccountCfg) -> Result<()> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut doc: DocumentMut = text.parse().context("config.toml does not parse")?;
@@ -1478,7 +1444,6 @@ pub fn append_account(path: &Path, a: &crate::config::AccountCfg) -> Result<()> 
     Ok(())
 }
 
-/// Replace `t[k]`, keeping the comments around the old value.
 fn set_keep_decor(t: &mut toml_edit::Table, k: &str, item: Item) {
     match (
         t.get(k).and_then(Item::as_value).map(|v| v.decor().clone()),
@@ -1494,9 +1459,6 @@ fn set_keep_decor(t: &mut toml_edit::Table, k: &str, item: Item) {
     }
 }
 
-/// Write one setting into config.toml, keeping comments and formatting.
-/// `None` removes the key, which brings back the default (or, for account
-/// overrides, inherits the global value). The result must still parse.
 pub fn write(path: &Path, key: &Key, item: Option<Item>) -> Result<()> {
     if *key == Key::Global(XAI_KEY) {
         return Err(anyhow!("API keys are never written to config.toml"));
@@ -1575,13 +1537,13 @@ mod tests {
         assert_eq!(cfg.voice.end_silence_ms, 900);
         assert_eq!(cfg.accounts[0].label, "Work");
         assert_eq!(cfg.accounts[0].auto_trust, Some(false));
-        // Reset removes the key: back to the default or to inheriting.
+
         write(&p, &Key::Account(0, "auto_trust"), None).unwrap();
         write(&p, &Key::Global("permission_mode"), None).unwrap();
         let cfg = Config::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(cfg.accounts[0].auto_trust, None);
         assert_eq!(cfg.permission_mode, "bypass");
-        // Invalid values are refused and the file is unchanged.
+
         let before = std::fs::read_to_string(&p).unwrap();
         assert!(write(&p, &Key::Account(0, "name"), Some(value("../bad"))).is_err());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), before);

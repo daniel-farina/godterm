@@ -111,7 +111,6 @@ Set-Content -Encoding ASCII "$h\tour_done" "1"
 """)
 
     print("==> run the TUI in a console (ConPTY over ssh -tt)")
-    # our own test runs must never show up in godterm.com's install counts
     launch = (f"$env:GODTERM_HOME='{HOME}'; $env:GODTERM_NO_TELEMETRY='1'; $env:DO_NOT_TRACK='1'; "
               f"$env:GODTERM_NO_AUDIO='1'; $env:GODTERM_NO_MIC='1'; "
               f"$env:GODTERM_NO_OPEN='1'; & '{exe_path}'; \"GODTERM_EXIT=$LASTEXITCODE\"")
@@ -139,7 +138,6 @@ Set-Content -Encoding ASCII "$h\tour_done" "1"
                     return
                 raw.extend(chunk)
                 stream.feed(chunk)
-                # Answer cursor position queries like a real terminal.
                 if b"\x1b[6n" in chunk:
                     os.write(fd, f"\x1b[{screen.cursor.y + 1};{screen.cursor.x + 1}R".encode())
 
@@ -167,12 +165,12 @@ Set-Content -Encoding ASCII "$h\tour_done" "1"
     check("TUI renders account Bravo", wait_for("Bravo", 5))
     check("fake claude runs in a pane", wait_for("fake claude in", 20))
     print("---- screen after start ----\n" + text().rstrip() + "\n----")
-    send(b"\x01t")  # Ctrl-a t: new tab
+    send(b"\x01t")
     check("New Tab dialog opens", wait_for("New tab for Alpha", 10))
     send(b"\r")
     check("second tab opens", wait_for("[2/2]", 15))
     print("---- screen with two tabs ----\n" + text().rstrip() + "\n----")
-    send(b"\x01Q")  # Ctrl-a Q: quit
+    send(b"\x01Q")
     exited = False
     end = time.time() + 20
     while time.time() < end:

@@ -1,6 +1,3 @@
-//! Drawing the Git section (app_gitpanel): the browser dialog's look, with
-//! the actions as clickable rows and the buttons on the bottom edge.
-
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, BorderType, Borders, Clear};
@@ -25,8 +22,6 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, d: &GitDlg) {
     draw_view(f, area, app, &app.git_dialog_view(d));
 }
 
-/// A Git dialog (the Git section, the accounts and rules editor). Taller
-/// than the screen: scrolled so the selected row stays in view.
 pub fn draw_view(f: &mut Frame, area: Rect, app: &App, v: &DlgView) {
     let w = 104u16.min(area.width);
     let inner_w = w.saturating_sub(4) as usize;
@@ -98,7 +93,6 @@ pub fn draw_view(f: &mut Frame, area: Rect, app: &App, v: &DlgView) {
     crate::ui_chrome::modal_chrome(buf, app, r, &buttons);
 }
 
-/// Settings > GitHub: what is set now, and the button to the editor.
 pub fn draw_cfg_section(f: &mut Frame, app: &App, area: Rect) {
     let buf = f.buffer_mut();
     let limit = area.x + area.width;

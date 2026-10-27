@@ -1,15 +1,7 @@
-//! Deterministic random ("fuzz style") tests of what external input
-//! reaches: PTY output through the vt100 parser and every screen reader,
-//! text from agents and transcripts through the markdown and text
-//! helpers, and terminal events (keys, mouse anywhere, pastes, resizes
-//! from 1x1 up) through the app and a draw. Nothing may panic. A fixed
-//! seed per case, so a failure is replayed by running the test again.
-
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-/// xorshift64*: small, fast and the same everywhere.
 struct Rng(u64);
 
 impl Rng {
@@ -35,7 +27,6 @@ impl Rng {
     }
 }
 
-/// Pieces agent CLIs really print, and some they never should.
 const PIECES: &[&str] = &[
     "\x1b[2J",
     "\x1b[H",
@@ -115,7 +106,6 @@ const PIECES: &[&str] = &[
     "\u{ffff}",
 ];
 
-/// A random PTY stream: pieces, random bytes (cut UTF-8 too), long runs.
 fn stream(r: &mut Rng) -> Vec<u8> {
     let mut out = Vec::new();
     for _ in 0..r.below(60) + 1 {
@@ -128,7 +118,6 @@ fn stream(r: &mut Rng) -> Vec<u8> {
             }
             7 => out.extend(std::iter::repeat_n(b'x', r.below(500))),
             8 => {
-                // A CSI with random parameters.
                 out.extend_from_slice(b"\x1b[");
                 for _ in 0..r.below(6) {
                     out.extend_from_slice(r.next().to_string().as_bytes());
@@ -137,7 +126,6 @@ fn stream(r: &mut Rng) -> Vec<u8> {
                 out.push(*r.pick(b"ABCDHJKLMPSTXZ@`fmnrhlq"));
             }
             _ => {
-                // Half a multi-byte char.
                 let s = r.pick(PIECES).as_bytes();
                 out.extend_from_slice(&s[..r.below(s.len() + 1)]);
             }
@@ -150,7 +138,6 @@ fn text_of(r: &mut Rng) -> String {
     String::from_utf8_lossy(&stream(r)).into_owned()
 }
 
-/// Everything that reads a pane's screen.
 fn read_screen(screen: &vt100::Screen, chunk: &[u8], area: ratatui::layout::Rect) {
     use crate::harness::Harness;
     let _ = crate::pane::query_replies(chunk, screen);
@@ -183,7 +170,7 @@ fn random_pty_output_never_panics_the_parser_or_a_screen_reader() {
         let mut r = Rng::new(seed);
         let (rows, cols) = (r.below(60) as u16 + 2, r.below(200) as u16 + 10);
         let mut p = vt100::Parser::new(rows, cols, r.below(500));
-        // As the PTY reader does (pane.rs): huge counts capped first.
+
         let mut guard = crate::vt_guard::CsiCap::default();
         for _ in 0..r.below(12) + 1 {
             let chunk = stream(&mut r);
@@ -201,7 +188,6 @@ fn random_pty_output_never_panics_the_parser_or_a_screen_reader() {
             );
             read_screen(p.screen(), &chunk, area);
             if r.chance(20) {
-                // What Pane::resize does (it keeps at least 2 x 10).
                 let (rows, cols) = (r.below(80) as u16 + 2, r.below(300) as u16 + 10);
                 p.screen_mut().set_size(rows, cols);
             }
@@ -214,8 +200,7 @@ fn random_pty_output_never_panics_the_parser_or_a_screen_reader() {
             }
         }
     }
-    // One read used to take over a second (`ESC [ 65535 @`), the UI
-    // waiting on the parser lock meanwhile.
+
     assert!(
         slowest < std::time::Duration::from_millis(500),
         "slowest chunk {slowest:?}"
@@ -253,7 +238,7 @@ fn random_text_never_panics_the_text_helpers() {
         let _ = crate::session_rename::clean_name(&t);
         let _ = crate::app_busy::is_question(&t, None);
         let _ = crate::assistant_images::paste_paths(&t);
-        // The input box: rows, caret and clicks at any position.
+
         let rows = crate::input_edit::rows(&t, w);
         for _ in 0..5 {
             let pos = crate::input_edit::snap(&t, r.below(t.len() + 3));
@@ -263,7 +248,6 @@ fn random_text_never_panics_the_text_helpers() {
     }
 }
 
-/// A test app (stub harness, nothing real runs).
 fn app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     let home = std::env::temp_dir().join(format!("godterm-fuzz-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
@@ -276,8 +260,6 @@ fn app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     (crate::app::App::new(cfg, tx), home)
 }
 
-/// Ctrl-a commands that stay inside the app (no quit, voice, update,
-/// logins or browsers).
 const COMMANDS: &[char] = &[
     'h', 'j', 'k', 'l', '1', '2', '3', '9', '[', ']', 'L', 'o', '|', 'n', 'p', 'P', 'z', ';', '\'',
     'b', 'y', 'g', 'G', '@', '?', 'c', 'U', '{', '}', '<', '>', '.', 'Z', 't', 'w', '_', '/',
@@ -290,7 +272,6 @@ fn key(code: KeyCode, m: KeyModifiers) -> Event {
 fn random_event(r: &mut Rng, w: u16, h: u16) -> Vec<Event> {
     let any = |r: &mut Rng, n: u16| -> u16 {
         match r.below(10) {
-            // Outside the screen, and what crossterm makes of a 0 (wraps).
             0 => u16::MAX,
             1 => n.saturating_add(r.below(10) as u16),
             _ => r.below(n as usize + 1) as u16,
@@ -318,7 +299,6 @@ fn random_event(r: &mut Rng, w: u16, h: u16) -> Vec<Event> {
                 modifiers,
             };
             if kind == MouseEventKind::Down(MouseButton::Left) && r.chance(60) {
-                // A whole click.
                 let up = MouseEvent {
                     kind: MouseEventKind::Up(MouseButton::Left),
                     ..m
@@ -400,7 +380,7 @@ fn random_terminal_events_at_any_size_never_panic_the_app() {
             term.draw(|f| crate::ui::draw(f, &mut app))
                 .unwrap_or_else(|e| panic!("step {step} at {w}x{h}: {e}"));
         }
-        // Keep it on screen: a quit or a closed last tab ends nothing here.
+
         app.quit = false;
     }
     for p in app.panes.iter_mut() {

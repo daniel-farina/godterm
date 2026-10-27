@@ -1,29 +1,13 @@
-//! Credentials for project repos, per gh account, without ever switching
-//! gh's active account or storing a token.
-//!
-//! - `godterm git-credential --account <acct> get` speaks git's credential
-//!   protocol: it reads the request on stdin and, for https://github.com
-//!   only, answers with the token `gh auth token --hostname github.com
-//!   --user <acct>` prints. The token goes from gh's stdout to git's stdin
-//!   and nowhere else: never logged, never an argument, never on disk.
-//! - `gh` API calls (repo view, repo create) get the same token as
-//!   GH_TOKEN in their own environment, never as an argument.
-//! - Never `gh auth switch`, logout, a public or internal repo, or a repo
-//!   delete: `gh_args_ok` refuses them. The one login is the user's "Add
-//!   account..." (gh_login.rs), its exact argument list only.
-
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-/// The gh binary: `[git] gh_bin`, the helper's GODTERM_GH_BIN, else gh.
 pub fn gh_bin(cfg: Option<&crate::git_map::GitCfg>) -> PathBuf {
     if let Some(b) = cfg.and_then(|c| c.gh_bin.clone()).filter(|b| !b.is_empty()) {
         return crate::config::expand_tilde(&b);
     }
     if cfg!(test) {
-        // Tests never reach the real gh (and its keyring).
         return PathBuf::from("/nonexistent/gh");
     }
     if let Some(b) = std::env::var_os("GODTERM_GH_BIN").filter(|b| !b.is_empty()) {
@@ -37,7 +21,6 @@ pub fn gh_bin(cfg: Option<&crate::git_map::GitCfg>) -> PathBuf {
     PathBuf::from("gh")
 }
 
-/// gh argument lists GodTerm may run.
 pub fn gh_args_ok(args: &[&str]) -> Result<(), String> {
     let low: Vec<String> = args.iter().map(|a| a.to_ascii_lowercase()).collect();
     let has = |x: &str| low.iter().any(|a| a == x);
@@ -50,7 +33,7 @@ pub fn gh_args_ok(args: &[&str]) -> Result<(), String> {
     }
     match sub {
         ("auth", "token") | ("auth", "status") => Ok(()),
-        // The user's own "Add account..." (gh_login): exactly this list.
+
         ("auth", "login") if args == crate::gh_login::ARGS => Ok(()),
         ("repo", "view") => Ok(()),
         ("repo", "create") if has("--private") && !has("--push") => Ok(()),
@@ -70,7 +53,6 @@ fn gh_env(c: &mut Command) {
         .env("GH_SPINNER_DISABLED", "1");
 }
 
-/// The token of gh account `account` (from gh's own store).
 pub fn gh_token(gh: &Path, account: &str) -> Result<String, String> {
     if !crate::git_map::valid_owner(account) {
         return Err("bad account name".into());
@@ -90,7 +72,6 @@ pub fn gh_token(gh: &Path, account: &str) -> Result<String, String> {
     let (ok, out, err) = crate::project_git::exec(c, Duration::from_secs(20), None)?;
     let tok = out.trim().to_string();
     if !ok || tok.is_empty() || tok.contains(char::is_whitespace) {
-        // gh's message names the account, never a token.
         let e = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
         return Err(format!(
             "gh has no token for {account}{}",
@@ -104,7 +85,6 @@ pub fn gh_token(gh: &Path, account: &str) -> Result<String, String> {
     Ok(tok)
 }
 
-/// A gh command for `account` with its token in GH_TOKEN (never argv).
 pub fn gh_command(gh: &Path, account: &str, args: &[&str]) -> Result<Command, String> {
     gh_args_ok(args)?;
     let tok = gh_token(gh, account)?;
@@ -115,7 +95,6 @@ pub fn gh_command(gh: &Path, account: &str, args: &[&str]) -> Result<Command, St
     Ok(c)
 }
 
-/// git's credential request, parsed.
 fn parse_request(input: &str) -> Vec<(String, String)> {
     input
         .lines()
@@ -125,11 +104,8 @@ fn parse_request(input: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The helper's answer to `op` with request `input` (empty: say nothing,
-/// so git tries no other helper and fails cleanly).
 pub fn respond(op: &str, input: &str, account: &str, gh: &Path) -> Result<String, String> {
     if op != "get" {
-        // store and erase: GodTerm keeps nothing.
         return Ok(String::new());
     }
     let req = parse_request(input);
@@ -143,7 +119,6 @@ pub fn respond(op: &str, input: &str, account: &str, gh: &Path) -> Result<String
     Ok(format!("username={account}\npassword={tok}\n"))
 }
 
-/// `godterm git-credential --account <acct> <get|store|erase>`.
 pub fn helper_main(args: &[String]) -> anyhow::Result<()> {
     let account = args
         .iter()
@@ -178,23 +153,18 @@ pub fn helper_main(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         Err(e) => {
-            // To git's stderr only (shown to the user as git's message).
             eprintln!("godterm git-credential: {e}");
             std::process::exit(1);
         }
     }
 }
 
-/// The gh accounts logged in on github.com (`gh auth status`), never
-/// with tokens.
 pub fn accounts(gh: &Path) -> Vec<String> {
     status_text(gh)
         .map(|t| parse_status(&t))
         .unwrap_or_default()
 }
 
-/// What `gh auth status --hostname github.com` printed (gh masks the
-/// tokens; callers keep only the account names from it).
 pub fn status_text(gh: &Path) -> Option<String> {
     let args = ["auth", "status", "--hostname", "github.com"];
     gh_args_ok(&args).ok()?;
@@ -223,10 +193,6 @@ pub fn parse_status(text: &str) -> Vec<String> {
     v
 }
 
-// ---- creating a private repo ----
-
-/// `gh repo create owner/name --private --source dir --remote R`. Never
-/// `--public`, never `--push` (the first push is its own step).
 pub fn create_args(
     owner: &str,
     name: &str,
@@ -251,8 +217,6 @@ pub fn create_args(
     ])
 }
 
-/// The visibility gh reports for owner/name: Ok(None) when it does not
-/// exist (or this account cannot see it).
 pub fn visibility(
     gh: &Path,
     account: &str,
@@ -286,8 +250,6 @@ pub fn visibility(
     Ok(v["visibility"].as_str().map(|s| s.to_ascii_uppercase()))
 }
 
-/// Create the private repo and check gh says PRIVATE after. Err with why;
-/// a repo that is not private afterwards is reported loudly.
 pub fn create_private(
     gh: &Path,
     account: &str,

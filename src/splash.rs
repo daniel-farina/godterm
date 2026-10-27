@@ -1,26 +1,3 @@
-//! The start up splash: a glass crystal assembles, a beam of light
-//! passes through it and fans out into the account colors, then the
-//! wordmark, the tagline and the version appear. About 3.6 s, then it
-//! holds (the crystal turning slowly).
-//!
-//! Shown once on the first launch, before Setup, and once after an update
-//! ("updated to vX"); it closes by itself after a short hold, and any key
-//! skips it. Never in tests, under the test guard, with GODTERM_NO_SPLASH,
-//! in demo mode, without a terminal, or when the config says
-//! `splash = "never"` or `setup_dont_show = true` (smoke runs).
-//!
-//! Drawn through ratatui, so only the cells that change are sent. The
-//! scene is half block pixels (two per cell, supersampled), or whole cells
-//! in Terminal.app, whose block glyphs do not split a cell evenly; those
-//! are drawn for the cell grid (flat faces, a pale rim, one cell lines;
-//! see `render_cells`), never averaged down. The
-//! wordmark is always whole cells in solid colors: crisp anywhere. Calm
-//! blues and slate, no glow. NO_COLOR gets a plain drawing; `splash_motion`
-//! = "off" (or "auto" with Reduce Motion on) a still frame.
-//!
-//! `godterm splash` shows it any time (`--preview`: r replays, q quits;
-//! `--at <secs>` freezes one moment).
-
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -39,12 +16,11 @@ use ratatui::Terminal;
 use crate::config::Config;
 use crate::theme;
 
-/// When the intro is over and the hold begins.
 pub const END: f32 = 3.6;
-/// At start up the splash closes by itself this long after the intro.
+
 const HOLD_AT_START: f32 = 1.4;
 const FRAME: Duration = Duration::from_millis(33);
-/// Turns the start up splash off (smoke runs, scripts).
+
 pub const NO_SPLASH_ENV: &str = "GODTERM_NO_SPLASH";
 
 const TAGLINE: &str = "Every coding agent session, one terminal. Say hey god.";
@@ -54,26 +30,25 @@ const PREVIEW_HINT: &str = "preview   r replay   q quit";
 
 type Rgb = [f32; 3];
 
-// Background: deep navy at the crystal, near black at the edges.
 const BG_IN: Rgb = [17.0, 27.0, 47.0];
 const BG_OUT: Rgb = [6.0, 8.0, 14.0];
-// Glass.
+
 const DEEP: Rgb = [26.0, 50.0, 98.0];
 const MID: Rgb = [92.0, 134.0, 198.0];
 const ICE: Rgb = [214.0, 226.0, 244.0];
 const EDGE_FRONT: Rgb = [200.0, 214.0, 238.0];
 const EDGE_BACK: Rgb = [96.0, 126.0, 178.0];
 const BEAM: Rgb = [232.0, 235.0, 240.0];
-// The fan out of the crystal: the account palette (theme.rs), top to bottom.
+
 const RAYS: [Rgb; 6] = [
-    [138.0, 140.0, 174.0], // dusk
-    [128.0, 148.0, 170.0], // slate
-    [122.0, 156.0, 152.0], // teal
-    [138.0, 160.0, 128.0], // sage
-    [196.0, 176.0, 134.0], // sand
-    [180.0, 140.0, 146.0], // rose
+    [138.0, 140.0, 174.0],
+    [128.0, 148.0, 170.0],
+    [122.0, 156.0, 152.0],
+    [138.0, 160.0, 128.0],
+    [196.0, 176.0, 134.0],
+    [180.0, 140.0, 146.0],
 ];
-// Wordmark: "God" in pale ice, "Term" in a soft blue.
+
 const WM_GOD: Rgb = [226.0, 233.0, 246.0];
 const WM_TERM: Rgb = [132.0, 164.0, 214.0];
 const TEXT: Rgb = [164.0, 178.0, 200.0];
@@ -85,26 +60,23 @@ const HINT_C: Rgb = [118.0, 130.0, 150.0];
 struct Opts {
     preview: bool,
     at: Option<f32>,
-    /// A still frame instead of the animation.
+
     still: bool,
-    /// Close by itself this many seconds in (start up).
+
     close_at: Option<f32>,
-    /// The version line reads "updated to vX".
+
     updated: bool,
 }
 
-/// How a frame is drawn.
 #[derive(Default, Clone, Copy)]
 struct Look {
     mono: bool,
     preview: bool,
     updated: bool,
-    /// Whole cells instead of half blocks for the scene.
+
     whole: bool,
 }
 
-/// Whole cells for the scene: Terminal.app's block glyphs do not split a
-/// cell evenly. GODTERM_SPLASH_CELLS=1 or 0 forces it.
 fn whole_cells() -> bool {
     match std::env::var("GODTERM_SPLASH_CELLS").as_deref() {
         Ok("1") => true,
@@ -113,14 +85,13 @@ fn whole_cells() -> bool {
     }
 }
 
-/// `godterm splash [--preview] [--at <secs>]`.
 pub fn run(args: &[String]) -> anyhow::Result<()> {
     let at = args
         .iter()
         .position(|a| a == "--at")
         .and_then(|i| args.get(i + 1))
         .and_then(|v| v.parse().ok());
-    // `--dump <file> <cols>x<rows>`: write one frame's cells (for stills).
+
     if let Some(i) = args.iter().position(|a| a == "--dump") {
         let path = args.get(i + 1).cloned().unwrap_or_default();
         let (w, h) = args
@@ -130,7 +101,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             .unwrap_or((120, 36));
         return dump(&path, w, h, at.unwrap_or(END), no_color());
     }
-    // The motion setting, when there is a config (never writes one).
+
     let motion = if Config::path().exists() {
         Config::load_or_init()
             .map(|c| c.splash_motion)
@@ -148,7 +119,6 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One frame as text: a line per cell, "x y fg bg bold symbol".
 fn dump(path: &str, w: u16, h: u16, t: f32, mono: bool) -> anyhow::Result<()> {
     let area = Rect::new(0, 0, w, h);
     let mut buf = Buffer::empty(area);
@@ -179,22 +149,17 @@ fn dump(path: &str, w: u16, h: u16, t: f32, mono: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Why the splash plays at start.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Startup {
-    /// Never seen on this home.
     First,
-    /// Last seen with another version.
+
     Updated,
 }
 
-/// Remembers the version the splash was last shown for.
 fn seen_path() -> PathBuf {
     crate::config::app_home().join("splash_seen")
 }
 
-/// Whether the splash plays at start: `seen` is the version it was last
-/// shown for, `quiet` is a test, smoke or scripted run.
 pub fn decide(
     splash: &str,
     setup_dont_show: bool,
@@ -213,7 +178,6 @@ pub fn decide(
     }
 }
 
-/// A test, the test guard's children, smoke or demo runs: never a splash.
 fn quiet() -> bool {
     cfg!(test)
         || std::env::var_os(crate::test_guard::ENV).is_some()
@@ -221,9 +185,6 @@ fn quiet() -> bool {
         || crate::demo::active()
 }
 
-/// At start up, before Setup and the TUI: plays the splash when it is due
-/// (see `decide`), then remembers this version. Closes by itself shortly
-/// after the intro, so it never holds up more than its own few seconds.
 pub fn at_start(cfg: &Config) {
     let version = env!("CARGO_PKG_VERSION");
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
@@ -256,8 +217,6 @@ fn no_color() -> bool {
     std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
 }
 
-/// `splash_motion`: "off" is still, "auto" follows Reduce Motion, anything
-/// else ("on", the default) animates. GODTERM_REDUCED_MOTION=1 forces still.
 fn animate(motion: &str) -> bool {
     if let Some(v) = std::env::var_os("GODTERM_REDUCED_MOTION") {
         if !v.is_empty() && v != "0" {
@@ -271,7 +230,6 @@ fn animate(motion: &str) -> bool {
     }
 }
 
-/// macOS Reduce Motion (Accessibility > Display).
 fn reduced_motion() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -353,7 +311,6 @@ fn play(o: Opts) -> io::Result<()> {
                     next = start;
                     term.clear()?;
                 } else if t < END {
-                    // Any other key skips to the held frame.
                     start = crate::clock::ago(Duration::from_secs_f32(END));
                 }
             }
@@ -364,12 +321,10 @@ fn play(o: Opts) -> io::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------- timing
-
 fn clamp01(x: f32) -> f32 {
     x.clamp(0.0, 1.0)
 }
-/// 0 before `a`, 1 after `b`, linear between.
+
 fn seg(t: f32, a: f32, b: f32) -> f32 {
     clamp01((t - a) / (b - a))
 }
@@ -392,24 +347,21 @@ fn scale(a: Rgb, k: f32) -> Rgb {
     [a[0] * k, a[1] * k, a[2] * k]
 }
 
-// ---------------------------------------------------------------- layout
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Layout {
     cols: u16,
     rows: u16,
-    /// Crystal center and radius, in half block pixels.
+
     crystal: Option<(f32, f32, f32)>,
-    /// Wordmark left column, top pixel row and font (an index into FONTS).
+
     wordmark: Option<(usize, usize, usize)>,
-    /// A plain text wordmark row when there is no room for the drawn one.
+
     wm_text: Option<u16>,
     tagline: Option<(u16, &'static str)>,
     version: Option<u16>,
     hint: Option<u16>,
 }
 
-/// Vertical stretch of the crystal.
 const YS: f32 = 1.12;
 
 fn layout(cols: u16, rows: u16) -> Layout {
@@ -418,10 +370,10 @@ fn layout(cols: u16, rows: u16) -> Layout {
         .into_iter()
         .find(|s| s.chars().count() as i32 + 4 <= w);
     let hint = (r >= 10).then(|| (r - 2) as u16);
-    // Rows the text needs: tagline, a gap, the version.
+
     let text_rows = 3;
     let bottom = if hint.is_some() { 3 } else { 0 };
-    // The drawn wordmark: the largest hand drawn size that fits.
+
     let font = FONTS
         .iter()
         .position(|f| w >= f.width() as i32 + 6 && r >= f.min_rows);
@@ -442,7 +394,7 @@ fn layout(cols: u16, rows: u16) -> Layout {
         0
     };
     let used = crystal_rows + (if radius > 0.0 { gap } else { 0 }) + wm_rows + gap + text_rows;
-    // Center the stack in the space above the hint.
+
     let space = r - bottom;
     let mut y = ((space - used) / 2).max(0);
     let crystal = (radius > 0.0).then(|| {
@@ -476,9 +428,6 @@ fn layout(cols: u16, rows: u16) -> Layout {
     }
 }
 
-// ---------------------------------------------------------------- canvas
-
-/// A supersampled RGB canvas over half block pixels.
 struct Canvas {
     w: usize,
     h: usize,
@@ -486,8 +435,6 @@ struct Canvas {
     px: Vec<Rgb>,
 }
 
-/// Coverage at the supersampled resolution, kept as the maximum so shared
-/// strokes do not double up.
 struct Mask {
     v: Vec<f32>,
 }
@@ -530,7 +477,6 @@ impl Canvas {
         }
     }
 
-    /// Fills a triangle given in pixels.
     fn tri(&mut self, p: [(f32, f32); 3], c: Rgb, a: f32) {
         if a <= 0.0 {
             return;
@@ -572,8 +518,6 @@ impl Canvas {
         )
     }
 
-    /// Calls `f(index, coverage, t along the segment)` for a round capped
-    /// stroke `width` pixels wide from `a` to `b`.
     fn stroke(&self, a: (f32, f32), b: (f32, f32), width: f32, mut f: impl FnMut(usize, f32, f32)) {
         let s = self.ss as f32;
         let (a, b) = ((a.0 * s, a.1 * s), (b.0 * s, b.1 * s));
@@ -595,7 +539,6 @@ impl Canvas {
         }
     }
 
-    /// A stroke blended straight onto the canvas, its alpha by position.
     fn line(
         &mut self,
         a: (f32, f32),
@@ -623,7 +566,6 @@ impl Canvas {
         });
     }
 
-    /// Blends a mask on, coloured and weighted by position.
     fn composite(&mut self, m: &Mask, f: impl Fn(f32, f32) -> (Rgb, f32)) {
         let (sw, s) = (self.sw(), self.ss as f32);
         for i in 0..self.px.len() {
@@ -638,7 +580,6 @@ impl Canvas {
         }
     }
 
-    /// Box filtered down to one value per half block pixel.
     fn resolve(&self) -> Vec<Rgb> {
         let (s, sw) = (self.ss, self.sw());
         let n = (s * s) as f32;
@@ -660,8 +601,6 @@ impl Canvas {
         out
     }
 }
-
-// ---------------------------------------------------------------- crystal
 
 type V3 = [f32; 3];
 
@@ -695,7 +634,6 @@ fn rot_z(v: V3, a: f32) -> V3 {
     [v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]]
 }
 
-/// An icosahedron standing on a vertex: 12 points, 20 faces.
 fn icosahedron() -> (Vec<V3>, Vec<[usize; 3]>) {
     let p = (1.0 + 5f32.sqrt()) / 2.0;
     let mut v: Vec<V3> = vec![];
@@ -706,7 +644,7 @@ fn icosahedron() -> (Vec<V3>, Vec<[usize; 3]>) {
             v.push([b, 0.0, a]);
         }
     }
-    // Tip a vertex to the top: (0, 1, p) rotated about x by atan(p).
+
     let tip = (1.0f32 / p).atan();
     let v: Vec<V3> = v.into_iter().map(|q| norm(rot_x(q, -tip))).collect();
     let edge = 2.0 / (1.0 + p * p).sqrt();
@@ -734,7 +672,6 @@ fn render(l: &Layout, t: f32) -> Scene {
     let mut cv = Canvas::new(w, h);
     let (ccx, ccy, cr) = l.crystal.unwrap_or((w as f32 / 2.0, h as f32 / 3.0, 0.0));
 
-    // Background, fading up from black.
     let fade = ease_out(seg(t, 0.0, 0.6));
     let (fw, fh) = (w as f32, h as f32);
     cv.fill(|x, y| {
@@ -753,21 +690,18 @@ fn render(l: &Layout, t: f32) -> Scene {
     }
 }
 
-/// The light around the crystal at time `t`, in half block pixels: the
-/// beam in from the left and the fan of rays out to the right.
 struct Beams {
     p_in: (f32, f32),
     p_out: (f32, f32),
-    /// The beam: from, head, and how far it has grown.
+
     #[allow(clippy::type_complexity)]
     beam: Option<((f32, f32), (f32, f32), f32)>,
-    /// The rays: head, color, place in the fan (0 top, 1 bottom), how far
-    /// out they are.
+
     rays: Vec<((f32, f32), Rgb, f32)>,
     fan: f32,
-    /// Seconds into the hold.
+
     held: f32,
-    /// The light inside, 0 to 1.
+
     energy: f32,
 }
 
@@ -786,7 +720,6 @@ fn beams(l: &Layout, t: f32, (w, h): (f32, f32), (cx, cy, r): (f32, f32, f32)) -
     let fan = ease_out(seg(t, 1.25, 2.15));
     let mut rays = vec![];
     if fan > 0.0 {
-        // Spread so the lowest ray ends above the wordmark.
         let floor = l
             .wordmark
             .map(|w| w.1 as f32 * 2.0 - 3.0)
@@ -815,23 +748,19 @@ fn beams(l: &Layout, t: f32, (w, h): (f32, f32), (cx, cy, r): (f32, f32, f32)) -
     }
 }
 
-/// Where the pulse of the hold is along a ray (0 at the crystal, 1 at the
-/// edge), and how strong it is.
 fn pulse(held: f32, k: f32) -> (f32, f32) {
     (((held * 0.32 + k * 0.17) % 1.6) - 0.2, held.min(1.0))
 }
 
-/// One face of the crystal, projected.
 struct Facet {
     pts: [(f32, f32); 3],
-    /// Its normal: z > 0 faces the viewer.
+
     n: V3,
     z: f32,
-    /// How far it has flown in, 0 to 1.
+
     a: f32,
 }
 
-/// The crystal's faces at `t`, back to front.
 fn facets(t: f32, (cx, cy, r): (f32, f32, f32)) -> Vec<Facet> {
     let (verts, faces) = icosahedron();
     let spin = 0.6 + 2.6 * ease_out(seg(t, 0.0, 2.4)) + 0.21 * t;
@@ -857,7 +786,7 @@ fn facets(t: f32, (cx, cy, r): (f32, f32, f32)) -> Vec<Facet> {
             if dot(n, mid) < 0.0 {
                 n = scale(n, -1.0);
             }
-            // Each face flies in from outside along its own direction.
+
             let delay = 0.30 + 0.75 * (((i * 7 + 3) % 20) as f32 / 20.0);
             let p = ease_out(seg(t, delay, delay + 0.75));
             let off = scale(norm(mid), (1.0 - p) * 1.6);
@@ -884,7 +813,6 @@ fn crystal(cv: &mut Canvas, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
         cv.line(start, head, 0.9, BEAM, |s| 0.15 + 0.8 * s * grow);
     }
     for &(head, c, k) in &b.rays {
-        // In the hold, a soft pulse runs out along each ray now and then.
         let (at, strength) = pulse(b.held, k);
         let fan = b.fan;
         cv.line(b.p_out, head, 1.05, c, |s| {
@@ -894,7 +822,6 @@ fn crystal(cv: &mut Canvas, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
         });
     }
 
-    // The crystal itself.
     let fs = facets(t, (cx, cy, r));
     let light = light_dir();
     let half = norm([light[0], light[1], light[2] + 1.0]);
@@ -916,7 +843,6 @@ fn crystal(cv: &mut Canvas, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)) {
     }
     cv.composite(&back_edges, |_, _| (EDGE_BACK, 0.45 * glow));
 
-    // The light inside.
     if b.energy > 0.0 {
         cv.line(b.p_in, b.p_out, 0.9, ICE, |_| 0.35 * b.energy);
     }
@@ -937,31 +863,17 @@ fn add3(a: V3, b: V3) -> V3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-// ---------------------------------------------------------------- whole cells
-
-// Terminal.app draws block glyphs short of the cell: in Menlo and SF Mono
-// the half block ▀ fills about 44% of it and the full block █ about 86%,
-// the wedges ◢ ◣ are small centered shapes (or missing), and ╱ ╲ are thin
-// strokes. So the whole cell scene uses no glyph at all: every cell is a
-// space with one flat color, taken at its center and never blended with
-// its neighbours. The crystal is drawn like pixel art: each face one solid
-// tone, a pale rim, and the beam and rays one cell lines in a few solid
-// steps.
-
-/// The faces: three blues, lit to unlit.
 const CELL_LIGHT: Rgb = [128.0, 164.0, 218.0];
 const CELL_MID: Rgb = [70.0, 108.0, 174.0];
 const CELL_DEEP: Rgb = [36.0, 62.0, 118.0];
-/// The rim and the lit face once the light is in.
+
 const CELL_EDGE: Rgb = EDGE_FRONT;
-/// What the beam and rays fade toward, one solid step at a time.
+
 const CELL_FADE_TO: Rgb = [14.0, 20.0, 36.0];
 
-/// The scene as one color per cell.
 fn render_cells(l: &Layout, t: f32) -> Vec<Rgb> {
     let (cols, rows) = (l.cols as usize, l.rows as usize);
-    // Positions are in half block pixels, as for the other path: a cell
-    // is one pixel wide and two tall, its center at (x + 0.5, 2y + 1).
+
     let (w, h) = (cols as f32, rows as f32 * 2.0);
     let (ccx, ccy, cr) = l.crystal.unwrap_or((w / 2.0, h / 3.0, 0.0));
     let fade = ease_out(seg(t, 0.0, 0.6));
@@ -995,10 +907,6 @@ impl Cells {
         }
     }
 
-    /// A line one cell thick from `a` to `b` (half block pixels, mostly
-    /// level): a cell per column, its row where the line crosses the
-    /// column's middle. `color(s)` gives each cell's color, s from 0 at
-    /// `a` to 1 at `b`.
     fn line(&mut self, a: (f32, f32), b: (f32, f32), color: impl Fn(f32) -> Rgb) {
         let (x0, x1) = (a.0.min(b.0), a.0.max(b.0));
         let dx = b.0 - a.0;
@@ -1016,7 +924,6 @@ impl Cells {
         }
     }
 
-    /// Paints the cells whose centers fall inside the triangle.
     fn tri(&mut self, p: [(f32, f32); 3], c: Rgb) -> Vec<usize> {
         let mut hit = vec![];
         let area = (p[1].0 - p[0].0) * (p[2].1 - p[0].1) - (p[1].1 - p[0].1) * (p[2].0 - p[0].0);
@@ -1055,8 +962,6 @@ impl Cells {
     }
 }
 
-/// A solid step of a fading line: strong near its source, then two
-/// dimmer steps.
 fn step_fade(c: Rgb, s: f32) -> Rgb {
     let k = if s < 0.45 {
         0.92
@@ -1072,13 +977,11 @@ fn crystal_cells(g: &mut Cells, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)
     let (w, h) = (g.cols as f32, g.rows as f32 * 2.0);
     let b = beams(l, t, (w, h), (cx, cy, r));
     if let Some((start, head, _)) = b.beam {
-        // Brightest where it meets the crystal.
         let full = p_dist(start, b.p_in).max(1.0);
         let grown = p_dist(start, head) / full;
         g.line(start, head, |s| step_fade(BEAM, 1.0 - s * grown));
     }
-    // The rays leave the crystal a row apart, so each is its own line from
-    // the start, and fan out from there.
+
     let n = b.rays.len() as f32;
     for (i, &(head, c, k)) in b.rays.iter().enumerate() {
         let off = (i as f32 - (n - 1.0) / 2.0) * 2.0;
@@ -1097,13 +1000,10 @@ fn crystal_cells(g: &mut Cells, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)
         });
     }
 
-    // The crystal: faces back to front, each one flat tone.
     let fs = facets(t, (cx, cy, r));
     let light = light_dir();
     let glow = 0.72 + 0.28 * b.energy;
-    // Tones by rank among the faces toward the viewer, so the three blues
-    // split them evenly and neighbours mostly differ; the face that
-    // catches the light turns pale once the light is in.
+
     let mut front: Vec<usize> = (0..fs.len()).filter(|&i| fs[i].n[2] > 0.0).collect();
     front.sort_by(|&a, &b| dot(fs[b].n, light).total_cmp(&dot(fs[a].n, light)));
     let mut tone = vec![CELL_DEEP; fs.len()];
@@ -1125,22 +1025,20 @@ fn crystal_cells(g: &mut Cells, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)
     }
     let mut owner = vec![usize::MAX; g.px.len()];
     let behind = g.px.clone();
-    // Only the faces toward the viewer: together they cover the crystal,
-    // and while it assembles the gaps show the background.
+
     for i in (0..fs.len()).filter(|&i| fs[i].n[2] > 0.0) {
         let f = &fs[i];
         if f.a < 0.06 {
             continue;
         }
-        // Faces still flying in come up from dark in one flat color.
+
         let c = mix(CELL_FADE_TO, tone[i], 0.35 + 0.65 * f.a);
         for cell in g.tri(f.pts, c) {
             owner[cell] = i;
         }
     }
     let (cols, rows) = (g.cols, g.rows);
-    // A sliver one cell wide (a face edge on, or the tip of one) reads as
-    // a stray stroke: it goes.
+
     let empty = |o: &[usize], x: usize, y: usize, dx: i32| {
         let nx = x as i32 + dx;
         nx < 0 || nx as usize >= cols || o[y * cols + nx as usize] == usize::MAX
@@ -1162,10 +1060,7 @@ fn crystal_cells(g: &mut Cells, l: &Layout, t: f32, (cx, cy, r): (f32, f32, f32)
         }
     };
     let mut paint = vec![];
-    // A pale rim once the crystal has come together: the covered cells
-    // next to the outside.
-    // Only the outline, never the gaps between faces still flying in:
-    // the outside is what the screen's border reaches through empty cells.
+
     let rim = ease_out(seg(t, 1.0, 1.6));
     if rim > 0.0 {
         let mut outside = vec![false; cols * rows];
@@ -1220,18 +1115,10 @@ fn p_dist(a: (f32, f32), b: (f32, f32)) -> f32 {
     ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
 }
 
-// ---------------------------------------------------------------- wordmark
-
-/// A hand drawn font for "GodTerm" at cell resolution: each `#` is one
-/// whole cell painted with a background color, so the letters do not
-/// depend on how the terminal's font draws block glyphs, and nothing is
-/// blended. A cell is twice as tall as wide, so stems are two columns
-/// and bars one row: the same thickness on screen. Lowercase glyphs give
-/// only their x-height rows and sit on the baseline.
 struct Font {
     cap: usize,
     gap: usize,
-    /// Terminal rows the layout needs before choosing this size.
+
     min_rows: i32,
     shadow: bool,
     glyphs: [&'static [&'static str]; 7],
@@ -1247,7 +1134,6 @@ impl Font {
         self.cap + self.shadow as usize
     }
 
-    /// Calls `f(x, y, is_term)` for every lit cell, relative to the top left.
     fn each(&self, mut f: impl FnMut(usize, usize, bool)) {
         let mut x0 = 0;
         for (i, g) in self.glyphs.iter().enumerate() {
@@ -1264,8 +1150,6 @@ impl Font {
     }
 }
 
-/// Large (9 rows, stepped curves), medium (7 rows, cut corners) and
-/// compact (6 rows, square, for 80x24), largest first.
 const FONTS: [Font; 3] = [
     Font {
         cap: 9,
@@ -1432,8 +1316,6 @@ const FONTS: [Font; 3] = [
 
 const WM_SHADOW: Rgb = [34.0, 45.0, 70.0];
 
-/// Paints the wordmark into the cells: whole columns appear left to right,
-/// solid colors only.
 fn wordmark(
     cells: &mut [Option<Rgb>],
     cols: usize,
@@ -1459,8 +1341,6 @@ fn wordmark(
         put(left + x, top + y, if term { WM_TERM } else { WM_GOD });
     });
 }
-
-// ---------------------------------------------------------------- output
 
 fn version_line(updated: bool) -> String {
     let v = env!("CARGO_PKG_VERSION");
@@ -1491,8 +1371,7 @@ fn draw(buf: &mut Buffer, area: Rect, t: f32, look: Look) {
         draw_mono(buf, area, &l, preview, updated);
         return;
     }
-    // Whole cells: one flat color per cell, drawn for it (not the half
-    // block scene averaged).
+
     let (sc, cells) = if whole {
         (None, render_cells(&l, t))
     } else {
@@ -1529,7 +1408,7 @@ fn draw(buf: &mut Buffer, area: Rect, t: f32, look: Look) {
             }
         }
     }
-    // Text sits on the scene: each character blended over its cell.
+
     let mut text = |row: u16, s: &str, alpha: &dyn Fn(usize, char) -> (Rgb, f32), bold: bool| {
         let n = s.chars().count() as u16;
         if n > area.width {
@@ -1572,7 +1451,6 @@ fn draw(buf: &mut Buffer, area: Rect, t: f32, look: Look) {
             row,
             s,
             &|i, _| {
-                // Each character fades in a moment after the one before it.
                 let a = clamp01((p * (n + 10.0) - i as f32) / 10.0);
                 let c = match hi {
                     Some(h) if i >= h && i < h + 7 => TEXT_HI,
@@ -1599,7 +1477,6 @@ fn draw(buf: &mut Buffer, area: Rect, t: f32, look: Look) {
     }
 }
 
-/// NO_COLOR: the crystal as a braille line drawing, plain text below.
 fn draw_mono(buf: &mut Buffer, area: Rect, l: &Layout, preview: bool, updated: bool) {
     let put = |buf: &mut Buffer, row: u16, s: &str, bold: bool| {
         let n = s.chars().count() as u16;
@@ -1615,7 +1492,6 @@ fn draw_mono(buf: &mut Buffer, area: Rect, l: &Layout, preview: bool, updated: b
         buf.set_string(x, area.y + row, s, st);
     };
     if let Some((cx, cy, r)) = l.crystal {
-        // Braille dots: 2 across, 4 down per cell; pixel y is half a cell.
         let (dw, dh) = (area.width as usize * 2, area.height as usize * 4);
         let mut dots = vec![false; dw * dh];
         let (verts, faces) = icosahedron();
@@ -1663,7 +1539,6 @@ fn draw_mono(buf: &mut Buffer, area: Rect, l: &Layout, preview: bool, updated: b
         }
     }
     if let Some((left, top, f)) = l.wordmark {
-        // The same font in full blocks, in the terminal's own color.
         FONTS[f].each(|x, y, _| {
             if let Some(cell) =
                 buf.cell_mut((area.x + (left + x) as u16, area.y + (top + y) as u16))
@@ -1737,7 +1612,7 @@ mod tests {
     #[test]
     fn shows_once_per_home_and_version() {
         let v = "1.2.3";
-        // First run shows; the same version seen again does not.
+
         assert_eq!(
             decide("once", false, None, v, true, false),
             Some(Startup::First)
@@ -1747,7 +1622,7 @@ mod tests {
             Some(Startup::First)
         );
         assert_eq!(decide("once", false, Some("1.2.3\n"), v, true, false), None);
-        // A new version: once more, as "updated to".
+
         assert_eq!(
             decide("once", false, Some("1.2.2"), v, true, false),
             Some(Startup::Updated)
@@ -1758,11 +1633,11 @@ mod tests {
     fn never_quiet_or_without_a_terminal() {
         let v = "1.2.3";
         assert_eq!(decide("never", false, None, v, true, false), None);
-        // Smoke runs set setup_dont_show.
+
         assert_eq!(decide("once", true, None, v, true, false), None);
         assert_eq!(decide("once", false, None, v, false, false), None);
         assert_eq!(decide("once", false, None, v, true, true), None);
-        // Tests are always quiet.
+
         assert!(quiet());
     }
 
@@ -1784,8 +1659,6 @@ mod tests {
         assert!(!animate("off"));
     }
 
-    /// Whole cells: no glyph in the scene (Terminal.app draws them short of
-    /// the cell), and the crystal is a few flat tones, not a blend.
     #[test]
     fn whole_cells_are_flat_and_glyph_free() {
         let (w, h) = (120, 36);
@@ -1813,7 +1686,7 @@ mod tests {
                 }
             }
         }
-        // The held crystal: its cells take only a handful of colors.
+
         let (cx, cy, r) = l.crystal.unwrap();
         let cells = render_cells(&l, END + 1.0);
         let mut seen = std::collections::BTreeSet::new();

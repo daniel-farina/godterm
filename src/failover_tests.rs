@@ -1,7 +1,3 @@
-//! Usage aware failover: the notice when an account runs out, a limit
-//! message in a tab's output, a move with one yes, auto moving only idle
-//! tabs, and moves only between accounts of the same provider.
-
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::pane::{Activity, PaneState};
 
@@ -29,7 +25,7 @@ fn test_app(tag: &str, grok: &[usize]) -> (crate::app::App, std::path::PathBuf) 
         app.accounts[a].login.source = Some(CredSource::Keychain);
         app.accounts[a].usage = Some(usage(10.0, 10.0));
     }
-    // Every pane's tab runs (as far as failover can tell).
+
     for p in &mut app.panes {
         p.tabs[0].state = PaneState::Running;
         p.tabs[0].activity = Activity::Ready;
@@ -58,17 +54,17 @@ fn a_low_account_offers_a_move_to_the_one_with_most_left() {
             && t.ends_with("Move this session to Account 4 (100% left)?"),
         "{t}"
     );
-    // The notice, the assistant's state, nothing moved yet.
+
     assert!(crate::ui::status_chips(&app)
         .iter()
         .any(|c| c.action == crate::hits::UiAction::FailoverMove && c.text.contains("[C-a F]")));
     assert!(app.failover_state_line().contains(&format!("t{uid}")));
     assert!(app.pending_moves.is_empty() && app.queued_moves.is_empty());
-    // Above the threshold again: the offer goes.
+
     app.accounts[2].usage = Some(usage(10.0, 50.0));
     app.failover_scan();
     assert!(app.failover.is_empty());
-    // A threshold of its own: 60% left counts as low.
+
     app.cfg.usage.failover_pct = 60.0;
     app.failover_scan();
     assert!(app
@@ -108,7 +104,7 @@ fn one_yes_moves_it_and_no_means_no_more_offers() {
     app.accounts[1].usage = Some(usage(0.0, 0.0));
     app.failover_scan();
     let uid = app.failover[0].uid;
-    // Ctrl-a F: the yes.
+
     app.on_command(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('F'),
         crossterm::event::KeyModifiers::SHIFT,
@@ -117,7 +113,7 @@ fn one_yes_moves_it_and_no_means_no_more_offers() {
     assert_eq!(app.pending_moves[0].source_uid, uid);
     assert_eq!(app.pending_moves[0].target, 1);
     assert!(app.failover.iter().all(|o| o.uid != uid));
-    // "Not now" on another one: not offered again for that account.
+
     let (mut app, home2) = test_app("no", &[]);
     app.accounts[0].usage = Some(usage(100.0, 20.0));
     app.failover_scan();
@@ -144,10 +140,10 @@ fn auto_moves_only_idle_tabs_and_says_so() {
     assert_eq!(app.pending_moves.len(), 1, "the idle one moved");
     assert_eq!(app.pending_moves[0].source_uid, app.panes[s0].tabs[0].uid);
     assert!(app.flash.as_ref().unwrap().0.contains("so I moved"));
-    // The busy one stays on offer, not moved.
+
     assert!(app.failover.iter().any(|o| o.uid == busy));
     assert!(app.queued_moves.is_empty());
-    // Off: no offers at all.
+
     app.cfg.usage.auto_failover = "off".into();
     app.failover_scan();
     assert!(app.failover.is_empty());
@@ -157,18 +153,18 @@ fn auto_moves_only_idle_tabs_and_says_so() {
 #[test]
 fn moves_stay_within_one_provider() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Accounts 3 and 4 are Grok.
+
     let (mut app, home) = test_app("provider", &[2, 3]);
     let grok = crate::harness::grok::parse_billing(&serde_json::json!({
         "creditUsagePercent": 100.0,
         "currentPeriod": {"start": "2026-10-02T14:16:00Z", "end": "2099-10-09T14:16:00Z"}
     }));
     app.accounts[2].usage = Some(grok);
-    // The other Grok account is out too: no offer onto a Claude account.
+
     app.accounts[3].usage = app.accounts[2].usage.clone();
     app.failover_scan();
     assert!(app.failover.is_empty(), "{:?}", app.failover);
-    // The other Grok account has room: offered there.
+
     app.accounts[3].usage = Some(crate::harness::grok::parse_billing(&serde_json::json!({
         "creditUsagePercent": 10.0,
         "currentPeriod": {"start": "2026-10-02T14:16:00Z", "end": "2099-10-09T14:16:00Z"}

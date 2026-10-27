@@ -1,10 +1,3 @@
-//! `godterm install` / `godterm uninstall`: the GodTerm.app launcher in
-//! ~/Applications, the `godterm` command in ~/.local/bin, LaunchServices
-//! registration, and (only when asked) a Dock icon.
-//!
-//! The app and the symlink point at this binary's real path, so a rebuild
-//! takes effect at the next launch without reinstalling.
-
 use anyhow::{bail, Context, Result};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -27,19 +20,17 @@ pub fn cli_link() -> PathBuf {
         .join("godterm")
 }
 
-/// This binary, symlinks resolved.
 pub fn real_exe() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("finding this binary")?;
     Ok(std::fs::canonicalize(&exe).unwrap_or(exe))
 }
 
-/// What is installed, for doctor and Settings > About.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
     pub app: Option<PathBuf>,
-    /// The binary the app launches.
+
     pub app_runs: Option<PathBuf>,
-    /// Where ~/.local/bin/godterm points (None: missing).
+
     pub cli: Option<PathBuf>,
     pub cli_on_path: bool,
 }
@@ -69,7 +60,6 @@ impl Status {
         }
     }
 
-    /// One line per part, for screens.
     pub fn lines(&self) -> Vec<String> {
         let mut v = vec![];
         v.push(match (&self.app, &self.app_runs) {
@@ -129,8 +119,6 @@ fn plist(version: &str) -> String {
     )
 }
 
-/// The command the terminal window runs (clean environment, title, and a
-/// pause on exit so errors stay readable).
 fn run_sh(bin: &Path) -> String {
     format!(
         r#"#!/bin/zsh -l
@@ -151,8 +139,6 @@ read -r _
     )
 }
 
-/// The bundle executable: opens iTerm (or Terminal) running run.sh, at
-/// the remembered window position.
 const LAUNCHER: &str = r#"#!/bin/sh
 res="$(cd "$(dirname "$0")/../Resources" && pwd)"
 run="$res/run.sh"
@@ -197,7 +183,6 @@ fn chmod_x(p: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write the app bundle at `app` launching `bin`.
 pub fn write_app(app: &Path, bin: &Path) -> Result<()> {
     if app.exists() {
         std::fs::remove_dir_all(app)
@@ -224,8 +209,6 @@ pub fn write_app(app: &Path, bin: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Point `link` at `bin`. An existing symlink is replaced; a regular file
-/// is left alone (returns false).
 pub fn link_cli(link: &Path, bin: &Path) -> Result<bool> {
     if let Some(d) = link.parent() {
         std::fs::create_dir_all(d)?;
@@ -291,7 +274,6 @@ fn add_to_dock(app: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `godterm install [--dock]`.
 pub fn install(dock: bool) -> Result<()> {
     let bin = real_exe()?;
     let app = app_path();
@@ -327,8 +309,6 @@ pub fn install(dock: bool) -> Result<()> {
 const SPEECH_SRC: &str = include_str!("../helpers/godterm-speech/main.swift");
 const SPEECH_PLIST: &str = include_str!("../helpers/godterm-speech/Info.plist");
 
-/// Compile `godterm-speech` (Apple SpeechAnalyzer, macOS 26+) with swiftc
-/// into ~/.godterm/bin, when the source changed.
 pub fn build_speech_helper() -> Result<PathBuf> {
     let out = crate::voice::user_apple_helper_path();
     let dir = out.parent().context("no bin dir")?.to_path_buf();
@@ -365,8 +345,6 @@ pub fn build_speech_helper() -> Result<PathBuf> {
     Ok(out)
 }
 
-/// The claudego app and command from before the rename: the app goes, the
-/// `claudego` command becomes a shim that says so and runs godterm.
 fn replace_old_install(bin: &Path) -> Result<()> {
     let home = crate::config::home_dir();
     let old_app = home.join("Applications").join("ClaudeGo.app");
@@ -396,12 +374,10 @@ fn replace_old_install(bin: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The `claudego` shim.
 pub fn shim(bin: &Path) -> String {
     format!("#!/bin/sh\necho \"claudego was renamed to godterm; running godterm\" >&2\nexec \"{}\" \"$@\"\n", bin.display())
 }
 
-/// `godterm uninstall [--purge]`.
 pub fn uninstall(purge: bool) -> Result<()> {
     let app = app_path();
     let link = cli_link();
@@ -439,7 +415,6 @@ pub fn uninstall(purge: bool) -> Result<()> {
     Ok(())
 }
 
-/// (A macOS app bundle and a symlinked command: Unix only.)
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -474,9 +449,9 @@ mod tests {
                 & 0o111
                 != 0
         );
-        // Rewriting replaces it cleanly.
+
         write_app(&app, &bin).unwrap();
-        // The command symlink: created, replaced, and a regular file kept.
+
         let link = d.join("bin/godterm");
         assert!(link_cli(&link, &bin).unwrap());
         assert_eq!(std::fs::read_link(&link).unwrap(), bin);

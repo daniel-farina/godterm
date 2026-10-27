@@ -1,7 +1,3 @@
-//! A pane header's window controls (minimize, maximize, close at the far
-//! right) and its sideways collapse (the caret at the top left), with the
-//! row and column strips they make.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use serde_json::json;
@@ -41,7 +37,6 @@ fn cell(t: &Term, x: u16, y: u16) -> String {
     t.backend().buffer()[(x, y)].symbol().to_string()
 }
 
-/// The topmost region with this action.
 fn region(app: &App, a: &UiAction) -> Rect {
     app.last_hits
         .regions
@@ -66,7 +61,6 @@ fn click_at(app: &mut App, x: u16, y: u16) {
     }
 }
 
-/// A control on pane `i`'s header row (the status bar has a zoom too).
 fn ctl_region(app: &App, i: usize, a: &UiAction) -> Rect {
     let pane = app.pane_rects[i];
     app.last_hits
@@ -91,13 +85,11 @@ fn click_ctl(app: &mut App, i: usize, a: &UiAction) {
 
 fn click(app: &mut App, a: &UiAction) {
     let r = region(app, a);
-    // Two clicks in a row on one target read as a double click.
+
     app.last_click = None;
     click_at(app, r.x + r.width / 2, r.y);
 }
 
-/// The three controls of pane `i`: in order, 3 cells each, ending at the
-/// header's right border; their glyphs.
 fn controls(app: &App, t: &Term, i: usize, strip: bool) -> [String; 3] {
     let a = [
         UiAction::FoldAccount(i),
@@ -125,35 +117,35 @@ fn the_window_controls_sit_at_the_right_and_click() {
     let mut t = term(200, 50);
     draw(&mut app, &mut t);
     assert_eq!(controls(&app, &t, 0, false), ["_", "□", "×"]);
-    // The old marks are gone: no zoom word, no ▾ fold link (minimize is "_").
+
     let row: String = (0..200).map(|x| cell(&t, x, 0)).collect();
     assert!(!row.contains("zoom"), "{row}");
     assert!(region(&app, &UiAction::FoldSideways(0)).x <= app.pane_rects[0].x + 2);
-    // Maximize zooms; the glyph turns to restore; a click restores.
+
     click_ctl(&mut app, 0, &UiAction::Zoom(0));
     assert!(app.zoom);
     draw(&mut app, &mut t);
     assert_eq!(controls(&app, &t, 0, false)[1], "▣");
     click_ctl(&mut app, 0, &UiAction::Zoom(0));
     assert!(!app.zoom);
-    // Minimize: a row strip with restore, maximize and close at its end.
+
     draw(&mut app, &mut t);
     click_ctl(&mut app, 0, &UiAction::FoldAccount(0));
     assert_eq!(app.account_fold(0), Fold::Row);
     draw(&mut app, &mut t);
     assert_eq!(app.pane_rects[0].height, 1);
     assert_eq!(controls(&app, &t, 0, true), ["▭", "□", "×"]);
-    // Restore from the strip's control.
+
     click_ctl(&mut app, 0, &UiAction::FoldAccount(0));
     assert_eq!(app.account_fold(0), Fold::Open);
-    // A click anywhere on a strip expands it too.
+
     draw(&mut app, &mut t);
     click_ctl(&mut app, 1, &UiAction::FoldAccount(1));
     draw(&mut app, &mut t);
     let s = app.pane_rects[1];
     click_at(&mut app, s.x + 4, s.y);
     assert_eq!(app.account_fold(1), Fold::Open);
-    // Close keeps its confirmation.
+
     draw(&mut app, &mut t);
     click_ctl(&mut app, 0, &UiAction::CloseWindow(0));
     assert_eq!(app.modal, Modal::ConfirmCloseWindow(0));
@@ -174,7 +166,7 @@ fn narrow_headers_keep_the_controls() {
             assert_eq!(controls(&app, &t, i, false), ["_", "□", "×"], "{w}x{h}");
         }
     }
-    // Zoomed at 80x24 too.
+
     app.zoom = true;
     let mut t = term(80, 24);
     draw(&mut app, &mut t);
@@ -189,21 +181,21 @@ fn sideways_collapse_strip_persistence_and_voice() {
     let (mut app, home) = test_app("side");
     let mut t = term(200, 50);
     draw(&mut app, &mut t);
-    // A 2x2: pane 0 top left, pane 1 top right.
+
     let (r0, r1) = (app.pane_rects[0], app.pane_rects[1]);
     assert_eq!(r0.y, r1.y);
     let row_w = r0.width + r1.width;
-    // The caret at the top left collapses sideways.
+
     click(&mut app, &UiAction::FoldSideways(0));
     assert_eq!(app.account_fold(0), Fold::Col);
     draw(&mut app, &mut t);
     let (s0, n1) = (app.pane_rects[0], app.pane_rects[1]);
     assert_eq!(s0.width, COL_W);
     assert_eq!(s0.height, r0.height);
-    // Its row sibling takes the whole rest of the row.
+
     assert_eq!(n1.x, s0.x + COL_W);
     assert_eq!(n1.width, row_w - COL_W);
-    // The strip: caret, number, dot, tab count, top to bottom.
+
     let col: Vec<String> = (0..6).map(|k| cell(&t, s0.x + 1, s0.y + k)).collect();
     assert_eq!(col[0], "▸", "{col:?}");
     assert_eq!(col[1], "1");
@@ -216,11 +208,11 @@ fn sideways_collapse_strip_persistence_and_voice() {
         })
         .collect();
     assert!(all.contains("1t"), "{all}");
-    // The PTY keeps its size.
+
     let before = app.panes[0].tabs[0].pty_size();
     draw(&mut app, &mut t);
     assert_eq!(app.panes[0].tabs[0].pty_size(), before);
-    // Kept in config.toml, apart from the row list; back after a restart.
+
     let cfg = crate::config::Config::load_or_init().unwrap();
     assert_eq!(
         cfg.collapsed_sideways,
@@ -230,8 +222,7 @@ fn sideways_collapse_strip_persistence_and_voice() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let again = App::new(cfg, tx);
     assert_eq!(again.pane_fold(0), Fold::Col);
-    // Both directions at once: account 4 minimized by voice, account 2
-    // sideways by voice.
+
     app.control_call("collapse_accounts", &json!({"accounts": 4}));
     let v = app.control_call(
         "collapse_accounts",
@@ -254,24 +245,24 @@ fn sideways_collapse_strip_persistence_and_voice() {
             }
         }
     }
-    // A row strip folded the other way goes sideways (one list at a time).
+
     app.control_call(
         "collapse_accounts",
         &json!({"accounts": 4, "direction": "column"}),
     );
     assert_eq!(app.account_fold(3), Fold::Col);
     assert!(app.cfg.collapsed_accounts.is_empty());
-    // Click anywhere on a column strip expands it.
+
     draw(&mut app, &mut t);
     let s = app.pane_rects[0];
     click_at(&mut app, s.x + 1, s.y + s.height - 2);
     assert_eq!(app.account_fold(0), Fold::Open);
-    // Ctrl-a \ toggles the focused pane.
+
     app.focus = 2;
     app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
     app.on_key(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE));
     assert_eq!(app.account_fold(2), Fold::Col);
-    // The strips at 80x24: on screen, the caret on top.
+
     let mut small = term(80, 24);
     draw(&mut app, &mut small);
     for &i in &[1usize, 2, 3] {
@@ -282,7 +273,7 @@ fn sideways_collapse_strip_persistence_and_voice() {
     }
     let open = app.pane_rects[0];
     assert!(open.width > 60, "the open pane takes the width: {open:?}");
-    // The View menu offers it.
+
     let rows = crate::menus::entries(&app, crate::menus::MenuId::View);
     assert!(rows
         .iter()
@@ -290,7 +281,6 @@ fn sideways_collapse_strip_persistence_and_voice() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// A pane's width caret on its header row.
 fn caret(app: &App, i: usize, grow: bool) -> Option<Rect> {
     let pane = app.pane_rects[i];
     app.last_hits
@@ -323,8 +313,7 @@ fn width_carets_sit_before_the_controls_and_resize_per_shape() {
         caret(&app, 0, true).unwrap(),
     );
     let close = ctl_region(&app, 0, &UiAction::FoldAccount(0));
-    // " <  > " right before the minimize button, with a gap; each caret
-    // three cells wide, like the window controls.
+
     assert_eq!((n.width, w.width), (3, 3));
     assert_eq!(w.x, n.x + 3);
     assert_eq!(w.x + 3 + 1, close.x);
@@ -342,25 +331,25 @@ fn width_carets_sit_before_the_controls_and_resize_per_shape() {
     let row = app.pane_rects[0].width + app.pane_rects[1].width;
     let before = app.pane_rects[0].width;
     click_caret(&mut app, 0, true);
-    // A click on a caret starts no text selection and moves the focus there.
+
     assert!(app.selection.is_none());
     assert_eq!(app.focus, 0);
     draw(&mut app, &mut t);
     let after = app.pane_rects[0].width;
     assert!(after > before, "{before} -> {after}");
     assert_eq!(after + app.pane_rects[1].width, row);
-    // The bottom row follows the column (same weights).
+
     assert_eq!(app.pane_rects[2].width, after);
     let shape = app.last_arranged.as_ref().unwrap().shape.clone();
     assert_eq!(shape, "2x2");
     let saved = app.ratios.get(&shape).unwrap().cols.clone();
     assert_eq!(saved.len(), 2);
     assert!(saved[0] > saved[1]);
-    // Narrower on the other pane trades back the other way.
+
     click_caret(&mut app, 1, false);
     draw(&mut app, &mut t);
     assert!(app.pane_rects[1].width < before);
-    // Shift-click: equal again, and the entry is gone.
+
     let r = caret(&app, 0, true).unwrap();
     app.last_click = None;
     for kind in [
@@ -395,7 +384,7 @@ fn width_carets_stop_at_the_minimum_and_double_click_resets() {
     click_caret(&mut app, 0, false);
     draw(&mut app, &mut t);
     assert_eq!(app.pane_rects[0].width, at_min);
-    // A double click on a caret ends equal.
+
     let r = caret(&app, 0, true).unwrap();
     app.last_click = None;
     click_at(&mut app, r.x, r.y);
@@ -417,7 +406,7 @@ fn width_carets_with_three_columns_and_the_keyboard() {
     let total: u16 = (0..cols).map(|i| app.pane_rects[i].width).sum();
     let w1 = app.pane_rects[1].width;
     let w2 = app.pane_rects[2].width;
-    // The middle pane takes from its right neighbour only.
+
     app.focus = 1;
     app.resize_pane_width(1, true);
     draw(&mut app, &mut t);
@@ -427,7 +416,7 @@ fn width_carets_with_three_columns_and_the_keyboard() {
         (0..cols).map(|i| app.pane_rects[i].width).sum::<u16>(),
         total
     );
-    // The palette entries do the same for the focused pane.
+
     for name in ["pane wider", "pane narrower", "equal pane widths"] {
         assert!(
             crate::palette::ACTIONS.iter().any(|(n, _)| *n == name),
@@ -496,12 +485,12 @@ fn the_palette_jumps_to_any_open_tab_by_name() {
     app.panes[2].tabs[t].custom_name = Some("billing-api".into());
     let uid = app.panes[2].tabs[t].uid;
     app.focus = 0;
-    // Nothing typed: actions only.
+
     let none = crate::palette::Palette::default();
     assert!(crate::palette::items(&app, &none)
         .iter()
         .all(|(n, _)| !n.starts_with("go to tab")));
-    // Its name: the tab first, with its account and state.
+
     let pl = crate::palette::Palette {
         input: "billing".into(),
         sel: 0,
@@ -517,7 +506,7 @@ fn the_palette_jumps_to_any_open_tab_by_name() {
         label.starts_with("go to tab: billing-api · ") && label.contains(&acct),
         "{label}"
     );
-    // Fuzzy, like the actions.
+
     let pl2 = crate::palette::Palette {
         input: "bilapi".into(),
         sel: 0,
@@ -525,14 +514,13 @@ fn the_palette_jumps_to_any_open_tab_by_name() {
     assert!(crate::palette::items(&app, &pl2)
         .iter()
         .any(|(_, a)| *a == crate::palette::Action::GoTab(uid)));
-    // Actions still win their own words.
+
     let next = crate::palette::Palette {
         input: "next".into(),
         sel: 0,
     };
     assert_eq!(crate::palette::items(&app, &next)[0].0, "next tab");
-    // Enter goes there: the pane is focused and the tab shown, even when
-    // the pane was hidden.
+
     app.panes[2].hidden = true;
     app.panes[2].active = 0;
     app.modal = Modal::Palette(pl);
@@ -592,7 +580,7 @@ fn find_in_every_tab_lists_matches_and_goes_there() {
         .process(b"building...\r\nerror[E0425]: cannot find value `x`\r\ndone\r\n");
     app.focus = 0;
     let key = |app: &mut App, c: KeyCode| app.on_key(KeyEvent::new(c, KeyModifiers::NONE));
-    // Ctrl-a * opens it.
+
     app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
     key(&mut app, KeyCode::Char('*'));
     assert!(matches!(app.modal, Modal::FindAll(_)), "{:?}", app.modal);
@@ -610,7 +598,7 @@ fn find_in_every_tab_lists_matches_and_goes_there() {
         "{}",
         fa.hits[0].place
     );
-    // On screen, with a clickable row.
+
     let mut t2 = term(160, 40);
     draw(&mut app, &mut t2);
     let s: String = {
@@ -633,12 +621,12 @@ fn find_in_every_tab_lists_matches_and_goes_there() {
         .regions
         .iter()
         .any(|r| r.action == UiAction::FindAllRow(0)));
-    // Enter goes there.
+
     app.panes[1].active = 0;
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.modal, Modal::None);
     assert_eq!((app.focus, app.panes[1].active), (1, t));
-    // The palette has it too.
+
     assert!(crate::palette::ACTIONS
         .iter()
         .any(|(_, a)| *a == crate::palette::Action::FindAll));
@@ -648,8 +636,6 @@ fn find_in_every_tab_lists_matches_and_goes_there() {
 
 #[test]
 fn help_shows_every_key_on_a_wide_screen_that_is_not_tall() {
-    // Taller than the screen, the key rows scroll: every key is on screen
-    // at some scroll position, and the rows shown still run when clicked.
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("help-fit");
     app.modal = Modal::Help;

@@ -1,8 +1,3 @@
-//! Copying the BrowserSkill Agent Skill into GodTerm accounts, and allowing
-//! `Bash(bsk:*)` in a Claude account's settings.json. Both only run after
-//! the user's yes (see `app_browser`). Nothing here touches a real home:
-//! every path is passed in.
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -12,19 +7,16 @@ use std::time::SystemTime;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-/// The permission rule that lets an agent run `bsk` without asking.
 pub const BSK_RULE: &str = "Bash(bsk:*)";
 
-/// What happens (or happened) to one account's copy.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    /// No copy there: it will be installed.
     Install,
-    /// An older or different copy: it will be replaced.
+
     Update,
-    /// Already the same.
+
     Current,
-    /// The account's copy is newer than the source: left alone (unless forced).
+
     KeptNewer,
 }
 
@@ -39,8 +31,6 @@ impl Action {
     }
 }
 
-/// Every regular file under `dir` (relative path with `/`) and its SHA-256.
-/// Symlinks are not followed or copied.
 fn tree(dir: &Path) -> io::Result<BTreeMap<String, [u8; 32]>> {
     fn walk(base: &Path, d: &Path, out: &mut BTreeMap<String, [u8; 32]>) -> io::Result<()> {
         for e in fs::read_dir(d)? {
@@ -67,7 +57,6 @@ fn tree(dir: &Path) -> io::Result<BTreeMap<String, [u8; 32]>> {
     Ok(out)
 }
 
-/// The newest modification time of any file under `dir`.
 fn newest(dir: &Path) -> Option<SystemTime> {
     let mut best: Option<SystemTime> = None;
     let mut stack = vec![dir.to_path_buf()];
@@ -86,12 +75,10 @@ fn newest(dir: &Path) -> Option<SystemTime> {
     best
 }
 
-/// A usable source: a folder with a SKILL.md.
 pub fn source_ok(src: &Path) -> bool {
     src.join("SKILL.md").is_file()
 }
 
-/// What copying `src` to `dest` would do.
 pub fn plan(src: &Path, dest: &Path, force: bool) -> Result<Action, String> {
     if !source_ok(src) {
         return Err(format!("no skill at {} (no SKILL.md)", src.display()));
@@ -131,10 +118,6 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Copy `src` to `dest` atomically: into a temp folder beside it, then a
-/// rename (an existing copy is moved aside first and put back if the
-/// rename fails). On any failure `dest` is as it was and the temp folder
-/// is gone.
 pub fn install(src: &Path, dest: &Path) -> Result<(), String> {
     if !source_ok(src) {
         return Err(format!("no skill at {} (no SKILL.md)", src.display()));
@@ -174,22 +157,12 @@ pub fn install(src: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// What the settings.json merge did.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Merge {
-    /// Added to permissions.allow; the backup (None: the file was new).
-    Added {
-        backup: Option<PathBuf>,
-    },
+    Added { backup: Option<PathBuf> },
     AlreadyAllowed,
 }
 
-/// Add `rule` to `permissions.allow` in the settings.json at `path`, and
-/// nothing else: other keys and rules are kept. The file is backed up first
-/// (`settings.json.godterm-bak-<time>`), written through a temp file and a
-/// rename, and created when missing. A file that is not valid JSON, or whose
-/// `permissions` or `allow` has another shape, is refused untouched.
-/// (JSON objects are rewritten with sorted keys.)
 pub fn allow_rule(path: &Path, rule: &str) -> Result<Merge, String> {
     let text = match fs::read_to_string(path) {
         Ok(t) => Some(t),

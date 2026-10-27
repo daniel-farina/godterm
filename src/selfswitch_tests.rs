@@ -1,10 +1,3 @@
-//! The assistant watching its own account: the warning once per window,
-//! the move at the switch level (5 hour and weekly) or on a usage limit
-//! error with the turn sent again, the choice of account, the session
-//! copied and resumed there (or a fuller summary when that fails), the
-//! account saved, Remote Control coming back, everyone out, ask and off.
-//! A stub claude and fake usage numbers; nothing real is touched.
-
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -107,7 +100,7 @@ impl T {
             .filter(|e| e.text.contains(s))
             .count()
     }
-    /// A turn ends (as the stub never answers).
+
     fn done(&mut self, text: &str, error: bool) {
         self.app.on_brain(BrainEvent::Done {
             text: text.into(),
@@ -149,12 +142,12 @@ fn warns_once_at_the_threshold() {
         t.app.assistant.log
     );
     assert_eq!(t.notes("I'll move to Account 3 (90% left) at 5%."), 1);
-    // The weekly limit binds: said so.
+
     t.app.accounts[0].usage = Some(usage(20.0, 90.0));
     t.app.self_switch_tick();
     t.app.self_switch_tick();
     assert_eq!(t.notes("has 10% left this week"), 1);
-    // Nothing moved for a warning.
+
     assert_eq!(t.app.cfg.assistant.account, "account1");
     assert_eq!(
         t.app.self_switch_json()["left_pct"],
@@ -172,7 +165,7 @@ fn moves_at_five_percent_on_either_limit_and_saves_it() {
     let mut t = setup("auto", &[]);
     t.app.ensure_brain().unwrap();
     assert_eq!(t.on(), Some(0));
-    // 5 hour: 96% used.
+
     t.app.accounts[0].usage = Some(usage(96.0, 20.0));
     t.app.accounts[1].usage = Some(usage(10.0, 10.0));
     t.app.self_switch_tick();
@@ -181,14 +174,14 @@ fn moves_at_five_percent_on_either_limit_and_saves_it() {
     assert_eq!(t.saved_account(), "account2");
     assert_eq!(crate::app_resume::load().unwrap().account, "account2");
     assert!(t.notes("so I moved myself to Account 2 (90% left)") >= 1);
-    // Weekly: 96% used while the 5 hour window is fine.
+
     t.app.accounts[1].usage = Some(usage(10.0, 96.0));
     t.app.accounts[0].usage = Some(usage(10.0, 10.0));
     t.app.self_switch_tick();
     assert_eq!(t.on(), Some(0));
     assert!(t.notes("has 4% left this week") >= 1);
     assert_eq!(t.saved_account(), "account1");
-    // Not in the middle of a turn.
+
     t.app.accounts[0].usage = Some(usage(99.0, 10.0));
     t.app.assistant.busy = true;
     t.app.self_switch_tick();
@@ -206,7 +199,7 @@ fn a_usage_limit_error_moves_and_sends_the_turn_again() {
     t.app.ask_assistant("what is the build doing");
     assert!(t.app.assistant.busy);
     assert_eq!(t.on(), Some(0));
-    // The stub has read it.
+
     let rec = t.rec.clone();
     assert!(t.pump(5, |_| std::fs::read_to_string(&rec)
         .unwrap_or_default()
@@ -222,7 +215,7 @@ fn a_usage_limit_error_moves_and_sends_the_turn_again() {
             .count(),
         2
     );
-    // Shown once, and the error is not the answer.
+
     assert_eq!(
         t.app
             .assistant
@@ -234,11 +227,11 @@ fn a_usage_limit_error_moves_and_sends_the_turn_again() {
     );
     assert_eq!(t.notes("usage limit reached|"), 0);
     assert!(t.notes("hit its usage limit, so I moved myself to Account 4") >= 1);
-    // A rate limit error counts too.
+
     t.app.accounts[0].usage = Some(usage(1.0, 1.0));
     t.done("API Error: 429 {\"type\":\"rate_limit_error\"}", true);
     assert_eq!(t.on(), Some(0));
-    // An ordinary error does not move it.
+
     t.app.ask_assistant("again");
     t.done("something else broke", true);
     assert_eq!(t.on(), Some(0));
@@ -248,8 +241,7 @@ fn a_usage_limit_error_moves_and_sends_the_turn_again() {
 fn the_best_account_skips_exhausted_logged_out_and_erroring_ones() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut t = setup("pick", &[]);
-    // 1 runs out; 2 is fine on 5 hours but out for the week; 3 is logged
-    // out (the most left); 4 errors on its token.
+
     t.app.accounts[0].usage = Some(usage(97.0, 10.0));
     t.app.accounts[1].usage = Some(usage(0.0, 99.0));
     t.app.accounts[2].usage = Some(usage(0.0, 0.0));
@@ -282,7 +274,7 @@ fn the_conversation_comes_along() {
     t.app.self_switch_tick();
     assert_eq!(t.on(), Some(2));
     t.pump(1, |_| false);
-    // Resumed by the same id on the new account, its transcript copied.
+
     assert!(t.args().contains(&format!("--resume {id}")), "{}", t.args());
     let there = t.app.cfg.accounts[2]
         .config_dir()
@@ -296,7 +288,7 @@ fn the_conversation_comes_along() {
         (id.as_str(), "account3")
     );
     assert!(!t.app.assistant.brain_fresh, "no memory block on a resume");
-    // "Move yourself to account two": the same path, Remote Control or not.
+
     t.app.assistant_turn += 1;
     t.app.assistant.last_user = "move yourself to account two".into();
     let v = t.app.control_call(
@@ -321,7 +313,7 @@ fn a_failed_resume_after_a_move_starts_fresh_with_a_fuller_summary() {
     t.app.accounts[1].usage = Some(usage(1.0, 1.0));
     t.app.self_switch_tick();
     assert_eq!(t.app.cfg.assistant.account, "account2");
-    // The resume fails: a fresh session with the summary.
+
     assert!(t.pump(10, |a| a.assistant.brain.is_none()));
     assert!(t.args().contains(&format!("--resume {id}")));
     assert!(t.app.assistant.fresh_session);
@@ -330,7 +322,7 @@ fn a_failed_resume_after_a_move_starts_fresh_with_a_fuller_summary() {
         carry.contains("remember the code word plum") && carry.contains("Noted: plum."),
         "{carry}"
     );
-    // The next request starts it fresh with that summary.
+
     t.app.ask_assistant("what was the word");
     t.pump(2, |_| false);
     assert!(t.sent().contains("Earlier in this conversation"));
@@ -389,11 +381,7 @@ fn everyone_out_says_so_once_and_retries() {
     );
     assert_eq!(t.notes("I keep running on Account 1 until it stops me."), 1);
     assert_eq!(t.on(), Some(0));
-    // Hard blocked: the turn waits and is tried again now and then.
-    // The retry is due when the test says so, not after a short wall
-    // clock wait: on a slow runner (the log written line by line) the
-    // handling of the error alone took longer than a 100 ms retry, so
-    // the turn went out again before it could be seen held.
+
     t.app.assistant.selfswitch.retry_every = Some(Duration::from_secs(3600));
     t.app.ask_assistant("deploy status please");
     t.done("You've hit your limit · resets 5pm", true);
@@ -416,7 +404,7 @@ fn everyone_out_says_so_once_and_retries() {
             .count(),
         2
     );
-    // Room comes back on another account: it moves there with the turn.
+
     t.done("You've hit your limit · resets 5pm", true);
     t.app.accounts[2].usage = Some(usage(0.0, 10.0));
     t.app.self_switch_tick();
@@ -459,11 +447,11 @@ fn ask_mode_has_yes_and_no_buttons() {
             t.app.self_switch_tick();
             assert!(t.app.assistant.selfswitch.asked.is_none(), "asked once");
         }
-        // Nothing went to the brain as a "yes" or "no".
+
         t.pump(1, |_| false);
         assert!(!t.sent().contains("\"yes") && !t.sent().contains("\"no"));
     }
-    // A spoken yes answers it too.
+
     let mut t = setup("askvoice", &[]);
     t.app.cfg.assistant.auto_switch = "ask".into();
     t.app.accounts[0].usage = Some(usage(10.0, 97.0));

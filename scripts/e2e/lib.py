@@ -17,7 +17,6 @@ import traceback
 
 COLS, ROWS = 200, 50
 
-# tmux key names for the GodTerm prefix and friends.
 PREFIX = "C-a"
 
 
@@ -44,11 +43,8 @@ class Tmux:
     def start(self, name, argv, env, cwd, cols=COLS, rows=ROWS):
         """A new session running `argv` (a list) with exactly `env`."""
         self.kill(name)
-        # `env -i` so the pane gets only what we pass (not the server's
-        # environment, which tmux would otherwise copy in).
         envs = [f"{k}={v}" for k, v in sorted(env.items())]
         cmd = " ".join(shlex.quote(a) for a in ["env", "-i", *envs, *argv])
-        # Keep the pane after the program exits, to read its last screen.
         self.tmux("new-session", "-d", "-s", name, "-x", str(cols), "-y", str(rows), "-c", cwd, cmd)
         self.tmux("set-option", "-t", name, "remain-on-exit", "on")
         self.tmux("set-option", "-t", name, "history-limit", "5000")
@@ -164,7 +160,7 @@ class Report:
         except StepFailed as e:
             rec["status"] = "fail"
             rec["detail"] = str(e)
-        except Exception as e:  # a bug in the step itself: still go on
+        except Exception as e:
             rec["status"] = "fail"
             rec["detail"] = f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=3)}"
         rec["secs"] = round(time.time() - t0, 1)

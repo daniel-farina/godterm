@@ -1,33 +1,3 @@
-//! Update mode: while it is on, GodTerm tells you, as things move, what
-//! changed in each active project, like a colleague keeping you posted
-//! ("ACME: the test deploy finished the plan and is applying now.
-//! Hyper: three of seven steps done, now applying the migration.").
-//!
-//! Every few seconds it reads what is new: the part of each Claude tab's
-//! transcript written since the last read (text, tools by kind, to do
-//! progress, subagents, background commands, errors, a turn that
-//! ended), the screen state of every tab (working, ready, waiting for
-//! approval: all there is for Grok, Codex, Cursor, Antigravity and
-//! OpenCode), scheduled jobs that ran, and requests that were dropped
-//! without a word. An event (an approval, an error, a finished turn, a
-//! subagent or job done) is said at the next quiet moment once the
-//! minimum gap since the last update is over; plain progress waits for
-//! the roundup every few minutes. Nothing new: nothing is said. Several
-//! projects go in one short utterance, the most important first, and
-//! what "X finished" or "X needs approval" already said is not repeated.
-//!
-//! It never talks over the user (the quiet gate's rules: not mid
-//! sentence, not right after they spoke or typed, not mid turn), and
-//! waits while paused, brainstorming or in direct mode. With the voice
-//! off, the speaker or mic muted, or voice asleep, the same words show as
-//! one line in the assistant panel (every update is logged there too).
-//! "What's the latest?" gives a roundup on demand, even with the mode
-//! off. The wording is built from the facts (updates.rs). Unasked news
-//! is not said by GodTerm itself: it goes to the assistant as an event
-//! (app_events), which tells the user; only an asked roundup is said
-//! directly, as the answer to the user's request. Subagents finishing
-//! are never mentioned.
-
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -38,54 +8,47 @@ use crate::app::{App, View};
 use crate::pane::Activity;
 use crate::updates::{self, Cursor, Facts, Phrase, Said};
 
-/// The card shown on first use (and from the ⓘ).
 pub const EXPLAIN: &str = "Update mode: I keep you posted on every active project, a sentence or two each: what finished, what needs your approval, errors, steps done. Big news comes at once (at most every minute), the rest in a roundup every few minutes, and only when something changed. Say 'stop updates' to end it, or 'what's the latest' any time.";
-/// Its spoken one line version.
+
 pub const EXPLAIN_SPOKEN: &str =
     "Update mode. I'll tell you what changes in each active project. Say stop updates to end it.";
 
-/// How often transcripts and screens are read.
 const SCAN_EVERY: Duration = Duration::from_secs(5);
 
-/// One tab followed by update mode.
 #[derive(Debug, Clone)]
 pub struct Track {
     pub path: Option<PathBuf>,
     pub cur: Cursor,
     pub act: Activity,
     pub bg_wait: bool,
-    /// Its latest to do list (for "still on it" when asked).
+
     pub todo: Option<updates::Todo>,
 }
 
 #[derive(Default)]
 pub struct UpdatesState {
-    /// The explanation card shows in the panel.
     pub card: bool,
     pub tabs: HashMap<u64, Track>,
-    /// What changed since the last update, by project key (a tab's uid,
-    /// or a job target's), with the project's spoken name.
+
     pub pending: BTreeMap<u64, (String, Facts)>,
-    /// "X needs approval" (true) or "X finished" (false) already said
-    /// since the last update.
+
     pub announced: Vec<(u64, bool)>,
-    /// Each job's last result time seen.
+
     pub jobs_seen: HashMap<String, i64>,
     pub jobs_primed: bool,
     pub last_said: Option<Instant>,
     pub last_round: Option<Instant>,
     pub scanned: Option<Instant>,
-    /// Active projects at the last scan (the chip).
+
     pub active: usize,
-    /// Each project's last line, so the same progress is not said twice.
+
     pub last_line: HashMap<u64, String>,
-    /// What it said (or showed), newest last (the panel and tests).
+
     pub said: Vec<String>,
-    /// Tests: the clock.
+
     pub clock: Option<Instant>,
 }
 
-/// A job target without an open tab gets a key of its own.
 fn key_of(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -98,7 +61,6 @@ impl App {
         self.cfg.voice.updates
     }
 
-    /// Now, on update mode's clock.
     pub fn updates_now(&self) -> Instant {
         self.updates.clock.unwrap_or_else(Instant::now)
     }
@@ -111,7 +73,6 @@ impl App {
         Duration::from_secs(self.cfg.voice.updates_every_min.max(1) as u64 * 60)
     }
 
-    /// Something else has the floor: updates wait (and pile up).
     pub fn updates_held(&self) -> Option<&'static str> {
         if self.paused() {
             Some("paused")
@@ -124,8 +85,6 @@ impl App {
         }
     }
 
-    /// Said out loud, or only shown: no voice, a muted speaker or mic,
-    /// voice asleep.
     pub fn updates_spoken(&self) -> bool {
         self.tts_on()
             && !self.cfg.voice.speaker_muted
@@ -134,7 +93,6 @@ impl App {
             && (self.voice.engine.is_some() || self.voice.preview.is_some() || self.cfg.voice.tts)
     }
 
-    /// "● updates · 4 projects · next in 2m" for the composer.
     pub fn updates_chip(&self) -> Option<String> {
         if !self.updates_on() {
             return None;
@@ -159,15 +117,12 @@ impl App {
         Some(format!("● updates · {projects} · {when}"))
     }
 
-    /// The palette, the menus, Settings: on or off.
     pub fn toggle_update_mode(&mut self) {
         let on = !self.updates_on();
         let say = self.set_update_mode(on, true);
         self.flash(say);
     }
 
-    /// Turn it on (from now: nothing old is news) or off. With `speak`,
-    /// its line is said. Returns that line.
     pub fn set_update_mode(&mut self, on: bool, speak: bool) -> String {
         if on == self.updates_on() {
             return if on {
@@ -198,7 +153,7 @@ impl App {
             }
             return line;
         }
-        // From now on: every tab and job as it is now is the baseline.
+
         self.updates.tabs.clear();
         self.updates.jobs_primed = false;
         self.updates_scan(false);
@@ -244,8 +199,6 @@ impl App {
         line
     }
 
-    /// The names of the active projects (working, waiting, background
-    /// work), as said.
     fn updates_active_names(&self) -> Vec<String> {
         let mut v = vec![];
         for s in 0..self.panes.len() {
@@ -266,7 +219,7 @@ impl App {
         if matches!(tab.activity, Activity::Working | Activity::Permission) || tab.bg_wait {
             return true;
         }
-        // Background shells or subagents under a tab at its prompt: busy.
+
         if self.tab_background_work(s, t).is_some() {
             return true;
         }
@@ -279,8 +232,6 @@ impl App {
             })
     }
 
-    /// The focused tab the user is looking at (terminal in front): its
-    /// news is on screen already.
     fn updates_in_view(&self, s: usize, t: usize) -> bool {
         self.voice.term_focused == Some(true)
             && s == self.focus
@@ -288,8 +239,6 @@ impl App {
             && self.view == View::Grid
     }
 
-    /// Read what is new everywhere into `pending`. `ask`: an on demand
-    /// roundup, so a tab first seen counts its recent past.
     pub fn updates_scan(&mut self, ask: bool) {
         let mut seen: Vec<u64> = vec![];
         let mut active = 0;
@@ -332,15 +281,13 @@ impl App {
                     }
                     Some(tr) => {
                         facts.merge(updates::screen_facts(tr.act, act, bg));
-                        // The background work it waited on is done.
+
                         if tr.bg_wait && !bg && act == Activity::Ready {
                             facts.finished = true;
                         }
                         tr.act = act;
                         tr.bg_wait = bg;
                         if path != tr.path {
-                            // Another session in this tab: a new one from
-                            // its start, a resumed one from its end.
                             tr.cur = Cursor {
                                 offset: path.as_deref().map(updates::switched_offset).unwrap_or(0),
                                 ..Default::default()
@@ -357,8 +304,7 @@ impl App {
                         tr.todo = Some(td.clone());
                     }
                 }
-                // Direct mode says this tab's news itself; a tab in view
-                // shows it.
+
                 let skip = self.direct_with(uid) || self.updates_in_view(s, t);
                 if !skip && !facts.is_empty() {
                     let name = self.spoken_tab_name(uid);
@@ -375,14 +321,12 @@ impl App {
                 }
             }
         }
-        // Gone tabs: forgotten (a dropped request still waits to be said).
+
         self.updates.tabs.retain(|u, _| seen.contains(u));
         self.updates_scan_jobs();
         self.updates.active = active;
     }
 
-    /// Jobs whose run ended well since the last scan (a failure is said
-    /// at once by the jobs code itself).
     fn updates_scan_jobs(&mut self) {
         let primed = self.updates.jobs_primed;
         let mut news: Vec<(u64, String, String)> = vec![];
@@ -427,7 +371,6 @@ impl App {
         }
     }
 
-    /// A request to a tab was dropped and nothing was said about it.
     pub fn updates_note_dropped(&mut self, uid: u64) {
         if !self.updates_on() {
             return;
@@ -441,8 +384,6 @@ impl App {
         e.1.dropped += 1;
     }
 
-    /// "X needs approval" or "X finished" was said already (the announcer
-    /// no longer speaks; kept for callers that tell it some other way).
     #[allow(dead_code)]
     pub fn updates_note_announced(&mut self, uid: u64, approval: bool) {
         if self.updates_on() && !self.updates.announced.contains(&(uid, approval)) {
@@ -450,8 +391,6 @@ impl App {
         }
     }
 
-    /// The pending news as lines, most important first; the projects it
-    /// covers. Approvals no longer waiting are dropped.
     fn updates_lines(&self) -> Vec<(updates::Prio, String, u64)> {
         let mut out = vec![];
         for (key, (name, f)) in &self.updates.pending {
@@ -469,7 +408,7 @@ impl App {
             let Some((p, line)) = updates::say_project(name, &f, said) else {
                 continue;
             };
-            // The same progress line as last time is no news.
+
             if p == updates::Prio::Progress && self.updates.last_line.get(key) == Some(&line) {
                 continue;
             }
@@ -478,10 +417,8 @@ impl App {
         out
     }
 
-    /// Every tick: read what is new now and then, and say it when due.
     pub fn updates_tick(&mut self) {
         if !self.updates_on() {
-            // Off (also from Settings): the next start is a new baseline.
             if self.updates.last_round.is_some() {
                 self.updates.tabs.clear();
                 self.updates.pending.clear();
@@ -519,7 +456,6 @@ impl App {
             !lines.is_empty(),
         );
         if !due {
-            // Nothing to say at the roundup: start the next one.
             if lines.is_empty()
                 && self
                     .updates
@@ -535,7 +471,6 @@ impl App {
         self.updates_deliver(lines, false);
     }
 
-    /// Say (or show) the lines as one update; the pending news is spent.
     fn updates_deliver(&mut self, lines: Vec<(updates::Prio, String, u64)>, asked: bool) {
         let now = self.updates_now();
         for (_, l, k) in &lines {
@@ -549,7 +484,6 @@ impl App {
         self.updates_out(&text, asked);
     }
 
-    /// One update: a line in the panel, and said when it can be.
     fn updates_out(&mut self, text: &str, asked: bool) {
         if text.trim().is_empty() {
             return;
@@ -563,14 +497,12 @@ impl App {
         if n > 30 {
             self.updates.said.drain(..n - 30);
         }
-        // News nobody asked for just now goes to the assistant, which
-        // tells it (tabs and GodTerm never talk to the user themselves).
+
         if !asked {
             self.update_event(text);
             return;
         }
-        // Asked for ("what's the latest"): the answer to the user's own
-        // request, in the assistant's voice.
+
         let at = chrono::Local::now().format("%H:%M");
         self.note(format!("Update {at}: {text}"));
         if self.updates_spoken() {
@@ -580,8 +512,6 @@ impl App {
         }
     }
 
-    /// "What's the latest?": what changed since the last update, or how
-    /// things stand when nothing did. Works with the mode off too.
     pub fn updates_roundup_now(&mut self) -> String {
         self.updates_scan(true);
         let lines = self.updates_lines();
@@ -598,7 +528,6 @@ impl App {
         text
     }
 
-    /// How the active projects stand (nothing new to tell).
     fn updates_status_words(&self) -> String {
         let mut parts: Vec<String> = vec![];
         for s in 0..self.panes.len() {
@@ -653,14 +582,11 @@ impl App {
         }
     }
 
-    /// Before an utterance is routed: "update mode", "stop updates",
-    /// "what's the latest" (and "quiet" while it is on). True when it was
-    /// handled here.
     pub fn updates_intercept(&mut self, command: &str) -> bool {
         let Some(p) = updates::parse_phrase(command) else {
             return false;
         };
-        // In direct mode "what's the latest" is for the tab's agent.
+
         if self.direct.on.is_some() && matches!(p, Phrase::Now | Phrase::Quiet) {
             return false;
         }
@@ -694,7 +620,6 @@ impl App {
         true
     }
 
-    /// The panel's ⓘ: the card shown (or hidden again).
     pub fn toggle_updates_card(&mut self) {
         self.updates.card = !self.updates.card;
         if self.updates.card {
@@ -703,10 +628,8 @@ impl App {
         }
     }
 
-    /// The update_mode tool: on, off, or a roundup now.
     pub fn update_mode_tool(&mut self, args: &Value) -> Result<Value, String> {
         if args.get("now").and_then(Value::as_bool).unwrap_or(false) {
-            // Shown in the panel; the tool's say is the same words.
             self.updates_scan(true);
             let lines = self.updates_lines();
             let text = if lines.is_empty() {
@@ -735,7 +658,6 @@ impl App {
         }}))
     }
 
-    /// For the state block.
     pub fn updates_state_words(&self) -> Option<String> {
         self.updates_on().then(|| {
             format!(

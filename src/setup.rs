@@ -1,5 +1,3 @@
-//! First run setup (`godterm setup`) and the `godterm doctor` checks.
-
 use anyhow::Result;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::Path;
@@ -9,7 +7,6 @@ use crate::config::{expand_tilde, valid_name, AccountCfg, Config};
 use crate::creds;
 use crate::theme;
 
-/// Account directory name from a label: lowercase letters, digits and '-'.
 pub fn slug(label: &str, taken: &[String], n: usize) -> String {
     let mut s: String = label
         .to_lowercase()
@@ -45,12 +42,11 @@ fn ask(input: &mut dyn BufRead, prompt: &str, default: &str) -> Result<String> {
     if input.read_line(&mut line)? == 0 {
         return Ok(default.to_string());
     }
-    // Drop control characters and escape sequences (stray arrow keys).
+
     let mut clean = String::new();
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
-            // Skip "ESC [ ... final byte".
             if chars.peek() == Some(&'[') {
                 chars.next();
                 while let Some(&n) = chars.peek() {
@@ -72,7 +68,6 @@ fn ask(input: &mut dyn BufRead, prompt: &str, default: &str) -> Result<String> {
     })
 }
 
-/// Ask for a number of accounts (1 to 16). Keeps every other setting of `base`.
 pub fn ask_accounts(input: &mut dyn BufRead, base: Config) -> Result<Config> {
     println!("godterm setup\n");
     println!("Choose a coding agent for each slot. Claude, Grok and Codex have separate homes.");
@@ -154,7 +149,6 @@ pub fn ask_accounts(input: &mut dyn BufRead, base: Config) -> Result<Config> {
     Ok(Config { accounts, ..base })
 }
 
-/// Run the questions on the real terminal and save the result.
 pub fn interactive_setup(base: Config) -> Result<Config> {
     let stdin = io::stdin();
     let mut lock = stdin.lock();
@@ -194,7 +188,7 @@ fn version_of(bin: &Path) -> Option<String> {
 
 struct Report {
     problems: usize,
-    /// Privacy mode: emails are masked.
+
     private: bool,
 }
 
@@ -218,14 +212,12 @@ impl Report {
     }
 }
 
-/// Privacy mode is on (config, the runtime toggle, or --privacy).
 pub fn privacy_on(cfg: Option<&Config>) -> bool {
     std::env::args().any(|a| a == "--privacy")
         || cfg.is_some_and(|c| c.privacy)
         || crate::state::AppState::load().and_then(|s| s.privacy) == Some(true)
 }
 
-/// `godterm doctor`: check every dependency and print fixes.
 pub fn doctor() -> Result<()> {
     let mut r = Report {
         problems: 0,
@@ -466,7 +458,7 @@ pub fn doctor() -> Result<()> {
             "macOS asks the terminal app on first use; if voice says no access, enable it in System Settings > Privacy & Security > Microphone",
         );
     }
-    // Background voices: capture, voice processing, mic mode, speaker lock.
+
     let cap = crate::voice::capture::describe(vc);
     if cfg!(target_os = "macos") && !cap.starts_with("Apple") && vc.capture != "ffmpeg" {
         r.warn(
@@ -561,7 +553,7 @@ pub fn doctor() -> Result<()> {
         "terminal",
         &format!("{term}, TERM={}", std::env::var("TERM").unwrap_or_default()),
     );
-    // The install plan for what is missing (the Setup screen's model).
+
     let deps = crate::deps::all(&cfg, None, &crate::deps::Probe::host(&crate::deps::which));
     let missing: Vec<&crate::deps::Dep> = deps.iter().filter(|d| !d.status.ok()).collect();
     if !missing.is_empty() {

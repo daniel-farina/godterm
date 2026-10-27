@@ -1,61 +1,49 @@
-//! App configuration stored at `~/.godterm/config.toml`.
-
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// One coding-agent slot. Claude, Grok and Codex get isolated config homes;
-/// the other harnesses currently use their native shared login stores.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AccountCfg {
-    /// Short identifier, used as the directory name under `accounts/`.
     pub name: String,
-    /// Where this account's claude config lives (CLAUDE_CONFIG_DIR), when
-    /// not ~/.godterm/accounts/<name>. Never change it by hand: claude's
-    /// keychain item name depends on this exact path (use `godterm
-    /// migrate-accounts`, which carries the login over).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<String>,
-    /// Human friendly label shown in pane titles and the status bar.
+
     #[serde(default)]
     pub label: String,
-    /// The coding agent: claude (default), grok, codex, cursor,
-    /// antigravity or opencode. See docs/CLI_HARNESSES.md for capabilities.
+
     #[serde(
         default = "default_harness",
         skip_serializing_if = "is_default_harness"
     )]
     pub harness: String,
-    /// Accent color: a palette name (sage, sand, slate, clay, mauve, stone)
-    /// or a hex string like "#8a9a7b".
+
     #[serde(default = "default_color")]
     pub color: String,
-    /// Working directory for new sessions. `~` is expanded.
+
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Extra arguments appended to every agent invocation for this slot.
+
     #[serde(default)]
     pub args: Vec<String>,
-    /// Base folder for new tabs of this account (overrides `new_tab_base`).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_tab_base: Option<String>,
-    /// History lines for this account's tabs (overrides scrollback_lines).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scrollback_lines: Option<usize>,
-    /// Show this account's email in pane headers (overrides `show_email`).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_email: Option<bool>,
-    /// Answer claude's folder trust dialog automatically for this account
-    /// (overrides the global `auto_trust`).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_trust: Option<bool>,
-    /// Permission mode for this account's tabs (overrides the global one).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
 }
 
-/// Permission modes, as written in config.toml.
 pub const PERMISSION_MODES: &[&str] = &[
     "bypass",
     "default",
@@ -66,10 +54,6 @@ pub const PERMISSION_MODES: &[&str] = &[
     "dont-ask",
 ];
 
-/// claude arguments for a permission mode. "bypass" uses
-/// --dangerously-skip-permissions, "default" passes nothing (claude's own
-/// default), the rest map to --permission-mode <x> as named in
-/// `claude --help` (2.1.29x). Unknown values pass nothing.
 pub fn permission_args(mode: &str) -> Vec<String> {
     let m = match mode.trim().to_ascii_lowercase().as_str() {
         "bypass" | "bypasspermissions" | "skip" => {
@@ -85,7 +69,6 @@ pub fn permission_args(mode: &str) -> Vec<String> {
     vec!["--permission-mode".into(), m.into()]
 }
 
-/// Short badge text for the pane header.
 pub fn permission_badge(mode: &str) -> &'static str {
     match mode.trim().to_ascii_lowercase().as_str() {
         "bypass" | "bypasspermissions" | "skip" => "bypass",
@@ -104,11 +87,9 @@ fn default_color() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
-    /// Path to the claude binary. Defaults to `claude` on PATH.
     #[serde(default)]
     pub claude_bin: Option<String>,
-    /// Path to the grok binary (Grok Build) for grok accounts. Defaults to
-    /// ~/.local/bin/grok, else `grok` on PATH.
+
     #[serde(default)]
     pub grok_bin: Option<String>,
     #[serde(default)]
@@ -119,165 +100,142 @@ pub struct Config {
     pub antigravity_bin: Option<String>,
     #[serde(default)]
     pub opencode_bin: Option<String>,
-    /// What grok in a GodTerm slot may pick up from the user's Claude Code
-    /// setup (~/.claude): grok scans it whatever GROK_HOME says.
+
     #[serde(default)]
     pub grok_claude_compat: GrokCompat,
-    /// Start `claude` automatically in panes whose account is logged in.
+
     #[serde(default = "default_true")]
     pub autostart: bool,
-    /// Usage refresh interval in seconds.
+
     #[serde(default = "default_refresh")]
     pub refresh_secs: u64,
-    /// Restart a tab automatically (resuming its session) when claude
-    /// crashes. Off by default: the tab offers a restart on Enter instead.
+
     #[serde(default)]
     pub auto_restart: bool,
-    /// macOS notifications when a background tab needs approval or
-    /// finishes, while the terminal is not in front.
+
     #[serde(default = "default_true")]
     pub notifications: bool,
-    /// Environment variables to pass to claude even though they match the
-    /// Claude Code markers godterm strips (CLAUDECODE, CLAUDE_CODE_*, ...).
+
     #[serde(default)]
     pub pass_env: Vec<String>,
-    /// Where each pane lists its tabs: "left" (default), "right" or "top".
-    /// A pane can override it (Ctrl-a S, the account menu, or voice).
+
     #[serde(default = "default_tab_position")]
     pub tab_position: String,
-    /// Permission mode for new tabs: "bypass" (default, skips every
-    /// permission check), "default" (claude decides), "auto",
-    /// "accept-edits", "plan", "manual" or "dont-ask". Accounts can override.
+
     #[serde(default = "default_permission_mode")]
     pub permission_mode: String,
-    /// Ask before closing a tab: "busy" (default: when it is working,
-    /// waiting for an answer or has loops), "always" (whenever it runs)
-    /// or "never".
+
     #[serde(default = "default_confirm_close")]
     pub confirm_close: String,
-    /// Where tabs outside any group sit in a tab list: "bottom" or "top".
+
     #[serde(default = "default_ungrouped")]
     pub ungrouped_tabs: String,
-    /// Trust each tab's folder automatically: seed claude's trust flag before
-    /// starting it and answer the "Yes, I trust this folder" dialog.
+
     #[serde(default = "default_true")]
     pub auto_trust: bool,
-    /// Limit auto trust to folders inside these (empty: any folder).
+
     #[serde(default)]
     pub trusted_dirs: Vec<String>,
-    /// Folder new tabs are created in (a dated subfolder by default).
+
     #[serde(default = "default_base")]
     pub new_tab_base: String,
-    /// strftime pattern for new tab folder names; -1, -2... is appended.
+
     #[serde(default = "default_name_pattern")]
     pub new_tab_name_pattern: String,
-    /// Create the folder for a new tab (otherwise it must exist).
+
     #[serde(default = "default_true")]
     pub new_tab_create_folder: bool,
-    /// Recent folders kept per account.
+
     #[serde(default = "default_recent_limit")]
     pub recent_paths_limit: usize,
-    /// Save the terminal window's size and position and restore it from the
-    /// app launcher (moving it to the main screen if its monitor is gone).
+
     #[serde(default = "default_true")]
     pub remember_window: bool,
-    /// "eager" starts every restored tab at launch; "lazy" when first shown.
+
     #[serde(default = "default_restore")]
     pub restore: String,
-    /// After a restart, tabs that were in the middle of a turn get one
-    /// prompt to continue where they left off.
+
     #[serde(default = "default_true")]
     pub restore_continue_working: bool,
-    /// Show the account email in pane headers.
+
     #[serde(default = "default_true")]
     pub show_email: bool,
-    /// Show the active tab's folder in each pane header (and tab rows).
+
     #[serde(default = "default_true")]
     pub show_path: bool,
-    /// Hide emails everywhere (screen sharing).
+
     #[serde(default)]
     pub privacy: bool,
-    /// Do not open the Setup screen at start when something is missing.
+
     #[serde(default)]
     pub setup_dont_show: bool,
-    /// The start up splash: "once" (first launch, and once after an
-    /// update) or "never".
+
     #[serde(default = "default_splash")]
     pub splash: String,
-    /// Splash animation: "on", "auto" (still when Reduce Motion is on), "off".
+
     #[serde(default = "default_splash_motion")]
     pub splash_motion: String,
-    /// Pane layout: auto, grid, columns, rows, focus.
+
     #[serde(default = "default_layout")]
     pub layout: String,
-    /// Explicit grid such as "3x2" (used with layout = "grid").
+
     #[serde(default)]
     pub grid: String,
-    /// A split tree as JSON (used with layout = "custom"): see grid_layout.
+
     #[serde(default)]
     pub layout_tree: String,
-    /// Accounts closed in the grid (by name): still configured and logged
-    /// in, their tabs still running; reopened from View > Closed accounts.
+
     #[serde(default)]
     pub closed_accounts: Vec<String>,
-    /// Accounts collapsed in the grid to a one row strip (by name): their
-    /// siblings take the space, their tabs keep running.
+
     #[serde(default)]
     pub collapsed_accounts: Vec<String>,
-    /// Accounts collapsed sideways to a narrow column strip (by name):
-    /// the panes beside them take the width.
+
     #[serde(default)]
     pub collapsed_sideways: Vec<String>,
-    /// Focusing a collapsed pane (keys, the assistant) expands it; off:
-    /// only a click on its strip (or Ctrl-a _) does.
+
     #[serde(default)]
     pub expand_collapsed_on_focus: bool,
-    /// Side tab list width in columns for every pane (0: a share of the
-    /// pane). A width dragged or set with Ctrl-a < / > wins, per pane.
+
     #[serde(default)]
     pub tab_list_columns: u16,
-    /// A one row model bar in each pane, between the tab and its usage:
-    /// the harness's top models, a click switches the tab (its own
-    /// /model command). Hidden on panes under 12 rows.
+
     #[serde(default = "default_true")]
     pub tab_model_bar: bool,
-    /// The model bar's models per harness, overriding the built in ones
-    /// ("haiku", or "fable=Fable" for a label); empty: the built in list.
+
     #[serde(default)]
     pub tab_models: TabModelsCfg,
-    /// Usage colors: gradient, bands or mono.
+
     #[serde(default = "default_usage_colors")]
     pub usage_colors: String,
-    /// Scrollback kept for tabs not on screen.
+
     #[serde(default = "default_bg_scrollback")]
     pub background_scrollback_lines: usize,
-    /// Low memory profile.
+
     #[serde(default)]
     pub memory_saver: bool,
-    /// Stop idle background tabs after this long (memory saver), e.g. "10m".
+
     #[serde(default = "default_suspend")]
     pub suspend_idle_after: String,
-    /// Parsed sessions kept in memory for the sessions list and read back.
+
     #[serde(default = "default_transcript_cache")]
     pub transcript_cache: usize,
-    /// Usage samples kept per account.
+
     #[serde(default = "default_usage_history")]
     pub usage_history: usize,
-    /// Per tab input queue size in KB.
+
     #[serde(default = "default_writer_queue")]
     pub writer_queue_kb: usize,
-    /// PTY read buffer per tab in KB.
+
     #[serde(default = "default_read_buffer")]
     pub pty_read_buffer_kb: usize,
-    /// Stop whisper-server (and Kokoro) after this many idle minutes in
-    /// push to talk mode (0: keep them; the memory saver uses 5).
+
     #[serde(default)]
     pub voice_idle_stop_min: u32,
-    /// Lines of scrollback kept per tab (bounds memory use).
+
     #[serde(default = "default_scrollback")]
     pub scrollback_lines: usize,
-    /// A tab whose account has less than this % of its 5 hour window left
-    /// offers a one click move to the account with the most left (0: off).
+
     #[serde(default = "default_suggest_move")]
     pub suggest_move_below: f64,
     #[serde(default, rename = "account")]
@@ -286,68 +244,55 @@ pub struct Config {
     pub voice: VoiceCfg,
     #[serde(default)]
     pub assistant: AssistantCfg,
-    /// `[usage]`: moving work off an account that runs out.
+
     #[serde(default)]
     pub usage: UsageCfg,
-    /// `[tabs]`: what GodTerm hands the agents running in its tabs.
+
     #[serde(default)]
     pub tabs: TabsCfg,
-    /// `[browser]`: the Chrome profile links open in.
+
     #[serde(default)]
     pub browser: BrowserCfg,
-    /// `[ui]`: small interface switches.
+
     #[serde(default)]
     pub ui: UiCfg,
-    /// `[viz]`: the live map.
+
     #[serde(default)]
     pub viz: crate::livemap::VizCfg,
-    /// `[update]`: checking for and installing new versions.
+
     #[serde(default)]
     pub update: UpdateCfg,
-    /// `[supervisor]`: the watchdog that relaunches GodTerm after a crash
-    /// (`godterm supervisor install`).
+
     #[serde(default)]
     pub supervisor: SupervisorCfg,
-    /// `[web]`: GodTerm in a browser (docs/WEB_APP.md).
+
     #[serde(default)]
     pub web: WebCfg,
-    /// `[sync]`: GodTerm Sync (docs/SYNC.md), machine local.
+
     #[serde(default)]
     pub sync: crate::sync::SyncCfg,
-    /// `[git]`: which GitHub owner and gh account each project folder
-    /// belongs to (docs/SYNC.md).
+
     #[serde(default)]
     pub git: crate::git_map::GitCfg,
 }
 
-/// `[web]`: the web app, served on 127.0.0.1 (remote access through
-/// `tailscale serve`) and on this Mac's tailnet IPv4. `godterm web-url`
-/// prints the sign in links.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct WebCfg {
-    /// Serve it (or start with `godterm --web`).
     pub enabled: bool,
     pub port: u16,
-    /// Host names it answers to besides loopback and *.ts.net.
+
     pub hosts: Vec<String>,
-    /// Sign in tailnet users with no token: through `tailscale serve` (its
-    /// identity headers) and on the tailnet IP (`tailscale whois`). Only
-    /// the owner of this Mac's tailnet node and `tailnet_users`.
+
     pub tailnet_sign_in: bool,
-    /// More tailnet logins that sign in (e.g. "you@example.com").
+
     pub tailnet_users: Vec<String>,
-    /// Also listen on this Mac's tailnet IPv4, port `ip_port` (for
-    /// browsers that cannot resolve *.ts.net).
+
     pub tailnet_ip: bool,
     pub ip_port: u16,
-    /// Serve the app's files from this folder (a web/ checkout) instead
-    /// of the ones built in, reloaded within about two seconds of an edit.
-    /// Empty: the repo's web/ when GodTerm runs from inside the checkout
-    /// it was built in (target/release/godterm), else the built in files.
+
     pub assets_dir: String,
-    /// Always the built in files when `assets_dir` is empty (no repo
-    /// web/ for a binary run from its checkout).
+
     pub embedded_assets: bool,
 }
 
@@ -367,18 +312,14 @@ impl Default for WebCfg {
     }
 }
 
-/// `[supervisor]`: what the launchd watchdog does once installed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SupervisorCfg {
-    /// Relaunch GodTerm after an unclean exit (a crash, kill, panic or a
-    /// closed window); a quit is never undone.
     pub enabled: bool,
-    /// Restart a GodTerm whose control socket has not answered for
-    /// `hang_s` seconds.
+
     pub hang_restart: bool,
     pub hang_s: u64,
-    /// The shell command that starts it (empty: open GodTerm.app).
+
     pub launch: String,
 }
 
@@ -393,22 +334,17 @@ impl Default for SupervisorCfg {
     }
 }
 
-/// `[update]`: GodTerm checks GitHub Releases at start and every few
-/// hours, downloads and verifies a new version in the background, and
-/// restarts into it when you say so (Ctrl-a N).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct UpdateCfg {
-    /// Check for new versions.
     pub enabled: bool,
-    /// "stable", or "prerelease" to include pre-releases.
+
     pub channel: String,
-    /// Download and verify a new version in the background.
+
     pub auto_download: bool,
-    /// Refuse a release whose SHA256SUMS has no valid minisign signature
-    /// (on by default: every release from 0.2.2 is signed).
+
     pub require_signature: bool,
-    /// Hours between checks.
+
     pub check_hours: u64,
 }
 
@@ -424,16 +360,11 @@ impl Default for UpdateCfg {
     }
 }
 
-/// `[usage]`: when an account runs low, offer to move its tabs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct UsageCfg {
-    /// Offer a move when an account has less than this percent left (the
-    /// binding limit), or when a tab says it hit its limit.
     pub failover_pct: f64,
-    /// "ask" (default): a notice offers the move, one yes does it;
-    /// "auto": idle tabs move by themselves (and it says so), busy ones
-    /// are offered; "off": no offers.
+
     pub auto_failover: String,
 }
 
@@ -446,12 +377,9 @@ impl Default for UsageCfg {
     }
 }
 
-/// `[ui]`: small interface switches.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct UiCfg {
-    /// The Approvals button (and a waiting tab's marker) blinks red while
-    /// something waits for you. Off: solid red, no blinking.
     pub blink_attention: bool,
 }
 
@@ -463,13 +391,9 @@ impl Default for UiCfg {
     }
 }
 
-/// `[tabs]`: what the agents running in tabs get from GodTerm.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct TabsCfg {
-    /// Each Claude and Grok tab gets a `godterm mcp` server limited to its
-    /// own jobs (create_job, list_jobs, update_job, delete_job, adopt_loop)
-    /// and a hint to prefer it over CronCreate and /loop.
     pub jobs_tools: bool,
 }
 
@@ -479,21 +403,13 @@ impl Default for TabsCfg {
     }
 }
 
-/// `[browser]`: which Chrome profile links open in.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BrowserCfg {
-    /// Chrome profile folder ("Default", "Profile 1") where GodTerm opens
-    /// links when asked to open one in Chrome. The profile last chosen with
-    /// a tab's Browser button is written here. Empty: the system browser.
     pub default_profile: String,
-    /// Sign in pages and Remote Control links GodTerm opens go to that
-    /// default profile too (true, the default); false: the system browser.
+
     pub login_links: bool,
-    /// Connected BrowserSkill browsers the user said are a profile: the
-    /// extension's "Browser name" label (as `bsk browsers` shows it) to
-    /// the Chrome profile folder. bsk cannot tell profiles apart, so this
-    /// wins over guessing from the label.
+
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub links: std::collections::BTreeMap<String, String>,
 }
@@ -508,92 +424,63 @@ impl Default for BrowserCfg {
     }
 }
 
-/// `[assistant]`: the natural language voice assistant, a headless claude
-/// on one of your accounts that drives godterm through its tools.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AssistantCfg {
-    /// Which brain: "claude" (default) or "grok" (src/providers).
     pub provider: String,
-    /// The model per provider other than claude (`model` is claude's):
-    /// [assistant.models] grok = "grok-4.7-build-fast".
+
     pub models: std::collections::BTreeMap<String, String>,
-    /// "always" (default): the assistant interprets everything said or
-    /// typed, apart from the instant one word commands; "off". The old
-    /// "fallback" reads as "always".
+
     pub mode: String,
-    /// "best" (the logged in account with the most 5 hour quota left) or
-    /// an account name. The assistant spends that account's quota.
+
     pub account: String,
-    /// claude model alias or name.
+
     pub model: String,
-    /// "concise" or "chatty".
+
     pub style: String,
-    /// When it must get a spoken yes: "destructive" (closing tabs,
-    /// stopping loops, broadcast, deny, approving rm / push / force...),
-    /// "always" (every approval too), "never" (not recommended).
+
     pub confirm: String,
-    /// Most actions in one turn.
+
     pub max_tool_calls: usize,
-    /// After it speaks, listen this many seconds for a follow up without
-    /// the wake word (wake mode).
+
     pub follow_up_s: u64,
-    /// claude --effort: low (default, quickest), medium, high. Thinking is
-    /// off at low.
+
     pub effort: String,
-    /// Upper limit in tokens for one reply including its tool calls (a
-    /// long send_prompt or summary needs room); speech is kept short by
-    /// spoken_sentences instead.
+
     pub max_output_tokens: u32,
-    /// Start a fresh conversation after this many turns (keeps context
-    /// small and answers quick); a one line summary carries over.
+
     pub reset_after_turns: u32,
-    /// Silence that ends an utterance while the assistant or open mic is on
-    /// (shorter than voice.end_silence_ms, so it answers sooner).
+
     pub endpoint_ms: u32,
-    /// Start the assistant's process at launch and keep it warm.
+
     pub prewarm: bool,
-    /// Keep saved conversations this many days (0: forever).
+
     pub history_days: u32,
-    /// A new assistant process remembers the conversations of this many
-    /// days (a short summary of each; 0: none).
+
     pub memory_days: u32,
-    /// Speak at most this many sentences of a reply (0: all); the rest
-    /// stays in the panel, and "more" says it.
+
     pub spoken_sentences: usize,
-    /// Watch for the answer to a question delegated to a tab this many
-    /// minutes, then stop waiting.
+
     pub answer_wait_min: u64,
-    /// Updates nobody asked for (a tab's answer, a tab finished, progress)
-    /// wait until the user has been quiet this many seconds.
+
     pub update_quiet_s: u64,
-    /// Speak replies to typed messages too (spoken ones are always
-    /// spoken unless the speaker is muted).
+
     pub speak_typed: bool,
-    /// The panel: "docked" (beside the panes, which shrink), "overlay"
-    /// (floats over the right side; the panes keep their size) or "auto"
-    /// (docked while every pane keeps about 80 columns).
+
     pub panel: String,
-    /// The panel's width in columns: 0 is automatic (half the screen, 44
-    /// to 76); otherwise kept between 36 and what leaves the panes 40.
-    /// The carets in its title, Ctrl-a { and }, or a drag on its edge set it.
+
     pub panel_width: u16,
-    /// The most rows the input grows to as you type (it starts at 3).
+
     pub input_rows: u16,
-    /// Keep Claude Code Remote Control on: it turns on whenever the
-    /// assistant starts or restarts, and again when it drops (Claude only).
+
     pub remote_control: bool,
-    /// Keep the assistant's own session across restarts and crashes
-    /// (`--resume`); off: every process starts fresh with the memory block.
+
     pub resume: bool,
-    /// Its own account running out: "auto" (move itself to the account
-    /// with the most left, conversation kept), "ask" (one Yes/No) or "off".
+
     pub auto_switch: String,
-    /// Warn once per window when its account's binding limit is under this
-    /// much left (percent).
+
     pub switch_warn_pct: f64,
-    /// Move (or ask) at this much left or less (percent), or when a turn
-    /// fails on a usage limit.
+
     pub switch_at_pct: f64,
 }
 
@@ -604,7 +491,7 @@ impl Default for AssistantCfg {
             models: Default::default(),
             mode: "always".into(),
             account: "best".into(),
-            model: "claude-haiku-4-5".into(),
+            model: "claude-sonnet-5-5".into(),
             style: "concise".into(),
             confirm: "destructive".into(),
             max_tool_calls: 16,
@@ -632,210 +519,165 @@ impl Default for AssistantCfg {
     }
 }
 
-/// `[voice]` section. Everything runs locally (ffmpeg + whisper.cpp + say).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct VoiceCfg {
-    /// Start the voice engine at launch. Push-to-talk (Ctrl-a space) also
-    /// starts it on demand.
     pub enabled: bool,
-    /// "push" (Ctrl-a space only) or "wake" (always listening for a wake word).
+
     pub mode: String,
     pub wake_words: Vec<String>,
-    /// Instant one word commands: handled at once, without the assistant.
+
     pub instant_commands: bool,
-    /// whisper.cpp's silero voice activity detection inside the server
-    /// (the model, about 1 MB, is fetched once when missing).
+
     pub whisper_vad: bool,
-    /// Recognizer: "auto" (Apple on-device when available, else whisper),
-    /// "apple" or "whisper".
+
     pub engine: String,
-    /// Start with the mic muted.
+
     pub mute_on_start: bool,
-    /// Level each utterance to about -20 dBFS before whisper.
+
     pub auto_gain: bool,
-    /// Beam size for final transcripts (1: greedy).
+
     pub beam_size: u32,
-    /// Save the last 20 utterances (the exact WAV sent to whisper, the
-    /// partials, the final and timings) to ~/.godterm/voice/debug.
+
     pub debug_save_audio: bool,
-    /// The instant set: "phrase" (a built in one) or "phrase=action"
-    /// with action one of stop, approve, deny, sleep, wake, stop_talking,
-    /// next_tab, previous_tab. Matched against the whole utterance only.
+
     pub instant: Vec<String>,
-    /// whisper.cpp ggml model. `~` is expanded.
+
     pub model: String,
-    /// Small model used only to spot the wake word in always listening mode:
-    /// "auto" (a ggml tiny or base model next to `model`, if present), a
-    /// path, or "off".
+
     pub wake_model: String,
-    /// whisper-server binary (kept running so the model loads once).
+
     pub whisper_server: String,
-    /// whisper-cli binary, used if the server cannot start.
+
     pub whisper_cli: String,
     pub ffmpeg: String,
-    /// avfoundation audio device: "default", an index like "1", or a name.
+
     pub device: String,
     pub language: String,
-    /// Speech starts when frame energy exceeds noise floor times this.
+
     pub vad_threshold: f32,
-    /// Absolute minimum RMS (0..32768) that counts as speech.
+
     pub vad_min_rms: f32,
-    /// Silence that ends an utterance.
+
     pub end_silence_ms: u32,
     pub min_speech_ms: u32,
     pub max_utterance_s: u32,
-    /// Input gain in dB applied to the microphone.
+
     pub gain_db: f32,
-    /// "auto" (calibrate, then follow the room) or a fixed level in dBFS
-    /// such as "-55".
+
     pub noise_floor: String,
-    /// Audio kept from just before speech starts.
+
     pub preroll_ms: u32,
-    /// Model for live partial transcripts: "auto" (the small wake model if
-    /// there is one, else the main model), "main", or "off".
+
     pub partial_model: String,
-    /// whisper threads (0: about half the idle cores).
+
     pub whisper_threads: usize,
-    /// How close a heard word must be to a wake word or a learned alias
-    /// (0.5 loose to 1.0 exact).
+
     pub wake_sensitivity: f32,
-    /// Open mic: after this many silent minutes it goes back to waiting
-    /// for the wake word (0: never).
+
     pub open_mic_sleep_min: u32,
-    /// "Hold on" without a duration pauses listening this long (seconds).
+
     pub pause_default_s: u32,
-    /// After a bare wake word ("hey god" alone), the next utterance within
-    /// this many seconds is the command (no wake word needed).
+
     pub wake_follow_up_s: u64,
-    /// Direct mode (the voice goes to one tab): how the tab's replies are
-    /// said. "auto": up to direct_sentences sentences as they are, a longer
-    /// one summarized by the assistant; "sentences": always the first
-    /// direct_sentences sentences, never the assistant.
+
     pub direct_reply: String,
-    /// Sentences of a tab's reply said in direct mode (1 to 10).
+
     pub direct_sentences: usize,
-    /// The longest pause (seconds).
+
     pub pause_max_s: u32,
-    /// Talk back at all (confirmations, read backs, announcements).
+
     pub tts: bool,
-    /// The speaker mute: nothing is said (answers still show as text).
-    /// Separate from the mic mute.
+
     pub speaker_muted: bool,
-    /// "kokoro" (neural, in process), "chatterbox" or "ming" (local
-    /// helpers, Apple Silicon, installed from Settings), "say", "grok"
-    /// (xAI cloud), "off". When it fails or times out, `tts_fallback` is
-    /// tried in order.
+
     pub tts_engine: String,
-    /// Engines tried after `tts_engine`, in order ("kokoro", "say", "grok").
+
     pub tts_fallback: Vec<String>,
-    /// `[voice.local]`: Chatterbox Turbo and Ming-3.0, run by a local
-    /// helper process (voice/local_tts.rs).
+
     pub local: LocalTtsCfg,
-    /// Grok (xAI cloud) talk back, and the xAI login Grok speech
-    /// recognition shares.
+
     pub grok: GrokTtsCfg,
-    /// Grok (xAI cloud) speech recognition (engine = grok).
+
     pub grok_stt: GrokSttCfg,
-    /// macOS `say` voice (None: the system voice).
+
     pub tts_voice: Option<String>,
-    /// Kokoro voice, e.g. af_heart, am_michael, bf_emma.
+
     pub kokoro_voice: String,
     pub kokoro_model: String,
     pub kokoro_voices: String,
-    /// espeak-ng binary, for Kokoro's phonemes.
+
     pub espeak: String,
-    /// ONNX Runtime provider for Kokoro: "cpu" or "coreml".
+
     pub tts_provider: String,
-    /// Kokoro inference threads (0: half the cores, at most 8).
+
     pub tts_threads: usize,
-    /// Unload Kokoro (about 800 MB) after this many idle seconds; it
-    /// reloads in a fraction of a second when needed. 0 keeps it loaded.
+
     pub tts_unload_after_s: u32,
-    /// Output device name for talk back ("default").
+
     pub output_device: String,
-    /// Pronunciation fixes, "word=spoken form", applied before speaking.
+
     pub pronounce: Vec<String>,
-    /// Speaking rate, 1.0 is normal (0.5 to 2.0).
+
     pub tts_speed: f32,
-    /// Playback volume, 0.0 to 1.0.
+
     pub tts_volume: f32,
-    /// Speak short confirmations ("sent", "new tab").
+
     pub speak_confirm: bool,
-    /// Read replies and requests back when asked.
+
     pub speak_readback: bool,
-    /// After talking back, listen for a reply without the wake word.
+
     pub conversation: bool,
-    /// Speaking over the talk back stops it. The mic stays muted while we
-    /// speak; only speech this many dB over the threshold cuts through
-    /// (headphones recommended).
+
     pub barge_in: bool,
     pub barge_margin_db: f32,
-    /// Barge-in needs words, not noise: the reply stops only when the
-    /// audio over it holds this many real words (fillers, sound tags and
-    /// our own echo not counted), or a command word like "stop" at once.
+
     pub barge_in_min_words: u32,
-    /// Lower the reply's volume while deciding whether it was words.
+
     pub barge_in_duck: bool,
-    /// Speak when a background tab needs approval or finishes.
+
     pub announce: bool,
-    /// Minimum seconds between announcements.
+
     pub announce_every_s: u32,
-    /// Play a short sound when the wake word is heard.
+
     pub chime: bool,
-    /// Headphone tap: the play/pause button on headphones (or the media
-    /// key) turns the mic on or off. GodTerm claims Now Playing while it
-    /// is on, so the press does not reach Music or Spotify (macOS).
+
     pub headphone_tap: bool,
-    /// Unrecognized speech after the wake word: "confirm" holds it until you
-    /// say "send", "send" types it into the focused session right away,
-    /// "off" ignores it.
+
     pub dictation_fallback: String,
-    /// Mic capture: "auto" (Apple voice processing through the
-    /// godterm-speech helper on macOS when it is available, else ffmpeg),
-    /// "apple" or "ffmpeg".
+
     pub capture: String,
-    /// Apple capture: voice processing (echo cancellation, noise
-    /// suppression, gain control; honors the Voice Isolation mic mode).
+
     pub voice_processing: bool,
-    /// Neural noise suppression (RNNoise) before the endpointer: "auto"
-    /// (on unless Apple voice processing is on), "on" or "off".
+
     pub denoise: String,
-    /// Only accept the enrolled voice: "off", "open_mic_only" or "always"
-    /// (every hands free utterance). Push to talk is never checked.
+
     pub speaker_lock: String,
-    /// Speaker model: "auto" (WeSpeaker ResNet34 in ~/.cache/godterm-models),
-    /// a known model name, or a path to an ONNX file.
+
     pub speaker_model: String,
-    /// Accept threshold for the speaker score (0: the calibrated one).
+
     pub speaker_threshold: f32,
-    /// Added to the calibrated threshold (stricter when positive).
+
     pub speaker_margin: f32,
-    /// Drop utterances far quieter and duller than the user (a phone on
-    /// speaker or a TV across the room).
+
     pub near_field: bool,
-    /// How far under the user's usual level counts as far away (dB).
+
     pub near_field_db: f32,
-    /// End of speech waits this much longer (ms) when what was said so far
-    /// ends with a filler or a connective ("and", "so", "um", a comma):
-    /// the sentence is not over. 0: off.
+
     pub connective_hold_ms: u32,
-    /// Brainstorm mode: after this many silent minutes it ends, the draft
-    /// kept in the box (and a "Send it?").
+
     pub brainstorm_timeout_min: u32,
-    /// Suggest brainstorm mode when speech sounds unfinished.
+
     pub brainstorm_suggest: bool,
-    /// Brainstorm mode was explained once (its card shows on first use).
+
     pub brainstorm_explained: bool,
-    /// Update mode: GodTerm says what changed in each active project as
-    /// things move ("keep me posted").
+
     pub updates: bool,
-    /// Update mode: at least this many seconds between two updates.
+
     pub updates_gap_s: u32,
-    /// Update mode: a roundup every this many minutes, only when
-    /// something changed.
+
     pub updates_every_min: u32,
-    /// Update mode was explained once (its card shows on first use).
+
     pub updates_explained: bool,
 }
 
@@ -936,29 +778,21 @@ impl Default for VoiceCfg {
     }
 }
 
-/// `[voice.local]`: the optional local voices beside Kokoro. Their Python
-/// helper and models are installed only from Settings (after a yes).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct LocalTtsCfg {
-    /// Chatterbox Turbo: a short WAV of a voice to clone ("": its own
-    /// default voice). `~` is expanded.
     pub chatterbox_ref: String,
-    /// Ming-3.0: US_Emma, US_Stella, US_James, UK_George, UK_Charlotte,
-    /// or "design" (uses `ming_design`).
+
     pub ming_voice: String,
-    /// Ming-3.0 voice design: a description such as "a calm, warm male
-    /// narrator in his forties".
+
     pub ming_design: String,
-    /// Where the helper's Python environment lives ("": voices/venv in
-    /// GodTerm's folder, ~/.godterm/voices/venv).
+
     pub venv: String,
-    /// Python used to make the environment ("auto": uv, else python3.12,
-    /// 3.13, 3.11, 3.10).
+
     pub python: String,
-    /// The first start (model load) may take this long (seconds).
+
     pub load_timeout_s: u32,
-    /// No audio within this long: the sentence goes to the fallback.
+
     pub timeout_ms: u32,
 }
 
@@ -976,37 +810,29 @@ impl Default for LocalTtsCfg {
     }
 }
 
-/// `[voice.grok]`: the xAI text to speech API. The spoken text (the
-/// assistant's replies) goes to xAI. An API key lives in the Keychain,
-/// never here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GrokTtsCfg {
-    /// "oauth" (a grok login) or "api_key" (an xAI API key in the Keychain).
     pub auth: String,
-    /// For oauth: "auto" (the first logged in grok account, then ~/.grok),
-    /// "main" (~/.grok) or a grok account's name.
+
     pub source: String,
-    /// A voice id from /v1/tts/voices: eve, ara, leo, rex, sal, ...
+
     pub voice: String,
-    /// 0.7 to 1.5, 1.0 is normal.
+
     pub speed: f32,
-    /// BCP-47 code or "auto".
+
     pub language: String,
-    /// No audio within this long: the sentence goes to the fallback.
+
     pub timeout_ms: u32,
 }
 
-/// `[voice.grok_stt]`: Grok speech recognition. Microphone audio (each
-/// utterance, after the speaker lock) goes to xAI.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GrokSttCfg {
-    /// No text within this long: the utterance goes to the fallback.
     pub timeout_ms: u32,
-    /// Live partials from whisper or Apple while you talk.
+
     pub local_partials: bool,
-    /// When Grok fails: "whisper" (then apple) or "apple" (then whisper).
+
     pub fallback: String,
 }
 
@@ -1190,12 +1016,6 @@ impl Default for Config {
     }
 }
 
-/// `GODTERM_<name>`, or the old `CLAUDEGO_<name>` (deprecated, read for
-/// one more version). Empty counts as unset.
-/// grok's [compat.claude] switches for GodTerm's grok slots. Hooks are
-/// off by default: grok runs the user's Claude plugin hooks and fails on
-/// them ("command not found: .../hooks/node"); MCP servers and sessions
-/// are off too (they would start the user's Claude MCP servers).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GrokCompat {
@@ -1221,7 +1041,6 @@ impl Default for GrokCompat {
 }
 
 impl GrokCompat {
-    /// (environment variable, value) for each switch.
     pub fn env(&self) -> Vec<(&'static str, &'static str)> {
         let b = |x: bool| if x { "true" } else { "false" };
         vec![
@@ -1254,21 +1073,16 @@ pub fn env_var(name: &str) -> Option<String> {
     None
 }
 
-/// Where GodTerm keeps its state and where the user's own (non GodTerm)
-/// Claude Code and Grok installs are. One place resolves these, so unit
-/// tests can point them at fixtures without touching the environment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Dirs {
-    /// `~/.godterm`, or `$GODTERM_HOME`.
     pub app_home: PathBuf,
-    /// `~/.claude`, or `$GODTERM_MAIN_DIR`.
+
     pub main_claude: PathBuf,
-    /// `~/.grok`, or `$GODTERM_MAIN_GROK_DIR`.
+
     pub main_grok: PathBuf,
-    /// The home was given explicitly (no migration from ~/.claudego).
+
     pub explicit_home: bool,
-    /// Whether to look at the main installs at all (tests: only when a
-    /// fixture is set).
+
     pub mains: bool,
 }
 
@@ -1288,14 +1102,13 @@ pub fn dirs() -> Dirs {
             .unwrap_or_else(|| home_dir().join(".grok")),
         mains: true,
     };
-    // Demo mode: nothing may point at the user's real data.
+
     if crate::demo::active() {
         crate::demo::assert_safe(&d);
     }
     d
 }
 
-/// The user's real data dirs (`~/.claude`, `~/.grok`, `~/.godterm`, ...).
 fn real_user_dirs() -> Vec<PathBuf> {
     let h = home_dir();
     [".claude", ".grok", ".godterm", ".claudego", ".claude.json"]
@@ -1304,15 +1117,10 @@ fn real_user_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// `p` is the home folder itself or inside one of the user's real data
-/// dirs. Tests and demo mode refuse such paths.
 pub fn is_real_user_dir(p: &Path) -> bool {
     p == home_dir() || real_user_dirs().iter().any(|r| p.starts_with(r))
 }
 
-/// Unit tests never read the environment for these: they use
-/// `testing::set_dirs`, and until then a scratch dir that is not the
-/// user's. Every lookup checks nothing points at a real user dir.
 #[cfg(test)]
 pub fn dirs() -> Dirs {
     let d = testing::current();
@@ -1320,21 +1128,17 @@ pub fn dirs() -> Dirs {
     d
 }
 
-/// `~/.godterm`, or `$GODTERM_HOME` when set.
 pub fn app_home() -> PathBuf {
     dirs().app_home
 }
 
 #[cfg(test)]
 pub mod testing {
-    //! Test isolation: one lock for tests that change the shared dirs,
-    //! the dirs themselves (never the process environment), and a check
-    //! that fails when anything would point at the user's real data.
+
     use super::{home_dir, Dirs};
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
-    /// Held by every test that changes the dirs or builds an App.
     pub static LOCK: Mutex<()> = Mutex::new(());
 
     static DIRS: Mutex<Option<Dirs>> = Mutex::new(None);
@@ -1359,7 +1163,6 @@ pub mod testing {
             })
     }
 
-    /// Point GodTerm's home at `home` (main installs off).
     pub fn set_home(home: &Path) {
         let mut d = current();
         d.app_home = home.to_path_buf();
@@ -1370,7 +1173,6 @@ pub mod testing {
         *DIRS.lock().unwrap_or_else(|e| e.into_inner()) = Some(d);
     }
 
-    /// Fixture main installs until the guard drops (also on panic).
     pub fn main_dirs(claude: &Path, grok: Option<&Path>) -> MainGuard {
         let prev = current();
         let mut d = prev.clone();
@@ -1398,9 +1200,6 @@ pub mod testing {
         super::is_real_user_dir(p)
     }
 
-    /// Panics if the dirs, or GodTerm's own env vars, point at the user's
-    /// real data. (CLAUDE_CONFIG_DIR and GROK_HOME may come from the shell
-    /// running the tests; every tab is given its own slot dir instead.)
     pub fn assert_safe(d: &Dirs) {
         for p in [&d.app_home, &d.main_claude, &d.main_grok] {
             assert!(
@@ -1434,7 +1233,7 @@ pub mod testing {
         std::fs::write(h.join("godterm.log"), "x").unwrap();
         set_home(&h);
         crate::config::secure_home();
-        // (Windows has no mode bits: the calls run, the modes are Unix.)
+
         let mode = |p: &Path| {
             if cfg!(unix) {
                 std::fs::metadata(p).unwrap().permissions().mode() & 0o777
@@ -1475,11 +1274,9 @@ pub fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// A path with the home folder written as `~`.
 pub fn tilde(p: &Path) -> String {
     let home = home_dir();
-    // One separator throughout: "~\AppData\Local" on Windows, not
-    // "~/AppData\Local".
+
     match p.strip_prefix(&home) {
         Ok(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
         Err(_) => p.display().to_string(),
@@ -1517,9 +1314,6 @@ impl AccountCfg {
         }
     }
 
-    /// The isolated CLAUDE_CONFIG_DIR for this slot: `config_dir` when set
-    /// (kept byte for byte, since claude names the slot's keychain item
-    /// after this exact string), else `<home>/accounts/<name>`.
     pub fn harness(&self) -> crate::harness::Harness {
         crate::harness::Harness::of(&self.harness)
     }
@@ -1563,13 +1357,11 @@ impl Config {
         app_home().join("config.toml")
     }
 
-    /// Load the config, writing a default one on first run.
     pub fn load_or_init() -> Result<Config> {
         let path = Self::path();
         if !path.exists() {
             let cfg = Config::default();
-            // Never write a fresh config while a claudego install still
-            // waits to be migrated: it would stand in for the real one.
+
             if !crate::migrate::pending() {
                 cfg.save()?;
             }
@@ -1581,14 +1373,11 @@ impl Config {
         Ok(cfg)
     }
 
-    /// The TUI's load: like load_or_init, but a config that does not parse
-    /// (cut short, or a bad edit) is moved aside (recover.rs) and the start
-    /// is clean, with setup offered again, instead of a refusal to start.
     pub fn load_or_recover() -> Result<Config> {
         let path = Self::path();
         let text = match fs::read_to_string(&path) {
             Ok(t) => t,
-            // Missing (first run) or unreadable: as before.
+
             Err(_) => return Self::load_or_init(),
         };
         match Self::parse(&text) {
@@ -1602,7 +1391,7 @@ impl Config {
                 let Some(bak) = crate::recover::quarantine(&path, &why) else {
                     return Err(e.context(format!("parsing {}", path.display())));
                 };
-                // Seen before setup runs on the plain terminal.
+
                 eprintln!(
                     "GodTerm: config.toml did not parse ({why}); saved as {} and starting clean.",
                     bak.display()
@@ -1647,7 +1436,6 @@ impl Config {
         write_atomic(&path, format!("{header}{body}").as_bytes())
     }
 
-    /// Base folder for new tabs of account `i`.
     pub fn base_for(&self, i: usize) -> std::path::PathBuf {
         let b = self
             .accounts
@@ -1657,7 +1445,6 @@ impl Config {
         expand_tilde(if b.trim().is_empty() { "~" } else { b.trim() })
     }
 
-    /// Whether account `i` trusts folders automatically.
     pub fn trust_for(&self, i: usize) -> bool {
         self.accounts
             .get(i)
@@ -1665,12 +1452,6 @@ impl Config {
             .unwrap_or(self.auto_trust)
     }
 
-    /// Effective permission mode of account `i`.
-    ///
-    /// The global default is "bypass", which was chosen for Claude and
-    /// Grok. Codex, Cursor and Antigravity map it to flags that switch off
-    /// their sandbox or approvals, so a slot of those CLIs only gets
-    /// "bypass" when its own `permission_mode` says so.
     pub fn mode_for(&self, i: usize) -> String {
         let Some(a) = self.accounts.get(i) else {
             return self.permission_mode.clone();
@@ -1685,8 +1466,6 @@ impl Config {
     }
 
     pub fn claude_bin(&self) -> String {
-        // Tests never reach the real claude on PATH (a config reloaded
-        // from disk in a test has no claude_bin).
         self.claude_bin
             .as_deref()
             .map(|s| expand_tilde(s).to_string_lossy().into_owned())
@@ -1694,7 +1473,6 @@ impl Config {
     }
 }
 
-/// Write a file only its owner can read (GodTerm's state, logs, config).
 pub fn write_private(path: &Path, data: impl AsRef<[u8]>) -> std::io::Result<()> {
     use crate::platform::{OpenOptionsExt, PermissionsExt};
     use std::io::Write;
@@ -1704,14 +1482,11 @@ pub fn write_private(path: &Path, data: impl AsRef<[u8]>) -> std::io::Result<()>
         .truncate(true)
         .mode(0o600)
         .open(path)?;
-    // An existing file keeps its mode on open: tighten it.
+
     f.set_permissions(fs::Permissions::from_mode(0o600))?;
     f.write_all(data.as_ref())
 }
 
-/// GodTerm's home is owner only (it holds logins, prompts and the
-/// control token), and so are the files in it, also ones made by older
-/// versions.
 pub fn secure_home() {
     use crate::platform::PermissionsExt;
     let h = app_home();
@@ -1733,8 +1508,6 @@ pub fn secure_home() {
     }
 }
 
-/// Write through a private temp file and a rename: never half written,
-/// never readable by others.
 pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     let tmp = path.with_extension("toml.tmp");
     write_private(&tmp, data)?;
@@ -1832,7 +1605,6 @@ name = "home"
     }
 }
 
-/// `[tab_models]`: the model bar's models per harness.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TabModelsCfg {
     #[serde(default)]
@@ -1846,7 +1618,7 @@ impl TabModelsCfg {
         match h {
             crate::harness::Harness::Claude => &self.claude,
             crate::harness::Harness::Grok => &self.grok,
-            // Their models are picked in the CLI; GodTerm has no bar for them.
+
             _ => &[],
         }
     }

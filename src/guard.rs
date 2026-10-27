@@ -1,12 +1,5 @@
-//! What the assistant's file tools may never touch, whatever folder a tab
-//! is in: GodTerm's own home (account logins, the control token), the
-//! Claude Code and Grok installs, keys and credentials. And which folders
-//! a tab may be opened in at all.
-
 use std::path::{Path, PathBuf};
 
-/// The real path: symlinks resolved for the part that exists (so a path
-/// that is not there yet still compares right, /var vs /private/var).
 pub fn canon(p: &Path) -> PathBuf {
     if let Ok(c) = p.canonicalize() {
         return c;
@@ -29,7 +22,6 @@ pub fn canon(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
-/// Folders whose contents are private, wherever a tab is.
 fn private_dirs() -> Vec<PathBuf> {
     let h = crate::config::home_dir();
     let mut v: Vec<PathBuf> = [
@@ -59,31 +51,23 @@ fn private_dirs() -> Vec<PathBuf> {
     v.push(PathBuf::from("/Library/Keychains"));
     v.push(PathBuf::from("/private/var/db"));
     let mut v: Vec<PathBuf> = v.into_iter().map(|p| canon(&p)).collect();
-    // The private vault: never canonicalized (that would look inside it).
+
     v.extend(vault_dirs());
     v
 }
 
-/// The user's private vault: nothing in it is ever read, listed, bound to
-/// a repo or synced. Compared as written, never looked into.
 pub const VAULT: &str = "/Volumes/Private";
 
 fn vault_dirs() -> Vec<PathBuf> {
     vec![PathBuf::from(VAULT)]
 }
 
-/// `p` names the vault or something in it, judged on the path as written
-/// (no file system access).
 pub fn in_vault(p: &Path) -> bool {
     vault_dirs()
         .iter()
         .any(|v| same(p, v) || inside(p, v) || p.starts_with(v))
 }
 
-/// Where `p` really is, following symlinks one component at a time, and
-/// refusing (without touching it) as soon as the path leads into the
-/// vault. Err(why) for the vault; otherwise the resolved path (the part
-/// that does not exist is kept as written).
 pub fn resolve_outside_vault(p: &Path) -> Result<PathBuf, String> {
     use std::path::Component;
     let refuse = || {
@@ -131,7 +115,7 @@ pub fn resolve_outside_vault(p: &Path) -> Result<PathBuf, String> {
                 if in_vault(&full) {
                     return refuse();
                 }
-                // Walk the target from the start again, then the rest.
+
                 cur = PathBuf::new();
                 for t in full
                     .components()
@@ -147,9 +131,6 @@ pub fn resolve_outside_vault(p: &Path) -> Result<PathBuf, String> {
     Ok(cur)
 }
 
-/// A folder no project repo may live in or point into: the vault and the
-/// private folders (logins, keys). Why, if so. Symlinks are followed
-/// without ever stepping into the vault.
 pub fn never_folder(p: &Path) -> Option<String> {
     let r = match resolve_outside_vault(p) {
         Ok(r) => r,
@@ -167,8 +148,6 @@ pub fn never_folder(p: &Path) -> Option<String> {
     None
 }
 
-/// A path as the OS compares them: on Windows without the \\?\ prefix
-/// canonicalize adds, one separator, and case-insensitive.
 fn path_key(p: &str, windows: bool) -> String {
     if !windows {
         return p.trim_end_matches('/').to_string();
@@ -177,7 +156,6 @@ fn path_key(p: &str, windows: bool) -> String {
     s.trim_end_matches('\\').to_lowercase()
 }
 
-/// `child` is strictly inside `parent` (an ancestor, not the same folder).
 pub fn strictly_inside(child: &str, parent: &str, windows: bool) -> bool {
     let (c, p) = (path_key(child, windows), path_key(parent, windows));
     let sep = if windows { '\\' } else { '/' };
@@ -196,7 +174,6 @@ pub(crate) fn same(a: &Path, b: &Path) -> bool {
     path_key(&a.to_string_lossy(), cfg!(windows)) == path_key(&b.to_string_lossy(), cfg!(windows))
 }
 
-/// A file name that holds secrets.
 pub fn secret_name(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     let stem = n.split('.').next().unwrap_or("");
@@ -222,11 +199,7 @@ pub fn secret_name(name: &str) -> bool {
         )
 }
 
-/// Why `p` may not be read, listed or opened by the assistant, if so.
-/// `allowed` are folders inside a private one that the user made tabs in
-/// (tab workspaces under GodTerm's home).
 pub fn denied(p: &Path, allowed: &[PathBuf]) -> Option<String> {
-    // The vault first, without looking into it (canon would).
     if let Err(why) = resolve_outside_vault(p) {
         return Some(why);
     }
@@ -254,7 +227,6 @@ pub fn denied(p: &Path, allowed: &[PathBuf]) -> Option<String> {
     None
 }
 
-/// Document types open_path may hand to their default app.
 const DOCS: &[&str] = &[
     "html", "htm", "pdf", "png", "jpg", "jpeg", "gif", "svg", "webp", "heic", "bmp", "tiff", "ico",
     "md", "markdown", "txt", "rtf", "json", "csv", "tsv", "log", "xml", "yaml", "yml", "toml",
@@ -262,9 +234,6 @@ const DOCS: &[&str] = &[
     "pages", "numbers", "key", "odt", "ods", "epub",
 ];
 
-/// The arguments for `open` showing folder `p` in Finder: a folder that is
-/// an app or other bundle (a tab's agent may cd into `X.app`) is revealed,
-/// never launched.
 pub fn finder_args(p: &Path) -> Vec<std::ffi::OsString> {
     let mut v = vec![];
     if open_refusal(p).is_some() {
@@ -274,8 +243,6 @@ pub fn finder_args(p: &Path) -> Vec<std::ffi::OsString> {
     v
 }
 
-/// Why open_path must not open `p` (it could run code), if so. Folders
-/// open in Finder unless they are bundles; files only as documents.
 pub fn open_refusal(p: &Path) -> Option<String> {
     use crate::platform::PermissionsExt;
     let ext = p
@@ -304,7 +271,7 @@ pub fn open_refusal(p: &Path) -> Option<String> {
             .contains(&ext.as_str())
             .then(|| format!(".{ext} is an app or installer bundle; it would run"));
     }
-    // ".key" is Keynote here; private keys were refused by `denied` first.
+
     if !DOCS.contains(&ext.as_str()) {
         return Some(if ext.is_empty() {
             "a file with no document type could run as a program".into()
@@ -318,8 +285,6 @@ pub fn open_refusal(p: &Path) -> Option<String> {
     None
 }
 
-/// Windows system folders: a drive root, the Users folder itself, and the
-/// Windows, Program Files and ProgramData trees.
 #[cfg(windows)]
 fn windows_system(c: &Path) -> bool {
     use std::path::Component;
@@ -331,7 +296,7 @@ fn windows_system(c: &Path) -> bool {
     if normal == 0 {
         return true;
     }
-    // (SystemDrive is "C:", which alone means C's current folder.)
+
     let users = std::env::var("SystemDrive")
         .ok()
         .map(|d| canon(Path::new(&format!("{d}\\Users"))));
@@ -356,7 +321,6 @@ fn windows_system(_c: &Path) -> bool {
     false
 }
 
-/// A system folder on this OS that exists (for tests and examples).
 #[cfg(test)]
 pub fn a_system_folder() -> PathBuf {
     if cfg!(windows) {
@@ -368,13 +332,11 @@ pub fn a_system_folder() -> PathBuf {
     }
 }
 
-/// Where a tab may be opened: Ok(false) fine, Ok(true) needs the user's
-/// yes (the home folder itself), Err refused.
 pub fn tab_folder(p: &Path, allowed: &[PathBuf]) -> Result<bool, String> {
     resolve_outside_vault(p)?;
     let c = canon(p);
     let home = canon(&crate::config::home_dir());
-    // The temp folders (on Windows the one in the profile's AppData).
+
     let sys_tmp = canon(&std::env::temp_dir());
     let tmp = |c: &Path| {
         c.starts_with("/private/var/folders")
@@ -383,7 +345,7 @@ pub fn tab_folder(p: &Path, allowed: &[PathBuf]) -> Result<bool, String> {
             || same(c, &sys_tmp)
             || inside(c, &sys_tmp)
     };
-    // Roots that hold everything, and system trees.
+
     let exact = [
         "/",
         "/Users",
@@ -418,7 +380,7 @@ pub fn tab_folder(p: &Path, allowed: &[PathBuf]) -> Result<bool, String> {
     if let Some(why) = denied(&c, allowed) {
         return Err(why);
     }
-    // A parent of a private folder would bring it into the tab's scope.
+
     if !same(&c, &home) && private_dirs().iter().any(|d| inside(d, &c)) && !tmp(&c) {
         return Err(format!(
             "{} contains private folders (logins and keys)",
@@ -432,7 +394,6 @@ pub fn tab_folder(p: &Path, allowed: &[PathBuf]) -> Result<bool, String> {
 mod tests {
     use super::*;
 
-    /// Windows shaped paths, checked on every OS (pure path logic).
     #[test]
     fn ancestors_the_windows_way() {
         let w = true;
@@ -475,7 +436,7 @@ mod tests {
         let home = crate::config::app_home();
         assert!(denied(&home.join("accounts/one/.credentials.json"), &[]).is_some());
         assert!(denied(&home.join("control.json"), &[]).is_some());
-        // Any folder: secret file names are refused.
+
         let tmp = std::env::temp_dir().join("proj");
         for n in [
             "auth.json",
@@ -491,8 +452,7 @@ mod tests {
         for n in ["main.rs", "tokenizer.rs", "README.md", "keys.md"] {
             assert!(denied(&tmp.join(n), &[]).is_none(), "{n}");
         }
-        // A workspace the user made under GodTerm's home is fine, its
-        // logins are not.
+
         let ws = home.join("tabs/demo");
         assert!(denied(&ws.join("a.txt"), std::slice::from_ref(&ws)).is_none());
         assert!(denied(
@@ -518,7 +478,7 @@ mod tests {
             assert!(denied(Path::new(p), &[]).is_some(), "{p}");
         }
         assert!(!in_vault(Path::new("/Volumes/PrivateX")));
-        // A symlink into the vault is refused from the link alone.
+
         let d = std::env::temp_dir().join(format!("godterm-vault-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
@@ -572,14 +532,14 @@ mod tests {
         ] {
             assert!(open_refusal(&d.join(bad)).is_some(), "{bad}");
         }
-        // The executable bit exists on Unix only.
+
         if cfg!(unix) {
             assert!(open_refusal(&d.join("script.html")).is_some());
         }
         for good in ["index.html", "notes.md", "site"] {
             assert!(open_refusal(&d.join(good)).is_none(), "{good}");
         }
-        // Finder shows a folder, and only reveals a bundle.
+
         assert_eq!(
             finder_args(&d.join("site")),
             vec![d.join("site").into_os_string()]

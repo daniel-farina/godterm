@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# SHA256SUMS over every artifact in dist/ (not the stage), sorted.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 cd "$DIST"
 files=()

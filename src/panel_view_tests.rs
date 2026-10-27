@@ -1,8 +1,3 @@
-//! The way back to the conversation from the panel's other views: a
-//! "‹ Conversation" button first in every one (whole on narrow panels),
-//! Esc, the current conversation pinned in History, and a dot for replies
-//! that came while away.
-
 use crate::app_assistant::{Entry, Who};
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::hits::UiAction;
@@ -67,7 +62,6 @@ fn click(app: &mut crate::app::App, a: &UiAction) {
     });
 }
 
-/// The first toolbar button (row under the panel's title).
 fn first_button(app: &crate::app::App) -> Option<(UiAction, ratatui::layout::Rect)> {
     let panel = app.last_hits.find(&UiAction::AssistantFocus)?.rect;
     app.last_hits
@@ -118,7 +112,7 @@ fn every_view_has_the_way_back_first_and_it_returns_intact() {
         assert_eq!(a, UiAction::AssistantConversation, "{v:?}");
         assert!(s.contains("‹ Conversation"), "{v:?}:\n{s}");
         assert!(s.contains(" New "), "New stays: {v:?}");
-        // The title says where you are.
+
         let title: String = crate::ui_assistant::title_parts(&app, 200)
             .iter()
             .map(|(t, _)| t.as_str())
@@ -156,7 +150,7 @@ fn esc_goes_back_to_the_conversation() {
         assert_eq!(app.panel_view(), PanelView::Conversation, "{v:?}");
         assert!(app.assistant.focused, "{v:?}: still typing to it");
     }
-    // In the conversation, Esc gives the keys back (as before).
+
     app.on_key(esc);
     assert!(!app.assistant.focused && app.assistant.show);
     let _ = std::fs::remove_dir_all(&home);
@@ -166,7 +160,7 @@ fn esc_goes_back_to_the_conversation() {
 fn history_pins_the_current_conversation_and_opens_it_live() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("pin");
-    // A saved conversation, and the one going on (saved too).
+
     let old = crate::assistant_history::ConvLog::new();
     old.write("user", serde_json::json!({"text": "an older question"}));
     std::thread::sleep(std::time::Duration::from_millis(1100));
@@ -189,7 +183,7 @@ fn history_pins_the_current_conversation_and_opens_it_live() {
         .unwrap();
     assert!(pin < older, "on top");
     assert!(s.lines().nth(pin).unwrap().contains("which tabs are busy"));
-    // A click opens the live conversation, not a read only replay.
+
     click(&mut app, &UiAction::AssistantConversation);
     assert_eq!(app.panel_view(), PanelView::Conversation);
     assert!(app.assistant.conv.as_ref().is_some_and(|c| c.id == cur.id));
@@ -242,17 +236,17 @@ fn narrow_panels_keep_the_button_whole() {
             ["‹ Conversation", "‹ Chat", "‹"].contains(&row),
             "width {w}: {row:?}"
         );
-        // Narrow: the views go before it does.
+
         if w == 90 {
             assert!(!s.contains(" Admin "), "Admin overflows into ⋯ first");
         }
-        // ⋯ and × still fit after it.
+
         assert!(app
             .last_hits
             .find(&UiAction::MenuOpen(crate::menus::MenuId::AssistantMore))
             .is_some());
     }
-    // The narrowest label when nothing else fits.
+
     assert_eq!(crate::ui_assistant::back_label(&app, 1), "‹");
     let _ = std::fs::remove_dir_all(&home);
 }

@@ -1,35 +1,22 @@
-//! Copying and moving sessions between config dirs (accounts and the main
-//! `~/.claude`). A session is its transcript `projects/<dir>/<id>.jsonl`
-//! plus what claude reads back on `--resume`: the subagent folder
-//! `projects/<dir>/<id>/`, checkpoints in `file-history/<id>/`, and
-//! `session-env/<id>/` (claude 2.1.29x keeps no per session todos file).
-//! A move copies, verifies, then puts the originals in
-//! `~/.godterm/trash/<stamp>/`, from where it can be undone.
-
 use anyhow::{bail, Context, Result};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// Per session data outside the project folder, by top level dir.
 const SIDE_DIRS: &[&str] = &["file-history", "session-env", "todos", "tasks"];
 
-/// The main Claude Code config dir: `$GODTERM_MAIN_DIR` or `~/.claude`.
 pub fn main_dir() -> PathBuf {
     crate::config::dirs().main_claude
 }
 
-/// What to do when the target already has the session.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Conflict {
     Skip,
     Overwrite,
-    /// Copy under a fresh session id (rewriting it in the transcript).
+
     NewId,
 }
 
-/// Every path belonging to session `id` whose transcript is `jsonl`, as
-/// (absolute source, path relative to the config dir).
 pub fn related(config_dir: &Path, jsonl: &Path, id: &str) -> Vec<(PathBuf, PathBuf)> {
     let mut v = vec![];
     if let Ok(rel) = jsonl.strip_prefix(config_dir) {
@@ -68,7 +55,7 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<u64> {
         if let Some(p) = dst.parent() {
             fs::create_dir_all(p)?;
         }
-        // Write to a temp name, then rename: never a half written file.
+
         let tmp = dst.with_extension("cgtmp");
         fs::copy(src, &tmp).with_context(|| format!("copying {}", src.display()))?;
         fs::rename(&tmp, dst)?;
@@ -104,7 +91,6 @@ fn digest(p: &Path) -> Result<Vec<u8>> {
     Ok(h.finalize().to_vec())
 }
 
-/// A random version 4 UUID.
 pub fn new_uuid() -> String {
     let mut b = [0u8; 16];
     crate::platform::fill_random(&mut b);
@@ -123,16 +109,14 @@ pub fn new_uuid() -> String {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Copied {
-    /// The id in the target (new when re-id'd).
     pub id: String,
     pub files: usize,
     pub bytes: u64,
     pub skipped: bool,
-    /// The target transcript.
+
     pub jsonl: PathBuf,
 }
 
-/// Copy session `id` (transcript `jsonl` under `src_dir`) into `dst_dir`.
 pub fn copy_session(
     src_dir: &Path,
     jsonl: &Path,
@@ -179,7 +163,6 @@ pub fn copy_session(
     }
     let out = dst_dir.join(rename_id(rel, id, &new_id));
     if new_id != id {
-        // Every line carries "sessionId": the copy must use its new id.
         let text = fs::read_to_string(&out)?;
         let fixed = text.replace(
             &format!("\"sessionId\":\"{id}\""),
@@ -212,17 +195,14 @@ fn rename_id(p: &Path, old: &str, new: &str) -> PathBuf {
         .collect()
 }
 
-/// What a move did, so it can be undone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Moved {
     pub copied: Copied,
-    /// (original path, where it went in the trash).
+
     pub trashed: Vec<(PathBuf, PathBuf)>,
     pub dst_dir: PathBuf,
 }
 
-/// Move: copy, check every copied file matches, then move the originals
-/// into the trash. With a conflict the move stops before anything moves.
 pub fn move_session(
     src_dir: &Path,
     jsonl: &Path,
@@ -238,7 +218,7 @@ pub fn move_session(
     let parts = related(src_dir, jsonl, id);
     for (src, r) in &parts {
         let dst = dst_dir.join(rename_id(r, id, &copied.id));
-        // A re-id'd transcript differs on purpose; check its size class only.
+
         let same = if copied.id != id && src == jsonl {
             dst.exists()
         } else {
@@ -257,7 +237,6 @@ pub fn move_session(
             fs::create_dir_all(p)?;
         }
         if fs::rename(&src, &t).is_err() {
-            // Other volume: copy then remove.
             copy_tree(&src, &t)?;
             if src.is_dir() {
                 fs::remove_dir_all(&src)?;
@@ -274,7 +253,6 @@ pub fn move_session(
     })
 }
 
-/// Undo a move: originals back, the copy removed.
 pub fn undo_move(m: &Moved) -> Result<()> {
     for (orig, t) in &m.trashed {
         if let Some(p) = orig.parent() {
@@ -282,7 +260,7 @@ pub fn undo_move(m: &Moved) -> Result<()> {
         }
         fs::rename(t, orig).with_context(|| format!("restoring {}", orig.display()))?;
     }
-    // Remove what the copy created in the target.
+
     let jsonl = &m.copied.jsonl;
     let dir_cfg = &m.dst_dir;
     for (p, _) in related(dir_cfg, jsonl, &m.copied.id) {
@@ -306,7 +284,6 @@ mod tests {
         d
     }
 
-    /// A fake config dir with one session and all its side data.
     fn session(dir: &Path, id: &str) -> PathBuf {
         let proj = dir.join("projects").join("-Users-x-proj");
         fs::create_dir_all(proj.join(id).join("subagents")).unwrap();
@@ -317,7 +294,7 @@ mod tests {
         fs::write(dir.join("file-history").join(id).join("abc@v1"), "old").unwrap();
         fs::create_dir_all(dir.join("session-env").join(id)).unwrap();
         fs::write(dir.join("session-env").join(id).join("hook.sh"), "#!").unwrap();
-        // Another session that must not come along.
+
         fs::create_dir_all(dir.join("file-history").join("other")).unwrap();
         j
     }
@@ -347,7 +324,7 @@ mod tests {
             .is_file());
         assert!(!b.join("file-history/other").exists());
         assert!(j.exists(), "copy keeps the original");
-        // Again: skip, overwrite, or a new id.
+
         assert!(
             copy_session(&a, &j, "s1", &b, Conflict::Skip)
                 .unwrap()
@@ -386,7 +363,7 @@ mod tests {
         undo_move(&m).unwrap();
         assert!(j.exists() && a.join("file-history/s2/abc@v1").exists());
         assert!(!b.join("projects/-Users-x-proj/s2.jsonl").exists());
-        // A conflict stops a move before anything moves.
+
         copy_session(&a, &j, "s2", &b, Conflict::Skip).unwrap();
         assert!(move_session(&a, &j, "s2", &b, Conflict::Skip, &t).is_err());
         assert!(j.exists());
@@ -405,8 +382,6 @@ mod tests {
 
     #[test]
     fn main_dir_override() {
-        // Read only: just the path logic.
-        // Unit tests never see the real ~/.claude.
         assert!(!main_dir().starts_with(crate::config::home_dir().join(".claude")));
     }
 }

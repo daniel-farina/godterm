@@ -1,18 +1,3 @@
-//! What must not leave this Mac in a project push, checked before every
-//! push the user starts from the Git section:
-//! - secrets in the outgoing commits: gitleaks when installed (whole
-//!   history on a first push, `<upstream>..HEAD` after), else built-in
-//!   patterns over the outgoing patch. Findings block the push; only the
-//!   human can override, by typing "push anyway" in the dialog;
-//! - large files: an outgoing blob over 50 MB warns, over 95 MB blocks
-//!   (GitHub refuses those), a push over 1.5 GB in all blocks;
-//! - tracked files with secret names (.env, keys, credentials) and staged
-//!   symlinks into the vault or a private folder;
-//! - .gitignore hygiene: the rules a project should have, offered for
-//!   review (never written without the user's press).
-//!
-//! Matches are always shown redacted: never the whole value.
-
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -23,7 +8,6 @@ pub const WARN_BYTES: u64 = 50 * 1024 * 1024;
 pub const BLOCK_BYTES: u64 = 95 * 1024 * 1024;
 pub const TOTAL_BYTES: u64 = 1536 * 1024 * 1024;
 
-/// What the user types to push past secret findings.
 pub const OVERRIDE: &str = "push anyway";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -31,7 +15,7 @@ pub struct Finding {
     pub file: String,
     pub line: u32,
     pub rule: String,
-    /// The match with all but its first characters hidden.
+
     pub redacted: String,
 }
 
@@ -69,7 +53,6 @@ fn patterns() -> &'static [(&'static str, Regex)] {
     })
 }
 
-/// A secret shown safely: its first 4 characters and its length.
 pub fn redact(s: &str) -> String {
     let n = s.chars().count();
     if n <= 8 {
@@ -79,7 +62,6 @@ pub fn redact(s: &str) -> String {
     format!("{head}****({n} chars)")
 }
 
-/// Findings in one text (lines numbered from `first`).
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn scan_text(file: &str, text: &str, first: u32) -> Vec<Finding> {
     let mut v = vec![];
@@ -94,7 +76,6 @@ fn scan_line(file: &str, l: &str, line: u32) -> Vec<Finding> {
     let mut taken: Vec<(usize, usize)> = vec![];
     for (rule, re) in patterns() {
         for m in re.find_iter(l) {
-            // A generic hit over a specific one is the same secret.
             if taken.iter().any(|(a, b)| m.start() < *b && *a < m.end()) {
                 continue;
             }
@@ -110,8 +91,6 @@ fn scan_line(file: &str, l: &str, line: u32) -> Vec<Finding> {
     v
 }
 
-/// Every match in `text` replaced by its redacted form (for showing a
-/// diff to the assistant).
 pub fn redact_text(text: &str) -> String {
     let mut out = text.to_string();
     for (_, re) in patterns() {
@@ -122,7 +101,6 @@ pub fn redact_text(text: &str) -> String {
     out
 }
 
-/// Findings in the added lines of a unified patch.
 pub fn scan_patch(patch: &str) -> Vec<Finding> {
     let mut v = vec![];
     let mut file = String::new();
@@ -136,7 +114,6 @@ pub fn scan_patch(patch: &str) -> Vec<Finding> {
             continue;
         }
         if let Some(h) = l.strip_prefix("@@ ") {
-            // @@ -a,b +c,d @@
             line = h
                 .split_whitespace()
                 .find_map(|p| p.strip_prefix('+'))
@@ -155,8 +132,6 @@ pub fn scan_patch(patch: &str) -> Vec<Finding> {
     v
 }
 
-/// `.gitleaksignore` entries (fingerprints "commit:file:rule:line"; the
-/// built-in scan matches their "file:rule:line" end).
 fn ignored(top: &Path, f: &Finding) -> bool {
     let Ok(t) = std::fs::read_to_string(top.join(".gitleaksignore")) else {
         return false;
@@ -167,8 +142,6 @@ fn ignored(top: &Path, f: &Finding) -> bool {
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .any(|l| l == tail || l.ends_with(&format!(":{tail}")))
 }
-
-// ---- gitleaks ----
 
 pub fn gitleaks_bin() -> Option<PathBuf> {
     if cfg!(test) {
@@ -197,7 +170,6 @@ pub fn gitleaks_args(dir: &Path, log_opts: Option<&str>) -> Vec<String> {
     a
 }
 
-/// gitleaks' JSON report as findings (its own redaction kept, ours on top).
 pub fn parse_gitleaks(json: &str) -> Result<Vec<Finding>, String> {
     let t = json.trim();
     if t.is_empty() {
@@ -227,13 +199,12 @@ pub fn parse_gitleaks(json: &str) -> Result<Vec<Finding>, String> {
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct SecretScan {
     pub findings: Vec<Finding>,
-    /// gitleaks or built-in.
+
     pub tool: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
-/// Scan what a push would send.
 pub fn scan_outgoing(ctx: &Ctx, gitleaks: Option<&Path>) -> SecretScan {
     let range = git_ops::outgoing_range(ctx);
     let first = git_ops::upstream(ctx).is_none();
@@ -278,7 +249,7 @@ pub fn scan_outgoing(ctx: &Ctx, gitleaks: Option<&Path>) -> SecretScan {
             tool: "built-in".into(),
             error: None,
         },
-        // A repo with no commits has nothing outgoing.
+
         Err(e) if git_ops::head(ctx).is_none() => SecretScan {
             tool: "built-in".into(),
             error: Some(e.to_string()).filter(|_| false),
@@ -292,13 +263,10 @@ pub fn scan_outgoing(ctx: &Ctx, gitleaks: Option<&Path>) -> SecretScan {
     }
 }
 
-// ---- sizes ----
-
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct Sizes {
-    /// (path, bytes) over WARN_BYTES and at most BLOCK_BYTES.
     pub warn: Vec<(String, u64)>,
-    /// Over BLOCK_BYTES.
+
     pub block: Vec<(String, u64)>,
     pub total: u64,
     pub blobs: usize,
@@ -327,7 +295,6 @@ pub fn classify(blobs: &[(String, u64)]) -> Sizes {
     s
 }
 
-/// The blobs a push would send, with their sizes.
 pub fn outgoing_sizes(ctx: &Ctx) -> Result<Sizes, String> {
     if git_ops::head(ctx).is_none() {
         return Ok(Sizes::default());
@@ -362,8 +329,6 @@ pub fn outgoing_sizes(ctx: &Ctx) -> Result<Sizes, String> {
     Ok(classify(&blobs))
 }
 
-/// Files in the work tree a commit of everything would take that are
-/// over the warning size.
 pub fn big_worktree_files(ctx: &Ctx, paths: &[String]) -> Vec<(String, u64)> {
     paths
         .iter()
@@ -378,9 +343,6 @@ pub fn mb(n: u64) -> String {
     format!("{:.0} MB", n as f64 / 1024.0 / 1024.0)
 }
 
-// ---- secret files, symlinks and .gitignore ----
-
-/// A .env file that holds real values (examples and samples are fine).
 pub fn env_file(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     (n == ".env" || n.starts_with(".env."))
@@ -392,7 +354,6 @@ pub fn secret_file(path: &str) -> bool {
     env_file(name) || crate::guard::secret_name(name)
 }
 
-/// Tracked or staged files whose names say they hold secrets.
 pub fn tracked_secret_files(ctx: &Ctx) -> Vec<String> {
     git_ops::run(ctx, &["ls-files".into(), "--cached".into()])
         .unwrap_or_default()
@@ -402,8 +363,6 @@ pub fn tracked_secret_files(ctx: &Ctx) -> Vec<String> {
         .collect()
 }
 
-/// Staged symlinks that point into the vault or a private folder:
-/// (path, why).
 pub fn bad_symlinks(ctx: &Ctx) -> Vec<(String, String)> {
     let t = git_ops::run(ctx, &["ls-files".into(), "--stage".into()]).unwrap_or_default();
     let mut v = vec![];
@@ -430,7 +389,6 @@ pub fn bad_symlinks(ctx: &Ctx) -> Vec<(String, String)> {
     v
 }
 
-/// (a path git would test, the rule that ignores it).
 const WANTED: &[(&str, &str)] = &[
     (".env", ".env"),
     (".env.local", ".env.*"),
@@ -451,12 +409,10 @@ const WANTED: &[(&str, &str)] = &[
     (".godterm-x", ".godterm-*"),
 ];
 
-/// The hygiene rules this repo's ignore files do not cover yet.
 pub fn missing_ignores(ctx: &Ctx) -> Vec<String> {
     let mut a: Vec<String> = vec!["check-ignore".into(), "--no-index".into(), "--".into()];
     a.extend(WANTED.iter().map(|(p, _)| p.to_string()));
     let ignored: Vec<String> = match git_ops::run_any(ctx, &a, None) {
-        // Exit 1: none of them is ignored.
         Ok((_, out, _)) => out.lines().map(|l| l.trim().to_string()).collect(),
         Err(_) => return vec![],
     };
@@ -467,8 +423,6 @@ pub fn missing_ignores(ctx: &Ctx) -> Vec<String> {
         .collect()
 }
 
-/// Append `rules` to the repo's .gitignore (the user pressed Add). The
-/// examples stay tracked when .env.* is added.
 pub fn add_ignores(top: &Path, rules: &[String]) -> Result<String, String> {
     if rules.is_empty() {
         return Ok("Nothing to add.".into());
@@ -499,8 +453,6 @@ pub fn add_ignores(top: &Path, rules: &[String]) -> Result<String, String> {
     ))
 }
 
-// ---- everything a push checks ----
-
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct PushCheck {
     pub secrets: SecretScan,
@@ -510,13 +462,11 @@ pub struct PushCheck {
     pub missing_ignores: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size_error: Option<String>,
-    /// HEAD when checked: a push of anything newer is checked again.
+
     pub head: Option<String>,
 }
 
 impl PushCheck {
-    /// Blocks no typing can pass: vault links, files over 95 MB, a push
-    /// over 1.5 GB, a scan that could not run.
     pub fn hard_blocks(&self) -> Vec<String> {
         let mut v = vec![];
         for (p, why) in &self.bad_links {
@@ -545,7 +495,6 @@ impl PushCheck {
         v
     }
 
-    /// Blocks the human may push past by typing OVERRIDE.
     pub fn soft_blocks(&self) -> Vec<String> {
         let mut v: Vec<String> = self
             .secrets

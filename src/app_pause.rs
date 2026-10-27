@@ -1,11 +1,3 @@
-//! "Hold on a minute": stop listening for a while. While paused nothing
-//! heard is acted on except the wake word (or "resume"), which resumes at
-//! once and runs the rest of the utterance. Background announcements wait
-//! and are summarized on resume. When the time is up the previous mode
-//! comes back by itself. The assistant pauses with the `pause_listening`
-//! tool (it reads the duration from what was said); "hold on" and "pause"
-//! alone are instant.
-
 use std::time::{Duration, Instant};
 
 use crate::app::App;
@@ -13,23 +5,20 @@ use crate::app::App;
 #[derive(Debug, Clone)]
 pub struct Pause {
     pub until: Instant,
-    /// Open mic was on: it comes back on resume.
+
     pub was_open_mic: bool,
-    /// Announcements held back while paused.
+
     pub queued: Vec<String>,
     pub reason: Option<String>,
     pub started: Instant,
 }
 
 impl Pause {
-    /// Now on the pause's clock: time the Mac slept counts, so "five
-    /// minutes" is over after a night with the lid closed.
     fn now(&self) -> Instant {
         Instant::now() + crate::clock::slept_since(self.started)
     }
 }
 
-/// "2 minutes", "30 seconds", "1 minute 30 seconds".
 pub fn spoken_duration(secs: u64) -> String {
     let (m, s) = (secs / 60, secs % 60);
     let unit = |n: u64, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
@@ -45,7 +34,6 @@ impl App {
         self.voice.paused.is_some()
     }
 
-    /// Seconds left, rounded up.
     pub fn pause_left(&self) -> Option<u64> {
         self.voice.paused.as_ref().map(|p| {
             p.until
@@ -55,8 +43,6 @@ impl App {
         })
     }
 
-    /// Stop acting on speech for `secs` (default and cap from Settings).
-    /// Returns the seconds it will wait.
     pub fn pause_listening(&mut self, secs: Option<u64>, reason: Option<String>) -> u64 {
         let max = self.cfg.voice.pause_max_s.max(10) as u64;
         let secs = secs
@@ -75,7 +61,7 @@ impl App {
             .take()
             .map(|p| p.queued)
             .unwrap_or_default();
-        // Open mic is suspended: only the wake word is screened for.
+
         if self.voice.open_mic {
             self.voice.open_mic = false;
             self.stop_voice();
@@ -111,7 +97,6 @@ impl App {
         secs
     }
 
-    /// Back to listening: the mode from before, and what was held back.
     pub fn resume_listening(&mut self, why: &str) {
         let Some(p) = self.voice.paused.take() else {
             return;
@@ -124,7 +109,6 @@ impl App {
             if mins == 1 { "1 minute".to_string() } else { format!("{mins} minute") }
         ));
         if p.was_open_mic && !self.voice.muted {
-            // Quietly: no "open mic" announcement.
             self.stop_voice();
             self.voice.open_mic = true;
             self.voice.asleep = false;
@@ -151,7 +135,6 @@ impl App {
         }
     }
 
-    /// Hold an announcement while paused. True when it was held.
     pub fn hold_announcement(&mut self, msg: &str) -> bool {
         match self.voice.paused.as_mut() {
             Some(p) => {
@@ -162,7 +145,6 @@ impl App {
         }
     }
 
-    /// The pause ran out: resume on our own.
     pub fn pause_tick(&mut self) {
         if self
             .voice
@@ -174,8 +156,6 @@ impl App {
         }
     }
 
-    /// While paused, an utterance: the wake word (or "resume") resumes and
-    /// gives back what follows it; anything else is dropped (None).
     pub fn while_paused(&mut self, norm: &str, ptt: bool) -> Option<String> {
         let woke = self.strip_wake(norm).map(str::to_string);
         let resume_word = matches!(

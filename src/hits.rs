@@ -1,7 +1,3 @@
-//! Clickable regions. Rendering registers every button, tab, row and area
-//! it draws together with the action it stands for; mouse handling looks the
-//! click up here instead of recomputing layout. Later regions sit on top.
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -35,16 +31,14 @@ pub enum PickerUi {
     RemoveRecent(usize),
 }
 
-/// Parts of the Add account dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddUi {
-    /// Anywhere inside: keeps the dialog open.
     Inside,
     Field(u8),
     Agent(u8),
     Color(u8),
     Recent(u8),
-    /// 0 previous, 1 next.
+
     Mode(u8),
 }
 
@@ -59,14 +53,13 @@ pub enum TrainUi {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiAction {
-    /// Same as Ctrl-a followed by this key.
     Key(char),
     FocusPane(usize),
-    /// An empty grid cell's "New tab on… ▾" (which cell).
+
     EmptySlotMenu(usize),
-    /// Open a new pane on this account and pick a folder for its tab.
+
     NewPaneFor(usize),
-    /// Learned rules view: a key, a row, a toggle; opening it.
+
     LearnedKey(char),
     LearnedRow(usize),
     LearnedToggle(usize),
@@ -74,20 +67,20 @@ pub enum UiAction {
     PromptKey(char),
     PromptRow(usize),
     OpenPrompt,
-    /// Tab history view: a key's action, a row.
+
     ThKey(char),
     ThRow(usize),
-    /// End a listening pause.
+
     ResumeListening,
-    /// Close a pane's window (asks first).
+
     CloseWindow(usize),
-    /// Reopen the last closed tab or window (the Undo toast).
+
     ReopenClosed,
-    /// A pane header's background: focus, and drag to swap panes.
+
     PaneHeader(usize),
-    /// Move a pane: 0..3 left, right, up, down; 10 + n to slot n.
+
     MovePane(usize, u8),
-    /// Click inside a pane's terminal area.
+
     PaneBody(usize),
     SelectTab(usize, usize),
     CloseTab(usize, usize),
@@ -95,16 +88,16 @@ pub enum UiAction {
     Zoom(usize),
     Restart(usize),
     AccountMenu(usize),
-    /// Footer usage area: open the dashboard on this account.
+
     UsageOf(usize),
-    /// Footer of a logged out slot: start the login.
+
     LoginPane(usize),
-    /// Answer the prompt shown in (pane, tab).
+
     Answer(usize, usize, Choice),
     Jump(usize, usize),
-    /// Row `i` of a list: click selects, double click activates.
+
     Row(List, usize),
-    /// Voice mode button: off, push to talk, wake word.
+
     VoiceCycle,
     Mic,
     ModalOk,
@@ -112,274 +105,261 @@ pub enum UiAction {
     TourNext,
     TourSkip,
     TourStart,
-    /// A button of the voice onboarding (app_onboarding::BTN_*).
+
     Onboarding(u8),
-    /// Collapse or expand pane `i`'s tab list.
+
     SidebarToggle(usize),
-    /// Scroll pane `i`'s tab list by this many tabs.
+
     TabsScroll(usize, isize),
-    /// Set (or clear) pane `i`'s tab list position.
+
     TabPos(usize, Option<crate::slot::TabPos>),
-    /// Set the permission mode of the account in pane `.0`.
+
     SetPerm(usize, &'static str),
-    /// Flip auto trust for the account in pane `.0`.
+
     ToggleTrust(usize),
-    /// New Tab dialog controls.
+
     Picker(PickerUi),
-    /// Settings rows: step a value (+1 / -1), reset it, edit text.
+
     SettingStep(usize, i64),
     SettingReset(usize),
     SettingEdit(usize),
     OpenConfig,
     RunDoctor,
-    /// Settings > Setup: install an item ("voice": the voice pack).
+
     SetupInstall(String),
-    /// Settings > Setup: the whisper model to offer.
+
     SetupWhisper(String),
-    /// Settings > Setup: do not open it at start.
+
     SetupDontShow,
-    /// Settings > Browser: look again now.
+
     BrowserRefresh,
-    /// Settings > Browser: copy the skill into the accounts (two clicks).
+
     BrowserSkill,
-    /// Settings > Browser: the next Chrome profile as the default for links.
+
     BrowserDefault,
-    /// Settings > Browser: sign in and Remote Control links in that
-    /// profile, or the system browser.
+
     BrowserLoginLinks,
-    /// The Browser button on pane `.0`'s bottom bar: its dialog.
+
     TabBrowser(usize),
-    /// A profile row of the Browser dialog.
+
     BrowserRow(usize),
-    /// The Browser dialog's "No browser".
+
     BrowserClear,
-    /// The Browser dialog's "Also use" / "Remove": the selected profile in
-    /// or out of the tab's set.
+
     BrowserAlso,
-    /// The Git section: a key press (its buttons).
+
     GitKey(char),
-    /// The Git section: row `.0` (an action or a branch).
+
     GitRow(usize),
-    /// A tab's git warning badge: open its Git section (pane, tab).
+
     GitOpen(usize, usize),
-    /// Settings > GitHub: open the accounts and rules editor.
+
     GitCfgOpen,
-    /// The accounts and rules editor: a key press (its buttons).
+
     GitCfgKey(char),
-    /// The accounts and rules editor: selectable row `.0`.
+
     GitCfgRow(usize),
-    /// The Browser dialog: bring up the tab's Chrome profile.
+
     BrowserOpenTab,
-    /// The assistant panel's input (or anywhere in it): give it the keys.
+
     AssistantFocus,
-    /// The chat's scrollbar column.
+
     ChatBar,
-    /// Anywhere in the Loops & schedules section (for the wheel).
+
     SchedArea,
-    /// The panel's Remote indicator: open (and copy) the link.
+
     AssistantRemoteLink,
-    /// The assistant panel's Send button.
+
     AssistantSend,
-    /// The assistant panel's window controls, width carets, edge and
-    /// quick actions.
+
     AssistantPanel(crate::app_panelwin::PanelCtl),
-    /// A pane's width carets: pane `.0` narrower (false) or wider (true);
-    /// shift-click or a double click: equal widths.
+
     PaneWidth(usize, bool),
-    /// An action chip in the assistant panel: show or hide its raw call.
+
     AssistantChip(usize),
-    /// Settings > About: check for a new version now.
+
     UpdateCheck,
-    /// Settings > About: do not offer this version again.
+
     UpdateSkip,
-    /// Settings > About: godterm install (true: with --dock).
+
     Install(bool),
-    /// Play a sample of the selected talk back voice.
+
     VoicePreview,
-    /// Settings: pick the Chatterbox voice clip (a file dialog).
+
     PickVoiceClip,
-    /// Open wake word training.
+
     TrainWake,
-    /// Settings > Voice: "Train my voice" (speaker lock enrollment).
+
     TrainVoice,
-    /// Settings > Voice: the macOS mic mode picker (Voice Isolation).
+
     MicModes,
-    /// A draggable border between panes.
+
     Border,
-    /// Back to the grid of every pane (the logo, Grid, Back, x).
+
     Home,
-    /// Sessions view: source chip, an action key, a dialog choice.
+
     SessSource(usize),
     SessKey(char),
     SessTarget(usize),
     SessConflict(u8),
     SessConfirm,
-    /// Move tab picker row (single click selects, double confirms), its
-    /// Move / Copy and same folder toggles, the confirm button.
+
     MoveRow(usize),
     MoveCopy(bool),
     MoveFolder,
     MoveGo,
-    /// Busy tab: wait (false) or interrupt (true).
+
     MoveBusy(bool),
-    /// Tab menu entry.
+
     TabMenuItem(usize),
-    /// The tab panel (double click): an option row, a Color swatch (0:
-    /// none), a Group choice, the session title field, a section tab when
-    /// both do not fit (false: Move, true: Tab), Copy session only.
+
     TabOpt(usize),
     TabOptColor(usize),
     TabOptGroup(usize),
     TabTitleField,
     TabPanelSec(bool),
     MoveSessionOnly,
-    /// A tab group's header in pane .0's list: click folds, right click
-    /// opens its menu, a dragged tab dropped on it joins.
+
     GroupHeader(usize, usize),
-    /// The Archived group's header in pane `.0`'s tab list.
+
     ArchivedHeader(usize),
-    /// An archived conversation (pane, archive id) in that list.
+
     ArchivedRow(usize, String),
-    /// A row of an archived entry's menu.
+
     ArchMenuItem(usize),
     GroupMenuItem(usize),
     GroupPickItem(usize),
     GroupMoveTo(usize),
-    /// A Settings header: fold or unfold it.
+
     SettingsGroup(&'static str),
-    /// Settings: test the Grok voice credential, or remove the API key.
+
     GrokTest,
     GrokRemoveKey,
-    /// Settings: record 3 s and transcribe it with Grok.
+
     SttTest,
-    /// Settings: list the audio devices again (after a timeout).
+
     RetryDevices,
-    /// Settings: open the Grok login picker.
+
     OpenGrokLogins,
-    /// The Grok login picker: (card, action) (see grok_logins).
+
     GrokLoginAct(usize, u8),
-    /// Tabs ▾ > Sort tabs (the focused pane).
+
     SortTabs(crate::tab_groups::TabSort),
-    /// Undo the last tab move.
+
     UndoTabMove,
-    /// Loops view: jump to the selected loop's tab, stop it, stop all.
+
     LoopJump,
     LoopStop,
-    /// Loops view: the selected loop's detail card.
+
     LoopCard,
     LoopStopAll,
-    /// Memory: free now.
+
     FreeNow,
-    /// Assistant: new conversation.
+
     AssistantNew,
-    /// Assistant panel: the History tab, a row, read, resume, delete.
+
     AssistantHistory,
     HistRow(usize),
     HistResume,
     HistDelete,
     HistBack,
-    /// A pane header's folder: click copies, double click opens Finder,
-    /// right click opens its menu; the menu's rows.
+
     PathClick(usize),
-    /// The edge of pane `.0`'s tab list: drag to resize, double click resets.
+
     SidebarEdge(usize),
-    /// Collapse pane `.0`'s account to a strip, or expand it (▾ / ▸).
+
     FoldAccount(usize),
-    /// Collapse pane `.0` sideways to a column strip, or expand it.
+
     FoldSideways(usize),
-    /// The search field atop pane `.0`'s tab list: type to filter.
+
     TabSearch(usize),
-    /// Clear pane `.0`'s tab search (its ×).
+
     TabSearchClear(usize),
-    /// The Sort ▾ dropdown atop pane `.0`'s tab list.
+
     TabSortMenu(usize),
-    /// A color choice in the color picker (usize::MAX: inside, no-op).
+
     ColorPick(usize),
-    /// Open the color picker.
+
     OpenColor(crate::color_pick::Target),
-    /// The Add account dialog.
+
     AddAcct(AddUi),
     PathMenuItem(usize, u8),
-    /// Sessions view: the harness filter (0 claude, 1 grok) and subagents.
+
     SessHarness(u8),
     SessSubagents,
-    /// Sessions: show headless / temp folder sessions.
+
     SessHeadless,
-    /// Sessions: a column header (index into sess_sort::KEYS).
+
     SessSort(u8),
-    /// The Bring here dialog: 0 take over (wait), 1 interrupt, 2 copy.
+
     TakeOverDo(u8),
-    /// The red mute button (menu bar), Ctrl-a X.
+
     MuteToggle,
-    /// The speaker mute (talk back), separate from the mic.
+
     SpeakerToggle,
-    /// Back to the conversation going on (from History, Admin, Rules...).
+
     AssistantConversation,
-    /// Answer the assistant's question: yes (true) or no.
+
     AssistantAnswer(bool),
-    /// The new version chip and the Updates window's buttons.
+
     OpenUpdates,
     UpdatesDownload,
     UpdatesRestart,
     UpdatesRestartGo,
     UpdatesLater,
     UpdatesPage,
-    /// The failover notice: move the tab (Ctrl-a F), or not now.
+
     FailoverMove,
     FailoverDismiss,
-    /// A menu bar title, a row of an open menu, a menu only command.
+
     MenuOpen(crate::menus::MenuId),
     MenuRow(crate::menus::MenuId, usize),
     Menu(crate::menus::Cmd),
-    /// A row of Find in every tab: go to that tab.
+
     FindAllRow(usize),
-    /// The Voice dropdown (menu bar button, status bar chip), its rows.
+
     VoiceMenu,
-    /// The mic badge on the pane (which) that holds the voice in direct
-    /// mode: the menu to move it.
+
     MicMenu(usize),
-    /// Move the mic to this tab (its uid), or back to the assistant.
+
     MicMoveTo(u64),
     MicToAssistant,
     VoiceMode(u8),
-    /// The » menu of buttons that did not fit, its rows.
+
     MenuOverflow,
     OverflowItem(usize),
-    /// The ✎ on a tab: rename it in place.
+
     RenameTab(usize, usize),
-    /// Move dialog: focus the tab name field, save the name only.
+
     MoveName,
-    /// Suggested move of pane .0's tab to account .1.
+
     SuggestMove(usize, usize),
-    /// Account menu: split, hide or close pane `.0`.
+
     SplitPane(usize),
     HidePane(usize),
     ClosePane(usize),
     ShowHidden,
-    /// Wake word training dialog buttons.
+
     Train(TrainUi),
     LoginAccount(usize),
     RemoveAccount(usize),
-    /// Account menu entries.
+
     SwitchAccount(usize, usize),
-    /// The model bar: (pane, model index).
+
     TabModel(usize, usize),
-    /// The loops drawer: open or close it (pane), its top edge (drag),
-    /// New loop…, a loop's row (pane, loop), and a loop's button
-    /// (pane, loop, op).
+
     LoopsDrawer(usize),
     LoopsDrawerEdge(usize),
     LoopsNew(usize),
     LoopRow(usize, usize),
     LoopAction(usize, usize, u8),
-    /// The assistant panel's Loops & schedules section: its header, a row
-    /// (job id, or "tab:loop": opens its card) and a row's button (key, op).
+
     SchedToggle,
     SchedRow(String),
     SchedAct(String, u8),
-    /// A tab group's header in the section: fold or unfold it.
+
     SchedGroup(String),
-    /// The detail card: a button (op), and its inside (keeps it open).
+
     SchedCardAct(u8),
     SchedCardInside,
     Login(usize),
@@ -390,17 +370,14 @@ pub enum UiAction {
 pub struct Region {
     pub rect: Rect,
     pub action: UiAction,
-    /// Shown in the status bar while hovered.
+
     pub hint: String,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct Hits {
     pub regions: Vec<Region>,
-    /// Each pane's tab list: (pane, first region, end), the regions it
-    /// added, its background (the whole list) first. The wheel anywhere
-    /// in a list (a row, a group header, the search row, the empty space
-    /// below, the separator) scrolls that list.
+
     pub tab_lists: Vec<(usize, usize, usize)>,
 }
 
@@ -420,7 +397,6 @@ impl Hits {
         }
     }
 
-    /// Topmost region containing (col, row).
     #[cfg(test)]
     pub fn at(&self, col: u16, row: u16) -> Option<&Region> {
         self.regions
@@ -429,7 +405,6 @@ impl Hits {
             .find(|r| contains(r.rect, col, row))
     }
 
-    /// First region with exactly this action (tests and the tour).
     pub fn find(&self, action: &UiAction) -> Option<&Region> {
         self.regions.iter().find(|r| &r.action == action)
     }
@@ -442,8 +417,6 @@ pub fn contains(r: Rect, col: u16, row: u16) -> bool {
         && row < r.y.saturating_add(r.height)
 }
 
-/// Draw "[ label ]" style button text at (x, y), clipped to `limit` (the
-/// right edge), register it, and return the next free column.
 #[allow(clippy::too_many_arguments)]
 pub fn button(
     buf: &mut Buffer,
@@ -483,7 +456,6 @@ pub fn button(
     x + w + 1
 }
 
-/// Write plain text (not clickable) and return the next column.
 pub fn text(buf: &mut Buffer, x: u16, y: u16, limit: u16, s: &str, style: Style) -> u16 {
     let mut cx = x;
     for ch in s.chars() {
@@ -545,7 +517,7 @@ mod tests {
         assert_eq!(next, 8);
         assert_eq!(h.regions[0].rect, Rect::new(1, 0, 6, 1));
         assert_eq!(buf[(2, 0)].symbol(), "H");
-        // Clipped at the limit.
+
         let n2 = button(
             &mut buf,
             &mut h,

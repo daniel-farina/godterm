@@ -1,8 +1,3 @@
-//! Selecting text with the mouse inside one pane (or the assistant's
-//! conversation), and copying it: drag, double click a word, triple click
-//! a line. The selection never leaves its pane. A tab that asked for mouse
-//! reporting still gets the mouse; Shift (or Option) drag selects there.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::time::{Duration, Instant};
 
@@ -11,12 +6,9 @@ use crate::hits::{Region, UiAction};
 use crate::pane::PaneState;
 use crate::select::{self, Pos, Press, Selection, Target, Unit};
 
-/// Presses this close together count as a double or triple click.
 const MULTI_CLICK: Duration = Duration::from_millis(450);
 
 impl App {
-    /// Selection's part of a mouse event. True when it took the event (the
-    /// normal handling must not run); a plain click still runs it.
     pub fn selection_mouse(&mut self, m: &MouseEvent, region: Option<&Region>) -> bool {
         if let Some(target) = self
             .selection
@@ -33,7 +25,7 @@ impl App {
                     self.finish_selection();
                     return true;
                 }
-                // The release got lost (it happened outside the window).
+
                 _ => self.finish_selection(),
             }
         }
@@ -41,7 +33,6 @@ impl App {
             return false;
         }
         let Some((target, take)) = self.selectable_at(m, region) else {
-            // A click anywhere else drops the selection.
             if self.modal == Modal::None {
                 self.selection = None;
             }
@@ -69,8 +60,6 @@ impl App {
         };
         self.selection = Some(Selection::new(target, pos, unit));
         if take {
-            // The tab reports the mouse, but this is a Shift drag: focus
-            // it as a click would, and tell it nothing.
             if let Target::Pane { slot, .. } = target {
                 self.focus = slot;
             }
@@ -78,7 +67,6 @@ impl App {
         take
     }
 
-    /// Where a press can start a selection: (what, take the event).
     fn selectable_at(&self, m: &MouseEvent, region: Option<&Region>) -> Option<(Target, bool)> {
         if self.modal != Modal::None {
             return None;
@@ -121,8 +109,6 @@ impl App {
         ))
     }
 
-    /// The buffer position under (col, row), clamped into the target, and
-    /// which edge it is past (-1 above, 1 below, 0 inside).
     fn sel_pos(&mut self, target: Target, col: u16, row: u16) -> Option<(Pos, i8)> {
         let rect = match target {
             Target::Pane { slot, .. } => *self.term_rects.get(slot)?,
@@ -162,14 +148,12 @@ impl App {
             s.moved = s.moved || pos != s.anchor;
             s.head = pos;
         }
-        // Past the top or bottom: scroll the pane's history with it.
+
         if edge != 0 {
             self.selection_scroll(edge, 1);
         }
     }
 
-    /// Scroll the pane being selected in by `lines` towards `edge`, the
-    /// selection's end following onto the row now at that edge.
     fn selection_scroll(&mut self, edge: i8, lines: isize) {
         let Some(Selection {
             target: Target::Pane { slot, .. },
@@ -199,7 +183,6 @@ impl App {
         }
     }
 
-    /// Held past an edge: keep scrolling (from the app tick).
     pub fn selection_tick(&mut self) {
         if let Some(edge) = self
             .selection
@@ -211,7 +194,6 @@ impl App {
         }
     }
 
-    /// The button came up: copy what is selected, or drop an empty one.
     fn finish_selection(&mut self) {
         let Some(s) = self.selection.as_mut() else {
             return;
@@ -225,7 +207,6 @@ impl App {
         self.copy_selection();
     }
 
-    /// The selected text, if the selection is still on screen.
     pub fn selection_text(&self) -> Option<String> {
         let sel = self.selection.as_ref().filter(|s| s.visible())?;
         let t = match sel.target {
@@ -246,7 +227,6 @@ impl App {
         Some(t)
     }
 
-    /// Copy the selection (on release, and Ctrl-a c).
     pub fn copy_selection(&mut self) {
         match self.selection_text() {
             None => self.flash("Nothing selected: drag over text in a pane to select it"),
@@ -255,14 +235,11 @@ impl App {
         }
     }
 
-    /// Put text on the clipboard: the system's own, and OSC 52 for a
-    /// terminal over SSH (or where there is no clipboard program).
     pub fn copy_text(&mut self, text: String) {
         self.flash(select::copied_msg(&text));
         let quiet = cfg!(test) || crate::demo::active();
         if !quiet {
             if crate::procs::osc52_wanted() {
-                // Through the terminal writer: never waits on the terminal.
                 crate::tty_out::write_raw(select::osc52(&text).into_bytes());
             }
             crate::procs::copy_to_clipboard(text.clone());
@@ -270,8 +247,6 @@ impl App {
         self.last_copied = Some(text);
     }
 
-    /// A key into the focused pane (or the assistant): its selection goes.
-    /// True when the key was Esc and only cleared it.
     pub fn selection_key(&mut self, k: &KeyEvent) -> bool {
         let Some(sel) = &self.selection else {
             return false;
@@ -307,7 +282,7 @@ mod tests {
         let base = home.join("newtabs");
         std::fs::create_dir_all(&base).unwrap();
         app.cfg.new_tab_base = base.to_string_lossy().into_owned();
-        // Never start the real claude from unit tests.
+
         app.cfg.claude_bin = Some(crate::test_stub::true_bin());
         (app, home)
     }
@@ -327,7 +302,6 @@ mod tests {
         })));
     }
 
-    /// Pane 1 shows text, as if its claude had printed it.
     fn fill(app: &mut crate::app::App, slot: usize, text: &str) -> ratatui::layout::Rect {
         let p = app.panes[slot].cur_mut();
         p.state = PaneState::Exited(Some(0));
@@ -359,7 +333,7 @@ mod tests {
             .any(|r| r.action == UiAction::PaneBody(1)));
         mouse(&mut app, DOWN, t.x + 2, t.y, NONE);
         mouse(&mut app, UP, t.x + 2, t.y, NONE);
-        // Exactly what a click did before: focus, no selection, no copy.
+
         assert_eq!(app.focus, 1);
         assert!(app.selection.is_none());
         assert!(app.last_copied.is_none());
@@ -373,18 +347,18 @@ mod tests {
         let (mut app, home) = test_app("drag");
         let t = fill(&mut app, 0, "hello world\r\nsecond row");
         mouse(&mut app, DOWN, t.x + 6, t.y, NONE);
-        // Dragged far to the right, into the next pane: clamped to this one.
+
         mouse(&mut app, DRAG, t.x + 3, t.y + 1, NONE);
         mouse(&mut app, DRAG, t.x + t.width + 30, t.y + 1, NONE);
         mouse(&mut app, UP, t.x + t.width + 30, t.y + 1, NONE);
         assert_eq!(app.last_copied.as_deref(), Some("world\nsecond row"));
         assert_eq!(app.flash.as_ref().unwrap().0, "Copied 16 characters");
-        // The highlight is drawn, in this pane only.
+
         let term = draw(&mut app);
         let b = term.backend().buffer();
         assert_eq!(b[(t.x + 6, t.y)].bg, crate::theme::SELECT_BG);
         assert_ne!(b[(t.x + 5, t.y)].bg, crate::theme::SELECT_BG);
-        // Ctrl-a c copies it again; a key into the pane clears it.
+
         app.last_copied = None;
         app.on_command(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('c'),
@@ -396,7 +370,7 @@ mod tests {
             NONE,
         ));
         assert!(app.selection.is_none());
-        // Double click: a word; triple: the line.
+
         mouse(&mut app, DOWN, t.x + 8, t.y, NONE);
         mouse(&mut app, UP, t.x + 8, t.y, NONE);
         mouse(&mut app, DOWN, t.x + 8, t.y, NONE);
@@ -405,7 +379,7 @@ mod tests {
         mouse(&mut app, DOWN, t.x + 8, t.y, NONE);
         mouse(&mut app, UP, t.x + 8, t.y, NONE);
         assert_eq!(app.last_copied.as_deref(), Some("hello world"));
-        // A click elsewhere drops it.
+
         mouse(&mut app, DOWN, 1, 0, NONE);
         assert!(app.selection.is_none());
         let _ = std::fs::remove_dir_all(home);
@@ -432,8 +406,7 @@ mod tests {
         assert_eq!(app.panes[0].cur().scroll, 5);
         mouse(&mut app, UP, t.x, t.y - 1, NONE);
         let got = app.last_copied.clone().unwrap();
-        // From the row 5 above the top of the screen down to the bottom
-        // (the empty line after "line 79" left out).
+
         let first_shown = 80 + 1 - t.height as usize;
         assert!(
             got.starts_with(&format!("line {}\n", first_shown - 5)),
@@ -457,7 +430,7 @@ mod tests {
         mouse(&mut app, DRAG, body.x + body.width + 10, y, NONE);
         mouse(&mut app, UP, body.x + body.width + 10, y, NONE);
         assert_eq!(app.last_copied.as_deref(), Some(lines[first].trim_end()));
-        // Highlighted while it lasts; a key into the panel drops it.
+
         let term = draw(&mut app);
         assert_eq!(
             term.backend().buffer()[(body.x, y)].bg,
@@ -475,14 +448,14 @@ mod tests {
     fn mouse_reporting_tab_gets_plain_drags_shift_selects() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = test_app("report");
-        // 1000h: the program asked for mouse reports.
+
         let t = fill(&mut app, 0, "\x1b[?1000hpick me");
-        // Not running: nothing to report to, so a drag selects.
+
         mouse(&mut app, DOWN, t.x, t.y, NONE);
         mouse(&mut app, DRAG, t.x + 3, t.y, NONE);
         mouse(&mut app, UP, t.x + 3, t.y, NONE);
         assert_eq!(app.last_copied.as_deref(), Some("pick"));
-        // Running and reporting: a plain press is the program's.
+
         app.panes[0].cur_mut().state = PaneState::Running;
         let _ = draw(&mut app);
         app.last_copied = None;
@@ -491,7 +464,7 @@ mod tests {
         mouse(&mut app, DRAG, t.x + 3, t.y, NONE);
         mouse(&mut app, UP, t.x + 3, t.y, NONE);
         assert!(app.last_copied.is_none());
-        // Shift drag selects anyway.
+
         mouse(&mut app, DOWN, t.x + 5, t.y, KeyModifiers::SHIFT);
         mouse(&mut app, DRAG, t.x + 6, t.y, KeyModifiers::SHIFT);
         mouse(&mut app, UP, t.x + 6, t.y, KeyModifiers::SHIFT);

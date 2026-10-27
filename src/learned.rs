@@ -1,16 +1,8 @@
-//! Learned instructions: rules the user teaches the assistant ("next time
-//! always check usage before opening a tab"), kept in
-//! `~/.godterm/assistant/learned.json` with every change logged in
-//! `learned-history.jsonl` (both 0600), and added to the brain's system
-//! prompt. Rules never override the safety rules: code refuses ones that
-//! would, and ones that did not come from the user's own words.
-
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-/// Rules injected at most, and their text at most (about 2k tokens).
 pub const MAX_RULES: usize = 40;
 pub const MAX_CHARS: usize = 8000;
 
@@ -19,12 +11,12 @@ pub struct Rule {
     pub id: u32,
     pub text: String,
     pub reason: String,
-    /// "<conversation id>#<turn>".
+
     pub source_turn: String,
     pub created: String,
     pub updated: String,
     pub enabled: bool,
-    /// global, account or project.
+
     pub scope: String,
 }
 
@@ -39,13 +31,13 @@ pub struct Store {
 pub struct Revision {
     pub rev: u32,
     pub time: String,
-    /// add, edit, disable, enable, delete, revert.
+
     pub op: String,
     pub rule_id: u32,
     pub before: Option<Rule>,
     pub after: Option<Rule>,
     pub why: String,
-    /// assistant or user.
+
     pub by: String,
 }
 
@@ -227,7 +219,6 @@ impl Store {
         .map_err(|e| e.to_string())
     }
 
-    /// Put a rule back as it was before revision `rev`.
     pub fn revert(&mut self, rev: u32, by: &str) -> Result<(u32, u32), String> {
         let r = history()
             .into_iter()
@@ -236,7 +227,6 @@ impl Store {
         let i = self.rules.iter().position(|x| x.id == r.rule_id);
         let current = i.map(|i| self.rules[i].clone());
         match (&r.before, i) {
-            // Undo an add: the rule goes off.
             (None, Some(i)) => {
                 self.rules[i].enabled = false;
                 self.rules[i].updated = now();
@@ -284,9 +274,6 @@ fn clean(text: &str) -> Result<String, String> {
     Ok(t)
 }
 
-/// Rules can shape style and habits, never safety: no turning off
-/// confirmations or auto approving, no credentials or keys, no permission
-/// modes, no ignoring the user, no pause handling.
 pub fn check_safe(text: &str) -> Result<(), String> {
     let t = format!(" {} ", text.to_lowercase());
     let has = |ws: &[&str]| ws.iter().any(|w| t.contains(w));
@@ -383,7 +370,6 @@ pub fn check_safe(text: &str) -> Result<(), String> {
     }
 }
 
-/// Words that show the user is correcting or stating a lasting preference.
 pub fn user_teaches(said: &str) -> bool {
     let t = format!(" {} ", said.to_lowercase());
     [
@@ -423,7 +409,6 @@ pub fn user_teaches(said: &str) -> bool {
     .any(|w| t.contains(w))
 }
 
-/// The system prompt section: the policy, and the enabled rules.
 pub fn prompt_section(store: &Store) -> String {
     let mut s = String::from(
         "\n\nLearning from corrections. When the user corrects you or states a lasting preference (\"next time...\", \"always...\", \
@@ -473,7 +458,6 @@ pauses): those always win, and the tools refuse such rules.",
     s
 }
 
-/// Near the cap: time to consolidate.
 pub fn over_cap(store: &Store) -> bool {
     let rules = store.enabled();
     rules.len() > MAX_RULES * 9 / 10
@@ -539,21 +523,21 @@ mod tests {
             .unwrap();
         assert_eq!(rev2, 2);
         assert!(prompt_section(&load()).contains("[rule 1] Check weekly and 5 hour usage"));
-        // Revert the edit: the old text comes back, as a new revision.
+
         let (_, rev3) = s.revert(2, "user").unwrap();
         assert_eq!(rev3, 3);
         assert_eq!(
             load().rules[0].text,
             "Check weekly usage before choosing an account"
         );
-        // Forget disables, never deletes.
+
         s.set_enabled(id, false, "user said forget it", "assistant")
             .unwrap();
         let l = load();
         assert_eq!(l.rules.len(), 1);
         assert!(!l.rules[0].enabled && !prompt_section(&l).contains("[rule 1]"));
         assert_eq!(history().len(), 4);
-        // File modes (Unix; Windows has no mode bits).
+
         if cfg!(unix) {
             use crate::platform::PermissionsExt;
             assert_eq!(
@@ -569,7 +553,7 @@ mod tests {
                 0o600
             );
         }
-        // Over the cap: consolidation is asked for.
+
         let mut big = Store::default();
         for i in 0..45 {
             big.rules.push(Rule {

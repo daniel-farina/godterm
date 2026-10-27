@@ -1,9 +1,3 @@
-//! Find in every tab (Ctrl-a *, or the palette): type a word and see the
-//! tabs, on every account, whose recent output (the screen and the newest
-//! history) has it, with the matching line. Enter or a click goes there.
-//! Only the terminal text GodTerm already holds is searched; nothing is
-//! read from disk and nothing is sent anywhere.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -14,23 +8,21 @@ use crate::app::{App, Modal};
 use crate::hits::UiAction;
 use crate::theme::{self, BAR_BG, DIM, FG, SEL_BG};
 
-/// How many lines back each tab is searched (history, then its screen).
 pub const LINES_BACK: usize = 400;
-/// Matching lines shown per tab, and in all.
+
 const PER_TAB: usize = 3;
 const MAX_HITS: usize = 40;
-/// The shortest query searched (one letter matches everything).
+
 pub const MIN_QUERY: usize = 2;
 
-/// One matching line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FindHit {
     pub uid: u64,
-    /// "Work · billing".
+
     pub place: String,
-    /// The line, trimmed.
+
     pub line: String,
-    /// How many lines above the bottom it is (0: the last line).
+
     pub back: usize,
 }
 
@@ -41,8 +33,6 @@ pub struct FindAll {
     pub hits: Vec<FindHit>,
 }
 
-/// The last `n` lines of a terminal: its history (oldest first), then the
-/// screen. The view's own scroll position is put back.
 pub fn recent_lines(p: &mut vt100::Parser, n: usize) -> Vec<String> {
     let (rows, cols) = p.screen().size();
     let was = p.screen().scrollback();
@@ -63,8 +53,6 @@ pub fn recent_lines(p: &mut vt100::Parser, n: usize) -> Vec<String> {
     out
 }
 
-/// The lines of `lines` that contain `q` (any case), newest first, at most
-/// `max`: (line, lines above the bottom).
 pub fn matches_in(lines: &[String], q: &str, max: usize) -> Vec<(String, usize)> {
     let q = q.trim().to_lowercase();
     if q.chars().count() < MIN_QUERY {
@@ -81,7 +69,6 @@ pub fn matches_in(lines: &[String], q: &str, max: usize) -> Vec<(String, usize)>
         .collect()
 }
 
-/// A line cut around the match so the match shows in `w` cells.
 pub fn around(line: &str, q: &str, w: usize) -> String {
     let chars: Vec<char> = line.chars().collect();
     if chars.len() <= w {
@@ -109,7 +96,6 @@ impl App {
         self.modal = Modal::FindAll(FindAll::default());
     }
 
-    /// Search every tab of every shown account for `q`.
     pub fn find_all_hits(&self, q: &str) -> Vec<FindHit> {
         if q.trim().chars().count() < MIN_QUERY {
             return vec![];
@@ -138,7 +124,7 @@ impl App {
                 }
             }
         }
-        // The newest output first, across tabs.
+
         hits.sort_by_key(|h| h.back);
         hits.truncate(MAX_HITS);
         hits
@@ -175,7 +161,6 @@ impl App {
         self.modal = Modal::FindAll(fa);
     }
 
-    /// Go to hit `i`'s tab (its pane shown and focused).
     pub fn find_all_go(&mut self, i: usize) {
         let Modal::FindAll(fa) = self.modal.clone() else {
             return;
@@ -245,7 +230,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, fa: &FindAll) {
         crate::hits::text(buf, inner.x, top, limit, msg, Style::default().fg(DIM));
         return;
     }
-    // Keep the selection in view.
+
     let first = fa.sel.saturating_sub(room.saturating_sub(1) as usize);
     let place_w = fa
         .hits

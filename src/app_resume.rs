@@ -1,31 +1,18 @@
-//! The assistant's own session, kept across restarts (assistant.resume):
-//! every brain that starts continues it with `--resume`, so a launch, a
-//! crash, a restart to update or a brain that died picks the chat up where
-//! it was (and Remote Control, when kept on, comes back with it). A new
-//! session starts on New, after reset_after_turns, when the kept one is
-//! missing, belongs to another account or provider, or has grown too
-//! large; it then gets the memory block as before. The id lives in
-//! `~/.godterm/assistant/session.json`.
-
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::app::App;
 use crate::providers::{Provider, SessionPlan};
 
-/// A kept session larger than this starts fresh (with the memory block):
-/// its context would make every answer slow and costly. About 40 turns
-/// with their state blocks and tool results come to well under 1 MB.
 pub const MAX_RESUME_BYTES: u64 = 3 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Kept {
     pub id: String,
     pub provider: String,
-    /// The account's name ("" for a provider with its own login).
+
     pub account: String,
-    /// Set while GodTerm runs, cleared on a clean exit: found set at
-    /// launch, the last run ended in a crash.
+
     #[serde(default)]
     pub live: bool,
 }
@@ -45,7 +32,6 @@ pub fn save(k: &Kept) {
     }
 }
 
-/// A clean exit: the next launch is not a crash.
 pub fn mark_clean_exit() {
     if let Some(mut k) = load() {
         if k.live {
@@ -55,7 +41,6 @@ pub fn mark_clean_exit() {
     }
 }
 
-/// claude's folder name for a working directory under `projects/`.
 pub fn project_slug(p: &Path) -> String {
     p.to_string_lossy()
         .chars()
@@ -63,8 +48,6 @@ pub fn project_slug(p: &Path) -> String {
         .collect()
 }
 
-/// The `projects/` folder of the assistant's own sessions (kept out of
-/// Sessions and the session index).
 pub fn is_assistant_project(dir_name: &str) -> bool {
     let d = crate::assistant::dir();
     if project_slug(&d) == dir_name {
@@ -86,8 +69,6 @@ fn dir_size(p: &Path) -> u64 {
         .sum()
 }
 
-/// Where a kept session is on disk: claude's transcript
-/// (`projects/*/<id>.jsonl`) or grok's session folder (`sessions/*/<id>`).
 pub fn session_path(provider: &Provider, home: &Path, id: &str) -> Option<PathBuf> {
     if id.is_empty() || id.contains(['/', '\\', '.']) {
         return None;
@@ -113,9 +94,6 @@ pub fn session_size(p: &Path) -> u64 {
 }
 
 impl App {
-    /// The session for a brain about to start on `provider` (`account`,
-    /// `home`): the kept one again when it fits, else a new one (recorded).
-    /// None with assistant.resume off.
     pub(crate) fn session_plan(
         &mut self,
         provider: &Provider,
@@ -130,7 +108,6 @@ impl App {
             .map(|a| self.cfg.accounts[a].name.clone())
             .unwrap_or_default();
         if let Some(k) = load().filter(|k| !k.id.is_empty()) {
-            // Moved to another account: the session comes along.
             let k = self.adopt_kept_session(k, provider, &acct, home);
             let same = k.provider == provider.id && k.account == acct;
             let found = same.then(|| session_path(provider, home, &k.id)).flatten();
@@ -169,8 +146,7 @@ impl App {
                 }
                 Some(w) => {
                     crate::log::info(&format!("assistant: a fresh session ({w})"));
-                    // The replaced transcript goes (GodTerm's own log keeps
-                    // the conversation); claude's would only clutter.
+
                     if let Some(p) = found.filter(|_| provider.id == "claude") {
                         let _ = std::fs::remove_file(&p);
                         let _ = std::fs::remove_dir_all(p.with_extension(""));
@@ -189,11 +165,7 @@ impl App {
         Some(SessionPlan { id, resume: false })
     }
 
-    /// The resumed session could not be opened (claude exited before its
-    /// first answer): forget it and start fresh with the memory block,
-    /// sending the turn that was waiting again.
     pub(crate) fn resume_failed(&mut self, why: &str, was_busy: bool) {
-        // After a move: a fuller summary of the conversation goes along.
         if let Some(f) = self.take_switch_fallback() {
             self.assistant.carry = Some(f);
         }
@@ -220,15 +192,12 @@ impl App {
         };
         let n = self.assistant.log.len();
         self.start_turn(&text, heard.as_deref(), system.as_deref());
-        // The request is shown once.
+
         if self.assistant.log.len() > n {
             self.assistant.log.remove(n);
         }
     }
 
-    /// Once, early: the last run ended without a clean exit, so the
-    /// assistant comes back now (its session resumed, Remote Control
-    /// again when kept on) without waiting for a request.
     pub(crate) fn crash_check(&mut self) {
         if self.assistant.crash_checked {
             return;

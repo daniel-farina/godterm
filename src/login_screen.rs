@@ -1,32 +1,23 @@
-//! What an agent CLI's login screen says, read off its text: the sign in
-//! URL (wrapped lines joined), a device code to confirm, whether it waits
-//! for a pasted code, success, an error, a retry prompt. Pure, so the
-//! recorded screens in tests/fixtures/login check it (recorded from an
-//! isolated HOME that was never logged in).
-
-/// One reading of a login tab.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LoginScreen {
-    /// The sign in page.
     pub url: Option<String>,
-    /// The page sends the browser back to this Mac (a localhost
-    /// redirect): it has to be opened on the Mac, not a phone.
+
     pub local_redirect: bool,
-    /// A device code shown to confirm on the page (Grok).
+
     pub user_code: Option<String>,
-    /// "Paste code here if prompted >".
+
     pub wants_code: bool,
-    /// It says the login (or the token) worked.
+
     pub success: bool,
-    /// A long-lived token was made (`claude setup-token`).
+
     pub token_created: bool,
-    /// The last error line, if any.
+
     pub error: Option<String>,
-    /// How many error lines there are (only newer ones count).
+
     pub errors: usize,
-    /// "Press Enter to retry."
+
     pub retry: bool,
-    /// An onboarding screen that takes Enter for its default.
+
     pub onboarding: Option<&'static str>,
 }
 
@@ -40,7 +31,6 @@ fn is_error_line(l: &str) -> bool {
         || l.contains("error: ")
 }
 
-/// A device code in a URL (`user_code=ABCD-1234`).
 fn code_in_url(u: &str) -> Option<String> {
     let q = u.split_once('?')?.1;
     q.split('&')
@@ -106,7 +96,7 @@ mod tests {
             u.starts_with("https://claude.com/cai/oauth/authorize?code=true"),
             "{u}"
         );
-        // The wrapped lines are one URL.
+
         assert!(u.contains("&response_type=code&redirect_uri="), "{u}");
         assert!(u.contains("scope=user%3Ainference&code_challenge="), "{u}");
         assert!(u.contains("&state="), "{u}");

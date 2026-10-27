@@ -1,10 +1,3 @@
-//! Every path of the wake word: for each mode (wake, open mic, push to
-//! talk, paused, after a resume, while the assistant talks, muted):
-//! (a) the wake word alone answers and opens the follow up window, and
-//! the next utterance runs; (b) the wake word with a command runs it;
-//! (c) a command without the wake word runs only in open mic, push to
-//! talk or the follow up window; (d) noise is ignored.
-
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::voice::wake_profile::UttStats;
 use crate::voice::VoiceEvent;
@@ -19,7 +12,7 @@ fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     let base = home.join("newtabs");
     std::fs::create_dir_all(&base).unwrap();
     app.cfg.new_tab_base = base.to_string_lossy().into_owned();
-    // A stub brain: requests reach it, nothing real runs.
+
     let stub = crate::test_stub::claude(&home.join("brain"), &[]);
     app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
     app.accounts[0].login.source = Some(CredSource::Keychain);
@@ -39,7 +32,6 @@ const LONG: UttStats = UttStats {
 };
 
 fn hear(app: &mut crate::app::App, text: &str, ptt: bool) {
-    // A short clip for the wake word alone: no length guard may drop it.
     let stats = if text.split_whitespace().count() <= 2 {
         UttStats {
             ms: 650,
@@ -56,7 +48,6 @@ fn hear(app: &mut crate::app::App, text: &str, ptt: bool) {
     });
 }
 
-/// The requests the assistant got, in order.
 fn asked(app: &crate::app::App) -> Vec<String> {
     app.assistant
         .log
@@ -74,10 +65,7 @@ fn done_turn(app: &mut crate::app::App) {
     });
 }
 
-/// (a) to (d) in the current mode. `plain_runs`: a command without the
-/// wake word runs here.
 fn matrix(app: &mut crate::app::App, mode: &str, plain_runs: bool, ptt: bool) {
-    // (a) the wake word alone: an answer and the follow up window.
     let n = app.voice.said_wake.len();
     hear(app, "Hey God.", ptt);
     assert_eq!(
@@ -102,7 +90,7 @@ fn matrix(app: &mut crate::app::App, mode: &str, plain_runs: bool, ptt: bool) {
         "{mode}: the follow up runs"
     );
     done_turn(app);
-    // (b) the wake word with a command.
+
     hear(app, "God term, which tabs are waiting", ptt);
     assert_eq!(
         asked(app).last().map(String::as_str),
@@ -110,7 +98,7 @@ fn matrix(app: &mut crate::app::App, mode: &str, plain_runs: bool, ptt: bool) {
         "{mode}: wake plus command"
     );
     done_turn(app);
-    // (c) a command without the wake word, outside the window.
+
     app.voice.wake_until = None;
     let before = asked(app).len();
     hear(app, "how much usage is left on account two", ptt);
@@ -122,7 +110,7 @@ fn matrix(app: &mut crate::app::App, mode: &str, plain_runs: bool, ptt: bool) {
     if plain_runs {
         done_turn(app);
     }
-    // (d) noise.
+
     app.voice.wake_until = None;
     let before = asked(app).len();
     hear(app, "Thank you.", ptt);
@@ -159,8 +147,7 @@ fn push_to_talk_mode() {
     let (mut app, home) = test_app("ptt");
     app.voice.always_on = false;
     app.voice.open_mic = false;
-    // The wake word alone in a push to talk clip: "Yes?", and the mic
-    // opens again for the command once that is said.
+
     hear(&mut app, "hey god", true);
     assert_eq!(app.voice.said_wake.last().unwrap(), "Yes?");
     assert!(
@@ -177,13 +164,13 @@ fn paused_then_wake_resumes() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("paused");
     app.voice.always_on = true;
-    // During a pause other speech is dropped.
+
     app.pause_listening(Some(60), None);
     hear(&mut app, "what is running in fotmesh", false);
     assert!(app.paused() && asked(&app).is_empty());
     hear(&mut app, "Thank you.", false);
     assert!(app.paused());
-    // The wake word alone resumes and answers "I'm back."
+
     hear(&mut app, "Hey god", false);
     assert!(!app.paused());
     assert_eq!(app.voice.said_wake.last().unwrap(), "I'm back.");
@@ -191,23 +178,23 @@ fn paused_then_wake_resumes() {
     hear(&mut app, "what is running in fotmesh", false);
     assert_eq!(asked(&app).last().unwrap(), "what is running in fotmesh");
     done_turn(&mut app);
-    // The wake word with a command resumes and runs it.
+
     app.pause_listening(Some(60), None);
     hear(&mut app, "hey god, which tabs are waiting", false);
     assert!(!app.paused());
     assert_eq!(asked(&app).last().unwrap(), "which tabs are waiting");
     done_turn(&mut app);
-    // "resume" resumes.
+
     app.pause_listening(Some(60), None);
     hear(&mut app, "resume", false);
     assert!(!app.paused());
-    // Push to talk resumes.
+
     app.pause_listening(Some(60), None);
     hear(&mut app, "how much usage is left", true);
     assert!(!app.paused());
     assert_eq!(asked(&app).last().unwrap(), "how much usage is left");
     done_turn(&mut app);
-    // The pause runs out on its own: the next wake word alone works.
+
     app.pause_listening(Some(60), None);
     app.voice.paused.as_mut().unwrap().until =
         std::time::Instant::now() - std::time::Duration::from_secs(1);
@@ -223,7 +210,7 @@ fn while_the_assistant_talks() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("talking");
     app.voice.always_on = true;
-    // A reply is under way (barge-in brought this utterance).
+
     app.ask_assistant("what is everyone working on");
     assert!(app.assistant.busy);
     hear(&mut app, "hey god", false);
@@ -251,7 +238,7 @@ fn muted_hears_nothing() {
     }
     assert!(asked(&app).is_empty() && app.voice.said_wake.is_empty());
     assert!(app.voice.action.as_deref().unwrap().contains("Ctrl-a X"));
-    // The Voice menu says how to unmute, and keeps the choice for then.
+
     app.set_voice_mode(3);
     assert!(app.voice.muted && !app.voice.open_mic);
     assert!(app

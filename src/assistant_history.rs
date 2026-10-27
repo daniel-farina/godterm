@@ -1,14 +1,3 @@
-//! Saved assistant conversations: one JSON lines file per conversation in
-//! `~/.godterm/assistant/conversations/`, with what the user said (typed,
-//! or spoken with whisper's transcript), every tool call and its result
-//! (truncated), the replies, timing, and the account and model.
-//!
-//! With assistant.resume off the brain runs `claude -p
-//! --no-session-persistence`; on, it keeps one session of its own across
-//! restarts (see app_resume), kept out of Sessions. This log is the
-//! record either way; resuming a saved conversation starts a fresh brain
-//! with a summary of it.
-
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +9,6 @@ pub fn dir() -> PathBuf {
     crate::assistant::dir().join("conversations")
 }
 
-/// The file of the conversation going on.
 #[derive(Debug, Clone)]
 pub struct ConvLog {
     pub id: String,
@@ -52,7 +40,6 @@ impl ConvLog {
         })
     }
 
-    /// Append one event. Errors are logged, never fatal.
     pub fn write(&self, kind: &str, mut v: Value) {
         v["kind"] = json!(kind);
         v["at"] = json!(chrono::Local::now().to_rfc3339());
@@ -80,15 +67,14 @@ impl ConvLog {
     }
 }
 
-/// A saved conversation in the History list.
 #[derive(Debug, Clone)]
 pub struct Summary {
     pub id: String,
     pub started: String,
-    /// The first thing the user said.
+
     pub first: String,
     pub turns: usize,
-    /// All of its text, lower case (for search).
+
     pub text: String,
 }
 
@@ -132,7 +118,6 @@ pub fn summarize(path: &Path) -> Option<Summary> {
     })
 }
 
-/// Saved conversations, newest first.
 pub fn list() -> Vec<Summary> {
     let Ok(rd) = std::fs::read_dir(dir()) else {
         return vec![];
@@ -148,7 +133,6 @@ pub fn list() -> Vec<Summary> {
     v
 }
 
-/// Delete conversations older than `days` (0 keeps all). Returns how many.
 pub fn purge(days: u32) -> usize {
     if days == 0 {
         return 0;
@@ -178,9 +162,6 @@ pub fn delete(id: &str) -> bool {
     !id.contains('/') && std::fs::remove_file(dir().join(format!("{id}.jsonl"))).is_ok()
 }
 
-/// A line about pausing listening (the pause itself, waiting for the
-/// wake word): it must not carry into a new process, where it would read
-/// as if listening were still paused.
 pub fn about_pause(text: &str) -> bool {
     let t = text.to_lowercase();
     [
@@ -198,7 +179,6 @@ pub fn about_pause(text: &str) -> bool {
     .any(|w| t.contains(w))
 }
 
-/// The conversation had a pause in it (now over).
 pub fn had_pause(evs: &[Value]) -> bool {
     evs.iter()
         .any(|e| e["kind"] == "tool" && e["name"] == "pause_listening")
@@ -208,8 +188,6 @@ pub fn had_pause(evs: &[Value]) -> bool {
         })
 }
 
-/// What a resumed brain is told: the last exchanges, about 1500 chars.
-/// Pause talk is left out and replaced by a note that it has ended.
 pub fn carry_summary(evs: &[Value]) -> String {
     let paused = had_pause(evs);
     let mut parts: Vec<String> = evs
@@ -238,17 +216,14 @@ pub fn carry_summary(evs: &[Value]) -> String {
     out
 }
 
-/// The History tab of the assistant panel.
 #[derive(Debug, Clone, Default)]
 pub struct HistoryUi {
-    /// Saved conversations, the one going on left out (it is pinned on
-    /// top, live).
     pub items: Vec<Summary>,
     pub query: String,
     pub sel: usize,
-    /// Reading this conversation.
+
     pub open: Option<String>,
-    /// Delete was pressed once; press again to delete.
+
     pub confirm_delete: bool,
 }
 
@@ -283,8 +258,6 @@ impl App {
         }
     }
 
-    /// Continue a saved conversation: a fresh brain told what was said,
-    /// the panel shows it, new turns go on in the same file.
     pub fn resume_conversation(&mut self, id: &str) -> bool {
         let Some(c) = ConvLog::open(id) else {
             self.flash("That conversation is gone");
@@ -313,8 +286,7 @@ impl App {
                 Some("reply") => Who::Reply,
                 _ => continue,
             };
-            // The log's own time (RFC 3339) is the entry's; a line without
-            // one gets now.
+
             let at = e["at"]
                 .as_str()
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
@@ -351,7 +323,6 @@ impl App {
         }
     }
 
-    /// Keys while the History tab is open.
     pub fn on_history_key(&mut self, k: crossterm::event::KeyEvent) -> bool {
         use crossterm::event::KeyCode;
         let Some(h) = self.assistant.history.as_mut() else {

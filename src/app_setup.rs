@@ -1,10 +1,3 @@
-//! Setup that works out of the box: what is missing (Settings > Setup,
-//! shown on first launch), one step installs after a yes (the exact
-//! commands and sizes shown first), run in the background with spoken
-//! progress, picked up live. Steps that need sudo run in a visible tab
-//! where the user types their own password; nothing is ever sudo'd
-//! silently and no shell rc file is touched.
-
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -17,24 +10,23 @@ use crate::deps::{self, Dep, Group, Step};
 #[derive(Default)]
 pub struct SetupState {
     cache: RefCell<Option<(Instant, Vec<Dep>)>>,
-    /// The whisper model to offer ("large-v3-turbo" or "small.en").
+
     pub whisper_choice: Option<String>,
-    /// An Install click waiting for its second click (the confirmation).
+
     pub confirm: Option<(String, Instant)>,
-    /// Installs running now (ids).
+
     pub running: Vec<String>,
-    /// Tests: programs resolve here, downloads may use 127.0.0.1.
+
     pub bin_dir: Option<PathBuf>,
     pub local_ok: bool,
     pub url_base: Option<String>,
-    /// Tests: the commands sudo tabs would have run.
+
     pub tab_runs: Vec<String>,
-    /// Tests: the platform the plans are for, and the cache folder.
+
     pub os: Option<deps::Os>,
     pub cache_dir: Option<PathBuf>,
 }
 
-/// `name` (or `name.exe`) in `dir`.
 fn in_dir(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
     [dir.join(name), dir.join(format!("{name}.exe"))]
         .into_iter()
@@ -51,7 +43,6 @@ impl App {
         }
     }
 
-    /// Every dependency with its status (read again at most every 3 s).
     pub fn deps(&self) -> Vec<Dep> {
         if let Some((t, v)) = self.setup.cache.borrow().as_ref() {
             if t.elapsed() < Duration::from_secs(3) {
@@ -85,7 +76,6 @@ impl App {
         *self.setup.cache.borrow_mut() = None;
     }
 
-    /// The program a tab of `account` runs is not installed.
     pub fn agent_missing(&self, account: Option<usize>) -> Option<&'static str> {
         let a = account?;
         let id = self.cfg.accounts.get(a)?.harness().name();
@@ -95,7 +85,6 @@ impl App {
             .map(|d| d.id)
     }
 
-    /// The state block's line (only when something is missing).
     pub fn setup_state_line(&self) -> String {
         let miss: Vec<String> = self
             .deps()
@@ -123,7 +112,6 @@ impl App {
         }
     }
 
-    /// The required pieces that are missing.
     pub fn required_missing(&self) -> Vec<&'static str> {
         self.deps()
             .iter()
@@ -146,7 +134,6 @@ impl App {
         })
     }
 
-    /// What an install of `ids` runs, as one confirmation.
     pub fn install_question(&self, ids: &[&str]) -> Result<String, String> {
         let ds = self.deps();
         let mut parts = vec![];
@@ -211,7 +198,6 @@ impl App {
         Ok(q)
     }
 
-    /// Install `ids` in the background (sudo steps in a visible tab).
     pub fn run_install(&mut self, ids: &[String]) -> String {
         let ds = self.deps();
         let mut plan: Vec<(String, String, Vec<Step>)> = vec![];
@@ -226,7 +212,7 @@ impl App {
         if plan.is_empty() {
             return "Nothing to install.".into();
         }
-        // sudo steps: in a tab the user watches and types into.
+
         let mut background = vec![];
         for (id, name, steps) in plan {
             if steps.iter().any(Step::needs_sudo) {
@@ -244,7 +230,7 @@ impl App {
                     flag.to_string(),
                     format!("{line}; echo; echo 'Done. You can close this tab.'"),
                 ];
-                // Tests never run sudo: the tab's command is only recorded.
+
                 if cfg!(test) {
                     self.setup
                         .tab_runs
@@ -356,14 +342,10 @@ impl App {
         format!("Installing {} now; I'll say each step.", names.join(", "))
     }
 
-    /// After an install: read the state again; new tabs find the program,
-    /// and the voice engine restarts on the new pieces.
     pub fn after_setup(&mut self, voice: bool) {
         self.setup.running.clear();
         self.deps_changed();
-        // The installers put claude and grok in ~/.local/bin or ~/.grok/bin,
-        // which this process's PATH may not have: point GodTerm at them
-        // (config.toml only; shell rc files are never touched).
+
         if !cfg!(test) {
             for (id, key, cands) in [
                 (
@@ -403,7 +385,7 @@ impl App {
                 }
             }
         }
-        // The Add account form, if open, shows the new state.
+
         self.refresh_add_form();
         if voice && self.voice.engine.is_some() {
             let wake = self.voice.always_on;
@@ -413,8 +395,6 @@ impl App {
         }
     }
 
-    /// Settings > Setup's Install button: the first click shows what it
-    /// runs, the second (within 15 s) runs it.
     pub fn setup_click(&mut self, id: &str) {
         let ids: Vec<&str> = if id == "voice" {
             self.deps()
@@ -451,7 +431,6 @@ impl App {
         self.flash(say);
     }
 
-    /// Open Settings > Setup.
     pub fn open_setup(&mut self) {
         self.view = crate::app::View::Settings;
         self.settings_section = crate::settings::SECTIONS
@@ -462,8 +441,6 @@ impl App {
         self.deps_changed();
     }
 
-    /// At start: the setup screen when something required is missing (or
-    /// on the very first run), unless turned off.
     pub fn maybe_show_setup(&mut self, first_run: bool) {
         if self.cfg.setup_dont_show || cfg!(test) {
             return;

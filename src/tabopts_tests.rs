@@ -1,6 +1,3 @@
-//! The tab panel (double click on a tab): Move on top, the tab's options
-//! below; the right click menu lists the same options.
-
 use crate::app::Modal;
 use crate::app_tabopts::TabAct;
 use crate::config::testing::LOCK as ENV_LOCK;
@@ -63,7 +60,7 @@ fn double_click_opens_move_and_tab_sections() {
     ] {
         assert!(s.contains(want), "{want} missing:\n{s}");
     }
-    // The right click menu offers the same list.
+
     let menu: Vec<TabAct> = app.tab_actions(0, 1).iter().map(|r| r.act).collect();
     let panel: Vec<TabAct> = app.panel_rows(0, 1).iter().map(|r| r.act).collect();
     assert_eq!(
@@ -79,7 +76,7 @@ fn double_click_opens_move_and_tab_sections() {
     for r in app.tab_actions(0, 1) {
         assert!(s.contains(&r.label), "{} missing from the menu", r.label);
     }
-    // A click on a menu row runs it: Pin.
+
     let pin = app
         .tab_actions(0, 1)
         .iter()
@@ -98,7 +95,7 @@ fn rename_color_pin_group_and_close_from_the_panel() {
     let mut t = term();
     double_click_tab(&mut app, &mut t, 0, 1);
     draw(&mut app, &mut t);
-    // Rename: click the field, type, Enter saves; Esc cancels another edit.
+
     click(&mut app, &UiAction::MoveName);
     for _ in 0..80 {
         key(&mut app, KeyCode::Backspace);
@@ -115,7 +112,7 @@ fn rename_color_pin_group_and_close_from_the_panel() {
     key(&mut app, KeyCode::Esc);
     assert!(matches!(&app.modal, Modal::MoveTab(p) if p.name == "api" && !p.name_edit));
     assert_eq!(app.panes[0].tabs[1].name(), "api");
-    // Color: a swatch click (sand is the 2nd swatch), then none by keys.
+
     draw(&mut app, &mut t);
     click(&mut app, &UiAction::TabOptColor(2));
     assert_eq!(app.panes[0].tabs[1].accent.as_deref(), Some("sand"));
@@ -124,7 +121,7 @@ fn rename_color_pin_group_and_close_from_the_panel() {
     key(&mut app, KeyCode::Left);
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.panes[0].tabs[1].accent, None);
-    // Pin toggles, by keys: down to the Pin row, Enter, Enter.
+
     let rows = app.panel_rows(0, 1);
     let pin = rows.iter().position(|r| r.act == TabAct::Pin).unwrap();
     if let Modal::MoveTab(p) = &mut app.modal {
@@ -136,19 +133,19 @@ fn rename_color_pin_group_and_close_from_the_panel() {
     assert!(app.panes[0].tabs[1].pinned);
     key(&mut app, KeyCode::Enter);
     assert!(!app.panes[0].tabs[1].pinned);
-    // Group: put it in an existing group by a click.
+
     let uid0 = app.panes[0].tabs[0].uid;
     app.add_to_group(0, &[uid0], "web", None);
     draw(&mut app, &mut t);
     click(&mut app, &UiAction::TabOptGroup(0));
     assert_eq!(app.panes[0].tabs[1].group.as_deref(), Some("web"));
     assert!(matches!(app.modal, Modal::MoveTab(_)));
-    // New group... asks for a name.
+
     let n = app.group_choices(0).len();
     draw(&mut app, &mut t);
     click(&mut app, &UiAction::TabOptGroup(n - 2));
     assert!(matches!(app.modal, Modal::GroupName { .. }));
-    // Close goes through the confirm path: a pinned tab asks first.
+
     app.modal = Modal::None;
     app.panes[0].tabs[1].pinned = true;
     double_click_tab(&mut app, &mut t, 0, 1);
@@ -181,16 +178,16 @@ fn the_panel_fits_80x24() {
     };
     assert!(fits(&app, 24));
     let m = app.panel_rows(0, 1).len();
-    // 80x24 holds both sections here: every row is on screen.
+
     assert!(app.last_hits.find(&UiAction::TabOpt(m - 1)).is_some());
     assert!(app.last_hits.find(&UiAction::TabPanelSec(true)).is_none());
-    // Shorter: the sections become tabs.
+
     let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 16)).unwrap();
     let on_screen = |app: &crate::app::App| fits(app, 16);
     draw(&mut app, &mut t);
     assert!(on_screen(&app));
     assert!(app.last_hits.find(&UiAction::TabPanelSec(true)).is_some());
-    // Tab walks down into the options and the list scrolls to the focus.
+
     let n = app.move_targets(0).len();
     for _ in 0..(n + m + 2) {
         key(&mut app, KeyCode::Tab);
@@ -200,12 +197,12 @@ fn the_panel_fits_80x24() {
     assert!(on_screen(&app));
     assert!(app.last_hits.find(&UiAction::TabOpt(m - 1)).is_some());
     assert!(text(&t).contains("Close tab"));
-    // The section tab goes back to Move.
+
     click(&mut app, &UiAction::TabPanelSec(false));
     assert!(matches!(&app.modal, Modal::MoveTab(p) if p.opt.is_none()));
     draw(&mut app, &mut t);
     assert!(on_screen(&app));
-    // Tiny terminals draw nothing off screen either.
+
     let mut tiny = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 8)).unwrap();
     draw(&mut app, &mut tiny);
     let _ = std::fs::remove_dir_all(&home);

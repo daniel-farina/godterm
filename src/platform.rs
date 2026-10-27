@@ -1,9 +1,3 @@
-//! The few Unix only calls GodTerm makes, behind one cross platform face so
-//! the rest of the code reads the same everywhere. On Unix these are the
-//! real calls. On Windows they do the nearest equivalent, or nothing where
-//! the concept does not exist (Unix permission bits: files under the user's
-//! profile are already private to the user through their ACLs).
-
 use std::fs::File;
 use std::path::Path;
 
@@ -18,14 +12,13 @@ pub use libc::{SIGHUP, SIGINT, SIGKILL, SIGTERM};
 #[cfg(windows)]
 pub const SIGHUP: i32 = 1;
 #[cfg(windows)]
-#[allow(dead_code)] // Ctrl-C goes through procs.rs on Windows
+#[allow(dead_code)]
 pub const SIGINT: i32 = 2;
 #[cfg(windows)]
 pub const SIGKILL: i32 = 9;
 #[cfg(windows)]
 pub const SIGTERM: i32 = 15;
 
-/// The signals that end the main loop cleanly (window closed, Ctrl-C, kill).
 #[cfg(unix)]
 pub const EXIT_SIGNALS: &[i32] = &[
     signal_hook::consts::SIGTERM,
@@ -36,12 +29,9 @@ pub const EXIT_SIGNALS: &[i32] = &[
 #[cfg(windows)]
 pub const EXIT_SIGNALS: &[i32] = &[signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT];
 
-/// kill(2): `sig` 0 only checks that `pid` exists. 0 on success, like libc.
-/// On Windows any other signal terminates the process.
 pub fn kill(pid: i32, sig: i32) -> i32 {
     #[cfg(unix)]
     {
-        // SAFETY: plain kill(2); callers pass pids they started or were asked to stop.
         unsafe { libc::kill(pid, sig) }
     }
     #[cfg(windows)]
@@ -50,8 +40,6 @@ pub fn kill(pid: i32, sig: i32) -> i32 {
     }
 }
 
-/// Fill `buf` from the OS random source (/dev/urandom; the system RNG on
-/// Windows). Session ids and the control socket tokens come from here.
 pub fn fill_random(buf: &mut [u8]) {
     #[cfg(unix)]
     {
@@ -66,27 +54,22 @@ pub fn fill_random(buf: &mut [u8]) {
     }
 }
 
-/// Whether a process with this pid is running.
 pub fn alive(pid: u32) -> bool {
     kill(pid as i32, 0) == 0
 }
 
-/// Take an exclusive lock without waiting (flock LOCK_EX | LOCK_NB).
 pub fn try_lock(f: &File) -> bool {
     f.try_lock().is_ok()
 }
 
-/// Take an exclusive lock, waiting for it (flock LOCK_EX).
 pub fn lock(f: &File) -> bool {
     f.lock().is_ok()
 }
 
-/// Release a lock taken with `try_lock` or `lock`.
 pub fn unlock(f: &File) {
     let _ = f.unlock();
 }
 
-/// Whether a folder can be created in `dir` (it exists and is writable).
 pub fn writable(dir: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -94,7 +77,7 @@ pub fn writable(dir: &Path) -> bool {
         let Ok(c) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
             return false;
         };
-        // SAFETY: access(2) on a NUL terminated path.
+
         dir.is_dir() && unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0
     }
     #[cfg(windows)]
@@ -103,7 +86,6 @@ pub fn writable(dir: &Path) -> bool {
     }
 }
 
-/// A symbolic link at `link` pointing at `target`.
 pub fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -115,10 +97,6 @@ pub fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Become `bin` with `args` (the same pid, the same terminal): exec(3) on
-/// Unix. Windows has no exec, so the new program runs as a child sharing
-/// this console and this process exits with its code. Returns only on
-/// failure.
 pub fn exec_replace(bin: &Path, args: &[String]) -> std::io::Error {
     let mut cmd = std::process::Command::new(bin);
     cmd.args(args);
@@ -136,16 +114,14 @@ pub fn exec_replace(bin: &Path, args: &[String]) -> std::io::Error {
     }
 }
 
-/// The terminal device on stdin, e.g. /dev/ttys012 (None on Windows).
 pub fn own_tty() -> Option<String> {
     #[cfg(unix)]
     {
-        // SAFETY: ttyname returns a pointer to static storage or null.
         let p = unsafe { libc::ttyname(0) };
         if p.is_null() {
             return None;
         }
-        // SAFETY: non null, NUL terminated.
+
         Some(
             unsafe { std::ffi::CStr::from_ptr(p) }
                 .to_string_lossy()
@@ -158,11 +134,6 @@ pub fn own_tty() -> Option<String> {
     }
 }
 
-/// A short directory for sockets when the home's path is too long: one
-/// only this user can write (macOS: the per user $TMPDIR; Linux:
-/// $XDG_RUNTIME_DIR; else /tmp/godterm-<uid>, 0700 and ours), so another
-/// user cannot take the socket's name first. Plain /tmp only when none of
-/// those can be had.
 pub fn short_socket_dir() -> std::path::PathBuf {
     #[cfg(unix)]
     {
@@ -197,11 +168,9 @@ pub fn short_socket_dir() -> std::path::PathBuf {
     }
 }
 
-/// The current user's numeric id (for per user names); 0 on Windows.
 pub fn uid() -> u32 {
     #[cfg(unix)]
     {
-        // SAFETY: getuid has no failure modes.
         unsafe { libc::getuid() }
     }
     #[cfg(windows)]
@@ -210,14 +179,12 @@ pub fn uid() -> u32 {
     }
 }
 
-/// Run `f` with the process umask set to `mask` (Unix), restoring it after.
 pub fn with_umask<T>(mask: u32, f: impl FnOnce() -> T) -> T {
     #[cfg(unix)]
     {
-        // SAFETY: umask is process wide; set and restored around `f`.
         let old = unsafe { libc::umask(mask as libc::mode_t) };
         let r = f();
-        // SAFETY: restoring the previous mask.
+
         unsafe { libc::umask(old) };
         r
     }
@@ -232,7 +199,6 @@ pub fn with_umask<T>(mask: u32, f: impl FnOnce() -> T) -> T {
 mod win {
     use std::fs::{DirBuilder, OpenOptions, Permissions};
 
-    /// Unix permission bits on Windows: `mode` is accepted and ignored.
     pub trait OpenOptionsExt {
         fn mode(&mut self, mode: u32) -> &mut Self;
     }
@@ -251,15 +217,12 @@ mod win {
         }
     }
 
-    /// Only the write bits mean something: they map to the read only flag.
     pub trait PermissionsExt {
         fn from_mode(mode: u32) -> Self;
         fn mode(&self) -> u32;
     }
     impl PermissionsExt for Permissions {
         fn from_mode(mode: u32) -> Self {
-            // Permissions has no public constructor on Windows: start from
-            // a writable file's and set the read only flag from the mode.
             let mut p = std::env::current_exe()
                 .and_then(std::fs::metadata)
                 .or_else(|_| std::fs::metadata(std::env::temp_dir()))
@@ -289,20 +252,19 @@ mod win {
         } else {
             PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION
         };
-        // SAFETY: OpenProcess returns null on failure; the handle is closed below.
+
         let h = unsafe { OpenProcess(access, 0, pid) };
         if h.is_null() {
             return -1;
         }
         let ok = if sig == 0 {
             let mut code = 0u32;
-            // SAFETY: valid handle and out pointer.
+
             (unsafe { GetExitCodeProcess(h, &mut code) } != 0) && code == STILL_ACTIVE
         } else {
-            // SAFETY: valid handle opened with PROCESS_TERMINATE.
             unsafe { TerminateProcess(h, 1) != 0 }
         };
-        // SAFETY: closing the handle we opened.
+
         unsafe { CloseHandle(h) };
         if ok {
             0

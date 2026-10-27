@@ -1,6 +1,3 @@
-//! Drawing the Browser dialog (tab_browser): a small box with the Chrome
-//! profiles as clickable rows, a status line and buttons.
-
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, BorderType, Borders, Clear};
@@ -20,7 +17,6 @@ fn tone_color(t: Tone) -> Color {
     }
 }
 
-/// Break `s` into rows of at most `w` columns, at spaces where it can.
 pub fn wrap(s: &str, w: usize) -> Vec<String> {
     if s.chars().count() <= w || w < 8 {
         return vec![s.to_string()];
@@ -43,11 +39,9 @@ pub fn wrap(s: &str, w: usize) -> Vec<String> {
     rows
 }
 
-/// The dialog's rows after wrapping: (text, tone, line index it came from).
 pub fn rows(v: &DlgView, w: usize) -> Vec<(String, Tone, usize)> {
     let mut out = vec![];
     for (i, l) in v.lines.iter().enumerate() {
-        // A profile row keeps one row (it is cut, not wrapped).
         if l.action.is_some() {
             out.push((l.text.chars().take(w).collect(), l.tone, i));
             continue;

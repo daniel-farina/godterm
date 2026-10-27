@@ -1,5 +1,3 @@
-//! Application state, event handling and background workers.
-
 use chrono::{DateTime, Utc};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
@@ -20,59 +18,51 @@ use crate::theme;
 use crate::usage::{self, Usage, UsageError};
 
 pub enum AppEvent {
-    /// A user turn from an external control client (the socket's
-    /// user_says): what the user said, so a confirmation can follow.
     UserTurn(String),
     Input(Event),
     PaneOutput,
-    /// (tab uid, generation)
+
     PaneExited(u64, u64),
     Status(usize, Box<StatusSnapshot>),
-    /// The main ~/.grok's usage (the Grok login picker).
+
     MainGrokUsage(Box<Result<crate::usage::Usage, String>>),
-    /// A key as the input thread read it: `burst` when it came right
-    /// after the previous key (a paste the terminal typed out), timed
-    /// when read, not when handled (a busy frame bunches keys up).
+
     KeyRead(crossterm::event::KeyEvent, bool),
-    /// Wheel events the input thread read in one go, the same way at the
-    /// same place: the event and how many (a trackpad sends bursts).
+
     Wheel(crossterm::event::MouseEvent, u16),
-    /// A provider's own login's usage (the assistant's Grok).
+
     OwnUsage(&'static str, Box<Result<crate::usage::Usage, String>>),
     Sessions(usize, Vec<SessionInfo>),
     Voice(crate::voice::VoiceEvent),
-    /// The window's current bounds (from the terminal app).
+
     Window(Option<crate::window::SavedWindow>),
-    /// Fresh memory figures for the Settings screen.
+
     Mem(crate::app_settings::MemStats),
-    /// The terminal closed (stdin ended).
+
     InputClosed,
-    /// Loops found in running tabs.
+
     Loops(Vec<crate::app_loops::LoopRow>),
-    /// A control API call (tool, arguments) and where the reply goes.
+
     Control(
         String,
         serde_json::Value,
         std::sync::mpsc::Sender<serde_json::Value>,
     ),
-    /// The assistant's process said something.
+
     Assistant(u64, crate::assistant::BrainEvent),
-    /// A browser asked for something (src/web).
+
     Web(crate::web::ToApp),
-    /// Headphone play/pause or the media key (voice.headphone_tap).
+
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     MediaKey(crate::media_keys::Press),
-    /// The lease worker (app_lease.rs).
+
     Lease(crate::sync::takeover::Event),
-    /// A sync pulled changes for a store the app holds: apply and save
-    /// them, then say whether that went through.
+
     SyncApply(crate::sync::StoreApply, std::sync::mpsc::Sender<bool>),
 }
 
-/// Login state as derived from stored credentials (no secrets kept here).
 #[derive(Debug, Clone, Default)]
 pub struct LoginInfo {
-    /// Login is handled by the CLI; GodTerm has no credential adapter.
     pub cli_managed: bool,
     pub source: Option<CredSource>,
     pub expires_at: Option<i64>,
@@ -97,7 +87,7 @@ impl LoginInfo {
 pub struct StatusSnapshot {
     pub profile: Profile,
     pub login: LoginInfo,
-    /// None when usage was not requested in this refresh.
+
     pub usage: Option<Result<Usage, UsageError>>,
 }
 
@@ -105,17 +95,17 @@ pub struct StatusSnapshot {
 pub struct AccountState {
     pub profile: Profile,
     pub login: LoginInfo,
-    /// Last good usage reply, kept across errors.
+
     pub usage: Option<Usage>,
-    /// When `usage` was fetched.
+
     pub usage_good_at: Option<DateTime<Utc>>,
-    /// Error from the latest attempt, cleared by the next success.
+
     pub usage_err: Option<UsageError>,
-    /// When the latest attempt (good or bad) finished.
+
     pub usage_at: Option<DateTime<Utc>>,
-    /// A usage fetch is in flight.
+
     pub refreshing: bool,
-    /// Any status snapshot is in flight.
+
     inflight: bool,
     last_fetch: Option<Instant>,
     next_fetch: Option<Instant>,
@@ -124,18 +114,16 @@ pub struct AccountState {
     pub sessions_loading: bool,
     pub sessions_loaded: bool,
     pub cache: Arc<Mutex<SessionCache>>,
-    /// grok's own on screen "Weekly limit left: N%": (label, left, when).
+
     pub grok_screen: Option<(String, f64, DateTime<Utc>)>,
-    /// Where the usage shown came from, when not the API ("grok status").
+
     pub usage_note: Option<String>,
-    /// Recent 5 hour % left samples (capped at `usage_history`).
+
     pub usage_hist: std::collections::VecDeque<(DateTime<Utc>, f64)>,
 }
 
-/// Never ask the usage API about one account more often than this.
 pub const MIN_FETCH_INTERVAL: Duration = Duration::from_secs(60);
 
-/// The interval in use: demo mode reads fixtures, every 2 s.
 pub fn min_fetch_interval() -> Duration {
     if crate::demo::active() {
         Duration::from_secs(2)
@@ -145,7 +133,6 @@ pub fn min_fetch_interval() -> Duration {
 }
 
 impl AccountState {
-    /// Percent left in the 5 hour window, from the last good reply.
     pub fn five_hour_left(&self) -> Option<f64> {
         self.usage
             .as_ref()
@@ -153,7 +140,6 @@ impl AccountState {
             .map(|w| w.left_now())
     }
 
-    /// The 5 hour window reset since the numbers were fetched.
     pub fn five_hour_reset_passed(&self) -> bool {
         self.usage
             .as_ref()
@@ -161,13 +147,9 @@ impl AccountState {
             .is_some_and(|w| w.reset_passed())
     }
 
-    /// What is really left: the lower of the 5 hour and weekly windows,
-    /// which one binds ("5h" or "weekly"), and when that one resets.
     pub fn binding(&self) -> Option<(f64, &'static str, Option<chrono::DateTime<chrono::Utc>>)> {
         let u = self.usage.as_ref()?;
-        // A window whose reset time has passed is full again, even while
-        // the fetch that would say so fails (kept numbers would call the
-        // account out after it reset).
+
         let left = |w: &crate::usage::Window| w.left_now();
         let f = u.get("five_hour").map(|w| (left(w), "5h", w.resets_at));
         let w = u.get("seven_day").map(|w| (left(w), "weekly", w.resets_at));
@@ -177,14 +159,10 @@ impl AccountState {
         }
     }
 
-    /// What to say about the last fetch failing, if anything: a 429 is
-    /// only worth a word once the numbers shown are old (twice the fetch
-    /// interval), and then calmly.
     pub fn usage_problem(&self, interval: Duration, now: DateTime<Utc>) -> Option<String> {
         self.usage_problem_as(interval, now, false)
     }
 
-    /// `short`: for a pane's footer ("usage from 3 min ago").
     pub fn usage_problem_as(
         &self,
         interval: Duration,
@@ -214,12 +192,10 @@ impl AccountState {
         }
     }
 
-    /// Percent really left (see `binding`).
     pub fn effective_left(&self) -> Option<f64> {
         self.binding().map(|b| b.0)
     }
 
-    /// Time until a usage fetch is allowed again (zero if allowed now).
     pub fn fetch_wait(&self) -> Duration {
         let now = Instant::now();
         let min = self
@@ -233,7 +209,6 @@ impl AccountState {
         min.max(next)
     }
 
-    /// Record the outcome of a fetch and schedule the next one.
     pub fn record_usage(&mut self, res: Result<Usage, UsageError>, refresh_secs: u64) {
         let now = Instant::now();
         let base = Duration::from_secs(refresh_secs).max(min_fetch_interval());
@@ -280,21 +255,20 @@ pub enum View {
     Overview,
     Settings,
     Loops,
-    /// Every tab opened and closed (View ▾ > Tab history).
+
     TabHistory,
-    /// The assistant's learned rules and their history.
+
     Learned,
-    /// Every session as an animated diagram (View ▾ > Live map).
+
     LiveMap,
-    /// The assistant's system prompt: sections, edits, history.
+
     Prompt,
 }
 
-/// What the Add account dialog asks for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewAccount {
     pub label: String,
-    /// "claude" or "grok".
+
     pub harness: String,
     pub color: String,
     pub cwd: String,
@@ -303,141 +277,129 @@ pub struct NewAccount {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
-    /// The Grok login picker: the selected card.
     GrokLogins(usize),
-    /// A tab group header's menu: (pane, group, selected item).
+
     GroupMenu(usize, usize, usize),
-    /// Tab menu > Move to group: (pane, tab, selected choice).
+
     GroupPick(usize, usize, usize),
-    /// Naming a new group (with these tabs) or renaming one.
+
     GroupName {
         slot: usize,
         group: Option<usize>,
         tabs: Vec<u64>,
         buf: String,
     },
-    /// Close every tab of a group? (pane, group)
+
     ConfirmCloseGroup(usize, usize),
-    /// Move a group to which account: (pane, group, selected account).
+
     GroupMove(usize, usize, usize),
-    /// Stop every loop?
+
     ConfirmStopLoops,
-    /// A tab's agent asks for a job change: the request's token.
+
     ConfirmTabJob(String),
-    /// The Browser dialog of a tab (tab_browser).
+
     Browser(crate::tab_browser::BrowserDlg),
-    /// The Git section of a tab (app_gitpanel).
+
     Git(crate::app_gitpanel::GitDlg),
-    /// Settings > GitHub accounts and repos: the editor.
+
     GitCfg(crate::app_gitcfg::GitCfgDlg),
-    /// The detail card of a Loops & schedules row (its key).
+
     SchedCard(String),
-    /// Menu bar buttons that did not fit.
+
     MenuOverflow,
     None,
     Help,
-    /// What is new since this version (scrolled this far), and the update.
+
     Updates(u16),
-    /// "Restart to update?": what comes back, what is interrupted.
+
     UpdateRestart,
     ConfirmQuit,
     ConfirmClose,
-    /// Archive this tab (uid) although it is busy or has unsent text?
+
     ConfirmArchive(u64),
-    /// An archived entry's menu: its id, the selected row.
+
     ArchMenu(String, usize),
     AddAccount(Box<crate::add_account::AddForm>),
-    /// Close this pane's window (all its tabs)?
+
     ConfirmCloseWindow(usize),
-    /// "New tab on… ▾" of an empty grid cell.
+
     EmptySlotMenu(usize),
-    /// Where the mic goes next (the pane whose badge opened it).
+
     MicMenu(usize),
-    /// Picking a color for an account or a tab: the selected choice.
+
     ColorPick(crate::color_pick::Target, usize),
     NewTab(Picker),
     Palette(crate::palette::Palette),
-    /// Find in every tab's recent output (Ctrl-a *).
+
     FindAll(crate::find_all::FindAll),
-    /// Prompt text to send to the marked tabs (or every running tab).
+
     Broadcast(String),
-    /// Every tab waiting for approval; the selected row.
+
     Approvals(usize),
-    /// Confirm switching account `.1` (shown in pane `.0`) to bypass mode.
+
     ConfirmBypass(usize, usize),
-    /// Offer to restart pane `.0`'s tab so a new permission mode applies.
+
     OfferRestart(usize),
-    /// Edit a text setting: (row in the current section, text).
+
     EditSetting(usize, String),
-    /// Confirm removing account `.0` from config.toml.
+
     ConfirmRemoveAccount(usize),
-    /// Install (false) or remove (true) a local voice, after a yes
-    /// (app_voices.rs).
+
     ConfirmLocalVoice(&'static str, bool),
-    /// Rename a tab: (pane, tab, text typed so far).
+
     Rename(usize, usize, String),
-    /// Account menu of a pane: (pane, selected row).
+
     AccountMenu(usize, usize),
-    /// First launch walkthrough, at this step.
+
     Tour(usize),
-    /// Wake word training (state in `voice.training`).
+
     WakeTrain,
-    /// "Move tab to..." picker.
+
     MoveTab(crate::app_tabmove::MovePicker),
-    /// The tab to move is busy: wait, interrupt, or cancel.
+
     MoveBusy(crate::app_tabmove::QueuedMove),
-    /// Right click menu of a tab: (pane, tab, selected row).
+
     TabMenu(usize, usize, usize),
-    /// A pane header folder's menu: Finder, copy, terminal.
+
     PathMenu(usize),
-    /// A menu bar dropdown.
+
     Menu(crate::menus::Open),
-    /// Bring a session running elsewhere here: take over or copy.
+
     TakeOver(String),
-    /// Sessions: pick where to copy / move to (selected row).
+
     SessTarget(usize),
-    /// Sessions: confirm a move, or a write into the main ~/.claude.
+
     SessConfirm,
-    /// Sessions: the target has the session already: skip, overwrite, new id.
+
     SessConflict(usize),
 }
 
-/// Ctrl-a and a key that is no shortcut: say where the keys are.
 pub fn unknown_key_line(c: char) -> String {
     format!("Ctrl-a {c} does nothing. Ctrl-a ? lists keys, Ctrl-a : finds actions.")
 }
 
-/// Progress of the first run login walk through.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Onboard {
-    /// Accounts to log in, in order.
     pub queue: Vec<usize>,
     pub pos: usize,
-    /// Accounts the user skipped.
+
     pub skipped: Vec<usize>,
-    /// The first run's first account: it ends on its tab, not the dashboard.
+
     pub first: bool,
 }
 
-/// A state change worth telling the user about (used by voice alerts).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attention {
     pub slot: usize,
     pub tab: usize,
     pub what: Activity,
-    /// The tab's uid, and the transition seen ("working to ready").
+
     pub uid: u64,
     pub from: Activity,
 }
 
-/// A "finished" notice needs a turn that really ran: Working held this
-/// long (a one tick flicker of the spinner is not a turn).
 pub const FINISHED_MIN_WORK: Duration = Duration::from_millis(1500);
 
-/// Whether a tab's activity change is one the user is told about: it
-/// started waiting for approval, or a real turn ended (Working, held,
-/// to Ready). Never from Starting (a launch or a restore), Idle or
-/// Exited.
 pub fn attention_worthy(old: Activity, new: Activity, held: Duration) -> bool {
     match new {
         Activity::Permission => matches!(old, Activity::Working | Activity::Ready),
@@ -456,15 +418,14 @@ pub struct App {
     pub modal: Modal,
     pub prefix: bool,
     pub prefix_at: Option<Instant>,
-    /// Help: the first key row shown (it scrolls on short terminals).
+
     pub help_scroll: usize,
-    /// How far help can scroll on this screen (set as it is drawn).
+
     pub help_max: std::cell::Cell<usize>,
-    /// Selected account in dashboard and sessions views.
+
     pub sel_account: usize,
     pub sel_session: usize,
-    /// Sessions view: source chip, search, marks, pending copy / move,
-    /// the last move (for undo), and the main ~/.claude listing.
+
     pub sess_source: crate::app_sessions::SourceSel,
     pub sess_filter: String,
     pub sess_searching: bool,
@@ -473,10 +434,10 @@ pub struct App {
     pub last_moves: Vec<crate::session_ops::Moved>,
     pub main_sessions: Vec<SessionInfo>,
     pub main_grok_sessions: Vec<SessionInfo>,
-    /// Sessions view filters: one harness only; subagent rows too.
+
     pub sess_harness: Option<u8>,
     pub sess_subagents: bool,
-    /// Sessions view: sort column, reversed, grouping, headless shown.
+
     pub sess_sort: crate::sess_sort::SortKey,
     pub sess_sort_rev: bool,
     pub sess_group: crate::sess_sort::Group,
@@ -484,35 +445,30 @@ pub struct App {
     pub sess_sub_rows: Vec<(crate::app_sessions::Src, SessionInfo)>,
     pub main_cache: Arc<std::sync::Mutex<crate::sessions::SessionCache>>,
     pub main_loading: bool,
-    /// Tab moves: waiting for idle, started (until the target is up), and
-    /// the last one for undo.
+
     pub queued_moves: Vec<crate::app_tabmove::QueuedMove>,
-    /// Loops: scanner cache, what is active, selection, stop requests.
+
     pub loop_cache: Arc<std::sync::Mutex<crate::loops::LoopCache>>,
-    /// The assistant, its turn counter (confirmation tokens must predate
-    /// the current turn), actions this turn, and pending confirmations.
+
     pub assistant: crate::app_assistant::AssistantState,
     pub assistant_turn: u64,
     pub assistant_calls: usize,
     pub pending_confirms: Vec<crate::control::Pending>,
-    /// Job requests from the agents in tabs, waiting for the user.
+
     pub tab_jobs: crate::tab_jobs::TabJobs,
-    /// Confirmation tokens a newer question replaced: (old, new).
+
     pub superseded: Vec<(String, String)>,
-    /// A system_check running off the UI thread, for the reply that waits.
+
     pub pending_job: Option<std::sync::mpsc::Receiver<serde_json::Value>>,
-    /// Prompts waiting for their tab to be ready, and tool replies waiting
-    /// for a new tab.
-    /// Prompts on their way into tabs (followed until claude takes them).
+
     pub deliveries: Vec<crate::control::Delivery>,
-    /// Pastes whose Enter waits for the tab to show them (voice "send",
-    /// a login code).
+
     pub pending_enters: Vec<crate::control::PendingEnter>,
     pub delivery_seq: u64,
-    /// The tab the assistant last used ("there", "that tab").
+
     pub last_target: Option<u64>,
     pub ctl_waits: Vec<crate::control::Waiting>,
-    /// The user quit (not a signal, a closed terminal or an update).
+
     pub exit_clean: bool,
     pub loops: Vec<crate::app_loops::LoopRow>,
     pub loops_scanning: bool,
@@ -520,256 +476,245 @@ pub struct App {
     pub sel_loop: usize,
     pub stop_reqs: Vec<crate::app_loops::StopReq>,
     pub pending_moves: Vec<crate::app_tabmove::PendingMove>,
-    /// Every session on the Mac, for the assistant's sessions tool.
+
     pub session_index: crate::session_index::Shared,
-    /// What is inside each project folder, for find and search_projects.
+
     pub project_index: crate::project_index::Shared,
-    /// Sessions being brought here from other terminals.
+
     pub takeovers: Vec<crate::takeover::TakeOver>,
-    /// Conversation ownership across machines (GodTerm Sync, Phase 3).
+
     pub lease: crate::app_lease::LeaseApp,
-    /// Sync setup and status for the tools (Settings > Sync, the assistant).
+
     pub sync_ui: crate::app_sync::SyncUi,
-    /// Sessions running in other terminals (for the Sessions view), and when looked.
+
     pub sess_live: std::collections::HashMap<String, crate::takeover::Live>,
     pub sess_live_at: Option<Instant>,
-    /// What open_path opened (for tests and the log).
+
     pub opened_paths: Vec<String>,
-    /// Tab ids that moved, old to new (so plans and queued prompts follow).
+
     pub moved_ids: std::collections::HashMap<u64, u64>,
-    /// `claude stop` runs for tabs held by a background run (app_bglock).
+
     pub bg_stops: Vec<crate::app_bglock::Stopping>,
-    /// Side questions and background forks for busy tabs (app_busy).
+
     pub busy: crate::app_busy::State,
     pub last_tab_move: Option<crate::app_tabmove::DoneMove>,
     pub sel_overview: usize,
-    /// Background tabs that just started waiting or finished.
+
     pub attention: Vec<Attention>,
-    /// Everything GodTerm itself said or showed the user (told.rs).
+
     pub told: crate::told::Shared,
-    /// Runtime email toggles (persisted in state.json).
+
     pub rt_show_email: Option<bool>,
-    /// Memory saver toggled at runtime (persisted), and its last tick.
+
     pub rt_mem_saver: Option<bool>,
-    /// Voice as it ran at the last save ("open", "wake", "push", "off").
+
     pub rt_voice: Option<String>,
-    /// Voice as it ran just before shutdown stopped it.
+
     pub voice_at_quit: Option<String>,
     pub mem_ticked: Instant,
-    /// Layout picked at runtime (Ctrl-a L), dragged sizes, and the last
-    /// frame's arrangement (pages, borders) and main area.
+
     pub rt_layout: Option<String>,
     pub ratios: crate::layout::RatioMap,
     pub last_arranged: Option<crate::layout::Arranged>,
     pub main_area: ratatui::layout::Rect,
-    /// A pane border being dragged.
+
     pub dragging: Option<crate::layout::Border>,
-    /// Dragging the edge of this pane's tab list.
+
     pub sidebar_drag: Option<usize>,
-    /// Dragging pane `.0`'s header (moved: past the first cell).
+
     pub pane_drag: Option<(usize, bool)>,
-    /// When output last arrived (the latest 40 wake ups), to tell a steady
-    /// stream from an occasional update.
+
     pub output_at: std::collections::VecDeque<Instant>,
-    /// Recently closed tabs (newest last) and the Undo toast.
+
     pub closed: Vec<crate::closed::ClosedTab>,
     pub closed_seq: u64,
-    /// Archived conversations (~/.godterm/archive.json), whether the
-    /// Archived group is folded, the row last clicked, a fixed "now" for
-    /// tests, and memory freed by archiving this run (KB).
+
     pub archive: crate::archive::Store,
     pub archive_collapsed: bool,
     pub archive_sel: Option<String>,
     pub archive_clock: Option<i64>,
     pub freed_kb: u64,
-    /// The user said yes to opening a tab in their home folder (set only
-    /// while that confirmed plan runs).
+
     pub open_home_ok: bool,
-    /// Names the tools matched for a misheard one this call: (said, used).
+
     pub corrections: std::cell::RefCell<Vec<(String, String)>>,
-    /// The Tab history view.
+
     pub th: crate::app_tabhist::TabHistUi,
-    /// The Learned rules view.
+
     pub learned_ui: crate::app_learned::LearnedUi,
-    /// The Live map view.
+
     pub livemap: crate::livemap::LiveMap,
     pub prompt_ui: crate::app_sysprompt::PromptUi,
-    /// Sessions a take-over had to stop by force (Windows TerminateProcess).
+
     pub forced_stops: Vec<String>,
-    /// The main ~/.grok's usage, fetched for the Grok login picker.
+
     pub main_grok_usage: Option<Result<crate::usage::Usage, String>>,
-    /// Usage of the providers with a login of their own, by provider id.
+
     pub own_usage: std::collections::HashMap<&'static str, Result<crate::usage::Usage, String>>,
     pub own_usage_at: Option<Instant>,
-    /// Background work per tab (uid): when looked, what runs (2 s cache).
+
     pub bg_cache: std::cell::RefCell<std::collections::HashMap<u64, (Instant, Option<String>)>>,
-    /// Session titles in Claude Code or Grok by session id (5 s cache).
+
     pub native_titles:
         std::cell::RefCell<std::collections::HashMap<String, (Instant, Option<String>)>>,
-    /// The pane whose tab search field has the keys.
+
     pub tab_search: Option<usize>,
-    /// A tab being dragged in its list: (pane, tab, moved yet).
+
     pub tab_drag: Option<(usize, usize, bool)>,
     pub undo_toast: Option<(Instant, String)>,
-    /// Tab list width preset (Tabs ▾ > Tab list width): narrow, normal, wide.
+
     pub tab_list_width: Option<String>,
-    /// Ctrl-a ' then digits: a pane number being typed.
+
     pub num_entry: Option<String>,
-    /// Ctrl-a # then a number: the pane whose tab's model is being picked.
+
     pub model_entry: Option<usize>,
-    /// Model switches waiting for their tab to be idle (app_tabmodel).
+
     pub model_switches: Vec<crate::app_tabmodel::ModelSwitch>,
-    /// Open loops drawers: pane -> rows wanted (app_loopsdrawer).
+
     pub loops_drawer: std::collections::HashMap<usize, u16>,
-    /// The pane whose drawer has the keys (Esc, Up, Down).
+
     pub loops_drawer_focus: Option<usize>,
     pub loops_drawer_sel: usize,
-    /// A drawer's top edge being dragged (its pane).
+
     pub loops_drawer_drag: Option<usize>,
-    /// Where each open drawer was drawn.
+
     pub loops_drawer_geo: std::cell::RefCell<std::collections::HashMap<usize, Rect>>,
-    /// Cancel clicked once: (tab, loop id, when).
+
     pub loops_confirm: Option<(u64, String, Instant)>,
-    /// GodTerm's own jobs (jobs.rs, app_jobs.rs), the prompts they sent,
-    /// a fixed clock for tests, when the app started and last looked.
+
     pub jobs: crate::jobs::Store,
     pub job_runs: Vec<crate::app_jobs::JobRun>,
     pub job_clock: Option<i64>,
     pub jobs_boot: Instant,
-    /// Tests: the clock (ms) the attention blink reads instead of the wall clock.
+
     pub attn_clock_ms: std::cell::Cell<Option<u64>>,
     pub jobs_ticked: Instant,
-    /// The Loops & schedules section of the assistant panel is open, and
-    /// a delete clicked once.
+
     pub sched_open: bool,
     pub sched_confirm: Option<(String, Instant)>,
-    /// Its scroll, selection, folded tab groups (app_sched).
+
     pub sched_ui: crate::app_sched::SchedUi,
     pub rt_privacy: Option<bool>,
-    /// Eager restore: tabs still to start, (pane, tab uid), one at a time.
+
     pub restore_queue: std::collections::VecDeque<(usize, u64)>,
     pub(crate) restore_next: Instant,
-    /// (tabs, accounts) started by the eager restore so far.
+
     restore_done: (usize, std::collections::BTreeSet<usize>),
-    /// Tabs marked in the overview for broadcast (by uid).
+
     pub marked: std::collections::HashSet<u64>,
-    /// Last known terminal window bounds (saved in state.json).
+
     pub window: Option<crate::window::SavedWindow>,
     last_window_check: Instant,
-    /// Recently used folders (New Tab dialog), saved in state.json.
+
     pub recents: Vec<crate::picker::RecentDir>,
     pub flash: Option<(String, Instant)>,
     pub quit: bool,
-    /// Where the terminal cursor goes this frame (one place at most: the
-    /// focused text input); set while drawing, applied at the end.
+
     pub want_cursor: std::cell::Cell<Option<(u16, u16)>>,
-    /// Self update: the checker, the chip, restart to update.
+
     pub update: crate::app_update::UpdateUi,
-    /// The assistant's admin flows (installs, logins) and their log.
+
     pub admin: crate::app_admin::AdminState,
-    /// The Accounts screen's logins and tokens (app_accounts.rs).
+
     pub acct: crate::app_accounts::AcctState,
-    /// What is installed and the installs running (Settings > Setup).
+
     pub setup: crate::app_setup::SetupState,
-    /// BrowserSkill status and skill sync (Settings > Browser).
+
     pub browser: crate::app_browser::BrowserState,
-    /// The Git section's background work and badges (app_gitpanel).
+
     pub git: crate::app_gitpanel::GitState,
-    /// Restore every tab at once this start (after a restart to update).
+
     pub force_eager: bool,
-    /// The web app's server and what browsers were last sent (src/web).
+
     pub web: Option<crate::web::app_web::WebSide>,
-    /// The control call running now came from the web app.
+
     pub web_caller: bool,
-    /// The web port was busy: the next try to serve it (every 5 s).
+
     pub web_retry_at: Option<std::time::Instant>,
     pub pane_rects: Vec<Rect>,
-    /// Terminal area of each pane (inside the border, above the footer).
+
     pub term_rects: Vec<Rect>,
-    /// The assistant panel floats over the panes this frame.
+
     pub panel_overlay: std::cell::Cell<bool>,
-    /// How far the Updates window can scroll (set when drawn).
+
     pub updates_max_scroll: std::cell::Cell<u16>,
-    /// The menu bar is on screen (the update chip lives there, else in the
-    /// status bar).
+
     pub menu_shown: std::cell::Cell<bool>,
-    /// Moves on offer for tabs whose account runs out (app_failover).
+
     pub failover: Vec<crate::app_failover::Offer>,
-    /// (tab uid, account) the user said no to.
+
     pub failover_declined: Vec<(u64, usize)>,
-    /// Tabs whose screen says they hit a usage limit (failover_scan).
+
     pub limit_hit: std::collections::HashSet<u64>,
-    /// The key being handled came in a burst (see AppEvent::KeyRead).
+
     pub key_burst: Option<bool>,
-    /// Clickable regions being registered by the frame being drawn.
+
     pub hits: std::cell::RefCell<crate::hits::Hits>,
-    /// Index in `hits` where the open modal's regions begin.
+
     pub modal_from: std::cell::Cell<Option<usize>>,
-    /// The tab being renamed was drawn in its sidebar row this frame (so
-    /// no popup is needed).
+
     pub inline_rename: std::cell::Cell<bool>,
-    /// Menu bar buttons that did not fit this frame.
+
     pub menu_overflow: std::cell::RefCell<Vec<(String, crate::hits::UiAction)>>,
-    /// Regions of the last drawn frame: what the user can click.
+
     pub last_hits: crate::hits::Hits,
     pub last_modal_from: Option<usize>,
-    /// Last mouse position (for hover highlights and hints).
+
     pub mouse_pos: Option<(u16, u16)>,
-    /// Wheel events in the burst being handled (see `on_wheel`).
+
     pub wheel_n: u16,
-    /// The last wheel event that scrolled a pane: when, and up or down.
+
     pub wheel_last: Option<(Instant, bool)>,
     pub last_click: Option<(Instant, crate::hits::UiAction)>,
-    /// Text selected by dragging in a pane or the assistant (app_select).
+
     pub selection: Option<crate::select::Selection>,
-    /// The last press in selectable text, for double and triple clicks.
+
     pub sel_press: Option<crate::select::Press>,
-    /// The assistant's conversation as drawn: its area and lines.
+
     pub assistant_text: std::cell::RefCell<Option<(Rect, Vec<String>)>>,
-    /// What the last copy put on the clipboard.
+
     pub last_copied: Option<String>,
-    /// Mouse capture on (clickable UI) or released for text selection.
+
     pub mouse_capture: bool,
     pub tx: Sender<AppEvent>,
     pub voice: crate::app_voice::VoiceState,
-    /// Direct mode: the voice goes to one tab (app_direct).
+
     pub direct: crate::app_direct::DirectState,
-    /// Brainstorm mode (app_brainstorm): speech drafted, not sent.
+
     pub brainstorm: crate::app_brainstorm::BrainstormState,
-    /// Update mode (app_updates): spoken progress of active projects.
+
     pub updates: crate::app_updates::UpdatesState,
-    /// The voice onboarding (app_onboarding) and its phrases card.
+
     pub onb: crate::app_onboarding::OnbState,
-    /// The headphone tap's Now Playing claim (voice.headphone_tap).
+
     pub media: crate::media_keys::MediaKeys,
-    /// config.toml mtime last loaded, for hot reload.
+
     pub(crate) config_mtime: Option<std::time::SystemTime>,
     last_config_check: Instant,
-    /// Parse error in config.toml (the old config stays in use).
+
     pub config_error: Option<String>,
-    /// Settings screen: selected section and row.
+
     pub settings_section: usize,
     pub settings_sel: usize,
-    /// Settings search (`/`): matches across every section.
+
     pub settings_query: Option<String>,
-    /// Settings headers folded (Advanced and debugging starts so).
+
     pub settings_collapsed: std::collections::HashSet<&'static str>,
-    /// Live memory use: godterm RSS and each tab's process RSS (KB).
+
     pub mem: crate::app_settings::MemStats,
     last_mem: Instant,
-    /// Guided first run: log each account in, one at a time.
+
     pub onboard: Option<Onboard>,
     last_status: Instant,
     last_session_scan: Instant,
     pub(crate) state_dirty: bool,
     last_state_save: Instant,
-    /// Which tabs were working, for a restart to continue them.
+
     pub cont: crate::app_continue::ContinueState,
 }
 
 impl App {
     pub fn new(cfg: Config, tx: Sender<AppEvent>) -> App {
-        // (Tests share the global color mode; they set it themselves.)
         if !cfg!(test) {
             crate::theme::set_usage_colors(&cfg.usage_colors);
         }
@@ -778,7 +723,7 @@ impl App {
             .iter()
             .map(|_| AccountState::default())
             .collect();
-        // One pane per account (at least one pane).
+
         let panes = (0..cfg.accounts.len().max(1))
             .map(|i| {
                 let acct = (i < cfg.accounts.len()).then_some(i);
@@ -983,12 +928,12 @@ impl App {
         for a in &app.cfg.accounts {
             ensure_dir(a);
         }
-        // Synchronous first look so autostart knows who is logged in.
+
         for i in 0..app.accounts.len() {
             let snap = snapshot_of(&app.cfg.accounts[i], false);
             app.apply_status(i, snap);
         }
-        // The first usage requests a few seconds apart, not all at once.
+
         if !cfg!(test) && !crate::demo::active() {
             for (i, st) in app.accounts.iter_mut().enumerate().skip(1) {
                 st.next_fetch = Some(Instant::now() + Duration::from_secs(3 * i as u64));
@@ -997,7 +942,6 @@ impl App {
         app
     }
 
-    /// Restore saved tabs (if any) and start the visible ones.
     pub fn autostart(&mut self) {
         if let Some(st) = AppState::load() {
             self.restore(st);
@@ -1018,13 +962,10 @@ impl App {
                 }
             }
         }
-        // Requests queued again after the restart need their tabs up.
+
         self.start_tabs_with_requests();
     }
 
-    /// Every restored tab of a logged in account, visible tabs first. They
-    /// start ~300 ms apart (`claude --resume <id>`, or fresh without an id)
-    /// so the machine and the accounts are not hit all at once.
     pub fn queue_eager_restore(&mut self) {
         let mut visible = vec![];
         let mut rest = vec![];
@@ -1044,7 +985,7 @@ impl App {
                 }
             }
         }
-        // Visible tabs are started by autostart right away; count them.
+
         for (p, _) in &visible {
             self.restore_done.0 += 1;
             if let Some(a) = self.panes[*p].account {
@@ -1071,7 +1012,6 @@ impl App {
         self.restore_done = Default::default();
     }
 
-    /// Start the next queued tab when its turn comes (called from tick).
     pub fn restore_step(&mut self) {
         if self.restore_queue.is_empty() || Instant::now() < self.restore_next {
             return;
@@ -1085,7 +1025,7 @@ impl App {
                 continue;
             };
             let t = &self.panes[p].tabs[ti];
-            // Already started (shown, or restarted by hand) in the meantime.
+
             if t.is_running() || t.pending.is_none() {
                 continue;
             }
@@ -1103,13 +1043,10 @@ impl App {
         }
     }
 
-    /// Rebuild slots and tabs from saved state. Tabs start lazily: each one
-    /// launches (with --resume when its session id is known) when first shown.
     pub fn restore(&mut self, st: AppState) {
         let mut panes = vec![];
         let mut focus = None;
-        // Tabs keep their ids (t12) across restarts, and ids used before
-        // are never handed out again: a remembered id is that tab or none.
+
         let saved_max = st
             .slots
             .iter()
@@ -1117,14 +1054,14 @@ impl App {
             .filter_map(|t| t.uid)
             .max()
             .unwrap_or(0);
-        // Also past ids a run that crashed handed out after its last save.
+
         crate::pane::reserve_uids_below(
             st.next_uid
                 .unwrap_or(0)
                 .max(saved_max + 1)
                 .max(crate::pane::reserved_on_disk()),
         );
-        // (The panes made before restoring are replaced, ids and all.)
+
         let mut taken = std::collections::HashSet::new();
         for (i, ss) in st.slots.iter().enumerate() {
             let acct = ss
@@ -1177,7 +1114,6 @@ impl App {
             panes.push(slot);
         }
         if !panes.is_empty() {
-            // Saved panes in their order, then any account without one.
             self.panes = panes;
             self.focus = focus.unwrap_or(0);
         }
@@ -1242,7 +1178,7 @@ impl App {
                 .iter()
                 .map(|s| SlotState {
                     account: s.account.map(|a| self.cfg.accounts[a].name.clone()),
-                    // Index among the saved (non transient) tabs.
+
                     active: s.tabs[..s.active.min(s.tabs.len())]
                         .iter()
                         .filter(|t| !t.transient)
@@ -1297,7 +1233,6 @@ impl App {
         self.last_state_save = Instant::now();
     }
 
-    /// Learn session ids of freshly started tabs from new transcripts.
     pub(crate) fn detect_sessions(&mut self) {
         for si in 0..self.panes.len() {
             let Some(a) = self.panes[si].account else {
@@ -1324,7 +1259,7 @@ impl App {
                     if t.session_id.as_deref() != Some(&id) {
                         self.panes[si].tabs[ti].session_id = Some(id.clone());
                         self.state_dirty = true;
-                        // A new conversation id here: its own lease.
+
                         self.lease_claim(si, ti, &id);
                     }
                 }
@@ -1332,8 +1267,6 @@ impl App {
         }
     }
 
-    /// Output has been arriving without a break for the last second: a
-    /// tab is streaming, so redraws can slow to 30 a second.
     pub fn streaming(&self) -> bool {
         self.output_at.len() >= 30
             && self
@@ -1346,8 +1279,6 @@ impl App {
                 .is_some_and(|t| t.elapsed() < Duration::from_millis(100))
     }
 
-    /// A status-bar message, recorded for the assistant (told.rs); pure
-    /// UI hints are recorded low and kept out of its context.
     pub fn flash(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
         self.told_record(
@@ -1368,16 +1299,12 @@ impl App {
             .unwrap_or(theme::STONE)
     }
 
-    // ---------- launching ----------
-
-    /// Launch claude in the active tab of slot `pane`.
     pub fn launch(&mut self, pane: usize, kind: LaunchKind) {
         let Some(acct) = self.panes[pane].account else {
             self.flash("No account assigned to this pane (Ctrl-a a to assign)");
             return;
         };
-        // Sync on: a resume waits for this machine to hold the session's
-        // lease (and for its transcript to be pulled).
+
         if self.lease_gate(pane, &kind) {
             return;
         }
@@ -1389,14 +1316,11 @@ impl App {
         }
         ensure_dir(&a);
         let h = a.harness();
-        // Harness flags (grok: its own leader), the permission mode, then
-        // the account's own extra args.
+
         let mut args = h.base_args(&dir);
         args.extend(h.permission_args(&self.cfg.mode_for(acct)));
         args.extend(a.args.iter().cloned());
-        // The agent of this tab gets its own job tools and a hint, ahead of
-        // the flags below (a login or an attach replaces the arguments, so
-        // it gets none).
+
         let mut tab_env = vec![];
         if kind != LaunchKind::Login {
             let uid = self.panes[pane].cur().uid;
@@ -1416,19 +1340,15 @@ impl App {
                 args = h.login_args().unwrap_or_default();
             }
             LaunchKind::Login if h == crate::harness::Harness::Claude => {
-                // A fresh dir runs onboarding, which includes the OAuth login.
-                // An onboarded but logged out dir needs /login typed in.
                 if creds::load_profile(&dir).onboarded {
                     type_when_idle = Some(b"/login\r".to_vec());
                 }
             }
-            LaunchKind::Login => {} // native onboarding / login picker
+            LaunchKind::Login => {}
             LaunchKind::Resume(id)
                 if h == crate::harness::Harness::Claude
                     && crate::sessions::claude_session_is_empty(&dir, id) =>
             {
-                // Nothing was ever said in it: claude cannot resume it
-                // ("No conversation found"), so the tab starts fresh here.
                 crate::log::info(&format!(
                     "launch: session {id} has no messages, starting a new conversation"
                 ));
@@ -1436,7 +1356,7 @@ impl App {
             }
             LaunchKind::Resume(id) => args.extend(h.resume_args(id)),
         }
-        // A tab held by a background run: attach to it, or fork a copy.
+
         let next = self.panes[pane].cur_mut().next_launch.take();
         self.panes[pane].cur_mut().bg_lock = None;
         match (&next, &kind, h) {
@@ -1487,8 +1407,7 @@ impl App {
             harness: h,
         };
         self.state_dirty = true;
-        // Trust the folder up front, unless another claude of this account is
-        // running and could be rewriting .claude.json at the same moment.
+
         if h == crate::harness::Harness::Claude
             && self.cfg.trust_for(acct)
             && crate::trust::dir_allowed(&spec.cwd, &self.cfg.trusted_dirs)
@@ -1546,7 +1465,6 @@ impl App {
         }
     }
 
-    /// Run any program in a new tab of `pane` (an editor, doctor, ...).
     pub fn run_in_new_tab(&mut self, pane: usize, program: &str, args: Vec<String>) {
         let cwd = crate::config::app_home();
         let config_dir = self.panes[pane]
@@ -1580,7 +1498,6 @@ impl App {
         }
     }
 
-    /// Launch in a specific tab (which need not be the active one).
     pub fn launch_tab(&mut self, pane: usize, tab: usize, kind: LaunchKind) {
         let active = self.panes[pane].active;
         if !self.panes[pane].select(tab) {
@@ -1598,7 +1515,6 @@ impl App {
         self.view = View::Grid;
     }
 
-    /// The pane showing `acct`, or the focused pane (reassigned) if none.
     pub(crate) fn pane_for_account(&self, acct: usize) -> usize {
         self.panes
             .iter()
@@ -1606,8 +1522,6 @@ impl App {
             .unwrap_or(self.focus)
     }
 
-    /// Resume a session in the account's slot, in a new tab when the active
-    /// tab is busy. If the session is already open in a tab, jump there.
     pub fn resume(&mut self, acct: usize, session_id: String) {
         for (si, s) in self.panes.iter().enumerate() {
             if let Some(ti) = s
@@ -1631,8 +1545,7 @@ impl App {
             .map(|s| std::path::PathBuf::from(&s.cwd))
             .filter(|p| p.is_dir())
             .unwrap_or_else(|| self.cfg.accounts[acct].work_dir());
-        // A busy tab, or an ended one of another session (its own story,
-        // like a resume that failed), stays: the session gets a new tab.
+
         let cur = self.panes[pane].cur();
         let other = cur.session_id.as_deref().is_some_and(|s| s != session_id);
         if cur.is_running() || other {
@@ -1645,7 +1558,6 @@ impl App {
         self.view = View::Grid;
     }
 
-    /// Point slot `pane` at `acct`. Switching accounts closes its tabs.
     pub(crate) fn assign(&mut self, pane: usize, acct: usize) {
         if self.panes[pane].account == Some(acct) {
             return;
@@ -1673,11 +1585,9 @@ impl App {
         ));
     }
 
-    /// Add an account from the Add account dialog, open its pane focused
-    /// and start the agent's login there.
     pub(crate) fn add_account(&mut self, spec: NewAccount) {
         let taken: Vec<String> = self.cfg.accounts.iter().map(|a| a.name.clone()).collect();
-        // The folder name comes from the label; "Account 3" -> account-3.
+
         let name = crate::setup::slug(&spec.label, &taken, self.cfg.accounts.len() + 1);
         if !valid_name(&name) {
             self.flash("Invalid name: use letters, digits, - _ .");
@@ -1699,7 +1609,7 @@ impl App {
             harness: crate::harness::Harness::of(harness).name().to_string(),
         };
         ensure_dir(&acct);
-        // Append to config.toml with toml_edit so the user's comments stay.
+
         let saved = if Config::path().exists() {
             crate::settings::append_account(&Config::path(), &acct)
         } else {
@@ -1712,12 +1622,11 @@ impl App {
         if let Err(e) = saved {
             self.flash(format!("Could not save config: {e:#}"));
         }
-        // Our own write is not an outside edit to reload.
+
         self.config_mtime = config_mtime();
         let idx = self.cfg.accounts.len() - 1;
         self.sel_account = idx;
-        // Prefer an empty pane, then the focused pane if nothing runs there.
-        // An empty pane takes it, otherwise it gets a pane of its own.
+
         let target = match self.panes.iter().position(|p| p.account.is_none()) {
             Some(p) => Some(p),
             None => {
@@ -1739,9 +1648,6 @@ impl App {
         }
     }
 
-    // ---------- background refresh ----------
-
-    /// Status for every account, plus usage where a fetch is allowed.
     pub fn refresh_all(&mut self, with_usage: bool) {
         for i in 0..self.accounts.len() {
             self.refresh_account(i, with_usage);
@@ -1749,7 +1655,6 @@ impl App {
         self.last_status = Instant::now();
     }
 
-    /// Manual refresh: fetch usage if allowed, otherwise say when it will be.
     pub fn request_usage(&mut self, idx: usize) {
         let Some(st) = self.accounts.get(idx) else {
             return;
@@ -1769,7 +1674,6 @@ impl App {
         }
     }
 
-    /// Re-read login state; fetch usage too when asked and allowed.
     pub fn refresh_account(&mut self, idx: usize, want_usage: bool) {
         let st = &mut self.accounts[idx];
         if st.inflight {
@@ -1803,7 +1707,6 @@ impl App {
             let api_ok = res.is_ok();
             st.record_usage(res, refresh_secs);
             if api_ok {
-                // A fresh reply wins over what grok showed before it.
                 if let (Some((_, left, _)), Some(w)) = (
                     st.grok_screen.clone(),
                     st.usage.as_ref().and_then(|u| u.get("seven_day")),
@@ -1820,7 +1723,6 @@ impl App {
             && st.login.expires_at != old_expiry
             && st.usage_err == Some(UsageError::Unauthorized);
         if just_logged_in || token_renewed {
-            // Fetch as soon as the one per minute limit allows.
             st.next_fetch = None;
             st.backoff = 0;
         }
@@ -1850,9 +1752,6 @@ impl App {
         });
     }
 
-    /// grok shows its limit in its status line ("Weekly limit left: 0%"):
-    /// mirror it, so the footer is never empty while grok knows the number
-    /// and stays the same as grok's own when the two disagree.
     pub fn grok_screen_tick(&mut self) {
         let now = chrono::Utc::now();
         for a in 0..self.cfg.accounts.len() {
@@ -1916,10 +1815,7 @@ impl App {
         }
     }
 
-    /// Periodic work, called a few times per second.
     pub fn tick(&mut self) {
-        // Voice turned on, off or switched mode: saved soon, so even a crash
-        // comes back in it.
         self.voice_mode_tick();
         let now = self.voice_mode_now();
         if self.voice_at_quit.is_none() && self.rt_voice.as_deref() != Some(now) {
@@ -1975,8 +1871,6 @@ impl App {
                 let held = t.activity_since.elapsed();
                 let visible = si == self.focus && ti == active && self.view == View::Grid;
                 if let Some((old, new)) = t.update_activity() {
-                    // The turn ended, but it handed work to background
-                    // agents or shells that still run: not finished yet.
                     let bg = new == Activity::Ready
                         && attention_worthy(old, new, held)
                         && crate::app_continue::background_busy(&t.screen_text());
@@ -1991,15 +1885,13 @@ impl App {
                     if new == Activity::Working {
                         t.bg_wait = false;
                     }
-                    // A real turn ended out of view: its row says finished
-                    // until the user looks at it (tab_labels).
+
                     if !bg && new == Activity::Ready && attention_worthy(old, new, held) && !visible
                     {
                         t.finished = true;
                         self.state_dirty = true;
                     }
-                    // Waiting for approval, or finished a turn: only from
-                    // the tab's real transition (see attention_worthy).
+
                     if !bg && attention_worthy(old, new, held) {
                         let uid = t.uid;
                         let dup = self.attention.iter().any(|a| a.uid == uid && a.what == new);
@@ -2014,7 +1906,7 @@ impl App {
                         }
                     }
                 }
-                // The background work it waited on is done: finished now.
+
                 if t.bg_wait
                     && t.activity == Activity::Ready
                     && !crate::app_continue::background_busy(&t.screen_text())
@@ -2043,14 +1935,14 @@ impl App {
                         }
                     }
                 }
-                // Seen, or working again: no longer "finished".
+
                 if t.finished && (visible || t.activity == Activity::Working) {
                     t.finished = false;
                     self.state_dirty = true;
                 }
             }
         }
-        // Scheduled crash restarts.
+
         for p in 0..self.panes.len() {
             for t in 0..self.panes[p].tabs.len() {
                 let tab = &mut self.panes[p].tabs[t];
@@ -2061,7 +1953,7 @@ impl App {
                 }
             }
         }
-        // Folder trust dialogs answered automatically where allowed.
+
         let mut to_trust = vec![];
         for (si, slot) in self.panes.iter().enumerate() {
             let Some(a) = slot.account else { continue };
@@ -2101,8 +1993,7 @@ impl App {
             ));
             self.flash(format!("trusted {dir}"));
         }
-        // Restored tabs launch when they become the visible tab of a shown
-        // slot (hidden panes wait like lazy tabs).
+
         for p in 0..self.panes.len() {
             if self.panes[p].hidden {
                 continue;
@@ -2125,7 +2016,7 @@ impl App {
         self.direct_tick();
         self.voice_tick();
         self.onboard_tick();
-        // Window bounds, every 5 s, off the UI thread.
+
         if self.cfg.remember_window
             && self.last_window_check.elapsed() >= Duration::from_secs(5)
             && crate::window::terminal_app().is_some()
@@ -2147,7 +2038,7 @@ impl App {
         if self.state_dirty && self.last_state_save.elapsed() >= Duration::from_secs(3) {
             self.save_state();
         }
-        // A login in progress gets polled quickly so the dashboard flips fast.
+
         let logging_in = self
             .panes
             .iter()
@@ -2181,8 +2072,6 @@ impl App {
         }
     }
 
-    // ---------- events ----------
-
     pub fn handle(&mut self, ev: AppEvent) {
         match ev {
             AppEvent::KeyRead(k, burst) => {
@@ -2194,7 +2083,7 @@ impl App {
                 if self.hold_to_talk_key(&k) {
                     return;
                 }
-                // The voice onboarding's welcome and checks take the keys.
+
                 if k.kind != KeyEventKind::Release && self.onboarding_key(&k) {
                     return;
                 }
@@ -2205,7 +2094,6 @@ impl App {
                 }
             }
             AppEvent::Input(Event::Paste(text)) => {
-                // The assistant panel's input, while it has the keys.
                 if self.assistant_has_focus()
                     && self.assistant.history.is_none()
                     && self.modal == Modal::None
@@ -2285,8 +2173,6 @@ impl App {
                             }
                         }
                         if was_running && !was_login {
-                            // A resume refused by a background run: offer
-                            // attach, stop and resume, or fork.
                             self.note_bg_lock(si, ti);
                             self.learn_exit_session(si, ti);
                         }
@@ -2323,8 +2209,7 @@ impl App {
             }
             AppEvent::Control(tool, args, reply) => {
                 let mut v = self.control_call(&tool, &args);
-                // Replies that wait for a tab to come up or a prompt to be
-                // taken are finished by control_tick.
+
                 if let Some(w) = v.as_object_mut().and_then(|o| o.remove("_wait")) {
                     let ids: Vec<u64> = w["deliveries"]
                         .as_array()
@@ -2365,7 +2250,6 @@ impl App {
                 }
             }
             AppEvent::Assistant(gen, ev) => {
-                // Only the current process speaks; an old one's exit is not news.
                 if self.assistant.brain.as_ref().is_some_and(|b| b.gen == gen) {
                     self.on_brain(ev);
                 }
@@ -2413,7 +2297,6 @@ impl App {
     }
 
     pub(crate) fn on_key(&mut self, k: KeyEvent) {
-        // Ctrl-a ' then a pane number.
         if let Some(buf) = self.num_entry.as_mut() {
             match k.code {
                 KeyCode::Char(c) if c.is_ascii_digit() => {
@@ -2440,12 +2323,11 @@ impl App {
                 }
             }
         }
-        // Ctrl-a # then a model number (any other key goes on as usual).
+
         if self.model_entry.is_some() && self.model_entry_key(&k) {
             return;
         }
-        // An open loops drawer that has the keys (right after opening or
-        // a click in it): Esc closes it, arrows select.
+
         if self.modal == Modal::None
             && self.view == View::Grid
             && self.loops_drawer_focus.is_some()
@@ -2453,12 +2335,11 @@ impl App {
         {
             return;
         }
-        // The Loops & schedules section after a click in it: arrows
-        // select, Enter opens a card.
+
         if self.modal == Modal::None && self.sched_ui.focus && self.sched_key(&k) {
             return;
         }
-        // Modals swallow input first.
+
         match &mut self.modal {
             Modal::None => {}
             Modal::SchedCard(_) => {
@@ -2470,8 +2351,6 @@ impl App {
                 return;
             }
             Modal::Help => {
-                // Arrows and pages scroll a help taller than the screen;
-                // any other key closes it.
                 let n = self.help_max.get();
                 match k.code {
                     KeyCode::Down | KeyCode::Char('j') => {
@@ -2913,7 +2792,6 @@ impl App {
         if self.prefix {
             self.prefix = false;
             if is_prefix_key {
-                // Ctrl-a Ctrl-a sends a literal Ctrl-a.
                 if self.view == View::Grid {
                     self.panes[self.focus].cur_mut().write(&[0x01]);
                 }
@@ -2927,16 +2805,15 @@ impl App {
             self.prefix_at = Some(Instant::now());
             return;
         }
-        // A tab list's search field has the keys while it is focused.
+
         if self.on_tab_search_key(k) {
             return;
         }
-        // A key into a pane (or the assistant) drops the selection there;
-        // Esc does only that.
+
         if self.selection_key(&k) {
             return;
         }
-        // The assistant panel's input takes typing while it is open.
+
         if self.on_assistant_key(k) {
             return;
         }
@@ -2956,7 +2833,7 @@ impl App {
 
     pub(crate) fn on_grid_key(&mut self, k: KeyEvent) {
         let account = self.panes[self.focus].account;
-        // Its program is not installed: I installs it.
+
         if matches!(k.code, KeyCode::Char('I') | KeyCode::Char('i'))
             && self.panes[self.focus].cur().state != PaneState::Running
         {
@@ -2966,7 +2843,7 @@ impl App {
                 return;
             }
         }
-        // Owned elsewhere, or being handed over: its own keys only.
+
         let (fp, ft) = (self.focus, self.panes[self.focus].active);
         if self.panes[fp].tabs[ft]
             .lease
@@ -2979,7 +2856,6 @@ impl App {
         let pane = self.panes[self.focus].cur_mut();
         match pane.state {
             PaneState::Running => {
-                // Shift+PageUp/PageDown scroll locally; everything else goes in.
                 if k.modifiers.contains(KeyModifiers::SHIFT) {
                     match k.code {
                         KeyCode::PageUp => return pane.scroll_by(10),
@@ -2990,16 +2866,13 @@ impl App {
                 let bytes = keys::encode_key(&k, pane.app_cursor());
                 pane.reset_scroll();
                 pane.write(&bytes);
-                // Typed into here on the Mac: a size a browser took goes
-                // back to this pane.
+
                 if pane.web_size.is_some() {
                     let uid = pane.uid;
                     self.web_size_back(uid);
                 }
             }
             _ if pane.bg_lock.is_some() => {
-                // Held by a background run: a attaches (also Enter), s
-                // stops it (asks y first), f forks a copy.
                 let (p, t) = (self.focus, self.panes[self.focus].active);
                 self.bg_lock_key(p, t, k);
             }
@@ -3035,7 +2908,6 @@ impl App {
             _ => None,
         };
         if let (true, Some((dx, dy))) = (shift, dir) {
-            // Ctrl-a Shift+arrow: move the focused pane that way.
             self.view = View::Grid;
             match self.move_pane(self.focus, dx, dy) {
                 Ok(to) => self.flash(format!("Moved the pane to slot {}", self.slot_number(to))),
@@ -3352,7 +3224,6 @@ impl App {
         }
     }
 
-    /// The user quit: a clean exit the supervisor leaves alone.
     pub fn quit_by_user(&mut self) {
         self.quit = true;
         self.exit_clean = true;
@@ -3364,10 +3235,10 @@ impl App {
                 self.window = Some(w);
             }
         }
-        // Music and the others get the play/pause presses back.
+
         let tx = self.tx.clone();
         self.media.set(false, &tx);
-        // Remembered before it is stopped: the next start reopens it.
+
         self.voice_at_quit = Some(self.voice_mode_now().into());
         self.stop_voice();
         crate::voice::kill_helpers();
@@ -3379,8 +3250,6 @@ impl App {
         }
         crate::pane::wait_for_reapers(Duration::from_millis(800));
     }
-
-    // ---------- tabs ----------
 
     pub fn new_tab_prompt(&mut self, slot: usize) {
         let Some(a) = self.panes[slot].account else {
@@ -3413,7 +3282,6 @@ impl App {
         )
     }
 
-    /// Enter in the New Tab dialog: depends on what is being edited.
     pub fn new_tab_enter(&mut self) {
         use crate::picker::{Mode, Status};
         let Modal::NewTab(pk) = self.modal.clone() else {
@@ -3464,7 +3332,7 @@ impl App {
                     return;
                 }
                 match pk.status() {
-                    Status::Invalid(_) => {} // shown inline; nothing happens
+                    Status::Invalid(_) => {}
                     st => {
                         let dir = pk.target();
                         if st == Status::New {
@@ -3522,7 +3390,7 @@ impl App {
             self.state_dirty = true;
         }
         let s = &mut self.panes[slot];
-        // Reuse an unused first tab instead of stacking an empty one.
+
         if s.tabs.len() == 1 && s.cur().state == PaneState::Idle {
             s.cur_mut().cwd = cwd;
             s.cur_mut().pending = None;
@@ -3555,7 +3423,6 @@ impl App {
         self.launch(slot, LaunchKind::Resume(id));
     }
 
-    /// Where pane `p` shows its tabs: its own setting or the global one.
     pub fn tab_pos(&self, p: usize) -> crate::slot::TabPos {
         self.panes
             .get(p)
@@ -3564,7 +3431,6 @@ impl App {
             .unwrap_or(crate::slot::TabPos::Left)
     }
 
-    /// Set (or with None, clear) pane `p`'s tab list position.
     pub fn set_tab_pos(&mut self, p: usize, pos: Option<crate::slot::TabPos>) {
         if let Some(s) = self.panes.get_mut(p) {
             s.tab_pos = pos;
@@ -3574,8 +3440,6 @@ impl App {
         self.flash(format!("Pane {} tabs: {}", p + 1, shown.label()));
     }
 
-    /// Set account `a`'s permission mode (shown in pane `p`). Switching to
-    /// bypass asks first unless `confirmed`. Saved to config.toml.
     pub fn set_permission_mode(&mut self, p: usize, a: usize, mode: &str, confirmed: bool) {
         let mode = crate::config::permission_badge(mode);
         let mode = if mode == "edits" {
@@ -3612,7 +3476,6 @@ impl App {
         }
     }
 
-    /// Flip auto trust for the account shown in pane `p` (saved per account).
     pub fn toggle_trust(&mut self, p: usize) {
         let Some(a) = self.panes.get(p).and_then(|s| s.account) else {
             return;
@@ -3630,7 +3493,6 @@ impl App {
         ));
     }
 
-    /// Collapse or expand the tab list of pane `p` (Ctrl-a s).
     pub fn toggle_sidebar(&mut self, p: usize) {
         if let Some(s) = self.panes.get_mut(p) {
             s.sidebar_collapsed = !s.sidebar_collapsed;
@@ -3638,7 +3500,6 @@ impl App {
         }
     }
 
-    /// Open the rename box for (pane, tab), prefilled with its name.
     pub fn start_rename(&mut self, p: usize, t: usize) {
         if let Some(tab) = self.panes.get(p).and_then(|s| s.tabs.get(t)) {
             self.view = View::Grid;
@@ -3646,7 +3507,6 @@ impl App {
         }
     }
 
-    /// Give a tab a custom name; an empty name goes back to the folder name.
     pub fn rename_tab(&mut self, p: usize, t: usize, name: &str) -> String {
         let Some(tab) = self.panes.get_mut(p).and_then(|s| s.tabs.get_mut(t)) else {
             return "no such tab".into();
@@ -3701,10 +3561,6 @@ impl App {
         }
     }
 
-    // ---------- config hot reload ----------
-
-    /// Save one account key into config.toml (comments kept); when there is
-    /// no usable file yet, write the whole config.
     pub fn save_account_key(
         &mut self,
         a: usize,
@@ -3721,7 +3577,6 @@ impl App {
         self.cfg.save()
     }
 
-    /// Reload config.toml right now (after the Settings screen wrote it).
     pub fn reload_config_now(&mut self) {
         self.config_mtime = None;
         self.check_config_reload();
@@ -3752,17 +3607,11 @@ impl App {
         }
     }
 
-    /// Apply a newly parsed config in place. Accounts are matched by name:
-    /// existing ones get new labels, colors, dirs and args; new ones are
-    /// added. Returns a short summary.
     pub fn apply_config(&mut self, new: Config) -> String {
-        // Keeping Remote Control on and resuming change nothing in the
-        // running process (they act at its next start).
         let mut same = new.assistant.clone();
         same.remote_control = self.cfg.assistant.remote_control;
         same.resume = self.cfg.assistant.resume;
         if self.cfg.assistant != same {
-            // Model, style or account changed: the next request starts fresh.
             self.assistant.brain = None;
         }
         if !cfg!(test) {
@@ -3829,8 +3678,7 @@ impl App {
         if self.cfg.permission_mode != new.permission_mode {
             changes.push(format!("permissions {} for new tabs", new.permission_mode));
         }
-        // Everything else at the top level is taken as is; accounts were
-        // merged above so their indices stay stable.
+
         let old_web = self.cfg.web.clone();
         {
             let accounts = std::mem::take(&mut self.cfg.accounts);
@@ -3853,7 +3701,6 @@ impl App {
                     v.configure_tts(&self.cfg.voice);
                 }
             } else if self.voice.engine.is_some() {
-                // Restart the engine so device, model and thresholds apply.
                 let always = self.voice.always_on;
                 self.stop_voice();
                 self.start_voice(always);
@@ -3867,7 +3714,7 @@ impl App {
             changes.push(c);
         }
         self.apply_buffers();
-        // New accounts get a pane.
+
         self.ensure_panes();
         if changes.is_empty() {
             "no changes".into()
@@ -3876,9 +3723,6 @@ impl App {
         }
     }
 
-    // ---------- first run ----------
-
-    /// Walk through logging in every configured account.
     pub fn start_onboarding(&mut self) {
         let queue: Vec<usize> = (0..self.cfg.accounts.len()).collect();
         self.onboard = Some(Onboard {
@@ -3890,7 +3734,6 @@ impl App {
         self.onboard_step();
     }
 
-    /// Move to the next account that still needs a login, or finish.
     pub fn onboard_step(&mut self) {
         let Some(ob) = self.onboard.clone() else {
             return;
@@ -3951,7 +3794,6 @@ impl App {
         }
     }
 
-    /// Ctrl-a S during setup: skip the current account.
     pub fn onboard_skip(&mut self) {
         if let Some(o) = &mut self.onboard {
             if let Some(&a) = o.queue.get(o.pos) {
@@ -3973,13 +3815,10 @@ impl App {
         }
     }
 
-    // ---------- palette and broadcast ----------
-
     pub(crate) fn run_palette(&mut self, pl: crate::palette::Palette) {
         use crate::palette::Action;
         let matches = crate::palette::items(self, &pl);
-        // An action whose name matches runs; anything else typed is a
-        // request in plain words, for the assistant to interpret.
+
         let Some(&(_, action)) = matches.get(pl.sel.min(matches.len().saturating_sub(1))) else {
             let text = pl.input.trim().to_string();
             if text.is_empty() {
@@ -4079,7 +3918,6 @@ impl App {
         }
     }
 
-    /// Tabs a broadcast goes to: the marked running tabs, or all running.
     pub fn broadcast_targets(&self) -> Vec<(usize, usize)> {
         let running: Vec<(usize, usize)> = self
             .overview_rows()
@@ -4112,9 +3950,6 @@ impl App {
         self.flash(format!("Sent to {} session(s)", targets.len()));
     }
 
-    // ---------- overview ----------
-
-    /// Every (slot, tab) in display order.
     pub fn overview_rows(&self) -> Vec<(usize, usize)> {
         self.panes
             .iter()
@@ -4197,7 +4032,6 @@ fn ensure_dir(a: &AccountCfg) {
     }
 }
 
-/// Login state, profile and usage of an account, for its harness.
 pub fn snapshot_of(a: &AccountCfg, with_usage: bool) -> StatusSnapshot {
     let dir = a.config_dir();
     match a.harness() {
@@ -4221,8 +4055,7 @@ pub fn snapshot_of(a: &AccountCfg, with_usage: bool) -> StatusSnapshot {
                     .unwrap_or_default();
                 match (logged, usage::fixture_for(&name)) {
                     (false, _) => Err(UsageError::NotLoggedIn),
-                    // Fixtures are read as grok's billing reply; anything
-                    // else stands for the API being unavailable.
+
                     (true, Some(_)) => {
                         let base = crate::config::env_var("USAGE_FIXTURE").unwrap_or_default();
                         let p = std::path::Path::new(&base);
@@ -4260,8 +4093,6 @@ pub fn snapshot_of(a: &AccountCfg, with_usage: bool) -> StatusSnapshot {
     }
 }
 
-/// Gather login state, profile and (optionally) usage for one config dir.
-/// The access token never leaves this function.
 pub fn snapshot(dir: &std::path::Path, with_usage: bool) -> StatusSnapshot {
     let profile = creds::load_profile(dir);
     let found = creds::load_creds(dir);
@@ -4289,7 +4120,7 @@ pub fn snapshot(dir: &std::path::Path, with_usage: bool) -> StatusSnapshot {
             (Some((c, _)), None) if c.is_expired(Utc::now().timestamp_millis()) => {
                 Err(UsageError::Unauthorized)
             }
-            // One request per account across every GodTerm process.
+
             (Some((c, _)), None) => crate::usage_share::fetch(&name, min_fetch_interval(), || {
                 usage::fetch_usage_raw(usage::USAGE_URL, &c.access_token)
             }),

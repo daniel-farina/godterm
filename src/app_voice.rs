@@ -1,5 +1,3 @@
-//! Voice commands: wake word handling, targeting and execution.
-
 use std::time::{Duration, Instant};
 
 use crate::app::{App, Modal, View};
@@ -11,105 +9,91 @@ use crate::voice::grammar;
 use crate::voice::tts::Kind;
 use crate::voice::{Voice, VoiceEvent, VoiceStatus};
 
-/// Voice related app state (HUD contents and timers).
 pub struct VoiceState {
     pub engine: Option<Voice>,
     pub status: VoiceStatus,
     pub always_on: bool,
     pub asleep: bool,
-    /// Debug: read audio from this file instead of the mic.
+
     pub file: Option<String>,
     pub heard: Option<String>,
     pub action: Option<String>,
     pub info: Option<String>,
-    /// Dictation held until "send".
+
     pub pending: Option<String>,
     pub updated: Instant,
-    /// The terminal reports key release (kitty keyboard protocol), so
-    /// Ctrl-a space can be held.
+
     pub hold_supported: bool,
-    /// Space is being held for push to talk, since this instant.
+
     pub holding: Option<Instant>,
-    /// After a bare wake word, the next utterance needs no wake word.
+
     pub(crate) wake_until: Option<Instant>,
-    /// Push to talk after a bare wake word: listen again once the reply
-    /// has been spoken.
+
     pub listen_after_speech: bool,
-    /// What a bare wake word answered (tests and the HUD).
+
     pub said_wake: Vec<String>,
     notified: crate::notify::Limiter<(usize, usize, bool)>,
-    /// Terminal focus as reported by focus events (None: never reported).
+
     pub term_focused: Option<bool>,
-    /// Open mic: every utterance is a command, no wake word.
+
     pub open_mic: bool,
-    /// Last utterance (open mic auto sleep).
+
     pub last_heard: Instant,
-    /// Stats of the utterance being handled (open mic guards).
+
     pub cur_stats: crate::voice::wake_profile::UttStats,
-    /// The vocabulary last given to the engine.
+
     pub vocab_sent: Option<String>,
-    /// Partial transcript of speech still going on.
+
     pub partial: Option<String>,
-    /// Latency of the last partial request (ms).
+
     pub partial_ms: Option<u128>,
-    /// When the current utterance's first partial arrived.
+
     first_partial: Option<Instant>,
-    /// We were talking back at the last tick (conversation mode).
+
     was_speaking: bool,
-    /// Wake word training in progress.
+
     pub training: Option<crate::app_wake::Training>,
-    /// Learned wake aliases and negatives.
+
     pub profile: Option<crate::voice::wake_profile::WakeProfile>,
-    /// Talk back for Settings > Preview while the voice engine is off.
+
     pub preview: Option<crate::voice::tts::Speaker>,
-    /// The last few utterances, newest last.
+
     pub log: std::collections::VecDeque<LogEntry>,
-    /// Show the voice log above the strip.
+
     pub show_log: bool,
-    /// Utterances dropped as noise, doubtful or not addressed to us.
+
     pub ignored: u32,
-    /// The mic is muted (capture stopped); the voice mode to go back to.
+
     pub muted: bool,
     pub muted_prev: u8,
-    /// The mode voice last ran in (1 push to talk, 2 wake word, 3 open
-    /// mic; 0 never on): a headphone tap or a mic that came back reopens
-    /// it in this mode, never in another one.
+
     pub last_on_mode: u8,
-    /// The mic stream ended by itself (a Bluetooth route change): reopen
-    /// it at this time, in this mode, after this many tries.
+
     pub reopen: Option<(Instant, u8, u32)>,
-    /// A tap asked for open mic while a push to talk engine was speaking:
-    /// it starts again as open mic once the reply ends (never cuts it).
+
     pub open_mic_after_speech: bool,
-    /// When the running engine was started: a "stream ended" right after
-    /// is the old engine shutting down (a settings reload, a restart), not
-    /// a mic that went away.
+
     pub started_at: Option<Instant>,
-    /// Open mic went to sleep after a long silence (listening for the wake
-    /// word meanwhile): it is still open mic for a restart, and the wake
-    /// word brings open mic back.
+
     pub open_mic_asleep: bool,
-    /// The wake word woke a sleeping open mic: start open mic again once
-    /// nothing is being said.
+
     pub wake_to_open_mic: bool,
-    /// "Hold on a minute": listening paused until then.
+
     pub paused: Option<crate::app_pause::Pause>,
-    /// What was said on the last resume about held announcements.
+
     pub away_summary: Option<String>,
-    /// Speaker lock: utterances dropped as not the user's voice (or far
-    /// away), the last score, and the saved profile's summary.
+
     pub not_you: u32,
     pub speaker_last: Option<crate::voice::speaker::Check>,
     pub speaker_profile: Option<String>,
 }
 
-/// One utterance in the voice log.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogEntry {
     pub at: chrono::DateTime<chrono::Local>,
     pub heard: String,
     pub action: String,
-    /// Partial latency in ms when partials were shown.
+
     pub partial_ms: Option<u128>,
 }
 
@@ -182,9 +166,6 @@ fn spell(n: usize) -> String {
 }
 
 impl App {
-    /// Words whisper should expect (its prompt): commands, account names,
-    /// tab names and recent folders. Biasing toward these is the biggest
-    /// accuracy win for short commands.
     pub fn vocabulary(&self) -> String {
         let mut words: Vec<String> = vec!["GodTerm".into()];
         words.extend(self.cfg.voice.wake_words.iter().cloned());
@@ -244,9 +225,7 @@ impl App {
                 }
             }
         }
-        // Recent project folders and session titles, so a name like
-        // "fotmesh" is transcribed as said; "trading-room" also as
-        // "trading room", the way it is spoken.
+
         {
             let ix = self.session_index.lock().unwrap_or_else(|e| e.into_inner());
             let mut rows: Vec<&crate::session_index::Row> =
@@ -280,7 +259,7 @@ impl App {
                 }
             }
         }
-        // whisper's prompt is short: keep it under about 220 tokens.
+
         let mut out = String::new();
         for w in words {
             if out.len() + w.len() > 800 {
@@ -294,7 +273,6 @@ impl App {
         out
     }
 
-    /// Keep the engine's vocabulary current as tabs change.
     pub fn refresh_vocabulary(&mut self) {
         let v = self.vocabulary();
         if self.voice.vocab_sent.as_deref() != Some(v.as_str()) {
@@ -305,8 +283,6 @@ impl App {
         }
     }
 
-    /// Start voice in a mode (1 push to talk, 2 wake word, 3 open mic),
-    /// keeping it: the same mode it ran in, nothing else.
     pub fn start_voice_in(&mut self, m: u8) {
         match m {
             3 => {
@@ -320,7 +296,6 @@ impl App {
         }
     }
 
-    /// Track the running mode and reopen a mic that ended by itself.
     pub fn voice_mode_tick(&mut self) {
         let m = if self.voice.open_mic_asleep {
             3
@@ -355,14 +330,12 @@ impl App {
                 ));
                 self.stop_voice();
                 self.start_voice_in(mode);
-                // Kept (with its count) until it runs again.
+
                 self.voice.reopen = Some((Instant::now() + Duration::from_secs(3600), mode, tries));
             }
         }
     }
 
-    /// How voice runs now, as saved for the next start: "open" (open
-    /// mic), "wake", "push" or "off" (not running, or muted).
     pub fn voice_mode_now(&self) -> &'static str {
         if self.voice.engine.is_none() || self.voice.muted {
             "off"
@@ -383,7 +356,6 @@ impl App {
             return;
         }
         if cfg!(test) {
-            // Never open the microphone from unit tests.
             self.voice.always_on = always_on;
             return;
         }
@@ -392,18 +364,17 @@ impl App {
                 path: f.clone(),
                 realtime: true,
             },
-            // A browser with voice on (the web app) is the mic.
+
             (None, Some(m)) => Source::Web(m),
             (None, None) => Source::Mic(self.cfg.voice.device.clone()),
         };
-        // A file is a recording of hands free use, so listen for the wake word.
+
         let always_on = always_on || self.voice.file.is_some();
         let mut vc = self.cfg.voice.clone();
         if self.voice.open_mic {
-            vc.mode = "open".into(); // no wake word screening in the engine
+            vc.mode = "open".into();
         }
-        // Answer sooner: a shorter end of speech with the assistant or open
-        // mic, and Kokoro stays loaded while the assistant is on.
+
         if self.voice.open_mic || self.assistant_on() {
             vc.end_silence_ms = vc
                 .end_silence_ms
@@ -431,11 +402,6 @@ impl App {
         self.voice.status = VoiceStatus::Off(None);
     }
 
-    /// Ctrl-a space: start the engine if needed and capture one utterance;
-    /// pressed again while listening, it ends the capture.
-    /// Mute: capture stops entirely (ffmpeg ends, the mic indicator goes
-    /// off) and nothing is heard or sent; talk back still works. Unmute
-    /// goes back to the voice mode from before.
     pub fn set_muted(&mut self, on: bool) {
         if on == self.voice.muted {
             return;
@@ -443,9 +409,7 @@ impl App {
         if on {
             self.voice.muted_prev = self.voice_mode();
             self.voice.open_mic = false;
-            // Only the capture closes (the headset leaves call mode, so its
-            // play/pause comes again); the engine stays, so a reply being
-            // said goes on to its end. Unmute opens the mic again.
+
             if let Some(v) = &self.voice.engine {
                 v.set_mic(false);
             }
@@ -459,7 +423,6 @@ impl App {
             crate::log::info("voice: muted");
             self.flash("Mic muted: nothing is heard or sent (click ● MUTED or Ctrl-a X to unmute)");
         } else if self.voice.engine.is_some() {
-            // A headphone tap closed the mic and kept the engine.
             self.resume_kept_mic();
             self.voice.action = Some("unmuted".into());
             self.flash("Mic on");
@@ -479,8 +442,6 @@ impl App {
         }
     }
 
-    /// The speaker mute: nothing is said out loud (answers still show as
-    /// text); what is being said stops at once. Kept in config.toml.
     pub fn set_speaker_muted(&mut self, on: bool) {
         if on {
             if let Some(v) = &self.voice.engine {
@@ -512,7 +473,6 @@ impl App {
         self.set_speaker_muted(on);
     }
 
-    /// The talk back volume (0 to 1), kept in config.toml.
     pub fn set_tts_volume(&mut self, v: f32) {
         let v = (v.clamp(0.0, 1.0) * 100.0).round() / 100.0;
         let _ = crate::settings::write(
@@ -544,7 +504,7 @@ impl App {
             self.flash("The mic is muted (Ctrl-a X unmutes)");
             return;
         }
-        // Talking over a reply cuts it off.
+
         let speaking = self.voice.engine.as_ref().is_some_and(|v| v.speaking())
             || self.voice.preview.as_ref().is_some_and(|p| p.speaking());
         if speaking || self.assistant.busy {
@@ -569,10 +529,6 @@ impl App {
         self.voice.updated = Instant::now();
     }
 
-    /// The wake word alone ("hey god"): always an answer. A chime and a
-    /// short "Yes?" (or `reply`), "listening" on the HUD, and the next
-    /// utterance within the follow up window is the command. In push to
-    /// talk the mic opens again once the reply is spoken.
     pub fn bare_wake(&mut self, reply: &str, ptt: bool, cut_in: bool) {
         let secs = self.cfg.voice.wake_follow_up_s.clamp(3, 30);
         crate::log::info(&format!(
@@ -581,7 +537,6 @@ impl App {
         ));
         if cut_in {
             if let Some(v) = &self.voice.engine {
-                // It cuts in over whatever was being said.
                 v.stop_speaking();
                 v.chime();
             }
@@ -597,8 +552,6 @@ impl App {
         self.speak(reply);
     }
 
-    /// After a bare wake word in push to talk: once "Yes?" is spoken,
-    /// listen for the command without the key.
     pub fn listen_after_reply(&mut self, speaking: bool) {
         if !self.voice.listen_after_speech || speaking {
             return;
@@ -616,10 +569,6 @@ impl App {
         }
     }
 
-    /// Hold to talk: while space is held after Ctrl-a space, swallow its
-    /// repeats; on release after a real hold, end the capture. A quick tap
-    /// keeps listening until the pause detector ends it. Returns true when
-    /// the key was consumed.
     pub fn hold_to_talk_key(&mut self, k: &crossterm::event::KeyEvent) -> bool {
         use crossterm::event::{KeyCode, KeyEventKind};
         let Some(since) = self.voice.holding else {
@@ -646,7 +595,6 @@ impl App {
         }
     }
 
-    /// Ctrl-a v: switch between push to talk and always listening.
     pub fn toggle_wake_mode(&mut self) {
         let next = !self.voice.always_on || self.voice.engine.is_none();
         self.stop_voice();
@@ -669,18 +617,13 @@ impl App {
         self.voice.updated = Instant::now();
         match ev {
             VoiceEvent::Status(s) => {
-                // Speech started: warm the assistant up while they talk.
                 if s == VoiceStatus::Listening {
                     self.prewarm_assistant();
                 }
                 if let VoiceStatus::Off(Some(reason)) = &s {
                     self.voice.info = Some(reason.clone());
                     crate::log::info(&format!("voice: {reason}"));
-                    // The stream went away by itself (headphones switching
-                    // profile, a device change): open it again in the same
-                    // mode, as it ran, instead of leaving voice dead.
-                    // Only a stream that ran a while: one ending within 5 s
-                    // of a start is the replaced engine's own shutdown.
+
                     let settled = self
                         .voice
                         .started_at
@@ -705,15 +648,13 @@ impl App {
                     }
                 }
                 if s == VoiceStatus::Listening || s == VoiceStatus::Idle {
-                    // Running again: the next end starts a fresh count.
                     if self.voice.reopen.is_some_and(|r| Instant::now() > r.0) {
                         self.voice.reopen = None;
                     }
                 }
                 self.voice.status = s;
             }
-            // No barge-in while paused.
-            // Nor while brainstorming: nothing is being replied to.
+
             VoiceEvent::BargeIn { .. }
                 if self.paused() || self.voice.muted || self.brainstorm_on() => {}
             VoiceEvent::BargeIn { speech_ms, stop_ms } => {
@@ -726,7 +667,6 @@ impl App {
                 self.voice.info = Some(i);
             }
             VoiceEvent::Partial(text, ms) => {
-                // A partial that lands after the final is stale.
                 if self.voice.status == VoiceStatus::Listening {
                     self.voice.partial = Some(text.trim().to_string());
                     self.voice.partial_ms = Some(ms);
@@ -769,7 +709,6 @@ impl App {
         }
     }
 
-    /// The command after the wake word (learned aliases included).
     pub fn strip_wake<'a>(&self, norm: &'a str) -> Option<&'a str> {
         crate::voice::wake_profile::strip_wake_with(
             self.voice.profile.as_ref(),
@@ -779,7 +718,6 @@ impl App {
         )
     }
 
-    /// Settings > Voice and Audio > Preview: a sample in the chosen voice.
     pub fn preview_voice(&mut self) {
         let vc = &self.cfg.voice;
         let (engine, why) = crate::voice::tts::effective_engine(vc);
@@ -821,7 +759,6 @@ impl App {
         });
     }
 
-    /// The level meter needs frames at ~25 fps.
     pub fn meter_live(&self) -> bool {
         self.voice_hud_visible()
             && self
@@ -831,7 +768,6 @@ impl App {
                 .is_some_and(|v| v.levels.open.load(std::sync::atomic::Ordering::Relaxed))
     }
 
-    /// Rows the voice strip takes: one, plus the log when shown.
     pub fn voice_hud_rows(&self) -> u16 {
         if !self.voice_hud_visible() {
             0
@@ -848,14 +784,13 @@ impl App {
         let norm = grammar::normalize(text);
         self.voice.last_heard = Instant::now();
         self.quiet_user_spoke();
-        // Muted: the mic is off; a transcript still in flight is dropped.
+
         if self.voice.muted {
             crate::log::info(&format!("muted: ignored: {text}"));
             self.voice.action = Some("(muted, ignored: Ctrl-a X unmutes)".into());
             return;
         }
-        // Paused: only the wake word (or "resume") counts; it resumes and
-        // what follows it runs as usual.
+
         if self.paused() {
             let Some(rest) = self.while_paused(&norm, ptt) else {
                 return;
@@ -867,27 +802,21 @@ impl App {
             crate::log::info("paused: wake word with a command, resuming and running it");
             return self.run_heard(rest);
         }
-        // The voice onboarding: its welcome and checks take every
-        // utterance, its lesson only its own phrases (app_onboarding).
+
         if self.onboarding_heard(text, &norm) {
             return;
         }
-        // Brainstorm mode: everything is drafted (no wake word needed);
-        // only its own phrases do anything (app_brainstorm).
+
         if self.brainstorm_on() {
             let woke = self.strip_wake(&norm).map(str::to_string);
             return self.brainstorm_heard(text, &norm, woke);
         }
-        // Without a wake word (open mic, or the follow up window) short
-        // sounds, whisper's stock hallucinations and audio whisper doubts
-        // are not requests.
+
         let table = crate::instant::table(&self.cfg.voice.instant);
         let follow_up = self.voice.wake_until.is_some_and(|t| Instant::now() < t);
         let stats = self.voice.cur_stats;
         let woke = self.strip_wake(&norm).map(str::to_string);
-        // "brainstorm mode", an undo of a discarded brainstorm, "wait,
-        // I'm not done": caught before any filter (one word "braindump"
-        // is not too short), when the utterance is for us.
+
         let addressed = ptt
             || woke.is_some()
             || self.voice.open_mic
@@ -900,36 +829,31 @@ impl App {
                 crate::log::info(&format!("voice: brainstorm phrase: {text}"));
                 return;
             }
-            // "update mode", "stop updates", "what's the latest"
-            // (app_updates).
+
             if !command.trim().is_empty() && self.updates_intercept(&command) {
                 return;
             }
-            // "use the Bella voice", "use chatterbox" (app_voices).
+
             if !command.trim().is_empty() && self.voice_choice_intercept(&command) {
                 return;
             }
         }
-        // Direct mode: speech goes to one tab (app_direct); the wake word
-        // and a few phrases bring the assistant back.
+
         if self.direct.on.is_some() {
             return self.direct_heard(text, &norm, woke, ptt, stats, &table);
         }
-        // The wake word alone always gets an answer, in every mode (no
-        // length or noise filter applies to it).
+
         if woke.as_deref().is_some_and(|c| c.trim().is_empty()) {
             return self.bare_wake("Yes?", ptt, true);
         }
         let why = if ptt {
-            // Push to talk is deliberate; only silence's stock text is dropped.
             crate::app_openmic::is_noise(&norm).then_some("noise")
         } else if woke.is_none() && (self.voice.open_mic || follow_up) {
             crate::app_openmic::hands_free_filter(&norm, stats, &table)
         } else {
             crate::app_openmic::confidence_gate(stats)
         };
-        // A short reply to what the assistant just said or asked ("Go
-        // ahead.", "Close it.", "Yes.") is an answer, not noise.
+
         let replying = follow_up || self.pending_confirms.iter().any(|p| p.answerable());
         let why = why.filter(|w| {
             !(replying
@@ -989,8 +913,6 @@ impl App {
         self.run_heard(command);
     }
 
-    /// Route an utterance: an instant one word command runs at once;
-    /// everything else goes to the assistant, which interprets it.
     pub(crate) fn run_heard(&mut self, command: String) {
         let raw = self.voice.heard.clone().unwrap_or_default();
         let inst = if self.cfg.voice.instant_commands {
@@ -1019,13 +941,11 @@ impl App {
         if let Some(v) = &self.voice.engine {
             v.stop_speaking();
         }
-        // Sounds unfinished: the rare tip to use brainstorm mode.
+
         self.brainstorm_suggest_check(&raw);
         self.ask_assistant_from(&command, Some(&raw));
     }
 
-    /// Run an instant command. None hands the utterance to the assistant
-    /// instead (a yes the assistant is waiting for, several tabs waiting).
     pub fn run_instant(&mut self, i: crate::instant::Instant) -> Option<String> {
         use crate::instant::Instant as I;
         match i {
@@ -1065,7 +985,7 @@ impl App {
                 self.resume_listening("resume");
                 Some("listening again".into())
             }
-            // Not paused: "resume" is a request for the assistant.
+
             I::Resume => None,
             I::Sleep if self.voice.open_mic => {
                 self.leave_open_mic(true);
@@ -1094,7 +1014,7 @@ impl App {
             }
             I::Approve | I::Deny => {
                 let yes = i == I::Approve;
-                // The assistant asked something: the answer is for it.
+
                 let asked = self.pending_confirms.iter().any(|p| p.answerable())
                     || self
                         .assistant
@@ -1111,7 +1031,7 @@ impl App {
                 if asked && self.assistant_on() {
                     return None;
                 }
-                // An open dialog takes yes / no.
+
                 match self.modal {
                     Modal::ConfirmStopLoops => {
                         self.modal = Modal::None;
@@ -1172,8 +1092,7 @@ impl App {
                     }
                     _ => {}
                 }
-                // The focused tab if it asks, else the only waiting tab;
-                // several waiting is the assistant's to sort out.
+
                 let (fs, ft) = (self.focus, self.panes[self.focus].active);
                 let target = if self.panes[fs].tabs[ft].activity == Activity::Permission {
                     Some((fs, ft))
@@ -1189,13 +1108,10 @@ impl App {
         }
     }
 
-    /// How a tab is named to the user: by its project or task, never
-    /// only an account and a tab number (tab_names.rs).
     fn describe(&self, slot: usize, tab: usize) -> String {
         self.spoken_tab_name(self.panes[slot].tabs[tab].uid)
     }
 
-    /// Every tab waiting for approval, longest waiting first.
     pub fn waiting_tabs(&self) -> Vec<(usize, usize)> {
         let mut v: Vec<(usize, usize, Instant)> = self
             .panes
@@ -1209,7 +1125,6 @@ impl App {
         v.into_iter().map(|(s, t, _)| (s, t)).collect()
     }
 
-    /// What tab (slot, tab) is asking for, read from its screen.
     pub fn request_of(&self, slot: usize, tab: usize) -> Option<crate::prompt::Request> {
         let t = &self.panes[slot].tabs[tab];
         let screen = t
@@ -1224,17 +1139,12 @@ impl App {
         crate::prompt_cli::describe_request_for(h, &screen)
     }
 
-    /// Whether `choice` can be answered on the tab's prompt now: Err says
-    /// why not (not waiting, or a CLI whose prompt GodTerm cannot read or
-    /// that has no such option).
     pub fn tab_answerable(&self, slot: usize, tab: usize, choice: Choice) -> Result<(), String> {
         let who = self.describe(slot, tab);
         if self.panes[slot].tabs[tab].activity != Activity::Permission {
             return Err(format!("{who} is not waiting for approval"));
         }
         if let Some(h) = self.pane_harness(slot).filter(|h| !h.integrated()) {
-            // The 1 / 2 / Esc fallback is Claude's. Another CLI is only
-            // answered with keys read off its own prompt.
             let screen = self.panes[slot].tabs[tab]
                 .parser
                 .lock()
@@ -1254,7 +1164,6 @@ impl App {
         Ok(())
     }
 
-    /// Answer one waiting tab. Only ever called on an explicit request.
     pub fn answer_tab(&mut self, slot: usize, tab: usize, choice: Choice) -> String {
         let who = self.describe(slot, tab);
         if let Err(e) = self.tab_answerable(slot, tab, choice) {
@@ -1275,8 +1184,6 @@ impl App {
         }
     }
 
-    /// Keys that pick `choice` on the prompt shown in a tab, read from the
-    /// screen. Falls back to 1 / 2 / Esc when the prompt cannot be parsed.
     pub fn answer_keys(
         &self,
         slot: usize,
@@ -1315,15 +1222,12 @@ impl App {
         t.write(bytes);
     }
 
-    /// Type a prompt into a tab and submit it.
     pub(crate) fn send_text(&mut self, slot: usize, tab: usize, text: &str) {
         self.type_text(slot, tab, text, true);
     }
 
     fn type_text(&mut self, slot: usize, tab: usize, text: &str, enter: bool) {
         if enter {
-            // Paste, then Enter as its own write once the tab shows it: in
-            // the same read claude takes the CR as a newline in the paste.
             self.paste_then_enter(slot, tab, text);
             return;
         }
@@ -1332,7 +1236,6 @@ impl App {
         t.write(&keys::encode_paste(text, t.bracketed_paste()));
     }
 
-    /// Speak a short confirmation.
     pub(crate) fn speak(&self, text: &str) {
         self.speak_as(Kind::Confirm, text);
     }
@@ -1349,11 +1252,11 @@ impl App {
         if !on {
             return;
         }
-        // Brainstorming: no announcements over the user.
+
         if kind == Kind::Announce && self.brainstorm_on() {
             return;
         }
-        // Heard by the user: recorded for the assistant (told.rs).
+
         if self.speaker_on() {
             let what = match kind {
                 Kind::Confirm => "confirmation",
@@ -1366,8 +1269,6 @@ impl App {
         }
     }
 
-    /// Run a parsed command. Returns the HUD text describing what happened.
-    /// Logged in account with the most 5 hour quota left, and that percent.
     pub fn best_account(&self) -> Option<(usize, f64)> {
         self.accounts
             .iter()
@@ -1378,8 +1279,6 @@ impl App {
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
     }
 
-    /// When the focused account is nearly out of 5 hour quota, suggest the
-    /// account with the most left.
     pub fn low_quota_hint(&self) -> Option<String> {
         let a = self.panes[self.focus].account?;
         let left = self.accounts[a].effective_left()?;
@@ -1397,12 +1296,9 @@ impl App {
         ))
     }
 
-    /// Announce background tabs that need approval or finished.
     pub fn voice_tick(&mut self) {
-        // Notice a system sleep right after the wake (see clock).
         crate::clock::observe();
-        // Conversation mode: when we finish talking back, the reply needs
-        // no wake word.
+
         let speaking = self.voice.engine.as_ref().is_some_and(|v| v.speaking());
         if self.voice.was_speaking
             && !speaking
@@ -1421,13 +1317,9 @@ impl App {
         self.assistant_follow_up(any_speaking);
         self.listen_after_reply(any_speaking);
         self.quiet_tick();
-        // Tabs never talk to the user themselves: a finish or an approval
-        // is an event for the assistant (app_events), which decides what
-        // the user hears. Nothing is said or flashed here.
+
         let items = std::mem::take(&mut self.attention);
         for a in items {
-            // The tab as it is now: gone, or no longer waiting, means the
-            // notice is stale and nothing is said.
             let Some((slot, tab)) = self.find_tab(a.uid) else {
                 continue;
             };
@@ -1443,15 +1335,13 @@ impl App {
                 a.what.label(),
                 now.label()
             ));
-            // In direct mode that tab speaks for itself (app_direct).
+
             if self.direct_with(a.uid) {
                 continue;
             }
             if need {
                 self.tab_approval_event(a.uid);
-                // An approval must reach the user even with the terminal
-                // in the back: the desktop notification stays (only for
-                // approvals; notifications switch).
+
                 let key = (slot, tab, true);
                 if self.cfg.notifications
                     && self.voice.term_focused != Some(true)
@@ -1498,10 +1388,9 @@ mod voice_resume_tests {
     fn an_open_mic_comes_back_after_a_restart() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = app("open");
-        // Nothing saved yet: voice.mode decides.
+
         assert_eq!(app.startup_voice(true).unwrap(), "push");
-        // Running with an open mic at quit (shutdown records it before it
-        // stops voice): saved, and the next start reopens it.
+
         app.voice_at_quit = Some("open".into());
         app.save_state();
         let st = crate::state::AppState::load().unwrap();
@@ -1511,7 +1400,7 @@ mod voice_resume_tests {
         cfg.voice.enabled = true;
         cfg.voice.mode = "push".into();
         let mut next = App::new(cfg, tx);
-        // As main does: the saved state is restored before voice starts.
+
         next.restore(crate::state::AppState::load().unwrap());
         assert_eq!(next.startup_voice(true).unwrap(), "open");
         let _ = std::fs::remove_dir_all(&home);
@@ -1527,7 +1416,7 @@ mod voice_resume_tests {
         assert_eq!(app.startup_voice(true).unwrap(), "push");
         app.rt_voice = Some("nonsense".into());
         assert_eq!(app.startup_voice(true).unwrap(), "push");
-        // Not running: saved as off; a change marks the state for saving.
+
         assert_eq!(app.voice_mode_now(), "off");
         app.state_dirty = false;
         app.rt_voice = Some("open".into());

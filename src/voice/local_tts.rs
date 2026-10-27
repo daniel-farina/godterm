@@ -1,18 +1,3 @@
-//! The optional local voices beside Kokoro: Chatterbox Turbo and
-//! Ming-3.0, both MLX models run by mlx-audio on Apple Silicon.
-//!
-//! Each runs in a long lived helper process (local_helper.py in a Python
-//! environment GodTerm manages, ~/.godterm/voices/venv) that keeps its
-//! model warm. GodTerm talks to it over the helper's stdin and stdout, a
-//! private pipe: JSON requests in, JSON headers plus float32 PCM out (the
-//! protocol is in local_helper.py). The helper starts when the engine is
-//! first wanted, unloads after `tts_unload_after_s` idle like Kokoro, and
-//! starts again after a crash (three crashes in ten minutes keep it out
-//! for five).
-//!
-//! Nothing is installed or downloaded until the user says yes in
-//! Settings; Remove takes it all away again.
-
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -26,16 +11,15 @@ use serde_json::{json, Value};
 use super::engines::TtsEngine;
 use crate::config::{app_home, expand_tilde, LocalTtsCfg, VoiceCfg};
 
-/// What Settings shows for each engine, and what an install needs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LocalInfo {
     pub id: &'static str,
     pub name: &'static str,
-    /// The Hugging Face repo of the MLX weights.
+
     pub repo: &'static str,
     pub disk_gb: f32,
     pub ram_gb: f32,
-    /// Measured on an M5 Max: time to first audio and real time factor.
+
     pub first_audio: &'static str,
     pub rtf: f32,
     pub license: &'static str,
@@ -72,7 +56,6 @@ pub fn info(id: &str) -> Option<&'static LocalInfo> {
     LOCALS.iter().find(|l| l.id == id)
 }
 
-/// Ming-3.0's built in English voices.
 pub const MING_VOICES: &[&str] = &[
     "US_Emma",
     "US_Stella",
@@ -81,20 +64,15 @@ pub const MING_VOICES: &[&str] = &[
     "UK_Charlotte",
 ];
 
-/// mlx-audio at the commit both models were measured with (Ming-3.0 is on
-/// its main branch only).
 pub const MLX_AUDIO: &str =
     "mlx-audio @ git+https://github.com/Blaizzy/mlx-audio@24547fd21503d897b52924306608ea727a9f9405";
 
-/// The helper script, written next to the environment at start.
 pub const HELPER_PY: &str = include_str!("local_helper.py");
 
-/// The MLX models need Apple Silicon (and macOS).
 pub fn supported() -> bool {
     cfg!(all(target_os = "macos", target_arch = "aarch64"))
 }
 
-/// GodTerm's voices folder (~/.godterm/voices).
 pub fn voices_dir() -> PathBuf {
     app_home().join("voices")
 }
@@ -111,7 +89,6 @@ pub fn venv_python(cfg: &LocalTtsCfg) -> PathBuf {
     venv_dir(cfg).join("bin").join("python")
 }
 
-/// Written after a finished install (and removed by Remove).
 pub fn marker(id: &str) -> PathBuf {
     voices_dir().join(format!("{id}.installed"))
 }
@@ -120,8 +97,6 @@ pub fn installed(id: &str, cfg: &LocalTtsCfg) -> bool {
     marker(id).exists() && venv_python(cfg).exists()
 }
 
-/// The Hugging Face cache the models live in (the standard one, so a
-/// model fetched by other tools is reused). Tests use a folder of their own.
 pub fn hub_cache() -> PathBuf {
     if cfg!(test) {
         return app_home().join("hf-test-cache");
@@ -139,7 +114,6 @@ pub fn model_cache_dir(repo: &str) -> PathBuf {
     hub_cache().join(format!("models--{}", repo.replace('/', "--")))
 }
 
-/// Why this local engine cannot speak now, or None.
 pub fn problem(id: &str, cfg: &VoiceCfg) -> Option<String> {
     if !supported() {
         return Some("needs a Mac with Apple Silicon".into());
@@ -159,7 +133,6 @@ pub fn problem(id: &str, cfg: &VoiceCfg) -> Option<String> {
     None
 }
 
-/// The voice a local engine speaks with, for the HUD and the preview.
 pub fn voice_label(id: &str, cfg: &VoiceCfg) -> String {
     match id {
         "chatterbox" => match cfg.local.chatterbox_ref.trim() {
@@ -182,13 +155,9 @@ pub fn voice_label(id: &str, cfg: &VoiceCfg) -> String {
     }
 }
 
-// ---------------------------------------------------------------------
-// One-time notes for the UI ("Chatterbox is unavailable, using Kokoro").
-
 static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static NOTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Queue `text` for a flash, once per `key` in this run.
 pub fn note_once(key: &str, text: String) {
     let mut seen = NOTED.lock().unwrap_or_else(|e| e.into_inner());
     if seen.iter().any(|k| k == key) {
@@ -208,10 +177,6 @@ pub fn reset_notes() {
     NOTED.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
-// ---------------------------------------------------------------------
-// The helper process.
-
-/// How to start a helper: the program, its arguments, a log for stderr.
 #[derive(Debug, Clone)]
 pub struct Spec {
     pub program: PathBuf,
@@ -219,7 +184,6 @@ pub struct Spec {
     pub log: PathBuf,
 }
 
-/// The real helper for `id`: the environment's Python running the script.
 pub fn spec_for(id: &str, cfg: &LocalTtsCfg) -> Spec {
     let dir = voices_dir();
     let script = dir.join("local_helper.py");
@@ -252,7 +216,6 @@ enum Msg {
     Gone,
 }
 
-/// Larger frames than this are not ours: the stream is out of step.
 const MAX_FRAME: usize = 64 << 20;
 
 fn read_msgs(out: impl Read, tx: mpsc::Sender<Msg>) {
@@ -312,22 +275,19 @@ fn read_msgs(out: impl Read, tx: mpsc::Sender<Msg>) {
     }
 }
 
-/// A running helper.
 pub struct Helper {
     child: Child,
     stdin: Option<ChildStdin>,
     rx: Receiver<Msg>,
     pub started: Instant,
-    /// Set once the model is loaded and warm.
+
     pub load_ms: Option<u64>,
     next: u64,
-    /// The last speak failed on its own (an error for that request), not
-    /// because the helper broke.
+
     pub request_failed: bool,
 }
 
 impl Helper {
-    /// Start it; the model loads in the background (see `wait_ready`).
     pub fn spawn(spec: &Spec) -> Result<Helper, String> {
         if let Some(d) = spec.log.parent() {
             let _ = std::fs::create_dir_all(d);
@@ -367,7 +327,6 @@ impl Helper {
         self.child.id()
     }
 
-    /// Still running.
     pub fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
@@ -379,8 +338,6 @@ impl Helper {
             .map_err(|e| format!("helper stopped ({e})"))
     }
 
-    /// Wait up to `t` for the model to be loaded: Ok(true) ready, Ok(false)
-    /// still loading, Err when it failed or exited.
     pub fn wait_ready(&mut self, t: Duration) -> Result<bool, String> {
         if self.load_ms.is_some() {
             return Ok(true);
@@ -411,7 +368,7 @@ impl Helper {
         }
     }
 
-    #[allow(dead_code)] // tests and `godterm __local-voice-test`
+    #[allow(dead_code)]
     pub fn ping(&mut self, t: Duration) -> bool {
         if self.send(&json!({"op": "ping"})).is_err() {
             return false;
@@ -428,10 +385,6 @@ impl Helper {
         false
     }
 
-    /// Speak one request; PCM goes to `sink` as it comes. `first` bounds
-    /// the wait for the first audio, `gap` the wait between chunks. When
-    /// `sink` returns false or `cancel` is set it is cut off (the helper
-    /// stops generating). The time to first audio, or why it failed.
     pub fn speak(
         &mut self,
         mut req: Value,
@@ -472,7 +425,6 @@ impl Helper {
                 }
                 Ok(Msg::Done { id: i }) if i == id => return Ok(first_ms),
                 Ok(Msg::Error { id: Some(i), msg }) if i == id => {
-                    // This request failed (a bad clip): the helper is fine.
                     self.request_failed = !stopped;
                     return if stopped { Ok(first_ms) } else { Err(msg) };
                 }
@@ -480,11 +432,10 @@ impl Helper {
                 Ok(Msg::Gone) | Err(RecvTimeoutError::Disconnected) => {
                     return Err(self.exit_reason())
                 }
-                // Left over from a request that was cut off.
+
                 Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) => {
                     if stopped {
-                        // It did not confirm the cancel: start afresh.
                         return Err("the helper did not stop in time".into());
                     }
                     return Err(match first_ms {
@@ -503,7 +454,6 @@ impl Helper {
 
 impl Drop for Helper {
     fn drop(&mut self) {
-        // Closing stdin ends it; then make sure.
         self.stdin.take();
         let pid = self.child.id();
         let end = Instant::now() + Duration::from_millis(300);
@@ -520,10 +470,6 @@ impl Drop for Helper {
     }
 }
 
-// ---------------------------------------------------------------------
-// The engine.
-
-/// Restarts allowed in CRASH_WINDOW before the engine is kept out.
 const MAX_CRASHES: usize = 3;
 const CRASH_WINDOW: Duration = Duration::from_secs(600);
 pub const LOCAL_RETRY: Duration = Duration::from_secs(300);
@@ -537,7 +483,7 @@ pub struct LocalEngine {
     crashes: Vec<Instant>,
     down: Option<(Instant, String)>,
     cancel: Arc<AtomicBool>,
-    /// Time to first audio of the last sentence.
+
     pub last_first_audio_ms: Option<u64>,
 }
 
@@ -547,7 +493,6 @@ impl LocalEngine {
         LocalEngine::with_spec(id, cfg, spec)
     }
 
-    /// With any helper command (tests use a fake one).
     pub fn with_spec(id: &'static str, cfg: &VoiceCfg, spec: Spec) -> LocalEngine {
         LocalEngine {
             id,
@@ -562,7 +507,6 @@ impl LocalEngine {
         }
     }
 
-    /// New voice settings (the helper keeps running).
     pub fn set_cfg(&mut self, cfg: &VoiceCfg) {
         self.cfg = cfg.local.clone();
         self.speed = cfg.tts_speed.clamp(0.5, 2.0);
@@ -576,12 +520,11 @@ impl LocalEngine {
         self.helper.as_ref().is_some_and(|h| h.load_ms.is_some())
     }
 
-    #[allow(dead_code)] // tests
+    #[allow(dead_code)]
     pub fn pid(&self) -> Option<u32> {
         self.helper.as_ref().map(Helper::pid)
     }
 
-    /// Start the helper now (the model loads while other things happen).
     pub fn start(&mut self) -> Result<(), String> {
         if let Some(h) = self.helper.as_mut() {
             if h.alive() {
@@ -606,7 +549,6 @@ impl LocalEngine {
         }
     }
 
-    /// Free the model (idle, or the engine was switched away).
     pub fn unload(&mut self) {
         if self.helper.take().is_some() {
             crate::log::info(&format!("tts: {} helper stopped (idle)", self.id));
@@ -655,7 +597,6 @@ impl LocalEngine {
         }
     }
 
-    /// The first audio wait: Ming makes a whole sentence before it speaks.
     pub fn first_timeout(&self) -> Duration {
         let ms = self.cfg.timeout_ms.max(1000) as u64;
         Duration::from_millis(if self.id == "ming" { ms * 2 } else { ms })
@@ -689,7 +630,7 @@ impl TtsEngine for LocalEngine {
         let Some(h) = self.helper.as_mut() else {
             return Err("the helper is not running".into());
         };
-        // Still loading: this sentence goes to the fallback, it keeps loading.
+
         match h.wait_ready(first) {
             Ok(true) => {}
             Ok(false) => {
@@ -730,8 +671,6 @@ impl TtsEngine for LocalEngine {
                 Ok(())
             }
             Err(e) => {
-                // A helper that is out of step or gone starts afresh; one
-                // that only refused this request keeps running.
                 if !self.helper.as_ref().is_some_and(|h| h.request_failed) {
                     self.crashed(&e);
                 }
@@ -752,17 +691,13 @@ impl TtsEngine for LocalEngine {
     }
 }
 
-// ---------------------------------------------------------------------
-// tts_speed for engines without a speed control: a streaming WSOLA time
-// stretch (tempo changes, pitch stays).
-
 pub struct Stretch {
     speed: f32,
     pub rate: u32,
     input: Vec<f32>,
-    /// Where the next analysis frame starts in `input`.
+
     pos: f64,
-    /// The tail of the last output frame, overlapped with the next one.
+
     tail: Vec<f32>,
     started: bool,
 }
@@ -784,12 +719,10 @@ impl Stretch {
     }
 
     fn sizes(&self) -> (usize, usize, usize) {
-        // 40 ms frames, half overlap, 10 ms search.
         let n = (self.rate as usize / 25).max(64);
         (n, n / 2, n / 4)
     }
 
-    /// Feed samples; the stretched samples ready so far.
     pub fn push(&mut self, pcm: &[f32], rate: u32) -> Vec<f32> {
         if !self.started {
             self.rate = rate.max(8000);
@@ -799,7 +732,6 @@ impl Stretch {
         self.run(false)
     }
 
-    /// The rest at the end of the sentence.
     pub fn finish(&mut self) -> Vec<f32> {
         if self.identity() {
             return vec![];
@@ -821,8 +753,7 @@ impl Stretch {
             if need > self.input.len() && (!last || base >= self.input.len()) {
                 break;
             }
-            // The frame within ±tol of `base` most like the natural
-            // continuation of the last frame.
+
             let mut best = base;
             if !self.tail.is_empty() {
                 let lo = base.saturating_sub(tol);
@@ -843,7 +774,7 @@ impl Stretch {
             let frame: Vec<f32> = (0..n)
                 .map(|i| self.input.get(best + i).copied().unwrap_or(0.0))
                 .collect();
-            // Hann cross-fade over the overlap.
+
             #[allow(clippy::needless_range_loop)]
             for i in 0..hs {
                 let w = 0.5 - 0.5 * (std::f32::consts::PI * i as f32 / hs as f32).cos();
@@ -857,7 +788,7 @@ impl Stretch {
                 break;
             }
         }
-        // Drop what will never be read again.
+
         let keep_from = (self.pos as usize).saturating_sub(tol);
         if keep_from > n * 4 {
             self.input.drain(..keep_from);
@@ -866,9 +797,6 @@ impl Stretch {
         out
     }
 }
-
-// ---------------------------------------------------------------------
-// Install and remove (only after a yes in Settings).
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Install {
@@ -887,7 +815,6 @@ fn set_state(s: Option<Install>) {
     *INSTALL.lock().unwrap_or_else(|e| e.into_inner()) = s;
 }
 
-/// Take a finished install's result (for one flash).
 pub fn take_finished() -> Option<Install> {
     let mut g = INSTALL.lock().unwrap_or_else(|e| e.into_inner());
     if matches!(&*g, Some(Install::Done { .. } | Install::Failed { .. })) {
@@ -901,14 +828,12 @@ pub fn installing() -> bool {
     matches!(install_state(), Some(Install::Running { .. }))
 }
 
-/// One command of an install, with what to show while it runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Step {
     pub what: String,
     pub argv: Vec<String>,
 }
 
-/// A Python for the environment: uv, else a python3.10 to 3.13.
 #[cfg_attr(test, allow(dead_code))]
 pub fn find_python(cfg: &LocalTtsCfg) -> (Option<PathBuf>, Option<PathBuf>) {
     let w = |n: &str| super::tts::which(n);
@@ -925,8 +850,6 @@ pub fn find_python(cfg: &LocalTtsCfg) -> (Option<PathBuf>, Option<PathBuf>) {
     (uv, py)
 }
 
-/// The commands that install `id`: the environment (when missing),
-/// mlx-audio, then the model.
 pub fn install_steps(
     id: &str,
     cfg: &LocalTtsCfg,
@@ -993,12 +916,9 @@ pub fn install_steps(
     Ok(steps)
 }
 
-/// Requests that would have started an install (tests: nothing runs).
 #[cfg(test)]
 pub static STARTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Install `id` in the background (the user said yes). Progress is in
-/// `install_state()`.
 pub fn start_install(id: &str, vc: &VoiceCfg) {
     if installing() {
         return;
@@ -1118,8 +1038,6 @@ pub fn dir_bytes(p: &Path) -> u64 {
         .sum()
 }
 
-/// What Remove deletes for `id`: its marker and model, and the shared
-/// environment when no other local engine still uses it.
 pub fn remove_paths(id: &str, cfg: &LocalTtsCfg) -> Vec<PathBuf> {
     let mut v = vec![marker(id)];
     if let Some(i) = info(id) {
@@ -1133,7 +1051,6 @@ pub fn remove_paths(id: &str, cfg: &LocalTtsCfg) -> Vec<PathBuf> {
     v
 }
 
-/// Remove `id` (the user said yes): the paths of `remove_paths`.
 pub fn remove(id: &str, cfg: &LocalTtsCfg) -> Result<String, String> {
     let name = info(id).map(|i| i.name).ok_or("unknown engine")?;
     for p in remove_paths(id, cfg) {
@@ -1149,7 +1066,6 @@ pub fn remove(id: &str, cfg: &LocalTtsCfg) -> Result<String, String> {
     Ok(format!("{name} removed."))
 }
 
-/// The status line of an engine in Settings.
 pub fn status(id: &str, cfg: &VoiceCfg) -> String {
     if !supported() {
         return "unavailable: needs a Mac with Apple Silicon".into();
@@ -1166,12 +1082,11 @@ pub fn status(id: &str, cfg: &VoiceCfg) -> String {
     }
 }
 
-/// What the install asks before it starts.
 pub fn consent_lines(id: &str) -> Vec<String> {
     let Some(i) = info(id) else {
         return vec![];
     };
-    // Short lines: the dialog does not wrap.
+
     vec![
         format!("Install {}, a local voice?", i.name),
         format!("{}.", i.blurb),
@@ -1190,11 +1105,6 @@ pub fn consent_lines(id: &str) -> Vec<String> {
     ]
 }
 
-/// `godterm __local-voice-test --engine chatterbox|ming --python PY --out
-/// WAV [--voice V] [--ref CLIP] [--speed S]`: run the helper from a temp
-/// copy (not ~/.godterm), speak three sentences through the same code as
-/// talk back, report the time to first audio of each and write the WAV.
-/// Never plays anything.
 pub fn bench_command(args: &[String]) -> anyhow::Result<()> {
     let arg = |n: &str| {
         args.iter()
@@ -1289,8 +1199,6 @@ mod tests {
         d
     }
 
-    /// A fake helper in Python's standard library only: the real protocol,
-    /// a sine wave instead of a model. FAKE_MODE picks a failure.
     const FAKE: &str = r#"
 import json, os, struct, sys, math, time
 out = sys.stdout.buffer
@@ -1371,8 +1279,7 @@ for line in sys.stdin:
             .unwrap();
         assert!(first.is_some());
         assert_eq!(got, 4 * 2400);
-        // Cut off after the first chunk: it returns, and the next request
-        // still works (leftovers of the old one are skipped).
+
         let mut chunks = 0;
         h.speak(
             json!({"text": "Long."}),
@@ -1401,7 +1308,7 @@ for line in sys.stdin:
         assert_eq!(got, 4 * 2400);
         let pid = h.pid();
         drop(h);
-        // Dropped: the process is gone.
+
         std::thread::sleep(Duration::from_millis(100));
         assert!(!crate::platform::alive(pid));
         let _ = std::fs::remove_dir_all(&d);
@@ -1422,7 +1329,7 @@ for line in sys.stdin:
         }
         let why = e.down_reason().expect("kept out after three crashes");
         assert!(why.contains("paused"), "{why}");
-        // Kept out: no new process.
+
         assert!(e.speak_stream("Hi.", &mut |_, _| true).is_err());
         assert!(!e.loaded());
         let _ = std::fs::remove_dir_all(&d);
@@ -1439,7 +1346,7 @@ for line in sys.stdin:
         let mut e = LocalEngine::with_spec("chatterbox", &cfg, spec);
         e.start().unwrap();
         let mut n = 0;
-        // The first sentence may come while it loads: up to the timeout.
+
         e.speak_stream("Hello there.", &mut |p, _| {
             n += p.len();
             true
@@ -1452,7 +1359,7 @@ for line in sys.stdin:
         assert!(!e.loaded());
         std::thread::sleep(Duration::from_millis(100));
         assert!(!crate::platform::alive(pid));
-        // Used again: a new helper.
+
         e.speak_stream("Back.", &mut |_, _| true).unwrap();
         assert_ne!(e.pid(), Some(pid));
         let _ = std::fs::remove_dir_all(&d);
@@ -1478,7 +1385,7 @@ for line in sys.stdin:
         let m = LocalEngine::with_spec("ming", &cfg, spec.clone());
         assert_eq!(m.request("Hi.")["instruct"], "a calm narrator");
         assert!(m.first_timeout() > c.first_timeout());
-        // A helper that cannot start is a failure (for the fallback).
+
         let mut bad = LocalEngine::with_spec("ming", &cfg, spec);
         assert!(bad.speak_stream("Hi.", &mut |_, _| true).is_err());
     }
@@ -1495,7 +1402,7 @@ for line in sys.stdin:
             let err = e.speak_stream("Hi.", &mut |_, _| true).unwrap_err();
             assert!(err.contains("5 seconds"), "{err}");
         }
-        // Still the same running helper, never counted as a crash.
+
         assert!(e.ready() && e.down_reason().is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -1574,25 +1481,25 @@ for line in sys.stdin:
         assert_eq!(s[0].argv[1..3], ["-m".to_string(), "venv".into()]);
         assert!(install_steps("ming", &cfg, None, None).is_err());
         assert!(install_steps("bogus", &cfg, Some(&uv), None).is_err());
-        // Installed: marker and environment.
+
         std::fs::create_dir_all(venv_dir(&cfg).join("bin")).unwrap();
         std::fs::write(venv_python(&cfg), "").unwrap();
         std::fs::write(marker("chatterbox"), "{}").unwrap();
         std::fs::write(marker("ming"), "{}").unwrap();
         assert!(installed("chatterbox", &cfg));
-        // With the venv there, no step makes it again.
+
         assert_eq!(
             install_steps("ming", &cfg, Some(&uv), None).unwrap().len(),
             2
         );
-        // Ming still uses the environment: removing Chatterbox keeps it.
+
         let p = remove_paths("chatterbox", &cfg);
         assert!(p.contains(&marker("chatterbox")));
         assert!(p.contains(&model_cache_dir(CHATTERBOX.repo)));
         assert!(!p.contains(&venv_dir(&cfg)));
         remove("chatterbox", &cfg).unwrap();
         assert!(!installed("chatterbox", &cfg) && venv_python(&cfg).exists());
-        // The last one takes the environment along.
+
         assert!(remove_paths("ming", &cfg).contains(&venv_dir(&cfg)));
         remove("ming", &cfg).unwrap();
         assert!(!venv_dir(&cfg).exists());

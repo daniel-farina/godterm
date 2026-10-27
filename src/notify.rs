@@ -1,12 +1,8 @@
-//! macOS notifications and a small rate limiter shared with spoken alerts.
-
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Allows an event at most once per `per_key` for the same key and at most
-/// once per `gap` overall.
 pub struct Limiter<K> {
     per_key: Duration,
     gap: Duration,
@@ -50,12 +46,10 @@ impl<K: Hash + Eq> Limiter<K> {
     }
 }
 
-/// AppleScript string literal body.
 pub fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Post a notification through `osascript` without blocking.
 pub fn post(title: &str, message: &str) {
     if cfg!(test) || !cfg!(target_os = "macos") {
         return;

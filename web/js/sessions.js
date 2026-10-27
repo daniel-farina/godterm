@@ -1,5 +1,3 @@
-// Sessions: every Claude Code and Grok session on the Mac, through the
-// `sessions` control tool, with search, filters, sort and load more.
 import { $, h, store, toast, debounce, idOf, isDesk, skeleton, failRow, emptyState, hscroll } from './util.js';
 import { tool } from './conn.js';
 import { S } from './state.js';
@@ -53,7 +51,7 @@ async function query() {
   if (r.ok === false && !v.sessions) { info.textContent = ''; box.replaceChildren(failRow(r.error || 'Sessions are not available', query, 'The Sessions screen')); return; }
   const rows = v.sessions || [];
   info.textContent = `${v.matched ?? rows.length} sessions${v.did_you_mean ? ' · did you mean: ' + [].concat(v.did_you_mean).map((d) => d.title || d).slice(0, 2).join(', ') : ''}${v.indexing ? ' · still indexing' : ''}`;
-  // Scripted runs and sessions in temp folders are hidden unless asked for.
+
   if (v.headless_hidden || f.headless) {
     info.append(' · ', h('button.linkb', { onclick: () => { f.headless = !f.headless; reload(); } },
       f.headless ? 'hide scripted and temp' : `${v.headless_hidden} scripted or temp hidden: show`));
@@ -96,7 +94,7 @@ export function sessionsSheet() {
   const accts = [['', 'All accounts'], ['main', 'Main'], ...S.accounts.map((a) => [String(a.account), a.label])];
   info = h('div.mnote', { style: 'padding:0 4px' });
   box = h('div.list.slist');
-  // Filters fold into one row that says what is set.
+
   const fr = (label, el) => h('div.frow', {}, h('span.fl', {}, label), el);
   const filters = h('div.fbody', { hidden: !store.get('sessf-open', isDesk()) },
     fr('Sort', h('div.inrow', {}, sort, rev)),

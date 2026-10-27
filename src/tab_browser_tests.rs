@@ -1,11 +1,3 @@
-//! The Browser button of each tab (tab_browser.rs): the profile and
-//! extension state behind the button, the binding kept per tab (saved,
-//! restored, carried by a move), the tab's own tools answering with its
-//! profile only, links opened in the default profile, the dialog's steps
-//! and the click on the button. Chrome is never launched (the commands are
-//! recorded) and its real profiles are never read: the fixture is a temp
-//! folder.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -40,8 +32,6 @@ pub(crate) fn pe(dir: &str, name: &str, installed: bool, enabled: Option<bool>) 
     }
 }
 
-// ---- the states behind the button ----
-
 #[test]
 fn the_extension_state_of_a_profile() {
     assert_eq!(
@@ -56,7 +46,7 @@ fn the_extension_state_of_a_profile() {
         ext_state(&pe("Default", "Me", false, Some(false))),
         ExtState::Disabled
     );
-    // Files but no entry in Secure Preferences: not on.
+
     assert_eq!(
         ext_state(&pe("Default", "Me", true, None)),
         ExtState::Disabled
@@ -65,7 +55,7 @@ fn the_extension_state_of_a_profile() {
         ext_state(&pe("Default", "Me", false, None)),
         ExtState::Missing
     );
-    // An entry that says on, files not found: on.
+
     assert_eq!(
         ext_state(&pe("Default", "Me", false, Some(true))),
         ExtState::Enabled
@@ -83,7 +73,7 @@ fn the_button_state_follows_the_tabs_profile_and_its_extension() {
     assert_eq!(button_state(Some("Default"), &ps), BtnState::Ready);
     assert_eq!(button_state(Some("Profile 1"), &ps), BtnState::NeedsEnable);
     assert_eq!(button_state(Some("Profile 2"), &ps), BtnState::Chosen);
-    // A profile Chrome no longer lists, or nothing known yet.
+
     assert_eq!(button_state(Some("Profile 9"), &ps), BtnState::Chosen);
     assert_eq!(button_state(Some("Default"), &[]), BtnState::Chosen);
     assert_eq!(BtnState::Ready.word(), "ready");
@@ -112,7 +102,7 @@ fn the_button_text_shows_the_state_in_plain_words() {
         BtnState::Ready,
     ] {
         assert!(!button_label(s, "x").contains('—'), "no em dashes");
-        // Shorter forms for tight rows, longest first, the word always there.
+
         let v = tb::button_labels(s, "Work");
         assert_eq!(v[0], button_label(s, "Work"));
         assert!(v
@@ -155,22 +145,20 @@ fn a_profiles_browser_is_found_by_the_label_or_as_the_only_one() {
         (m.len(), m[0].instance_id.as_str(), how),
         (1, "bbb", "label")
     );
-    // The label may be the folder or the email too.
+
     let all = vec![bsk("ccc", "profile 1"), bsk("ddd", "work@x.com")];
     let (m, _) = match_browsers(&all, &work, 2, true, &L);
     assert_eq!(m.len(), 2);
-    // A lone browser counts only when this is the one profile with it on.
+
     let one = vec![bsk("eee", "")];
     assert_eq!(match_browsers(&one, &work, 1, true, &L).1, "only browser");
     assert!(match_browsers(&one, &work, 2, true, &L).0.is_empty());
     assert!(match_browsers(&one, &work, 1, false, &L).0.is_empty());
-    // Nothing guessed from other labels.
+
     let (m, how) = match_browsers(&[bsk("fff", "Me"), bsk("ggg", "Other")], &work, 2, true, &L);
     assert!(m.is_empty());
     assert_eq!(how, "unknown");
 }
-
-// ---- opening Chrome ----
 
 #[test]
 fn the_chrome_command_per_platform() {
@@ -187,7 +175,7 @@ fn the_chrome_command_per_platform() {
             u
         ]
     );
-    // chrome:// pages take the same route.
+
     let c = chrome_cmd(Os::Mac, tb::EXTENSIONS_URL, Some("Default")).unwrap();
     assert_eq!(
         c.args,
@@ -213,9 +201,9 @@ fn the_chrome_command_per_platform() {
     assert_eq!(c.prog, "cmd");
     assert_eq!(c.args[..4], ["/C", "start", "", "chrome"]);
     assert_eq!(c.args[4], "--profile-directory=Default");
-    // cmd would read these as syntax.
+
     assert!(chrome_cmd(Os::Windows, "https://x.com/?a=1&b=2", Some("Default")).is_none());
-    // Never a path, never an empty address.
+
     for bad in [
         "",
         "../x",
@@ -232,9 +220,6 @@ fn the_chrome_command_per_platform() {
     assert!(valid_profile_dir("Default") && valid_profile_dir("Profile 12"));
 }
 
-// ---- fixture ----
-
-/// A Chrome folder: Default (on), Profile 1 (off), Profile 2 (none).
 fn chrome(home: &Path) -> PathBuf {
     let root = home.join("chrome");
     fs::create_dir_all(&root).unwrap();
@@ -272,8 +257,6 @@ fn env(root: &Path) -> Env {
     }
 }
 
-/// An app with that Chrome folder looked at, and one running tab on pane
-/// 0 (its index).
 pub(crate) fn setup(tag: &str) -> (App, PathBuf, usize) {
     let (mut app, home) = test_app(&format!("tabbrowser-{tag}"));
     let root = chrome(&home);
@@ -289,14 +272,12 @@ pub(crate) fn setup(tag: &str) -> (App, PathBuf, usize) {
     (app, home, t)
 }
 
-/// The quick look, taken now (the test's own, not the background one).
 pub(crate) fn refresh(app: &mut App) {
     settle(app);
     let e = app.browser.env.clone().unwrap();
     app.browser.set_quick(tb::quick(&e, false));
 }
 
-/// Wait for background looks to end.
 pub(crate) fn settle(app: &App) {
     let t0 = std::time::Instant::now();
     while (app.browser.quick_busy.load(Ordering::SeqCst) || app.browser_busy())
@@ -321,8 +302,6 @@ pub(crate) fn key(app: &mut App, c: KeyCode) {
     app.on_browser_key(KeyEvent::new(c, KeyModifiers::NONE));
 }
 
-// ---- the binding: kept, restored, followed ----
-
 #[test]
 fn the_binding_is_saved_with_the_tab_and_restored() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -343,10 +322,10 @@ fn the_binding_is_saved_with_the_tab_and_restored() {
             .count(),
         1
     );
-    // Only the bound tab writes a key.
+
     let text = serde_json::to_string(&st).unwrap();
     assert_eq!(text.matches("\"browser\"").count(), 1, "{text}");
-    // A fresh app comes back with it, on the same tab.
+
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut next = App::new(crate::config::Config::default(), tx);
     next.restore(st);
@@ -355,10 +334,10 @@ fn the_binding_is_saved_with_the_tab_and_restored() {
     assert_eq!(next.panes[s].tabs[i].name(), "web");
     let o = next.find_tab(uid_of(&app, other)).unwrap();
     assert_eq!(next.panes[o.0].tabs[o.1].browser, None);
-    // Older state files have no key.
+
     let old: crate::state::TabState = serde_json::from_str(r#"{"cwd":"/x"}"#).unwrap();
     assert_eq!(old.browser, None);
-    // A path smuggled into the state is not kept as a binding.
+
     assert!(!app.bind_tab_browser(uid_of(&app, other), Some("../../etc".into())));
     let _ = fs::remove_dir_all(home);
 }
@@ -376,12 +355,10 @@ fn a_moved_tab_keeps_its_binding_and_the_others_do_not_get_it() {
     assert_ne!(new, uid);
     let (s, i) = app.find_tab(new).unwrap();
     assert_eq!(app.panes[s].tabs[i].browser.as_deref(), Some("Profile 1"));
-    // The binding is the tab's, not the account's: a neighbour has none.
+
     assert_eq!(app.panes[0].tabs[plain].browser, None);
     let _ = fs::remove_dir_all(home);
 }
-
-// ---- the tab's own tools ----
 
 pub(crate) fn snapshot(app: &App, browsers: Vec<Browser>) -> Snapshot {
     Snapshot {
@@ -412,7 +389,7 @@ fn a_tab_sees_only_its_own_profile_and_never_a_neighbours() {
     app.bind_tab_browser(ub, Some("Default".into()));
     let s = snapshot(&app, vec![bsk("inst-me", "Me"), bsk("inst-work", "Work")]);
     app.browser.set(s);
-    // Tab a: Work only.
+
     let v = tab_call(&mut app, ua, "list_browsers");
     assert_eq!(v["ok"], true, "{v}");
     let text = v.to_string();
@@ -424,7 +401,7 @@ fn a_tab_sees_only_its_own_profile_and_never_a_neighbours() {
         !text.contains("inst-me") && !text.contains("me@x.com") && !text.contains("Default"),
         "{text}"
     );
-    // Tab b: Me only.
+
     let v = tab_call(&mut app, ub, "list_browsers");
     assert_eq!(v["result"]["bound_profile"]["state"], "ready");
     assert_eq!(v["result"]["browsers"][0]["instance_id"], "inst-me");
@@ -433,18 +410,18 @@ fn a_tab_sees_only_its_own_profile_and_never_a_neighbours() {
         .unwrap()
         .contains("--browser inst-me"));
     assert!(!v.to_string().contains("inst-work"));
-    // browser_status lists one Chrome profile: the tab's.
+
     let v = tab_call(&mut app, ub, "browser_status");
     let profs = v["result"]["chrome_profiles"].as_array().unwrap();
     assert_eq!(profs.len(), 1, "{v}");
     assert_eq!(profs[0]["profile_dir"], "Default");
     assert!(!v.to_string().contains("work@x.com"));
-    // Tab c has none: told to ask, and no binding of the others shows.
+
     let v = tab_call(&mut app, uc, "list_browsers");
     assert_eq!(v["ok"], true, "{v}");
     assert!(v["result"]["bound_profile"].is_null());
     assert!(v["result"]["say"].as_str().unwrap().contains("Browser"));
-    // A tab cannot name another tab's browser.
+
     let v = app.control_call(
         "list_browsers",
         &json!({"_client": format!("tab:{ua}"), "tab": tab_id_of(ub)}),
@@ -463,7 +440,7 @@ fn an_unclear_match_asks_the_user_instead_of_guessing() {
     let (mut app, home, a) = setup("unclear");
     let ua = uid_of(&app, a);
     app.bind_tab_browser(ua, Some("Default".into()));
-    // Two connected browsers, neither labelled for this profile.
+
     let s = snapshot(&app, vec![bsk("x1", "one"), bsk("x2", "two")]);
     app.browser.set(s);
     let v = tab_call(&mut app, ua, "list_browsers");
@@ -501,8 +478,6 @@ fn the_hint_tells_a_tab_to_use_only_its_browser() {
     assert!(d.contains("THIS tab"));
 }
 
-// ---- links ----
-
 #[test]
 fn links_open_in_the_default_profile_and_a_tab_uses_its_own() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -515,11 +490,11 @@ fn links_open_in_the_default_profile_and_a_tab_uses_its_own() {
         }
         app.control_call("open_path", &a)
     };
-    // No default: the usual opener, Chrome is not asked for a profile.
+
     let v = open(&mut app, json!({}));
     assert_eq!(v["ok"], true, "{v}");
     assert!(launched().is_empty());
-    // A default profile: the link goes there.
+
     app.set_default_profile("Profile 1");
     open(&mut app, json!({}));
     assert_eq!(
@@ -530,7 +505,7 @@ fn links_open_in_the_default_profile_and_a_tab_uses_its_own() {
         .args
         .iter()
         .any(|a| a == "--profile-directory=Profile 1"));
-    // A tab with its own profile uses it for links opened for it.
+
     let tid = tab_id_of(uid_of(&app, t));
     app.bind_tab_browser(uid_of(&app, t), Some("Default".into()));
     tb::LAUNCHED.lock().unwrap().clear();
@@ -539,14 +514,14 @@ fn links_open_in_the_default_profile_and_a_tab_uses_its_own() {
         launched(),
         vec![chrome_cmd(Os::current(), url, Some("Default")).unwrap()]
     );
-    // Without a tab, still the default.
+
     tb::LAUNCHED.lock().unwrap().clear();
     open(&mut app, json!({}));
     assert_eq!(
         launched(),
         vec![chrome_cmd(Os::current(), url, Some("Profile 1")).unwrap()]
     );
-    // A profile Chrome does not have any more: nothing is sent to it.
+
     app.set_default_profile("Profile 9");
     tb::LAUNCHED.lock().unwrap().clear();
     open(&mut app, json!({}));
@@ -566,7 +541,7 @@ fn the_default_profile_is_written_to_config_toml() {
     );
     let cfg = crate::config::Config::parse(&text).unwrap();
     assert_eq!(cfg.browser.default_profile, "Profile 1");
-    // Settings > Browser: the button steps through the profiles, then none.
+
     app.browser_default_cycle();
     assert_eq!(app.cfg.browser.default_profile, "Profile 2");
     app.browser_default_cycle();
@@ -578,8 +553,6 @@ fn the_default_profile_is_written_to_config_toml() {
     let _ = fs::remove_dir_all(home);
 }
 
-// ---- the dialog ----
-
 #[test]
 fn a_profile_with_the_extension_on_is_ready_at_once() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -590,7 +563,7 @@ fn a_profile_with_the_extension_on_is_ready_at_once() {
     assert!(
         matches!(&app.modal, Modal::Browser(d) if d.uid == uid_of(&app, t) && d.step == Step::Pick)
     );
-    key(&mut app, KeyCode::Enter); // the first row: Default
+    key(&mut app, KeyCode::Enter);
     assert_eq!(app.panes[0].tabs[t].browser.as_deref(), Some("Default"));
     assert_eq!(
         app.cfg.browser.default_profile, "Default",
@@ -613,7 +586,7 @@ fn a_missing_extension_opens_the_store_in_that_profile_after_a_yes() {
     settle(&app);
     refresh(&mut app);
     key(&mut app, KeyCode::Down);
-    key(&mut app, KeyCode::Down); // Profile 2: no extension
+    key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.panes[0].tabs[t].browser.as_deref(), Some("Profile 2"));
     assert_eq!(app.cfg.browser.default_profile, "Profile 2");
@@ -644,11 +617,11 @@ fn a_missing_extension_opens_the_store_in_that_profile_after_a_yes() {
         .unwrap()
         .contains("Press Add to Chrome"));
     assert_eq!(app.tab_browser_state(uid_of(&app, t)), BtnState::Chosen);
-    // Declining opens nothing.
+
     tb::LAUNCHED.lock().unwrap().clear();
     app.open_browser_dialog(0);
     settle(&app);
-    key(&mut app, KeyCode::Up); // Profile 1: installed, off
+    key(&mut app, KeyCode::Up);
     key(&mut app, KeyCode::Enter);
     let Modal::Browser(d) = app.modal.clone() else {
         panic!()
@@ -673,7 +646,7 @@ fn a_disabled_extension_opens_the_extensions_page_and_becomes_ready_when_turned_
     app.open_browser_dialog(0);
     settle(&app);
     refresh(&mut app);
-    key(&mut app, KeyCode::Down); // Profile 1
+    key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Enter);
     key(&mut app, KeyCode::Char('y'));
     assert_eq!(
@@ -681,12 +654,12 @@ fn a_disabled_extension_opens_the_extensions_page_and_becomes_ready_when_turned_
         vec![chrome_cmd(Os::current(), "chrome://extensions", Some("Profile 1")).unwrap()]
     );
     assert_eq!(app.tab_browser_state(uid), BtnState::NeedsEnable);
-    // Still off: a look changes nothing and the wait goes on.
+
     refresh(&mut app);
     app.browser_poll_tick();
     settle(&app);
     assert_eq!(app.browser.pending.len(), 1);
-    // The user turns it on in Chrome.
+
     let root = app.browser.env.clone().unwrap().chrome_root;
     set_pref(&root, "Profile 1", Some(1));
     refresh(&mut app);
@@ -699,7 +672,7 @@ fn a_disabled_extension_opens_the_extensions_page_and_becomes_ready_when_turned_
         "{:?}",
         app.browser.note
     );
-    // Cleared: no browser, and the pending wait is dropped.
+
     app.browser_clear();
     assert_eq!(app.panes[0].tabs[t].browser, None);
     assert_eq!(app.tab_browser_state(uid), BtnState::None);
@@ -737,7 +710,7 @@ fn a_bound_tab_gets_a_look_at_start_so_its_button_is_true() {
 fn a_queued_model_switch_keeps_the_room_it_needs() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home, _) = setup("room");
-    // Too narrow for the models and the button: the models win.
+
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30)).unwrap();
     draw(&mut app, &mut term);
     let s = screen(&term);
@@ -762,8 +735,6 @@ fn ctrl_a_i_and_the_palette_open_the_dialog() {
     assert!(crate::ui::HELP.iter().any(|(k, _)| *k == "Ctrl-a i"));
     let _ = fs::remove_dir_all(home);
 }
-
-// ---- the button on screen ----
 
 fn screen(t: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
     let b = t.backend().buffer();
@@ -792,8 +763,7 @@ fn the_button_sits_on_the_bottom_bar_shows_its_state_and_a_click_opens_the_dialo
         .find(|r| r.action == UiAction::TabBrowser(0))
         .unwrap_or_else(|| panic!("no Browser button"))
         .rect;
-    // It shares the model bar's row, right of the models and left of the
-    // loops button.
+
     let loops = app
         .last_hits
         .regions
@@ -803,7 +773,7 @@ fn the_button_sits_on_the_bottom_bar_shows_its_state_and_a_click_opens_the_dialo
         .rect;
     assert_eq!(r.y, loops.y);
     assert!(r.x + r.width <= loops.x, "{r:?} {loops:?}");
-    // State on the button.
+
     app.bind_tab_browser(uid_of(&app, t), Some("Profile 1".into()));
     draw(&mut app, &mut term);
     assert!(screen(&term).contains("browser: Work (turn on)"));
@@ -813,7 +783,7 @@ fn the_button_sits_on_the_bottom_bar_shows_its_state_and_a_click_opens_the_dialo
     app.bind_tab_browser(uid_of(&app, t), Some("Profile 2".into()));
     draw(&mut app, &mut term);
     assert!(screen(&term).contains("browser: Bare (add)"));
-    // A real click opens the dialog for this tab.
+
     click(&mut app, &UiAction::TabBrowser(0));
     assert!(matches!(&app.modal, Modal::Browser(d) if d.uid == uid_of(&app, t)));
     settle(&app);
@@ -826,7 +796,7 @@ fn the_button_sits_on_the_bottom_bar_shows_its_state_and_a_click_opens_the_dialo
         "{s}"
     );
     assert!(s.contains("me@x.com") || s.contains("Me"), "{s}");
-    // A click on a profile row chooses it.
+
     click(&mut app, &UiAction::BrowserRow(0));
     assert_eq!(app.panes[0].tabs[t].browser.as_deref(), Some("Default"));
     let _ = fs::remove_dir_all(home);
@@ -837,7 +807,7 @@ fn a_narrow_pane_keeps_a_compact_browser_button_before_hiding_it() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home, t) = setup("narrow");
     app.bind_tab_browser(uid_of(&app, t), Some("Default".into()));
-    // (width, the button's text when drawn)
+
     let mut seen: Vec<(u16, Option<String>)> = vec![];
     for w in 16..140u16 {
         app.hits.borrow_mut().clear();
@@ -867,17 +837,17 @@ fn a_narrow_pane_keeps_a_compact_browser_button_before_hiding_it() {
         !compact.is_empty(),
         "the compact form is used somewhere: {seen:?}"
     );
-    // Once it shows, it stays on every wider row.
+
     let first = seen.iter().position(|(_, l)| l.is_some()).unwrap();
     assert!(seen[first..].iter().all(|(_, l)| l.is_some()), "{seen:?}");
-    // It appears at a narrower width than the word form does.
+
     let tiny = seen
         .iter()
         .find(|(_, l)| l.as_deref() == Some(" ✓ browser "))
         .map(|(w, _)| *w)
         .unwrap();
     assert!(compact[0] < tiny, "{compact:?} {tiny}");
-    // The compact label still says its state.
+
     assert_eq!(tb::compact_label(BtnState::None), " web ");
     assert!(tb::compact_label(BtnState::Chosen).contains('!'));
     let _ = fs::remove_dir_all(home);
@@ -890,12 +860,12 @@ fn sign_in_and_remote_links_open_in_the_default_profile_unless_turned_off() {
     let url = "https://claude.ai/oauth/authorize?x=1";
     let opened = || crate::admin::OPENED.lock().unwrap().clone();
     crate::admin::OPENED.lock().unwrap().clear();
-    // On by default; with no default profile: the system browser.
+
     assert!(app.cfg.browser.login_links);
     app.open_service_link(url);
     assert!(launched().is_empty());
     assert_eq!(opened(), vec![url.to_string()]);
-    // A default profile: there (a tab's own binding is not used for these).
+
     app.set_default_profile("Profile 1");
     app.bind_tab_browser(uid_of(&app, t), Some("Default".into()));
     crate::admin::OPENED.lock().unwrap().clear();
@@ -905,11 +875,11 @@ fn sign_in_and_remote_links_open_in_the_default_profile_unless_turned_off() {
         vec![chrome_cmd(Os::current(), url, Some("Profile 1")).unwrap()]
     );
     assert!(opened().is_empty());
-    // Not a web link: never Chrome.
+
     tb::LAUNCHED.lock().unwrap().clear();
     app.open_service_link("file:///etc/passwd");
     assert!(launched().is_empty());
-    // Turned off (Settings > Browser): the system browser, and saved.
+
     app.toggle_login_links();
     assert!(!app.cfg.browser.login_links);
     let toml = fs::read_to_string(crate::config::Config::path()).unwrap();
@@ -919,7 +889,7 @@ fn sign_in_and_remote_links_open_in_the_default_profile_unless_turned_off() {
     app.open_service_link(url);
     assert!(launched().is_empty());
     assert_eq!(opened(), vec![url.to_string()]);
-    // The Remote Control link goes the same way.
+
     app.toggle_login_links();
     app.assistant.remote_last_url = Some("https://claude.ai/code/session_x".into());
     tb::LAUNCHED.lock().unwrap().clear();
@@ -941,7 +911,7 @@ fn a_bsk_call_reads_as_what_it_did() {
         Some("tab create a.io")
     );
     assert_eq!(s("bsk screenshot --full").as_deref(), Some("screenshot"));
-    // The last bsk call in a chain; other programs are not bsk.
+
     assert_eq!(
         s("bsk navigate https://a.io; bsk snapshot | head").as_deref(),
         Some("snapshot")
@@ -982,7 +952,7 @@ fn the_dialog_shows_the_tabs_last_browser_action_and_opens_its_chrome() {
     let (mut app, home, t) = setup("activity");
     let uid = uid_of(&app, t);
     app.bind_tab_browser(uid, Some("Default".into()));
-    // The tab's transcript: one bsk call.
+
     let a = app.panes[0].account.unwrap();
     let dir = app.cfg.accounts[a]
         .config_dir()
@@ -1007,13 +977,13 @@ fn the_dialog_shows_the_tabs_last_browser_action_and_opens_its_chrome() {
             .any(|l| l.contains("Last in the browser: navigate news.example.com")),
         "{text:?}"
     );
-    // list_tabs carries it for the assistant.
+
     let j = app.tab_browser_json(0, t).unwrap();
     assert!(j["last_action"]
         .as_str()
         .unwrap()
         .starts_with("navigate news.example.com"));
-    // Open Chrome: the button and the o key bring up that profile.
+
     assert!(v.buttons.iter().any(|b| b.1 == UiAction::BrowserOpenTab));
     tb::LAUNCHED.lock().unwrap().clear();
     key(&mut app, KeyCode::Char('o'));
@@ -1021,7 +991,7 @@ fn the_dialog_shows_the_tabs_last_browser_action_and_opens_its_chrome() {
         launched(),
         vec![chrome_cmd(Os::current(), "chrome://newtab", Some("Default")).unwrap()]
     );
-    // A tab with no browser: the palette action opens its dialog instead.
+
     app.modal = Modal::None;
     app.bind_tab_browser(uid, None);
     tb::LAUNCHED.lock().unwrap().clear();

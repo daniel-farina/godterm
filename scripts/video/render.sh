@@ -1,23 +1,8 @@
 #!/usr/bin/env bash
-# Render the GodTerm promo video from the Remotion project (default ~/godterm-video).
-#
-# usage: scripts/video/render.sh [--music FILE | --no-music] [--only LIST] [--concurrency N]
-#                                [--frames A-B] [--preview] [--project DIR]
-#   --music FILE      use FILE as the music bed (converted to 48 kHz WAV, beats detected)
-#   --no-music        render without music
-#                     (default: assets/video/music.(mp3|wav|m4a) if present, else the generated placeholder pad)
-#   --only LIST       comma list of: 4k,1080p,square,vertical,poster,srt (default: all)
-#   --concurrency N   Remotion browser tabs (default: sized from free CPU and RAM, at most 10)
-#   --frames A-B      render only a frame range (quick tests)
-#   --preview         quick quarter-scale landscape preview only: out/godterm-demo-preview.mp4
-#
-# Outputs (~/godterm-video/out/, or $GODTERM_VIDEO_OUT): godterm-demo-4k.mp4, godterm-demo-1080p.mp4, godterm-demo-square.mp4,
-#   godterm-demo-vertical.mp4, godterm-demo-poster.png, godterm-demo.srt
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROJ="${GODTERM_VIDEO_DIR:-$HOME/godterm-video}"
-# Outside the repo and its release tree (dist/ is the release scripts' scratch).
 OUT="${GODTERM_VIDEO_OUT:-$PROJ/out}"
 MUSIC=""; NO_MUSIC=0; ONLY="4k,1080p,square,vertical,poster,srt"; CONC=""; FRAMES=""; PREVIEW=0
 
@@ -42,7 +27,6 @@ log() { printf '\n== %s\n' "$*"; }
 [ -f "$PROJ/public/rec/term.mp4" ] || echo "warning: $PROJ/public/rec/term.mp4 is missing" >&2
 mkdir -p "$OUT"
 
-# concurrency from free resources: about 1.5 GB per 4K tab, keep 4 GB and a few cores spare
 if [ -z "$CONC" ]; then
   ncpu=$(sysctl -n hw.ncpu 2>/dev/null || nproc)
   page=$(sysctl -n hw.pagesize 2>/dev/null || echo 16384)
@@ -54,7 +38,6 @@ if [ -z "$CONC" ]; then
   echo "cpus $ncpu, ~${freegb} GB free -> concurrency $CONC"
 fi
 
-# ---- music
 cd "$PROJ"
 if [ "$NO_MUSIC" = 1 ]; then
   MUSIC_FILE=null

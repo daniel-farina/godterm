@@ -1,15 +1,9 @@
-//! Tab groups, pins, sorting and the search field in the app: the tab and
-//! group menus, the dialogs they open, dropping a dragged tab on a group,
-//! filtering a tab list as you type, and the assistant's tools for all of
-//! it.
-
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::{json, Value};
 
 use crate::app::{App, Modal};
 use crate::tab_groups::{TabSort, SORTS};
 
-/// A group header's right click menu.
 pub const GROUP_MENU: &[&str] = &[
     "Rename...",
     "Color...",
@@ -23,13 +17,8 @@ fn ok(v: Value) -> Value {
     json!({"ok": true, "result": v})
 }
 
-/// The marker of a pinned tab (plain, like the rest of the list).
 pub const PIN: &str = "▴";
 
-/// Whether a tab's words (`fields`: its names, folder, status) match what
-/// was typed or said: the query anywhere in them (case, spaces, hyphens
-/// and dots ignored: "fot mesh" finds fot-mesh), else every word of it in
-/// them or close to one of their words ("fotmash" finds fotmesh).
 pub fn filter_match(query: &str, fields: &[String]) -> bool {
     let qk = crate::fuzzy::key(query);
     if qk.is_empty() {
@@ -62,9 +51,6 @@ impl App {
         self.cfg.ungrouped_tabs == "top"
     }
 
-    /// The session's own title in Claude Code or Grok (its /rename name,
-    /// else the generated title), when it has one that differs from ours.
-    /// Read from the session index without waiting for it (cached).
     pub fn native_title(&self, s: usize, t: usize) -> Option<String> {
         let tab = self.panes.get(s)?.tabs.get(t)?;
         let sid = tab.session_id.clone()?;
@@ -84,15 +70,13 @@ impl App {
                 .and_then(|r| r.info.name.clone().or_else(|| r.info.title.clone()))
                 .map(|n| n.split_whitespace().collect::<Vec<_>>().join(" "))
                 .filter(|n| !n.is_empty()),
-            // Busy (a scan): the last one known.
+
             Err(_) => return cache.get(&sid).and_then(|(_, v)| v.clone()),
         };
         cache.insert(sid, (std::time::Instant::now(), v.clone()));
         v
     }
 
-    /// The Status sort: blocked or waiting for a confirmation, then
-    /// working, then a limit or an error, then the rest.
     pub fn status_rank(&self, s: usize, t: usize) -> u8 {
         use crate::tab_labels::TabLabel;
         let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
@@ -107,8 +91,6 @@ impl App {
         }
     }
 
-    /// What a search looks at for a tab: our name, the session's own
-    /// title, the folder and the status.
     pub fn tab_search_fields(&self, s: usize, t: usize) -> Vec<String> {
         let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
             return vec![];
@@ -128,7 +110,6 @@ impl App {
         v
     }
 
-    /// The tabs of pane `s` its search matches; None when nothing is typed.
     pub fn tab_filter(&self, s: usize) -> Option<Vec<bool>> {
         let slot = self.panes.get(s)?;
         let q = slot.filter.trim();
@@ -142,8 +123,6 @@ impl App {
         )
     }
 
-    /// The rows pane `s`'s tab list shows: its sort (Status in the app's
-    /// rank), its groups, and its search.
     pub fn list_rows(&self, s: usize, hold: bool) -> Vec<crate::tab_groups::Row> {
         let Some(slot) = self.panes.get(s) else {
             return vec![];
@@ -157,7 +136,6 @@ impl App {
         )
     }
 
-    /// Ctrl-a / or a click: type in pane `p`'s tab search.
     pub fn focus_tab_search(&mut self, p: usize) {
         if p >= self.panes.len() {
             return;
@@ -175,9 +153,6 @@ impl App {
         self.tab_search = Some(p);
     }
 
-    /// Keys while a tab search has them: typing filters, Up / Down pick
-    /// among the matches, Enter keeps the pick and gives the keys back,
-    /// Esc clears the search. False: not searching.
     #[allow(clippy::collapsible_match)]
     pub fn on_tab_search_key(&mut self, k: KeyEvent) -> bool {
         use crossterm::event::KeyModifiers;
@@ -196,7 +171,7 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Tab => {
                 self.tab_search = None;
-                // The pick, else the first match.
+
                 let rows = self.list_rows(p, true);
                 let active = self.panes[p].active;
                 let tabs: Vec<usize> = rows
@@ -210,8 +185,6 @@ impl App {
                     if let Some(&t) = tabs.first() {
                         self.panes[p].select(t);
                     } else if let Some(e) = self.archive_for_pane(p).first().cloned() {
-                        // Only archived conversations match: Enter resumes
-                        // the first.
                         match self.restore_archived(&e.id, None) {
                             Ok(m) => self.flash(m),
                             Err(err) => self.flash(format!("Could not restore it: {err}")),
@@ -253,7 +226,6 @@ impl App {
         true
     }
 
-    /// The sidebar's sort dropdown: the Sort tabs menu for pane `p`.
     pub fn open_sort_menu(&mut self, p: usize, at: (u16, u16)) {
         if p < self.panes.len() {
             self.focus = p;
@@ -286,7 +258,6 @@ impl App {
         self.set_pinned(s, t, on);
     }
 
-    /// Put tabs (by uid) of pane `s` in group `name`.
     pub fn add_to_group(&mut self, s: usize, uids: &[u64], name: &str, color: Option<String>) {
         let Some(slot) = self.panes.get_mut(s) else {
             return;
@@ -361,8 +332,6 @@ impl App {
         }
     }
 
-    /// The tab menu's "Move to group": its choices (groups, then New
-    /// group..., then No group).
     pub fn group_choices(&self, s: usize) -> Vec<String> {
         let mut v: Vec<String> = self
             .panes
@@ -397,7 +366,6 @@ impl App {
         }
     }
 
-    /// Close every tab of a group at once (one Undo brings them back).
     pub fn close_group_now(&mut self, s: usize, g: usize) {
         self.modal = Modal::None;
         let uids = self.group_uids(s, g);
@@ -411,7 +379,6 @@ impl App {
         ));
     }
 
-    /// Close these tabs now as one close group; returns how many closed.
     pub fn close_uids(&mut self, uids: &[u64], by: &str) -> usize {
         let group = self.next_close_group();
         let mut closed = 0;
@@ -433,8 +400,6 @@ impl App {
         closed
     }
 
-    /// Move a group's tabs to another account (each one as move_tab does;
-    /// the group comes along).
     pub fn move_group_to(&mut self, s: usize, g: usize, to: usize) -> Value {
         self.modal = Modal::None;
         let Some(grp) = self.panes.get(s).and_then(|p| p.groups.get(g)).cloned() else {
@@ -458,8 +423,6 @@ impl App {
         v
     }
 
-    /// After tabs moved: the group exists on the new account too, with
-    /// its color, and holds them.
     pub fn regroup_moved(&mut self, grp: &crate::tab_groups::TabGroup, new_uids: &[u64]) {
         for u in new_uids {
             if let Some((sl, t)) = self.find_tab(*u) {
@@ -470,8 +433,6 @@ impl App {
         self.state_dirty = true;
     }
 
-    /// A tab dragged in pane `s` and dropped: on a group header it joins
-    /// that group; on another tab (manual order) it moves there.
     pub fn drop_tab(&mut self, s: usize, t: usize, on: Option<crate::hits::UiAction>) {
         use crate::hits::UiAction;
         match on {
@@ -485,7 +446,7 @@ impl App {
                 let slot = &mut self.panes[s];
                 let active = slot.tabs[slot.active].uid;
                 let tab = slot.tabs.remove(t);
-                // Joining the group of the tab it lands on.
+
                 let into = slot.tabs[if t2 > t { t2 - 1 } else { t2 }].group.clone();
                 let mut tab = tab;
                 if !tab.pinned {
@@ -599,7 +560,6 @@ impl App {
         }
     }
 
-    /// The lines and buttons of the group dialogs, for ui.rs.
     #[allow(clippy::type_complexity)]
     pub fn group_modal_body(
         &self,
@@ -700,7 +660,6 @@ impl App {
         })
     }
 
-    /// The group or the tabs a tool names in pane terms: (pane, group).
     pub fn group_named(&self, name: &str, acct: Option<usize>) -> Result<(usize, usize), String> {
         let mut all: Vec<(usize, usize, String)> = vec![];
         for (s, p) in self.panes.iter().enumerate() {
@@ -714,7 +673,7 @@ impl App {
         if all.is_empty() {
             return Err("there are no tab groups yet".into());
         }
-        // "the api group" is api.
+
         let low = name.trim().to_lowercase();
         let low = low.strip_prefix("the ").unwrap_or(&low);
         let low = low.strip_suffix(" group").unwrap_or(low).trim().to_string();
@@ -758,7 +717,6 @@ impl App {
         ))
     }
 
-    /// The assistant's group, pin, color and sort tools; None for others.
     pub fn tabgroup_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         const TOOLS: &[&str] = &[
             "group_tabs",
@@ -787,7 +745,7 @@ impl App {
         if matches!(c.as_str(), "default" | "none" | "") {
             return Ok(Some(String::new()));
         }
-        // Plain color words map onto the muted swatches.
+
         let alias = match c.as_str() {
             "green" => "sage",
             "red" => "clay",
@@ -820,7 +778,7 @@ impl App {
                 let name = s("group")
                     .filter(|g| !g.trim().is_empty())
                     .ok_or("group (its name) is required")?;
-                // ("group" names the new group here, not tabs to target.)
+
                 let mut targ = args.clone();
                 if let Some(o) = targ.as_object_mut() {
                     o.remove("group");
@@ -1009,7 +967,7 @@ impl App {
                     let hits: Vec<usize> = (0..self.panes[p].tabs.len())
                         .filter(|&t| filter_match(&text, &self.tab_search_fields(p, t)))
                         .collect();
-                    // The lists with a match show the search; the others stay.
+
                     if !hits.is_empty() || acct.is_some() {
                         self.panes[p].filter = text.trim().to_string();
                         self.panes[p].sidebar_scroll = crate::slot::FOLLOW;

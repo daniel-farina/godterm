@@ -1,12 +1,5 @@
-//! Text selection inside one pane (or the assistant panel), as in tmux:
-//! drag selects, a double click a word, a triple click a line. Positions
-//! are in buffer lines (scrollback included), so a selection stays on its
-//! text while the view scrolls.
-
 use std::time::Instant;
 
-/// A cell of the buffer: `line` counts from the oldest scrollback line
-/// (for a pane) or from the first drawn line (the assistant).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Pos {
     pub line: usize,
@@ -20,14 +13,9 @@ pub enum Unit {
     Line,
 }
 
-/// What the selection is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
-    /// A tab of a pane, by slot and tab uid (another tab shown: not drawn).
-    Pane {
-        slot: usize,
-        uid: u64,
-    },
+    Pane { slot: usize, uid: u64 },
     Assistant,
 }
 
@@ -37,11 +25,11 @@ pub struct Selection {
     pub anchor: Pos,
     pub head: Pos,
     pub unit: Unit,
-    /// The button is still down.
+
     pub dragging: bool,
-    /// A char selection shows once the mouse moved off its first cell.
+
     pub moved: bool,
-    /// Held past the top (-1) or bottom (1) edge: the tick keeps scrolling.
+
     pub edge: i8,
 }
 
@@ -58,13 +46,11 @@ impl Selection {
         }
     }
 
-    /// Anything to show or copy.
     pub fn visible(&self) -> bool {
         self.moved
     }
 }
 
-/// The last press, to count double and triple clicks.
 #[derive(Debug, Clone, Copy)]
 pub struct Press {
     pub at: Instant,
@@ -73,18 +59,12 @@ pub struct Press {
     pub count: u8,
 }
 
-/// Lines of text a selection reads: a pane's buffer or the panel's lines.
 pub trait Lines {
-    /// The cells of a line (one string per column; "" for the right half
-    /// of a wide character) and whether it wraps onto the next.
     fn line(&mut self, n: usize) -> Option<(Vec<String>, bool)>;
 }
 
-/// A vt100 screen, scrollback included. Reading moves the view and puts it
-/// back.
 pub struct ScreenLines<'a>(pub &'a mut vt100::Screen);
 
-/// Lines in the scrollback of a screen (the view is left where it was).
 pub fn scrollback_len(s: &mut vt100::Screen) -> usize {
     let cur = s.scrollback();
     s.set_scrollback(usize::MAX);
@@ -93,7 +73,6 @@ pub fn scrollback_len(s: &mut vt100::Screen) -> usize {
     n
 }
 
-/// The buffer line shown on visible row `row`.
 pub fn line_of_row(s: &mut vt100::Screen, row: u16) -> usize {
     scrollback_len(s) - s.scrollback() + row as usize
 }
@@ -123,7 +102,6 @@ impl Lines for ScreenLines<'_> {
     }
 }
 
-/// Plain text lines, one cell per character (the assistant panel).
 pub struct TextLines<'a>(pub &'a [String]);
 
 impl Lines for TextLines<'_> {
@@ -140,21 +118,19 @@ impl Lines for TextLines<'_> {
     }
 }
 
-/// Characters that end a word: spaces, brackets, quotes and box drawing.
 fn is_word(s: &str) -> bool {
     let Some(c) = s.chars().next() else {
-        return true; // the right half of a wide character goes with it
+        return true;
     };
     !(c.is_whitespace() || "()[]{}<>\"'`,;|".contains(c) || ('\u{2500}'..='\u{259f}').contains(&c))
 }
 
-/// The word around `col` (just that cell when it is not in a word).
 fn word_at(cells: &[String], col: u16) -> (u16, u16) {
     if cells.is_empty() {
         return (col, col);
     }
     let mut col = (col as usize).min(cells.len() - 1);
-    // The right half of a wide character: the character itself.
+
     if cells[col].is_empty() && col > 0 {
         col -= 1;
     }
@@ -172,7 +148,6 @@ fn word_at(cells: &[String], col: u16) -> (u16, u16) {
     (a as u16, b as u16)
 }
 
-/// The selected range, in order and grown to words or lines: inclusive.
 pub fn span(src: &mut dyn Lines, sel: &Selection) -> (Pos, Pos) {
     let (mut a, mut b) = if sel.anchor <= sel.head {
         (sel.anchor, sel.head)
@@ -190,7 +165,6 @@ pub fn span(src: &mut dyn Lines, sel: &Selection) -> (Pos, Pos) {
             }
         }
         Unit::Line => {
-            // Whole lines, a long line that wrapped counting as one.
             while a.line > 0 && src.line(a.line - 1).is_some_and(|(_, w)| w) {
                 a.line -= 1;
             }
@@ -204,13 +178,10 @@ pub fn span(src: &mut dyn Lines, sel: &Selection) -> (Pos, Pos) {
     (a, b)
 }
 
-/// Whether `p` is in the span `(a, b)`.
 pub fn contains(span: (Pos, Pos), p: Pos) -> bool {
     span.0 <= p && p <= span.1
 }
 
-/// The selected text: trailing spaces trimmed per line (and blank lines
-/// at the end), a wrapped line joined back into one.
 pub fn text(src: &mut dyn Lines, sel: &Selection) -> String {
     if !sel.visible() {
         return String::new();
@@ -240,14 +211,13 @@ pub fn text(src: &mut dyn Lines, sel: &Selection) -> String {
     if !cur.is_empty() {
         out.push(cur.trim_end().to_string());
     }
-    // Dragged on into the empty rows below the text: not those.
+
     while out.last().is_some_and(|l| l.is_empty()) {
         out.pop();
     }
     out.join("\n")
 }
 
-/// Standard base64, for OSC 52.
 pub fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut s = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -266,12 +236,10 @@ pub fn base64(data: &[u8]) -> String {
     s
 }
 
-/// The OSC 52 sequence that puts `text` on the terminal's clipboard.
 pub fn osc52(text: &str) -> String {
     format!("\x1b]52;c;{}\x07", base64(text.as_bytes()))
 }
 
-/// "Copied 12 characters".
 pub fn copied_msg(text: &str) -> String {
     match text.chars().count() {
         1 => "Copied 1 character".to_string(),
@@ -313,14 +281,14 @@ mod tests {
     #[test]
     fn multi_row_trims_and_orders() {
         let mut p = parser(5, 20, "first line   \r\nsecond\r\nthird one");
-        // Forward and backward drags give the same text.
+
         let s = sel((0, 6), (2, 4), Unit::Char);
         assert_eq!(pane_text(&mut p, &s), "line\nsecond\nthird");
         let back = sel((2, 4), (0, 6), Unit::Char);
         assert_eq!(pane_text(&mut p, &back), "line\nsecond\nthird");
-        // One row, part of it.
+
         assert_eq!(pane_text(&mut p, &sel((1, 1), (1, 3), Unit::Char)), "eco");
-        // Not moved: nothing.
+
         let mut still = sel((0, 0), (0, 0), Unit::Char);
         still.moved = false;
         assert_eq!(pane_text(&mut p, &still), "");
@@ -333,17 +301,17 @@ mod tests {
             pane_text(&mut p, &sel((0, 6), (0, 6), Unit::Word)),
             "cargo-test"
         );
-        // A drag in word mode grows both ends to whole words.
+
         assert_eq!(
             pane_text(&mut p, &sel((0, 1), (0, 13), Unit::Word)),
             "run cargo-test"
         );
-        // Box drawing ends a word.
+
         assert_eq!(
             pane_text(&mut p, &sel((1, 5), (1, 5), Unit::Word)),
             "path/to/file.rs"
         );
-        // On a space: just that cell (trimmed away).
+
         assert_eq!(pane_text(&mut p, &sel((0, 3), (0, 3), Unit::Word)), "");
         assert_eq!(
             pane_text(&mut p, &sel((0, 9), (0, 9), Unit::Line)),
@@ -357,11 +325,10 @@ mod tests {
 
     #[test]
     fn wrapped_rows_join() {
-        // 10 columns: "abcdefghijKLMNO" wraps after j.
         let mut p = parser(4, 10, "abcdefghijKLMNO\r\nnext");
         let s = sel((0, 0), (2, 3), Unit::Char);
         assert_eq!(pane_text(&mut p, &s), "abcdefghijKLMNO\nnext");
-        // A triple click on the second half takes the whole long line.
+
         assert_eq!(
             pane_text(&mut p, &sel((1, 2), (1, 2), Unit::Line)),
             "abcdefghijKLMNO"
@@ -371,31 +338,30 @@ mod tests {
     #[test]
     fn clamped_columns_and_wide_chars() {
         let mut p = parser(3, 12, "日本 text\r\nb");
-        // Past the end of the row: up to the last column, trimmed.
+
         assert_eq!(
             pane_text(&mut p, &sel((0, 0), (0, u16::MAX), Unit::Char)),
             "日本 text"
         );
         assert_eq!(pane_text(&mut p, &sel((0, 2), (0, 3), Unit::Char)), "本");
-        // Past the last line: stops at what exists.
+
         assert_eq!(pane_text(&mut p, &sel((1, 0), (99, 5), Unit::Char)), "b");
     }
 
     #[test]
     fn scrollback_lines_stay_put() {
-        // 3 rows; 6 lines written, so 3 scrolled off.
         let mut p = parser(3, 10, "l0\r\nl1\r\nl2\r\nl3\r\nl4\r\nl5");
         let s = p.screen_mut();
         assert_eq!(scrollback_len(s), 3);
         assert_eq!(line_of_row(s, 0), 3);
-        // Scrolled up 2: row 0 shows line 1.
+
         s.set_scrollback(2);
         assert_eq!(line_of_row(s, 0), 1);
         let a = sel((1, 0), (4, 1), Unit::Char);
         assert_eq!(pane_text(&mut p, &a), "l1\nl2\nl3\nl4");
-        // Reading put the view back.
+
         assert_eq!(p.screen().scrollback(), 2);
-        // Scrolled to the bottom: the same lines, the same text.
+
         p.screen_mut().set_scrollback(0);
         assert_eq!(pane_text(&mut p, &a), "l1\nl2\nl3\nl4");
     }

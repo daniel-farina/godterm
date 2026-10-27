@@ -1,12 +1,8 @@
-//! Panes for any number of accounts: layout modes, paging, split and
-//! hidden panes, focus by number, and dragging pane borders.
-
 use crate::app::{App, View};
 use crate::layout::{self, Arranged, Border, Mode};
 use crate::slot::Slot;
 
 impl App {
-    /// Panes in the layout, in order (hidden ones left out).
     pub fn visible_panes(&self) -> Vec<usize> {
         (0..self.panes.len())
             .filter(|&i| {
@@ -28,8 +24,6 @@ impl App {
         layout::parse_mode(&self.layout_name(), &self.cfg.grid)
     }
 
-    /// Arrange the visible panes in `area` around the focused one;
-    /// collapsed panes fold to a strip and their siblings take the space.
     pub fn arrange(&self, area: ratatui::layout::Rect) -> (Vec<usize>, Arranged) {
         let (vis, mut a) = self.arrange_unfolded(area);
         let fi = vis.iter().position(|&p| p == self.focus).unwrap_or(0);
@@ -61,13 +55,12 @@ impl App {
                 p.rect = *r;
             }
         }
-        // Border drags and free cells follow the unfolded grid.
+
         a.borders.clear();
         a.empty.clear();
         (vis, a)
     }
 
-    /// The arrangement with no pane collapsed.
     pub fn arrange_unfolded(&self, area: ratatui::layout::Rect) -> (Vec<usize>, Arranged) {
         let vis = self.visible_panes();
         let fi = vis.iter().position(|&p| p == self.focus).unwrap_or(0);
@@ -104,7 +97,6 @@ impl App {
         (vis, a)
     }
 
-    /// Ctrl-a L: the next layout mode.
     pub fn cycle_layout(&mut self) {
         let next = layout::next_mode(&self.layout_name());
         self.set_layout(next);
@@ -129,12 +121,10 @@ impl App {
         self.flash(format!("Layout: {name}{extra} (Ctrl-a L for the next one)"));
     }
 
-    /// How many pages the panes take.
     pub fn page_count(&self) -> usize {
         self.last_arranged.as_ref().map(|a| a.pages).unwrap_or(1)
     }
 
-    /// Ctrl-a ] / [: focus the first pane of the next / previous page.
     pub fn page_by(&mut self, d: isize) {
         let Some(a) = self.last_arranged.clone() else {
             return;
@@ -154,8 +144,6 @@ impl App {
         }
     }
 
-    /// Focus pane number `n` (1 based, in layout order; hidden panes come
-    /// after the visible ones and are shown again).
     pub fn focus_number(&mut self, n: usize) {
         let mut order = self.visible_panes();
         order.extend((0..self.panes.len()).filter(|&i| self.panes[i].hidden));
@@ -172,7 +160,6 @@ impl App {
         }
     }
 
-    /// Every account has at least one pane (new accounts get one).
     pub fn ensure_panes(&mut self) {
         for a in 0..self.cfg.accounts.len() {
             if !self.panes.iter().any(|s| s.account == Some(a)) {
@@ -188,7 +175,6 @@ impl App {
         }
     }
 
-    /// A second pane for the same account, right after this one.
     pub fn split_pane(&mut self, p: usize) {
         let Some(a) = self.panes.get(p).and_then(|s| s.account) else {
             self.flash("Assign an account to this pane first");
@@ -207,7 +193,6 @@ impl App {
         ));
     }
 
-    /// Accounts by what is really left, most first (the empty cell's menu).
     pub fn accounts_by_left(&self) -> Vec<(usize, Option<f64>)> {
         let mut v: Vec<(usize, Option<f64>)> = (0..self.cfg.accounts.len())
             .map(|a| (a, self.accounts[a].effective_left()))
@@ -220,8 +205,6 @@ impl App {
         v
     }
 
-    /// A new pane for `a` (it fills the next free cell), focused, with the
-    /// New tab dialog open to pick its folder.
     pub fn new_pane_for(&mut self, a: usize) {
         if a >= self.cfg.accounts.len() {
             return;
@@ -236,7 +219,6 @@ impl App {
         self.new_tab_prompt(p);
     }
 
-    /// Close a pane that has a sibling for the same account (or no account).
     pub fn close_pane(&mut self, p: usize) {
         let Some(slot) = self.panes.get(p) else {
             return;
@@ -261,7 +243,6 @@ impl App {
         self.flash("Pane closed");
     }
 
-    /// Hide a pane from the layout; its tabs keep running.
     pub fn hide_pane(&mut self, p: usize) {
         if self.visible_panes().len() <= 1 {
             self.flash("The last visible pane cannot be hidden");
@@ -302,7 +283,6 @@ impl App {
         }
     }
 
-    /// Tab: the next visible pane.
     pub fn focus_next_visible(&mut self) {
         let vis = self.visible_panes();
         if vis.is_empty() {
@@ -315,7 +295,6 @@ impl App {
         self.focus = vis[i];
     }
 
-    /// Arrow keys: the nearest pane on screen in that direction.
     pub(crate) fn move_focus(&mut self, dx: i32, dy: i32) {
         self.view = View::Grid;
         if let Some(i) = self.neighbor(self.focus, dx, dy) {
@@ -323,7 +302,6 @@ impl App {
         }
     }
 
-    /// The pane on screen next to `from` in direction (dx, dy).
     pub fn neighbor(&self, from: usize, dx: i32, dy: i32) -> Option<usize> {
         let cur = self.pane_rects.get(from).copied().filter(|r| r.width > 0)?;
         let (cx, cy) = (
@@ -353,8 +331,6 @@ impl App {
         best.map(|(_, i)| i)
     }
 
-    /// Swap two panes' places (their tabs keep running). Focus follows
-    /// the pane it was on.
     pub fn swap_panes(&mut self, a: usize, b: usize) {
         if a == b || a >= self.panes.len() || b >= self.panes.len() {
             return;
@@ -376,7 +352,7 @@ impl App {
         for at in self.attention.iter_mut() {
             at.slot = map(at.slot);
         }
-        // Dialogs hold pane numbers: close them rather than point astray.
+
         if !matches!(self.modal, crate::app::Modal::None) {
             self.modal = crate::app::Modal::None;
         }
@@ -384,9 +360,6 @@ impl App {
         self.state_dirty = true;
     }
 
-    /// Move pane `p` one place in a direction: the pane next to it on
-    /// screen, or across a page edge the previous / next pane in order.
-    /// Returns where it went.
     pub fn move_pane(&mut self, p: usize, dx: i32, dy: i32) -> Result<usize, String> {
         if self.panes.get(p).is_none_or(|s| s.hidden) {
             return Err("that pane is hidden".into());
@@ -418,7 +391,6 @@ impl App {
         Ok(to)
     }
 
-    /// Pane `p`'s slot number (1 based, in Ctrl-a 1..9 order).
     pub fn slot_number(&self, p: usize) -> usize {
         self.visible_panes()
             .iter()
@@ -427,7 +399,6 @@ impl App {
             .unwrap_or(p + 1)
     }
 
-    /// Move pane `p` to slot `n` (1 based, as Ctrl-a 1..9 counts).
     pub fn move_pane_to_slot(&mut self, p: usize, n: usize) -> Result<usize, String> {
         let vis = self.visible_panes();
         let to = *n
@@ -438,7 +409,6 @@ impl App {
         Ok(to)
     }
 
-    /// Mouse down on a pane border starts a drag.
     pub fn border_at(&self, col: u16, row: u16) -> Option<Border> {
         if self.view != View::Grid || self.zoom {
             return None;
@@ -451,7 +421,6 @@ impl App {
             .cloned()
     }
 
-    /// How pane `i`'s tab list is sized.
     pub fn side(&self, i: usize) -> crate::ui::Side {
         let s = &self.panes[i];
         crate::ui::Side {
@@ -464,7 +433,6 @@ impl App {
         }
     }
 
-    /// Dragging the edge of pane `i`'s tab list to column `col`.
     pub fn drag_sidebar(&mut self, i: usize, col: u16) {
         let Some(r) = self.pane_rects.get(i).copied() else {
             return;
@@ -485,7 +453,6 @@ impl App {
         }
     }
 
-    /// The width pane `i`'s side tab list has now (0: none or on top).
     pub fn sidebar_now(&self, i: usize) -> u16 {
         let Some(r) = self.pane_rects.get(i).copied().filter(|r| r.width > 2) else {
             return 0;
@@ -496,8 +463,6 @@ impl App {
         crate::ui::sidebar_width(r.width - 2, self.side(i))
     }
 
-    /// The widest pane `i`'s side list may get: SIDEBAR_MAX, or less so
-    /// its terminal keeps 30 columns.
     pub fn sidebar_max(&self, i: usize) -> u16 {
         let room = self
             .pane_rects
@@ -508,9 +473,6 @@ impl App {
         room.clamp(crate::ui::SIDEBAR_MIN, crate::ui::SIDEBAR_MAX)
     }
 
-    /// Ctrl-a < / >, "make the tab list wider": pane `i`'s list by `d`
-    /// columns (it opens when collapsed), kept between the minimum and
-    /// the maximum. Returns the new width.
     pub fn nudge_sidebar(&mut self, i: usize, d: i32) -> u16 {
         if i >= self.panes.len() {
             return 0;
@@ -543,7 +505,6 @@ impl App {
         w
     }
 
-    /// Tabs ▾ > Tab list width: a preset for every pane (dragged widths reset).
     pub fn set_tab_list_width(&mut self, preset: &str) {
         self.tab_list_width = (preset != "normal").then(|| preset.to_string());
         for p in self.panes.iter_mut() {
@@ -553,7 +514,6 @@ impl App {
         self.flash(format!("Tab lists: {preset}"));
     }
 
-    /// Dragging a border to (col, row): new ratios for the current shape.
     pub fn drag_border(&mut self, b: &Border, col: u16, row: u16) {
         let Some(a) = &self.last_arranged else { return };
         let area = self.main_area;
@@ -568,9 +528,6 @@ impl App {
         self.state_dirty = true;
     }
 
-    /// Which column pane `i` is in and how many columns share its row, when
-    /// it has a neighbour to trade width with (None: zoomed, one column, a
-    /// pane spanning the row, a custom layout, a pane not on this page).
     pub fn pane_col(&self, i: usize) -> Option<(usize, usize)> {
         if self.view != View::Grid || self.zoom {
             return None;
@@ -578,7 +535,7 @@ impl App {
         let a = self.last_arranged.as_ref()?;
         let pos = self.visible_panes().iter().position(|&p| p == i)?;
         let rect = a.placed.iter().find(|p| p.index == pos)?.rect;
-        // The column borders running along this pane's rows.
+
         let along: Vec<&Border> = a
             .borders
             .iter()
@@ -591,8 +548,6 @@ impl App {
         Some((col, shape_tracks(&a.shape).0))
     }
 
-    /// The stored column weights of the current shape (the focus layout
-    /// starts at 2 to 1).
     fn col_weights(&self, shape: &str, n: usize) -> Vec<f32> {
         match self.ratios.get(shape).map(|r| &r.cols) {
             Some(c) if c.len() == n && c.iter().all(|x| *x > 0.0) => c.clone(),
@@ -601,7 +556,6 @@ impl App {
         }
     }
 
-    /// The width pane `i`'s column would have after a caret step.
     pub fn pane_width_after(&self, i: usize, grow: bool) -> Option<u16> {
         let (col, n) = self.pane_col(i)?;
         let shape = &self.last_arranged.as_ref()?.shape;
@@ -616,9 +570,6 @@ impl App {
         ))
     }
 
-    /// The width carets and their keys: pane `i` wider or narrower by a
-    /// step; the neighbours give or take the space, kept per shape like a
-    /// border drag.
     pub fn resize_pane_width(&mut self, i: usize, grow: bool) {
         let Some((col, n)) = self.pane_col(i) else {
             self.flash("This pane has no neighbour to trade width with");
@@ -642,7 +593,6 @@ impl App {
         self.state_dirty = true;
     }
 
-    /// Equal pane widths for the current shape (heights stay).
     pub fn equal_pane_widths(&mut self) {
         let Some(shape) = self.last_arranged.as_ref().map(|a| a.shape.clone()) else {
             return;
@@ -659,7 +609,6 @@ impl App {
         self.flash("Pane widths back to equal");
     }
 
-    /// Back to equal sizes for the current shape.
     pub fn reset_ratios(&mut self) {
         if let Some(a) = &self.last_arranged {
             self.ratios.remove(&a.shape);
@@ -668,7 +617,6 @@ impl App {
     }
 }
 
-/// (columns, rows) of a shape key.
 fn shape_tracks(shape: &str) -> (usize, usize) {
     match shape {
         "2+1" => (2, 2),
@@ -678,8 +626,6 @@ fn shape_tracks(shape: &str) -> (usize, usize) {
 }
 
 impl App {
-    /// Home: back to the grid of every pane from anywhere, popups closed
-    /// and zoom undone.
     pub fn go_home(&mut self) {
         if let crate::app::Modal::WakeTrain = self.modal {
             self.train_close();
@@ -690,8 +636,6 @@ impl App {
         self.ensure_focus_visible();
     }
 
-    /// The menu key of what is on screen, so its button reads as the
-    /// current tab (None on the grid).
     pub fn active_menu_key(&self) -> Option<char> {
         match self.modal {
             crate::app::Modal::Approvals(_) => return Some('y'),
@@ -711,7 +655,6 @@ impl App {
         }
     }
 
-    /// Where the breadcrumb says we are.
     pub fn breadcrumb(&self) -> Vec<String> {
         let mut v = vec![];
         match self.view {

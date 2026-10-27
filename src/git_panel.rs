@@ -1,18 +1,3 @@
-//! The Git section of a tab, for both the terminal UI (ui_git.rs) and the
-//! web sheet (web/js/git.js): what it shows (`view`), what a button would
-//! do (`prepare`: checks run, nothing changed) and doing it (`execute`,
-//! only after the user confirmed in the dialog, with "push anyway" typed
-//! when a secret finding stands in the way).
-//!
-//! The assistant can read all of this (git_status, git_log, git_diff,
-//! git_branches, git_bindings) and prepare a commit message or a binding
-//! for the user to look at, but it can never call `execute`: no control
-//! tool leads here. Only a key press or click in the TUI Git panel, or a
-//! `git` frame from the signed in web app's sheet, does.
-//!
-//! auto_sync and wip_backup from the design are not offered: GodTerm never
-//! commits, pushes, pulls or creates a repo on its own.
-
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -24,11 +9,10 @@ use crate::git_ops::{self, Ctx, Fail};
 use crate::git_scan::{self, PushCheck};
 use crate::project_git::{self, Facts};
 
-/// What a section needs from GodTerm.
 #[derive(Debug, Clone)]
 pub struct Env {
     pub cfg: GitCfg,
-    /// The godterm binary (credential helper).
+
     pub helper: Option<PathBuf>,
     pub gh: PathBuf,
     pub machine: String,
@@ -45,13 +29,9 @@ impl Env {
     }
 }
 
-// ---- what the assistant prepared (never acted on by itself) ----
-
 static DRAFTS: Mutex<Option<HashMap<PathBuf, String>>> = Mutex::new(None);
 static PROPOSALS: Mutex<Option<HashMap<PathBuf, Binding>>> = Mutex::new(None);
 
-/// The assistant drafted a commit message for `top` (shown in the commit
-/// box; the user edits and confirms).
 pub fn set_draft(top: &Path, msg: &str) {
     let mut g = DRAFTS.lock().unwrap_or_else(|e| e.into_inner());
     g.get_or_insert_with(HashMap::new)
@@ -73,7 +53,6 @@ fn clear_draft(top: &Path) {
     }
 }
 
-/// The assistant proposed a binding (shown with a Use button).
 pub fn set_proposal(dir: &Path, b: Binding) {
     let mut g = PROPOSALS.lock().unwrap_or_else(|e| e.into_inner());
     g.get_or_insert_with(HashMap::new)
@@ -89,10 +68,6 @@ pub fn proposal(dir: &Path) -> Option<Binding> {
         .cloned()
 }
 
-// ---- warnings ----
-
-/// What is not safe on GitHub yet, in short words: "Not backed up: no
-/// GitHub repo", "12 unpushed", "uncommitted changes".
 pub fn warnings(facts: Option<&Facts>) -> Vec<String> {
     let Some(f) = facts else {
         return vec!["Not backed up: not in git".into()];
@@ -140,17 +115,14 @@ pub fn warnings(facts: Option<&Facts>) -> Vec<String> {
     v
 }
 
-/// The badge for a folder from the cached facts (never runs git): None
-/// when all is on GitHub, or nothing is known yet.
 pub fn badge(ix: &crate::project_index::Index, dir: &Path) -> Option<String> {
     if crate::guard::never_folder(dir).is_some() {
         return None;
     }
-    // The home folder itself and temp folders are no project.
+
     let home = crate::config::home_dir();
     let tmp = std::env::temp_dir();
-    // (Tests build their fixtures in the temp folder, which on Linux is
-    // /tmp itself: the temp rule does not apply to them.)
+
     let in_tmp =
         dir.starts_with("/private/tmp") || dir.starts_with("/tmp") || dir.starts_with(&tmp);
     if crate::guard::same(dir, &home) || (in_tmp && !cfg!(test)) {
@@ -162,8 +134,6 @@ pub fn badge(ix: &crate::project_index::Index, dir: &Path) -> Option<String> {
     };
     (!w.is_empty()).then(|| w.join(" · "))
 }
-
-// ---- the view ----
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ActionRow {
@@ -194,9 +164,9 @@ pub struct View {
     pub secret_files: Vec<String>,
     pub draft: Option<String>,
     pub proposal: Option<Binding>,
-    /// Owners to pick from when defining (rules' choices, [git.owners]).
+
     pub owners: Vec<String>,
-    /// gh accounts known for binding.
+
     pub accounts: Vec<String>,
     pub actions: Vec<ActionRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -212,7 +182,6 @@ fn ctx_for(top: &Path, r: &Resolved, env: &Env) -> Ctx {
     }
 }
 
-/// The folder's repo top and facts (computed now; read only).
 fn facts_for(dir: &Path) -> Option<Facts> {
     let (t, g, c) = project_git::locate(dir)?;
     Some(project_git::compute(
@@ -223,8 +192,6 @@ fn facts_for(dir: &Path) -> Option<Facts> {
     ))
 }
 
-/// Everything the section shows for `dir` (runs read-only git; call off
-/// the UI thread).
 pub fn view(dir: &Path, env: &Env, accounts: &[String]) -> View {
     let mut v = View {
         dir: crate::config::tilde(dir),
@@ -388,8 +355,6 @@ impl View {
     }
 }
 
-// ---- actions ----
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Init,
@@ -514,7 +479,6 @@ impl Action {
     }
 }
 
-/// What a confirmed action will do, with the checks it ran.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Plan {
     #[serde(skip)]
@@ -524,15 +488,15 @@ pub struct Plan {
     #[serde(skip)]
     pub account: Option<String>,
     pub title: String,
-    /// What will happen, line by line.
+
     pub lines: Vec<String>,
     pub warnings: Vec<String>,
-    /// Secret findings: typing "push anyway" passes them.
+
     pub soft_blocks: Vec<String>,
-    /// Nothing passes these.
+
     pub hard_blocks: Vec<String>,
     pub needs_typed: bool,
-    /// The repo already exists on GitHub (offer Link instead).
+
     pub exists: bool,
     #[serde(skip)]
     pub check: Option<PushCheck>,
@@ -548,8 +512,6 @@ impl Plan {
     }
 }
 
-/// Look before doing: names checked, push checks run, the GitHub repo
-/// looked up for a create. Changes nothing (call off the UI thread).
 pub fn prepare(dir: &Path, action: Action, env: &Env) -> Plan {
     let facts = facts_for(dir);
     let top = facts
@@ -812,7 +774,6 @@ fn check_names(p: &mut Plan, owner: &str, repo: &str, account: &str) {
     }
 }
 
-/// origin, unless the repo has one already (then github).
 fn new_remote_name(ctx: &Ctx) -> String {
     if git_ops::remotes(ctx).iter().any(|r| r == "origin") {
         "github".into()
@@ -825,8 +786,6 @@ fn fail(e: Fail) -> String {
     e.to_string()
 }
 
-/// Do a prepared action: only from the user's confirmation in the Git
-/// section. `typed` is what they typed when the plan needs "push anyway".
 pub fn execute(plan: &Plan, typed: Option<&str>, env: &Env) -> Result<String, String> {
     let Some(action) = plan.action.clone() else {
         return Err("nothing to do".into());
@@ -852,7 +811,7 @@ pub fn execute(plan: &Plan, typed: Option<&str>, env: &Env) -> Result<String, St
         gh: Some(env.gh.clone()),
         ..Ctx::new(&top)
     };
-    // What was checked is what goes: newer commits are checked again.
+
     if let Some(c) = &plan.check {
         if c.head != git_ops::head(&ctx) {
             return Err("the repo changed since the check; press it again".into());
@@ -948,9 +907,6 @@ fn bind(top: &Path, owner: &str, repo: &str, account: &str, source: &str) -> Res
     s.save()
 }
 
-// ---- the web sheet's frames ----
-
-/// Pending plans the web sheet may run, by id (made by `prepare`, used once).
 type Kept = HashMap<String, (std::time::Instant, PathBuf, Plan)>;
 static PLANS: Mutex<Option<Kept>> = Mutex::new(None);
 
@@ -978,8 +934,6 @@ fn rand_u64() -> u64 {
     u64::from_le_bytes(b)
 }
 
-/// One `git` frame from the web sheet, answered off the UI thread:
-/// {op: view|prepare|run, dir, action..., plan, typed}.
 pub fn web_frame(v: &Value, dir: Option<PathBuf>, env: &Env, accounts: &[String]) -> Value {
     let op = v["op"].as_str().unwrap_or("view");
     match op {

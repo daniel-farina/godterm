@@ -1,9 +1,3 @@
-//! The assistant's brain providers. Each one starts a backend that takes
-//! turns and streams `BrainEvent`s back (the Claude stream-json shape),
-//! so the app, the prompt, the tools and the confirmations are the same
-//! for every provider. Adding one is a module here plus an entry in
-//! `PROVIDERS` (docs/ASSISTANT_PROVIDERS.md).
-
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
@@ -15,16 +9,13 @@ use crate::harness::Harness;
 pub mod claude;
 pub mod grok;
 
-/// A running brain.
 pub trait Backend: Send {
-    /// Send one user turn.
     fn send(&mut self, text: &str) -> Result<()>;
-    /// Whether the model sees images sent with a turn.
+
     fn takes_images(&self) -> bool {
         false
     }
-    /// Send one user turn with images (a provider that takes none gets
-    /// the text only; the caller says where the files are).
+
     fn send_images(
         &mut self,
         text: &str,
@@ -32,50 +23,44 @@ pub trait Backend: Send {
     ) -> Result<()> {
         self.send(text)
     }
-    /// Stop the current turn (it still ends with a Done).
+
     fn interrupt(&mut self) -> Result<()>;
     fn pid(&self) -> u32;
-    /// Still usable for the next turn.
+
     fn running(&mut self) -> bool;
-    /// A control request (Remote Control); returns its request id.
+
     fn control(&mut self, _request: serde_json::Value) -> Result<String> {
         anyhow::bail!("this provider takes no control requests")
     }
 }
 
-/// What a provider can do.
 #[derive(Debug, Clone, Copy)]
 pub struct Caps {
-    /// One process for the whole conversation (else one per turn).
     pub persistent: bool,
-    /// Text streams as it is written.
+
     pub partial: bool,
     pub efforts: &'static [&'static str],
-    /// Claude Code Remote Control (claude.ai/code and the app).
+
     pub remote_control: bool,
 }
 
-/// Everything a backend needs to start.
 pub struct StartCtx<'a> {
     pub bin: String,
-    /// Where its login and settings live (CLAUDE_CONFIG_DIR / GROK_HOME).
+
     pub home: PathBuf,
     pub cfg: &'a crate::config::AssistantCfg,
     pub model: String,
     pub pass_env: &'a [String],
     pub events: Sender<AppEvent>,
     pub gen: u64,
-    /// The assembled system prompt (sections and learned rules).
+
     pub system_prompt: String,
-    /// Its own session, kept across restarts (assistant.resume); None:
-    /// nothing is saved.
+
     pub session: Option<SessionPlan>,
-    /// More variables for its process only (the account's long-lived
-    /// token as CLAUDE_CODE_OAUTH_TOKEN, when it is set to use it).
+
     pub extra_env: Vec<(String, String)>,
 }
 
-/// The session a brain runs in: a new one with this id, or this one again.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionPlan {
     pub id: String,
@@ -85,68 +70,52 @@ pub struct SessionPlan {
 pub struct Provider {
     pub id: &'static str,
     pub name: &'static str,
-    /// Accounts of this harness can run it (None: it has its own login).
+
     pub harness: Option<Harness>,
     pub caps: Caps,
-    /// Models offered in the menu (the first is the default): id, name,
-    /// a two word description ("quickest").
+
     pub models: &'static [(&'static str, &'static str, &'static str)],
-    /// What a tab of this harness offers in its pane's model bar (top
-    /// models only, at most 4), switched with the harness's own in-session
-    /// `/model <arg>`. A new harness only declares these.
+
     pub tab_models: &'static [TabModel],
-    /// Its usage limits from a fetched usage reply, as buckets (none:
-    /// it reports no usage). The binding one is marked.
+
     pub usage: fn(&crate::usage::Usage) -> Vec<Bucket>,
-    /// The program to run.
+
     pub bin: fn(&crate::config::Config) -> String,
-    /// Its own home and whether it is logged in (providers with no
-    /// account of their own: `harness` None).
+
     pub own_home: Option<fn() -> PathBuf>,
     pub start: fn(StartCtx) -> Result<Box<dyn Backend>>,
 }
 
 pub const PROVIDERS: &[Provider] = &[claude::PROVIDER, grok::PROVIDER];
 
-/// A model in a pane's model bar.
 #[derive(Debug, Clone, Copy)]
 pub struct TabModel {
-    /// What `/model` gets ("haiku", "grok-4.7").
     pub arg: &'static str,
-    /// The button's short label ("Haiku", "4.7 fast").
+
     pub label: &'static str,
-    /// A word or two ("quickest").
+
     pub desc: &'static str,
-    /// Lowercase pieces naming it in a model id or display name
-    /// ("claude-haiku-4-5", "Sonnet 5.5"); the longest found wins, so
-    /// "grok-4.7-build-fast" is not "grok-4.7".
+
     pub matches: &'static [&'static str],
 }
 
-/// The model bar's models for tabs of harness `h`.
 pub fn tab_models(h: Harness) -> &'static [TabModel] {
     for_harness(h).map(|p| p.tab_models).unwrap_or(&[])
 }
 
-/// One usage limit of an account, whatever the provider calls it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bucket {
-    /// Short: "5h", "wk", "Build".
     pub label: String,
-    /// A word for speech and hints: "5 hour", "weekly".
+
     pub long: String,
     pub left_pct: f64,
     pub resets_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// The lowest of the ones that limit it: what it can really do.
+
     pub binding: bool,
 }
 
-/// Low enough to warn about (percent left of the binding bucket).
 pub const LOW_PCT: f64 = 20.0;
 
-/// The buckets for `keys` (window key, short, long) that the reply has,
-/// in that order, the lowest marked binding (a reset that passed reads
-/// as full, like AccountState::binding).
 pub fn buckets_of(u: &crate::usage::Usage, keys: &[(&str, &str, &str)]) -> Vec<Bucket> {
     let mut v: Vec<Bucket> = vec![];
     for (key, short, long) in keys {
@@ -185,8 +154,6 @@ pub fn buckets_of(u: &crate::usage::Usage, keys: &[(&str, &str, &str)]) -> Vec<B
     v
 }
 
-/// The provider that reads the usage of accounts of harness `h` (Grok
-/// accounts are read like the assistant's own Grok login).
 pub fn for_harness(h: Harness) -> Option<&'static Provider> {
     PROVIDERS
         .iter()
@@ -194,12 +161,10 @@ pub fn for_harness(h: Harness) -> Option<&'static Provider> {
         .or_else(|| PROVIDERS.iter().find(|p| p.id == h.name()))
 }
 
-/// The binding bucket.
 pub fn binding(b: &[Bucket]) -> Option<&Bucket> {
     b.iter().find(|b| b.binding)
 }
 
-/// "5h 89%".
 pub fn bucket_text(b: &Bucket) -> String {
     format!("{} {:.0}%", b.label, b.left_pct.floor())
 }
@@ -211,7 +176,6 @@ pub fn by_id(id: &str) -> &'static Provider {
         .unwrap_or(&PROVIDERS[0])
 }
 
-/// The model to use for `p` from the config (its own key per provider).
 pub fn model_for(p: &Provider, cfg: &crate::config::AssistantCfg) -> String {
     let m = match p.id {
         "claude" => cfg.model.clone(),

@@ -1,46 +1,22 @@
-//! Receipts for prompts sent to a tab: what claude's transcript says
-//! happened to one, after it was typed in.
-//!
-//! The records claude writes for a prompt (main chain of the session
-//! jsonl):
-//! - an idle tab: a `user` record with the prompt (a new turn);
-//! - a busy tab: `queue-operation` `enqueue` with the prompt as content;
-//!   then either `dequeue` and a `user` record (a turn of its own once
-//!   the running one ends), or `remove` with reason `absorbed_mid_turn`
-//!   and a `queued_command` attachment (taken into the running turn;
-//!   `delivered_to_agent` is the same for a message to a subagent), or
-//!   `popAll` (Esc or Up arrow pulled the queue back into the input box:
-//!   the text sits there unsent);
-//! - the end of a turn: `system` `turn_duration`; an interrupted one has
-//!   a `user` "[Request interrupted by user]" (or "... for tool use")
-//!   first.
-//!
-//! A queue entry claude never resolves (it restarted or exited with the
-//! prompt still queued) shows as an enqueue with nothing after it.
-
 use std::io::BufReader;
 use std::path::Path;
 
 use serde_json::Value;
 
-/// Where a prompt is, after GodTerm typed it in.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Receipt {
-    /// Not in the transcript yet (still queued in GodTerm, being typed,
-    /// or typed and waiting to show up).
     Pending,
-    /// In the transcript: queued in claude behind its running turn.
+
     Received,
-    /// A turn started with it, or the running turn took it in.
+
     Started,
-    /// That turn finished.
+
     Done,
-    /// It was never run (the reason says how it was lost).
+
     Dropped(String),
-    /// The turn that held it was interrupted before it finished.
+
     Interrupted(String),
-    /// Typed in, but there is no transcript to confirm it (Grok, or a tab
-    /// whose session file is not known).
+
     Unconfirmed,
 }
 
@@ -52,7 +28,6 @@ impl Receipt {
         )
     }
 
-    /// Lost: the user should resend it.
     pub fn lost(&self) -> bool {
         matches!(self, Receipt::Dropped(_) | Receipt::Interrupted(_))
     }
@@ -65,19 +40,15 @@ impl Receipt {
     }
 }
 
-/// What the transcript shows for one prompt.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Seen {
     Nothing,
-    /// Queued in claude.
+
     Enqueued,
-    /// A turn of its own (`absorbed` false) or taken into the running one.
-    Started {
-        absorbed: bool,
-    },
+
+    Started { absorbed: bool },
     Done,
-    /// Taken off claude's queue without being run (popAll, or another
-    /// remove reason).
+
     Dropped(String),
     Interrupted,
 }
@@ -85,28 +56,23 @@ pub enum Seen {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scan {
     pub seen: Seen,
-    /// The turn that holds it ends on a reply with no tool call after it
-    /// (over, when the tab is also at its prompt).
+
     pub turn_quiet: bool,
 }
 
-/// Records this long before the send still count (clock and write lag).
 const SLACK_MS: i64 = 3000;
 
 fn norm(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The part of a prompt looked for in the transcript.
 pub fn key(text: &str) -> String {
-    // Image lines GodTerm added: Claude Code shows them as attachments.
     norm(crate::assistant_images::strip_image_lines(text))
         .chars()
         .take(40)
         .collect()
 }
 
-/// The first words of a prompt, for a spoken notice.
 pub fn first_words(text: &str) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut s = words.iter().take(8).copied().collect::<Vec<_>>().join(" ");
@@ -134,7 +100,6 @@ fn text_of(v: &Value) -> Option<String> {
     }
 }
 
-/// A record's timestamp, read without parsing the line.
 fn stamp_of(line: &str) -> Option<&str> {
     const K: &str = "\"timestamp\":\"";
     let i = line.find(K)? + K.len();
@@ -149,8 +114,6 @@ fn millis(v: &Value) -> Option<i64> {
         .map(|d| d.timestamp_millis())
 }
 
-/// Follow one prompt (`text`, typed in at `since_ms`) through transcript
-/// lines.
 pub fn scan_lines<I: Iterator<Item = String>>(lines: I, text: &str, since_ms: i64) -> Scan {
     let k = key(text);
     let hit = |s: &str| !k.is_empty() && norm(s).contains(&k);
@@ -158,7 +121,7 @@ pub fn scan_lines<I: Iterator<Item = String>>(lines: I, text: &str, since_ms: i6
     let mut quiet = false;
     let from = since_ms - SLACK_MS;
     let started = |s: &Seen| matches!(s, Seen::Started { .. });
-    // Records are stamped like this; older ones are skipped unparsed.
+
     let from_str = chrono::DateTime::from_timestamp_millis(from)
         .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
         .unwrap_or_default();
@@ -184,8 +147,7 @@ pub fn scan_lines<I: Iterator<Item = String>>(lines: I, text: &str, since_ms: i6
         if millis(&v).is_none_or(|t| t < from) {
             continue;
         }
-        // Done and interrupted are for good; the rest can still move on
-        // (a popAll'd prompt typed in again is queued again).
+
         if matches!(seen, Seen::Done | Seen::Interrupted) {
             break;
         }
@@ -212,7 +174,7 @@ pub fn scan_lines<I: Iterator<Item = String>>(lines: I, text: &str, since_ms: i6
                             _ => {}
                         }
                     }
-                    // The queue went back into the input box, unsent.
+
                     "popAll"
                         if seen == Seen::Enqueued && (content.is_empty() || hit(content)) =>
                     {
@@ -235,7 +197,6 @@ pub fn scan_lines<I: Iterator<Item = String>>(lines: I, text: &str, since_ms: i6
             }
             "user" => {
                 let Some(t) = text_of(&v["message"]["content"]) else {
-                    // A tool result: the turn goes on.
                     quiet = false;
                     continue;
                 };
@@ -249,7 +210,6 @@ pub fn scan_lines<I: Iterator<Item = String>>(lines: I, text: &str, since_ms: i6
                     seen = Seen::Started { absorbed: false };
                     quiet = false;
                 } else if started(&seen) && !t.trim().is_empty() && !t.starts_with('<') {
-                    // Another prompt began a turn: ours had ended.
                     seen = Seen::Done;
                 }
             }
@@ -276,8 +236,6 @@ pub fn scan_lines<I: Iterator<Item = String>>(lines: I, text: &str, since_ms: i6
     }
 }
 
-/// `scan_lines` over a transcript file: from `from` (its length when the
-/// prompt was typed in; claude only appends), else its last 4 MB.
 pub fn scan(path: &Path, text: &str, since_ms: i64, from: Option<u64>) -> Scan {
     use std::io::{Seek, SeekFrom};
     let nothing = Scan {
@@ -293,7 +251,7 @@ pub fn scan(path: &Path, text: &str, since_ms: i64, from: Option<u64>) -> Scan {
         Some(o) => o.max(len.saturating_sub(TAIL)),
         None => len.saturating_sub(TAIL),
     };
-    // Mid line (the tail of a big file): that first line is skipped.
+
     let skip = start > 0 && from != Some(start);
     if start > 0 && f.seek(SeekFrom::Start(start)).is_err() {
         return nothing;
@@ -366,7 +324,7 @@ mod tests {
         assert!(
             matches!(run(&[enq.clone(), pop.clone()]).seen, Seen::Dropped(r) if r.contains("input box"))
         );
-        // Typed in again: queued again.
+
         let again = json!({"type": "queue-operation", "operation": "enqueue", "timestamp": at(T + 8), "content": "fix the build please"});
         assert_eq!(run(&[enq.clone(), pop, again]).seen, Seen::Enqueued);
         let rm = json!({"type": "queue-operation", "operation": "remove", "reason": "cleared", "timestamp": at(T + 6), "content": "fix the build please"});
@@ -397,8 +355,7 @@ mod tests {
         let old = json!({"type": "user", "timestamp": at(T + 1), "message": {"content": "fix the build please"}});
         std::fs::write(&p, format!("{old}\n")).unwrap();
         let from = std::fs::metadata(&p).unwrap().len();
-        // Only what came after the send counts (the same text before it
-        // was another request).
+
         assert_eq!(
             scan(&p, "fix the build please", T, Some(from)).seen,
             Seen::Nothing

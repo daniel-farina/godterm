@@ -1,5 +1,3 @@
-//! Append only log at `~/.godterm/godterm.log` (rotated at 2 MB).
-
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -28,7 +26,7 @@ fn write(level: &str, msg: &str) {
             .open(&p)
     } {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-        // A long-lived token never reaches the log, whoever wrote it.
+
         let msg = if msg.contains(crate::acct_tokens::PREFIX) {
             std::borrow::Cow::Owned(crate::acct_tokens::mask_all(msg))
         } else {

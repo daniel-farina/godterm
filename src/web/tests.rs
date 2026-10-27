@@ -1,7 +1,3 @@
-//! The web app's server: auth, HTTP, framing, the snapshot and live
-//! output order, backpressure, and a WebSocket client end to end against
-//! a real PTY.
-
 use super::auth::{self, Limiter};
 use super::tap::{self, Out, Outbox};
 use super::*;
@@ -18,8 +14,6 @@ fn home(tag: &str) -> std::path::PathBuf {
     h
 }
 
-// ---------- auth ----------
-
 #[test]
 fn constant_time_compare_and_cookies() {
     assert!(auth::same(b"abc", b"abc"));
@@ -31,7 +25,7 @@ fn constant_time_compare_and_cookies() {
         Some("xyz")
     );
     assert_eq!(auth::cookie_in("xgodterm_web=1", auth::COOKIE), None);
-    // The cookie is derived from the token, never the token itself.
+
     let v = auth::cookie_value("tok");
     assert_ne!(v, "tok");
     assert_eq!(v, auth::cookie_value("tok"));
@@ -67,14 +61,13 @@ fn hosts_and_origins() {
     let ok = |o: Option<&str>, h: &str| auth::origin_ok(o, h, None);
     assert!(ok(Some("http://127.0.0.1:7878"), "127.0.0.1:7878"));
     assert!(ok(Some("https://mac.x.ts.net:7878"), "mac.x.ts.net:7878"));
-    // Another port on the same host is another origin (cookies are per
-    // site, so this matters).
+
     assert!(!ok(Some("http://127.0.0.1:8080"), "127.0.0.1:7878"));
     assert!(!ok(Some("http://localhost"), "localhost:7878"));
     assert!(!ok(Some("https://evil.com"), "127.0.0.1:7878"));
     assert!(!ok(Some("null"), "127.0.0.1:7878"));
     assert!(!ok(None, "127.0.0.1:7878"));
-    // Behind a proxy that forwards the name the browser used.
+
     assert!(auth::origin_ok(
         Some("https://mac.x.ts.net"),
         "127.0.0.1:7878",
@@ -116,8 +109,6 @@ fn the_token_file_is_private_and_kept() {
     let _ = std::fs::remove_dir_all(&h);
 }
 
-// ---------- HTTP ----------
-
 #[test]
 fn parses_requests() {
     let r = http::parse("GET /a/b?t=x&v=2 HTTP/1.1\r\nHost: h\r\nCookie: c=1\r\n\r\n").unwrap();
@@ -129,7 +120,6 @@ fn parses_requests() {
     assert!(http::parse("GET / SPDY\r\n\r\n").is_none());
 }
 
-/// A hub on an ephemeral port for HTTP tests (no app behind it).
 fn test_hub(
     tag: &str,
 ) -> (
@@ -145,8 +135,6 @@ fn test_hub(
     (hub, tok, h, rx)
 }
 
-/// One request, read to the close (the head gets `Connection: close`,
-/// else the server would wait KEEP_IDLE for the next one).
 fn get(port: u16, head: &str) -> String {
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -170,17 +158,17 @@ fn http_logins_cookies_and_refusals() {
     let (hub, tok, h, _rx) = test_hub("http");
     let p = hub.port;
     let host = format!("127.0.0.1:{p}");
-    // No cookie: nothing but the sign in hint.
+
     let r = get(p, &format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n"));
     assert_eq!(status(&r), "401", "{r}");
     assert!(!r.contains("<html"));
-    // A foreign Host (DNS rebinding) is refused before anything else.
+
     let r = get(
         p,
         &format!("GET /?t={tok} HTTP/1.1\r\nHost: evil.com\r\n\r\n"),
     );
     assert_eq!(status(&r), "421");
-    // The right token: a cookie and the page without the token.
+
     let r = get(
         p,
         &format!("GET /?t={tok}&x=1 HTTP/1.1\r\nHost: {host}\r\n\r\n"),
@@ -193,7 +181,7 @@ fn http_logins_cookies_and_refusals() {
         "Set-Cookie: {cookie}; Path=/; HttpOnly; SameSite=Strict"
     )));
     assert!(r.contains("Referrer-Policy: no-referrer"));
-    // With the cookie: the app, never cached.
+
     let r = get(
         p,
         &format!("GET / HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n\r\n"),
@@ -201,7 +189,7 @@ fn http_logins_cookies_and_refusals() {
     assert_eq!(status(&r), "200", "{r}");
     assert!(r.contains("Cache-Control: no-cache"));
     assert!(r.contains("Content-Type: text/html"));
-    // A wrong cookie is no cookie.
+
     let r = get(
         p,
         &format!(
@@ -211,7 +199,7 @@ fn http_logins_cookies_and_refusals() {
         ),
     );
     assert_eq!(status(&r), "401");
-    // Not found, and no methods but GET.
+
     let r = get(
         p,
         &format!("GET /nope.js HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n\r\n"),
@@ -222,7 +210,7 @@ fn http_logins_cookies_and_refusals() {
         &format!("POST / HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n\r\n"),
     );
     assert_eq!(status(&r), "405");
-    // The WebSocket: a cookie and our own origin.
+
     let ws = |origin: &str, cookie: &str| {
         get(
             p,
@@ -235,8 +223,7 @@ fn http_logins_cookies_and_refusals() {
         "403"
     );
     assert_eq!(status(&ws(&format!("http://{host}"), "x=1")), "401");
-    // Wrong tokens: refused, then every login is held off for a while
-    // (the right token too).
+
     for _ in 0..auth::MAX_FAILS {
         let r = get(
             p,
@@ -259,7 +246,7 @@ fn every_file_in_web_is_embedded() {
     let a = assets::find("index.html").unwrap();
     assert!(a.mime.starts_with("text/html"));
     assert_eq!(assets::BUILD.len(), 12);
-    // A gzipped copy, when there is one, unpacks to the file.
+
     for p in paths {
         let a = assets::find(p).unwrap();
         if !a.gz.is_empty() {
@@ -268,8 +255,6 @@ fn every_file_in_web_is_embedded() {
         }
     }
 }
-
-// ---------- framing ----------
 
 #[test]
 fn binary_frames_round_trip() {
@@ -286,27 +271,24 @@ fn queries_are_kept_from_the_browser() {
     assert_eq!(s(b"a\x1b[6nb"), b"ab");
     assert_eq!(s(b"\x1b[c\x1b[>0c\x1b[>q\x1b[?2026$p\x1b[?u"), b"");
     assert_eq!(s(b"x\x1b]11;?\x07y\x1b]10;?\x1b\\z"), b"xyz");
-    // Everything else stays, colors and cursor moves included.
+
     let keep: &[u8] = b"\x1b[31mred\x1b[0m\x1b[2;3H\x1b]0;title\x07\x1b[?25l\x1b[6";
     assert_eq!(s(keep), keep);
 }
-
-// ---------- backpressure ----------
 
 #[test]
 fn a_slow_client_is_resynced_not_waited_for() {
     let out = Outbox::new();
     let chunk = vec![b'x'; 64 << 10];
     let t0 = Instant::now();
-    // Far more than the limit, nobody reading: never blocks.
+
     for _ in 0..(tap::OUTPUT_LIMIT / chunk.len()) * 4 {
         out.output(7, &chunk);
     }
     assert!(t0.elapsed() < Duration::from_secs(1));
     let (bytes, frames) = out.queued();
     assert!(bytes <= tap::OUTPUT_LIMIT);
-    // Another tab under the limit still flows... (the limit is per client:
-    // it is dropped too until the client catches up).
+
     out.output(8, b"y");
     let mut seen_resync = false;
     let mut after = 0;
@@ -323,7 +305,7 @@ fn a_slow_client_is_resynced_not_waited_for() {
         after, 0,
         "output of a lagged tab is dropped until its snapshot"
     );
-    // The snapshot lets output flow again.
+
     out.snapshot(7, "{}".into());
     out.output(7, b"z");
     assert_eq!(out.pop(Duration::ZERO), Some(Out::Snapshot(7, "{}".into())));
@@ -379,8 +361,6 @@ fn only_what_installing_needs_is_public() {
     }
 }
 
-// ---------- snapshot and live output ----------
-
 #[test]
 fn snapshot_history_keeps_colors_without_cursor_moves() {
     let mut p = vt100::Parser::new(4, 20, 100);
@@ -401,14 +381,13 @@ fn snapshot_history_keeps_colors_without_cursor_moves() {
         "{hist:?}"
     );
     assert!(hist.contains("wide \u{4e2d}!\r\n"), "{hist:?}");
-    // History rows never move the cursor (that would land on the screen).
+
     assert!(
         !hist.contains("\x1b[A") && !hist.contains("\x1b[C"),
         "{hist:?}"
     );
 }
 
-/// A stub program running `steps` (see test_stub::script) in a fresh folder.
 fn stub_program(steps: &[&str]) -> String {
     static N: AtomicU64 = AtomicU64::new(0);
     let d = std::env::temp_dir().join(format!(
@@ -444,8 +423,6 @@ fn shell_tab(steps: &[&str], rows: u16, cols: u16) -> (Pane, std::sync::mpsc::Re
     (p, rx)
 }
 
-/// What a browser terminal shows after the frames it got: each snapshot
-/// starts a blank terminal of its size.
 fn replay(frames: &[Out], uid: u64) -> Option<vt100::Parser> {
     let mut t: Option<vt100::Parser> = None;
     for f in frames {
@@ -482,7 +459,6 @@ fn replay(frames: &[Out], uid: u64) -> Option<vt100::Parser> {
 
 #[test]
 fn a_snapshot_then_output_has_no_gap_and_no_repeat() {
-    // Numbered lines, fast, while the client subscribes in the middle.
     let (p, _rx) = shell_tab(&["lines:3000:line {i}", "sleep:1"], 20, 60);
     let uid = p.uid;
     std::thread::sleep(Duration::from_millis(30));
@@ -490,7 +466,7 @@ fn a_snapshot_then_output_has_no_gap_and_no_repeat() {
     tap::get(uid).unwrap().subscribe(5, &out);
     let mut frames = vec![];
     let end = Instant::now() + Duration::from_secs(10);
-    // Until the script is done printing (the last line on screen).
+
     loop {
         while let Some(f) = out.pop(Duration::from_millis(20)) {
             frames.push(f);
@@ -506,8 +482,7 @@ fn a_snapshot_then_output_has_no_gap_and_no_repeat() {
     }
     let shown = replay(&frames, uid).expect("a snapshot");
     assert_eq!(shown.screen().contents(), p.screen_text());
-    // Every line in order exactly once: the snapshot's screen, then the
-    // output after it.
+
     let snaps = frames
         .iter()
         .filter(|f| matches!(f, Out::Snapshot(..)))
@@ -542,9 +517,7 @@ fn a_resize_sends_its_size_and_a_respawn_a_new_snapshot() {
         frames.push(f);
     }
     p.resize(12, 50);
-    // A resize is a `resized` frame in the stream, not a new snapshot
-    // (a phone zooming resized the tab, and each snapshot made the app
-    // redraw and lose its scroll position).
+
     let mut after = vec![];
     while let Some(f) = out.pop(Duration::ZERO) {
         assert!(
@@ -565,11 +538,11 @@ fn a_resize_sends_its_size_and_a_respawn_a_new_snapshot() {
     let shown = replay(&frames, uid).expect("a snapshot");
     assert_eq!(shown.screen().size(), (12, 50));
     assert!(shown.screen().contents().contains("hello"));
-    // Its new stream id and position: where a later resume starts.
+
     let at = stream_pos(&frames, uid).unwrap();
     assert_eq!(at.sid, v["sid"].as_str().unwrap());
     let mut frames = vec![];
-    // A new process: a new snapshot (an empty screen at first).
+
     p.kill();
     let (tx, _rx2) = std::sync::mpsc::channel();
     p.spawn(
@@ -600,7 +573,7 @@ fn a_resize_sends_its_size_and_a_respawn_a_new_snapshot() {
     let shown = replay(&frames, uid).expect("a snapshot after the respawn");
     assert!(shown.screen().contents().contains("second"));
     assert!(!shown.screen().contents().contains("hello"));
-    // Unsubscribed: nothing more comes.
+
     tap::get(uid).unwrap().unsubscribe(1);
     p.resize(10, 40);
     assert!(out.pop(Duration::ZERO).is_none());
@@ -615,8 +588,7 @@ fn a_full_screen_apps_snapshot_is_on_the_alternate_screen() {
     p.process(b"\x1b[?1049h\x1b[?1003h\x1b[?1006hfull screen");
     let (data, _, _) = tap::snapshot_bytes(&mut p, 100);
     let s = String::from_utf8(data).unwrap();
-    // No history above it, and the browser's terminal switches screens
-    // first (so it scrolls nothing of its own and gives the app the wheel).
+
     assert!(s.starts_with("\x1b[?1049h"), "{s:?}");
     assert!(!s.contains("shell"), "{s:?}");
     let mut b = vt100::Parser::new(5, 20, 0);
@@ -631,8 +603,6 @@ fn a_full_screen_apps_snapshot_is_on_the_alternate_screen() {
 
 #[test]
 fn a_wheel_from_a_browser_reaches_the_app_as_its_mouse_reports() {
-    // An app on the alternate screen with SGR mouse reports that prints,
-    // in hex, the bytes it reads.
     let (p, _rx) = shell_tab(
         &[
             "raw",
@@ -649,7 +619,7 @@ fn a_wheel_from_a_browser_reaches_the_app_as_its_mouse_reports() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let tap = tap::get(p.uid).unwrap();
-    // Two notches up at column 5, row 3 (0 based 4, 2): ESC [ < 64 ; 5 ; 3 M.
+
     assert_eq!(tap.wheel(true, 2, 4, 2), Some("mouse"));
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(tap.wheel(false, 1, 4, 2), Some("mouse"));
@@ -666,8 +636,6 @@ fn a_wheel_from_a_browser_reaches_the_app_as_its_mouse_reports() {
     );
 }
 
-/// The stream position after `frames`: the last snapshot's or resume's
-/// `pos` (and its `sid`) plus the output bytes after it.
 fn stream_pos(frames: &[Out], uid: u64) -> Option<tap::Resume> {
     let mut r: Option<tap::Resume> = None;
     for f in frames {
@@ -725,7 +693,7 @@ fn a_browser_that_comes_back_gets_only_what_it_missed() {
     let mut frames = vec![];
     drain(&out, 7, &mut frames);
     let at = stream_pos(&frames, uid).expect("a snapshot");
-    // The connection drops; the tab goes on.
+
     tap::get(uid).unwrap().unsubscribe(7);
     p.write(b"one\r");
     let t0 = Instant::now();
@@ -734,7 +702,7 @@ fn a_browser_that_comes_back_gets_only_what_it_missed() {
         std::thread::sleep(Duration::from_millis(20));
     }
     std::thread::sleep(Duration::from_millis(100));
-    // Back: a resume and the missing bytes, no snapshot.
+
     let out2 = Outbox::new();
     assert!(tap::get(uid).unwrap().subscribe_from(8, &out2, &at));
     let mut more = vec![];
@@ -746,14 +714,13 @@ fn a_browser_that_comes_back_gets_only_what_it_missed() {
     assert!(!more
         .iter()
         .any(|f| matches!(f, Out::Text(s) | Out::Snapshot(_, s) if s.contains("snapshot"))));
-    // Its old frames plus the new ones draw the tab as it is.
+
     let mut all = frames;
     all.extend(more);
     let shown = replay(&all, uid).unwrap();
     assert_eq!(shown.screen().contents(), p.screen_text());
     let at2 = stream_pos(&all, uid).unwrap();
-    // A stale position (from another stream) or a resize in between: a
-    // snapshot instead.
+
     tap::get(uid).unwrap().unsubscribe(8);
     let stale = tap::Resume {
         sid: "nope".into(),
@@ -772,8 +739,6 @@ fn a_browser_that_comes_back_gets_only_what_it_missed() {
 
 #[test]
 fn a_reader_is_never_held_up_by_a_client_that_reads_nothing() {
-    // 8 MB through a tab whose only client never reads: the tab's own
-    // screen keeps up (the reader is capped at STREAM_CAP a second).
     let (p, _rx) = shell_tab(
         &["bytes:5999993:x", "say:\\n", "say:DONE\\n", "sleep:5"],
         24,
@@ -786,12 +751,11 @@ fn a_reader_is_never_held_up_by_a_client_that_reads_nothing() {
         assert!(t0.elapsed() < Duration::from_secs(15), "the reader stalled");
         std::thread::sleep(Duration::from_millis(50));
     }
-    // "DONE" and the newline after it can arrive apart (ConPTY): let the
-    // screen settle, else the snapshot below is one scroll behind it.
+
     std::thread::sleep(Duration::from_millis(500));
     let (bytes, _) = out.queued();
     assert!(bytes <= tap::OUTPUT_LIMIT);
-    // Once read, it ends with a resync, whose snapshot shows the end.
+
     let mut frames = vec![];
     while let Some(f) = out.pop(Duration::ZERO) {
         if let Out::Resync(u) = f {
@@ -803,8 +767,6 @@ fn a_reader_is_never_held_up_by_a_client_that_reads_nothing() {
     let shown = replay(&frames, p.uid).unwrap();
     assert_eq!(shown.screen().contents(), p.screen_text());
 }
-
-// ---------- WebSocket end to end ----------
 
 fn ws_client(port: u16, cookie: &str) -> tungstenite::WebSocket<std::net::TcpStream> {
     use tungstenite::client::IntoClientRequest;
@@ -828,11 +790,11 @@ fn websocket_streams_a_tab_and_takes_input() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (hub, tok, h, rx) = test_hub("ws");
     let cookie = format!("{}={}", auth::COOKIE, auth::cookie_value(&tok));
-    // A shell that echoes what it reads, line by line.
+
     let (p, _prx) = shell_tab(&["noecho", "echo_lines:got:"], 24, 80);
     let uid = p.uid;
     let mut ws = ws_client(hub.port, &cookie);
-    // The server asked the app for a hello.
+
     match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
         AppEvent::Web(ToApp::Hello(_)) => {}
         _ => panic!("not a hello"),
@@ -854,7 +816,7 @@ fn websocket_streams_a_tab_and_takes_input() {
         (snap["rows"].as_u64(), snap["cols"].as_u64()),
         (Some(24), Some(80))
     );
-    // Keystroke round trips: a line in, its echo back.
+
     let mut times = vec![];
     for i in 0..30 {
         let t0 = Instant::now();
@@ -882,7 +844,7 @@ fn websocket_streams_a_tab_and_takes_input() {
         times.last().unwrap()
     );
     assert!(median < Duration::from_millis(50), "{median:?}");
-    // Input for a tab that does not exist is an error, not a crash.
+
     ws.send(Message::binary(ws::frame(ws::KIND_INPUT, 999_999, b"x")))
         .unwrap();
     loop {
@@ -892,7 +854,7 @@ fn websocket_streams_a_tab_and_takes_input() {
             }
         }
     }
-    // The connection stays usable: an app level ping.
+
     ws.send(Message::text(r#"{"t":"ping","id":7}"#)).unwrap();
     loop {
         if let Message::Text(t) = ws.read().unwrap() {
@@ -972,7 +934,7 @@ fn websocket_keeps_up_with_a_flood() {
         bytes as f64 / 1e6 / secs
     );
     assert!(tail.contains("END-OF-FLOOD") || snapshots > 0);
-    // The browser's screen ends as the tab's.
+
     std::thread::sleep(Duration::from_millis(200));
     if let Some(t) = term {
         assert_eq!(t.screen().contents(), p.screen_text());
@@ -989,8 +951,7 @@ fn json_str(v: &serde_json::Value) -> String {
 fn a_process_godterm_started_cannot_sign_in() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (hub, tok, h, _rx) = test_hub("inside");
-    // curl as this process's child stands in for a tab's agent that read
-    // the token file.
+
     let sink = h.join("curl-body.txt");
     let out = std::process::Command::new("curl")
         .args([
@@ -1014,7 +975,7 @@ fn a_browser_mic_keeps_only_fresh_audio_from_before_a_capture() {
     let pcm: Vec<u8> = (0..FRAME as i16 * 2)
         .flat_map(|s| s.to_le_bytes())
         .collect();
-    // Said while the engine still loads: kept for the capture that opens.
+
     mic.push(&pcm);
     let mut cap = Capture::web(&mic);
     assert!(cap.vp, "the browser cancels its own echo");
@@ -1024,12 +985,12 @@ fn a_browser_mic_keeps_only_fresh_audio_from_before_a_capture() {
     assert_eq!(f[..3], [0, 1, 2]);
     cap.frame(&mut f).unwrap();
     assert_eq!(f[0], FRAME as i16);
-    // Nothing more: silence after the wait.
+
     let t0 = Instant::now();
     assert!(cap.frame(&mut f).is_some());
     assert!(t0.elapsed() >= Duration::from_millis(200), "it waited");
     assert!(f.iter().all(|s| *s == 0));
-    // Closed (push to talk released), then audio that goes stale: dropped.
+
     drop(cap);
     mic.push(&pcm);
     std::thread::sleep(Duration::from_millis(1100));
@@ -1037,7 +998,7 @@ fn a_browser_mic_keeps_only_fresh_audio_from_before_a_capture() {
     assert_eq!(cap.queued(), 0);
     cap.frame(&mut f).unwrap();
     assert!(f.iter().all(|s| *s == 0));
-    // The counts say what came and what was dropped.
+
     let s = mic.take_stats();
     assert_eq!(s.frames, 2);
     assert_eq!(s.dropped, FRAME as u64 * 2);
@@ -1045,8 +1006,6 @@ fn a_browser_mic_keeps_only_fresh_audio_from_before_a_capture() {
     assert_eq!(mic.take_stats().frames, 0, "counts start again");
 }
 
-/// The page says when it plays speech (`voice {playing}`): the engine's
-/// capture of that browser's mic sees it (it gates and barges in on it).
 #[test]
 fn a_browser_mic_knows_when_its_page_plays() {
     use crate::voice::audio::{Capture, WebMic};
@@ -1059,10 +1018,6 @@ fn a_browser_mic_knows_when_its_page_plays() {
     assert!(!cap.web_playing());
 }
 
-/// Speech to the voice browser: clips go on its playback clock (the echo
-/// reference for its mic), a duck while a barge-in is decided goes as
-/// `audio_duck` once per change, and a stop as `audio_stop` clears what
-/// the clock expected to play.
 #[test]
 fn the_voice_browser_gets_ducks_and_stops() {
     use crate::voice::{player, tts};
@@ -1101,7 +1056,7 @@ fn the_voice_browser_gets_ducks_and_stops() {
     assert!(got(&a).iter().any(|t| t.contains("audio_stop")));
     assert_eq!(player::web_end(), None, "nothing more expected to play");
     app.web_voice_off("test");
-    // No browser: nothing is sent, nothing is ducked there.
+
     tts::web_duck(0.4);
     assert!(!got(&a).iter().any(|t| t.contains("audio_duck")));
     let _ = std::fs::remove_dir_all(home);
@@ -1165,7 +1120,7 @@ fn websocket_voice_and_images_reach_the_app() {
         ToApp::Voice { on, talk, .. } => assert_eq!((on, talk), (None, Some(false))),
         t => panic!("{t:?}"),
     }
-    // Mic audio goes to the client's mic once the app gave it one.
+
     let mic = crate::voice::audio::WebMic::new();
     let mut cap = crate::voice::audio::Capture::web(&mic);
     *hub.client(id).unwrap().mic.lock().unwrap() = Some(Arc::clone(&mic));
@@ -1175,7 +1130,7 @@ fn websocket_voice_and_images_reach_the_app() {
     let mut f = vec![];
     cap.frame(&mut f).unwrap();
     assert_eq!(f[..2], [7, 8], "the browser's samples");
-    // Direct mode, brainstorm and the rest go to the UI thread as is.
+
     ws.send(Message::text(r#"{"t":"voice","direct":12}"#))
         .unwrap();
     match next() {
@@ -1184,7 +1139,7 @@ fn websocket_voice_and_images_reach_the_app() {
         }
         t => panic!("{t:?}"),
     }
-    // The mic as a recording (kind 4), decoded with ffmpeg into the mic.
+
     let dir = std::env::temp_dir().join(format!("gt-ws-rec-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let webm = dir.join("r.webm");
@@ -1220,7 +1175,7 @@ fn websocket_voice_and_images_reach_the_app() {
         assert!(loud > 1000, "decoded samples: {loud}");
     }
     let _ = std::fs::remove_dir_all(&dir);
-    // A turn with a pasted image (a data URL) arrives decoded.
+
     let png = crate::assistant_images::testing::png(3, 2);
     let url = format!(
         "data:image/png;base64,{}",
@@ -1237,7 +1192,7 @@ fn websocket_voice_and_images_reach_the_app() {
         }
         t => panic!("{t:?}"),
     }
-    // Speech for the browser: a kind 2 binary frame.
+
     hub.client(id)
         .unwrap()
         .out
@@ -1309,12 +1264,12 @@ fn a_busy_port_is_tried_again_and_the_settings_start_stop_and_move_it() {
     let port = busy.local_addr().unwrap().port();
     app.cfg.web.enabled = true;
     app.cfg.web.port = port;
-    // Token only: no real tailscale, no tailnet listener in a test.
+
     app.cfg.web.tailnet_sign_in = false;
     app.try_start_web(true);
     assert!(app.web.is_none(), "the port is taken");
     assert!(app.web_retry_at.is_some(), "it tries again");
-    // Not yet time: nothing happens.
+
     assert!(app.web_retry_tick().is_some());
     assert!(app.web.is_none());
     drop(busy);
@@ -1325,7 +1280,7 @@ fn a_busy_port_is_tried_again_and_the_settings_start_stop_and_move_it() {
         Some(port),
         "it got the port"
     );
-    // A new port in config.toml: the server moves there.
+
     let other = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         l.local_addr().unwrap().port()
@@ -1339,7 +1294,7 @@ fn a_busy_port_is_tried_again_and_the_settings_start_stop_and_move_it() {
         std::net::TcpListener::bind(("127.0.0.1", port)).is_ok(),
         "the old port is free"
     );
-    // Turned off: stopped, the port freed.
+
     let old = app.cfg.web.clone();
     app.cfg.web.enabled = false;
     assert_eq!(app.web_config_changed(&old).as_deref(), Some("web app off"));
@@ -1349,7 +1304,7 @@ fn a_busy_port_is_tried_again_and_the_settings_start_stop_and_move_it() {
         std::net::TcpListener::bind(("127.0.0.1", other)).is_ok(),
         "the port is free"
     );
-    // On again.
+
     let old = app.cfg.web.clone();
     app.cfg.web.enabled = true;
     assert_eq!(app.web_config_changed(&old).as_deref(), Some("web app on"));
@@ -1371,14 +1326,14 @@ fn a_web_turn_carries_its_view_and_web_layout_reaches_that_browser_only() {
     }
     *a.view.lock().unwrap() = serde_json::json!({"device": "desktop", "panes": 4, "tabs": [null, null, null, null], "focused": 0});
     app.web = Some(super::app_web::WebSide::new(Arc::clone(&hub)));
-    // Not a web turn: no web line.
+
     assert!(!app.state_preamble().contains("came from the web app"));
     app.assistant.web_client = Some(a.id);
     let p = app.state_preamble();
     assert!(p.contains("came from the web app"), "{p}");
     assert!(p.contains("desktop, 4 panes: 1 empty"), "{p}");
     assert!(p.contains("web_layout"), "{p}");
-    // web_layout goes to the browser the request came from.
+
     let tab = crate::control::tab_id(app.panes[0].tabs[0].uid);
     let v = app.control_call(
         "web_layout",
@@ -1405,7 +1360,7 @@ fn a_web_turn_carries_its_view_and_web_layout_reaches_that_browser_only() {
         got(&b).iter().all(|t| !t.contains(r#""t":"ui""#)),
         "the other browser is left alone"
     );
-    // "all" reaches both.
+
     let v = app.control_call(
         "web_view",
         &serde_json::json!({"view": "sessions", "client": "all"}),
@@ -1416,11 +1371,6 @@ fn a_web_turn_carries_its_view_and_web_layout_reaches_that_browser_only() {
     let _ = std::fs::remove_dir_all(home);
 }
 
-// ---------- tailnet sign in ----------
-
-/// A tailnet as tailscale would describe it: this node 100.100.1.1 owned
-/// by me@example.com; whois answers from `peers` (ip -> login, "tag:" for
-/// a tagged node), counted.
 fn mock_tailnet(
     extra: &[&str],
     ips: Arc<Mutex<Vec<String>>>,
@@ -1509,7 +1459,7 @@ fn tailnet_addresses_and_logins() {
     }
     let calls = Arc::new(AtomicU64::new(0));
     let t = mock_tailnet(&["Friend@x.com"], own_ips(), vec![], calls);
-    // The node's owner (from Self.UserID), and tailnet_users; any case.
+
     assert_eq!(t.owner().as_deref(), Some("me@example.com"));
     assert_eq!(
         t.judge("ME@example.com"),
@@ -1546,13 +1496,13 @@ fn serve_identity_headers_sign_in_only_allowed_logins_on_ts_net() {
             &format!("GET / HTTP/1.1\r\nHost: {host}\r\n{extra}X-Forwarded-For: 100.100.2.2\r\nX-Forwarded-Proto: https\r\n\r\n"),
         )
     };
-    // From this Mac's own tailnet address (any local program): the token.
+
     let r = get(
         p,
         &format!("GET / HTTP/1.1\r\nHost: {ts}\r\nTailscale-User-Login: me@example.com\r\nX-Forwarded-For: 100.100.1.1\r\n\r\n"),
     );
     assert_eq!(status(&r), "401", "{r}");
-    // The owner, through serve: the app and the cookie at once.
+
     let r = req(&ts, "Tailscale-User-Login: me@example.com\r\n");
     assert_eq!(status(&r), "200", "{r}");
     assert!(r.contains("Content-Type: text/html"));
@@ -1563,17 +1513,17 @@ fn serve_identity_headers_sign_in_only_allowed_logins_on_ts_net() {
         "{r}"
     );
     assert!(r.contains("; Secure"));
-    // A login in tailnet_users.
+
     assert_eq!(
         status(&req(&ts, "Tailscale-User-Login: Friend@x.com\r\n")),
         "200"
     );
-    // Another tailnet user: a page that says so, never the app.
+
     let r = req(&ts, "Tailscale-User-Login: other@example.com\r\n");
     assert_eq!(status(&r), "403", "{r}");
     assert!(r.contains("not open to other@example.com"), "{r}");
     assert!(!r.contains("Set-Cookie") && !r.contains("<html"));
-    // The header on a name that is not serve's: not trusted.
+
     let r = req(
         &format!("127.0.0.1:{p}"),
         "Tailscale-User-Login: me@example.com\r\n",
@@ -1584,20 +1534,20 @@ fn serve_identity_headers_sign_in_only_allowed_logins_on_ts_net() {
         "Tailscale-User-Login: me@example.com\r\n",
     );
     assert_eq!(status(&r), "401", "{r}");
-    // A foreign Host is refused before anything else.
+
     assert_eq!(
         status(&req("evil.com", "Tailscale-User-Login: me@example.com\r\n")),
         "421"
     );
-    // Two logins: neither.
+
     let r = req(
         &ts,
         "Tailscale-User-Login: other@example.com\r\nTailscale-User-Login: me@example.com\r\n",
     );
     assert_eq!(status(&r), "401", "{r}");
-    // No header (a tagged node, or serve not in front): the token hint.
+
     assert_eq!(status(&req(&ts, "")), "401");
-    // The WebSocket by identity, from our own origin only.
+
     let ws = |origin: &str| {
         get(
             p,
@@ -1613,8 +1563,7 @@ fn serve_identity_headers_sign_in_only_allowed_logins_on_ts_net() {
     c.read_exact(&mut b).unwrap();
     assert_eq!(&b, b"HTTP/1.1 101", "the socket opens by identity");
     drop(c);
-    // Another local process sending the header itself (curl as our child
-    // stands in for any program of this user): refused, it is not serve.
+
     let sink = h.join("curl-body.txt");
     let out = std::process::Command::new("curl")
         .args([
@@ -1632,7 +1581,7 @@ fn serve_identity_headers_sign_in_only_allowed_logins_on_ts_net() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "401");
-    // Headers never cost a whois.
+
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     hub.stop();
     let _ = std::fs::remove_dir_all(&h);
@@ -1651,7 +1600,6 @@ fn identity_headers_are_ignored_with_tailnet_sign_in_off() {
     let _ = std::fs::remove_dir_all(&h);
 }
 
-/// A request to the tailnet listener as if from `peer`.
 fn from_peer(hub: &Arc<Hub>, peer: &str, head: &str) -> String {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let mut c = std::net::TcpStream::connect(l.local_addr().unwrap()).unwrap();
@@ -1685,37 +1633,35 @@ fn the_tailnet_ip_signs_in_by_whois() {
     let (hub, tok, h, _rx) = tailnet_hub("ip-id", t);
     let head = |extra: &str| format!("GET / HTTP/1.1\r\nHost: 100.100.1.1:7941\r\n{extra}\r\n");
     let cookie = format!("{}={}", auth::COOKIE, auth::cookie_value(&tok));
-    // A device of the owner's: the app, a cookie (plain http: not Secure).
+
     let r = from_peer(&hub, "100.100.2.2", &head(""));
     assert_eq!(status(&r), "200", "{r}");
     assert!(r.contains(&format!("Set-Cookie: {cookie};")), "{r}");
     assert!(!r.contains("; Secure"));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    // Asked once per address for a while.
+
     assert_eq!(status(&from_peer(&hub, "100.100.2.2", &head(""))), "200");
     assert_eq!(calls.load(Ordering::SeqCst), 1, "cached");
-    // IPv6 tailnet peer.
+
     assert_eq!(
         status(&from_peer(&hub, "fd7a:115c:a1e0::2", &head(""))),
         "200"
     );
-    // Another user's device, a tagged node: refused with a page.
+
     let r = from_peer(&hub, "100.100.3.3", &head(""));
     assert_eq!(status(&r), "403", "{r}");
     assert!(r.contains("not open to other@example.com"));
     let r = from_peer(&hub, "100.100.4.4", &head(""));
     assert_eq!(status(&r), "403", "{r}");
     assert!(r.contains("tagged node server.tail1.ts.net"), "{r}");
-    // whois knows nothing: the token hint; serve's header means nothing
-    // here.
+
     let r = from_peer(
         &hub,
         "100.100.5.5",
         &head("Tailscale-User-Login: me@example.com\r\n"),
     );
     assert_eq!(status(&r), "401", "{r}");
-    // This Mac's own tailnet address (a local process): the token only,
-    // and no whois for it.
+
     let n = calls.load(Ordering::SeqCst);
     assert_eq!(status(&from_peer(&hub, "100.100.1.1", &head(""))), "401");
     assert_eq!(calls.load(Ordering::SeqCst), n);
@@ -1725,10 +1671,10 @@ fn the_tailnet_ip_signs_in_by_whois() {
         &format!("GET /?t={tok} HTTP/1.1\r\nHost: 100.100.1.1:7941\r\n\r\n"),
     );
     assert_eq!(status(&r), "303", "{r}");
-    // Not a tailnet address at all: dropped without an answer.
+
     assert_eq!(from_peer(&hub, "8.8.8.8", &head("")), "");
     assert_eq!(from_peer(&hub, "192.168.1.5", &head("")), "");
-    // Host and Origin still checked.
+
     let r = from_peer(
         &hub,
         "100.100.2.2",
@@ -1751,7 +1697,7 @@ fn the_tailnet_ip_signs_in_by_whois() {
 #[test]
 fn the_tailnet_listener_waits_for_its_port_and_follows_the_address() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // 127.0.0.1 stands in for the tailnet address here.
+
     let ips = Arc::new(Mutex::new(vec!["127.0.0.1".to_string()]));
     let t = mock_tailnet(&[], Arc::clone(&ips), vec![], Arc::new(AtomicU64::new(0)));
     let (hub, _tok, h, _rx) = tailnet_hub("ip-keep", t);
@@ -1772,13 +1718,13 @@ fn the_tailnet_listener_waits_for_its_port_and_follows_the_address() {
         false
     };
     std::thread::sleep(Duration::from_millis(200));
-    // Taken by someone else: it tries again, and gets it once freed.
+
     drop(busy);
     assert!(wait(false), "it bound the port once it was free");
-    // The address goes away (tailscale down): the port is let go.
+
     ips.lock().unwrap().clear();
     assert!(wait(true), "it let the port go");
-    // Back: bound again.
+
     ips.lock().unwrap().push("127.0.0.1".into());
     assert!(wait(false), "bound again");
     hub.stop();
@@ -1805,11 +1751,11 @@ fn a_press_makes_a_browser_the_voice_and_a_refusal_says_why() {
         }
         out
     };
-    // A release from a browser that is not the voice: nothing, no note.
+
     app.web_voice(a.id, None, "push", Some(false));
     assert_eq!(app.web_voice_client(), None);
     assert!(got(&a).is_empty());
-    // A press alone makes it the voice in push to talk, and says so.
+
     app.web_voice(a.id, None, "push", Some(true));
     assert_eq!(app.web_voice_client(), Some(a.id));
     assert!(
@@ -1823,13 +1769,12 @@ fn a_press_makes_a_browser_the_voice_and_a_refusal_says_why() {
         "{fa:?}"
     );
     assert_eq!(app.web_state()["voice"]["web"], serde_json::json!(a.id));
-    // Another browser's press takes it over; the first one is told.
+
     app.web_voice(b.id, None, "push", Some(true));
     assert_eq!(app.web_voice_client(), Some(b.id));
     assert!(a.mic.lock().unwrap().is_none());
     assert!(got(&a).iter().any(|t| t.contains(r#""moved":true"#)));
-    // The same browser changing mode (push to open) is not a move: it
-    // keeps the voice and hears no "moved".
+
     got(&b);
     app.web_voice(b.id, Some(true), "open", None);
     assert_eq!(app.web_voice_client(), Some(b.id));
@@ -1844,7 +1789,7 @@ fn a_press_makes_a_browser_the_voice_and_a_refusal_says_why() {
         b.mic.lock().unwrap().is_some(),
         "its mic is still the input"
     );
-    // Muted in GodTerm: refused with the reason, kept on screen there.
+
     app.web_voice_off("test");
     got(&b);
     app.voice.muted = true;
@@ -1860,9 +1805,6 @@ fn a_press_makes_a_browser_the_voice_and_a_refusal_says_why() {
     let _ = std::fs::remove_dir_all(home);
 }
 
-/// The browser's mic mute (`voice {muted}`): only the voice browser's
-/// counts, it is in the state, and open mic does not fall asleep on the
-/// silence meanwhile; the sleep count starts again at the unmute.
 #[test]
 fn a_muted_browser_mic_keeps_open_mic_awake() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1876,7 +1818,7 @@ fn a_muted_browser_mic_keeps_open_mic_awake() {
     app.web_voice(a.id, Some(true), "open", None);
     assert_eq!(app.web_voice_client(), Some(a.id));
     assert!(app.voice.open_mic, "open mic on the browser's audio");
-    // Another browser's mute is not this one's.
+
     app.web_voice_ctl(b.id, &serde_json::json!({"muted": true}));
     assert!(!app.web_mic_is_muted());
     app.web_voice_ctl(a.id, &serde_json::json!({"muted": true}));
@@ -1886,23 +1828,23 @@ fn a_muted_browser_mic_keeps_open_mic_awake() {
         serde_json::json!(true)
     );
     assert!(!app.voice.muted, "GodTerm's own mute is not touched");
-    // Long muted: still open mic, the mode kept.
+
     app.voice.last_heard = Instant::now() - Duration::from_secs(5 * 60);
     app.open_mic_tick();
     assert!(
         app.voice.open_mic,
         "no auto sleep while the browser is muted"
     );
-    // Unmuted: the count starts again, so no sleep at once...
+
     app.web_voice_ctl(a.id, &serde_json::json!({"muted": false}));
     assert!(!app.web_mic_is_muted());
     app.open_mic_tick();
     assert!(app.voice.open_mic, "the sleep count starts at the unmute");
-    // ...but a long silence after it still sleeps, as before.
+
     app.voice.last_heard = Instant::now() - Duration::from_secs(5 * 60);
     app.open_mic_tick();
     assert!(!app.voice.open_mic, "auto sleep again once unmuted");
-    // A new voice session starts unmuted.
+
     app.web_voice_ctl(a.id, &serde_json::json!({"muted": true}));
     app.web_voice_off("test");
     app.web_voice(a.id, Some(true), "open", None);
@@ -1929,7 +1871,7 @@ fn a_browser_chooses_its_own_talk_back_voice() {
         }
         out
     };
-    // Chosen before it is the voice: kept for the client, said back.
+
     super::ws::web_tts(
         &a,
         &serde_json::json!({"engine": "kokoro", "voice": "bf_emma"}),
@@ -1943,7 +1885,7 @@ fn a_browser_chooses_its_own_talk_back_voice() {
         *a.tts.lock().unwrap(),
         Some(WebTts::new("kokoro", "bf_emma"))
     );
-    // An engine GodTerm does not have: refused, the choice kept.
+
     super::ws::web_tts(&a, &serde_json::json!({"engine": "espeak", "voice": "x"}));
     let r = got(&a, Duration::from_millis(20));
     let r = r.last().unwrap();
@@ -1953,19 +1895,19 @@ fn a_browser_chooses_its_own_talk_back_voice() {
     );
     assert!(r["error"].as_str().unwrap().contains("unknown engine"));
     assert_eq!(a.tts.lock().unwrap().as_ref().unwrap().voice, "bf_emma");
-    // Becoming the voice: speech to it uses its choice.
+
     app.web_voice(a.id, None, "push", Some(true));
     assert_eq!(app.web_voice_client(), Some(a.id));
     assert_eq!(
         web_tts::route(),
         Some((a.id, Some(WebTts::new("kokoro", "bf_emma"))))
     );
-    // Another browser's choice does not change it; its own does, at once.
+
     super::ws::web_tts(&b, &serde_json::json!({"engine": "grok", "voice": "ara"}));
     assert_eq!(web_tts::route().unwrap().1.unwrap().engine, "kokoro");
     super::ws::web_tts(&a, &serde_json::Value::Null);
     assert_eq!(web_tts::route(), Some((a.id, Some(WebTts::new("mac", "")))));
-    // A browser that never chose hears Kokoro Heart.
+
     app.web_voice(hub.add().id, None, "push", Some(true));
     let (_, none) = web_tts::route().unwrap();
     assert_eq!(none, None);
@@ -1974,10 +1916,10 @@ fn a_browser_chooses_its_own_talk_back_voice() {
         (cfg.tts_engine.as_str(), cfg.kokoro_voice.as_str()),
         ("kokoro", "af_heart")
     );
-    // Voice back on the Mac: the Mac's settings again.
+
     app.web_voice_off("test");
     assert_eq!(web_tts::route(), None);
-    // The list, made off the UI thread.
+
     got(&a, Duration::from_millis(20));
     app.web_voice_ctl(a.id, &serde_json::json!({"web_tts_list": true}));
     let r = got(&a, Duration::from_secs(5));
@@ -2006,18 +1948,16 @@ fn a_browser_chooses_its_own_talk_back_voice() {
     let _ = std::fs::remove_dir_all(home);
 }
 
-// ---------- the browsers' debug log ----------
-
 #[test]
 fn the_client_log_scrubs_secrets() {
     use super::clientlog::scrub;
     let tok = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    // The token itself, and any 64 hex (the cookie is its sha256).
+
     let s = scrub(&format!("loaded with {tok}"), tok);
     assert!(!s.contains(tok) && s.contains("[token]"), "{s}");
     let other = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
     assert!(!scrub(other, tok).contains("fedcba98"));
-    // The sign in link's t= value, wherever it sits in a URL.
+
     for u in [
         "GET http://127.0.0.1:7963/?t=sekrit123 failed",
         "open /x?a=1&t=sekrit123#h",
@@ -2029,9 +1969,9 @@ fn the_client_log_scrubs_secrets() {
             "{s}"
         );
     }
-    // Words that only end in t= are left alone.
+
     assert_eq!(scrub("set=1 at=2", tok), "set=1 at=2");
-    // Cookie and Authorization values.
+
     for h in [
         "Cookie: godterm_web=abc; other=1",
         "{\"cookie\":\"godterm_web=abc\"}",
@@ -2042,18 +1982,18 @@ fn the_client_log_scrubs_secrets() {
         assert!(!s.contains("abc"), "{h} -> {s}");
         assert!(s.contains("[redacted]"), "{s}");
     }
-    // Blobs: base64 (a data URL) and long hex.
+
     let b64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk";
     let s = scrub(b64, tok);
     assert!(!s.contains("iVBORw0KGgo") && s.contains("[blob"), "{s}");
     assert!(scrub("deadbeefdeadbeefdeadbeefdeadbeef", tok).contains("[hex]"));
-    // Ordinary text, paths and URLs stay readable.
+
     let plain = "conn: closed 1006 after 12.3 s, /js/term.js?v=0a1b2c3d4e5f:12:5";
     assert_eq!(scrub(plain, tok), plain);
-    // Control characters (escapes, new lines) never reach the file.
+
     let s = scrub("a\x1b[31mb\nc\rd\u{7}", tok);
     assert!(!s.chars().any(|c| c.is_control()), "{s:?}");
-    // A line is capped.
+
     assert!(scrub(&"x ".repeat(5000), tok).chars().count() <= 2003);
 }
 
@@ -2089,8 +2029,7 @@ fn client_log_lines_hide_typed_text_and_are_rate_limited() {
     assert!(out
         .iter()
         .all(|l| l.ends_with('\n') && l.matches('\n').count() == 1));
-    // A runaway page: the burst goes through, then lines are dropped and
-    // the drop is noted once the allowance comes back.
+
     let many: Vec<_> = (0..200)
         .map(|i| serde_json::json!({"cat": "spam", "text": i}))
         .collect();
@@ -2130,7 +2069,7 @@ fn the_client_log_is_private_and_rotates() {
     );
     assert!(cur.contains("line 09") && !cur.contains("line 05"));
     assert!(old.contains("line 05") || old.contains("line 06"));
-    // Only one old file is kept.
+
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
     #[cfg(unix)]
     {
@@ -2138,20 +2077,18 @@ fn the_client_log_is_private_and_rotates() {
         let m = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
         assert_eq!(m, 0o600);
     }
-    // A new writer appends to what is there.
+
     drop(f);
     let mut f = LogFile::new(p.clone(), 100);
     f.write("again\n").unwrap();
     assert!(std::fs::read_to_string(&p).unwrap().ends_with("again\n"));
-    // Deleted by hand: the next line starts a new file.
+
     std::fs::remove_file(&p).unwrap();
     f.write("fresh\n").unwrap();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), "fresh\n");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The Git sheet's `git` frame: browser -> server -> the app's event,
-/// and the answer back on the same socket (view, a checked plan, its run).
 #[test]
 fn git_frames_round_trip() {
     use tungstenite::Message;
@@ -2208,9 +2145,6 @@ fn git_frames_round_trip() {
     let _ = std::fs::remove_dir_all(&h);
 }
 
-/// Settings > GitHub accounts and repos: its `git` frames (`cfg_view`,
-/// `cfg_check`) go browser -> server -> the app's event like the Git
-/// sheet's, and the app's answer comes back on the same socket.
 #[test]
 fn gitcfg_frames_round_trip() {
     use tungstenite::Message;
@@ -2261,9 +2195,6 @@ fn gitcfg_frames_round_trip() {
     let _ = std::fs::remove_dir_all(&ah);
 }
 
-/// The live browser view: a `bview` frame reaches the app as its own
-/// event (not a control tool), and pictures go back as binary kind 5
-/// with the tab's uid, from a fake bsk.
 #[cfg(unix)]
 #[test]
 fn bview_frames_and_pictures_round_trip() {
@@ -2319,7 +2250,7 @@ fn bview_frames_and_pictures_round_trip() {
     let (uid, p) = pic.expect("a picture");
     assert_eq!(uid, 77);
     assert_eq!(crate::browser_view::image_size(&p), Some((1280, 800)));
-    // The socket goes: the loop stops.
+
     drop(ws);
     crate::browser_view::unwatch(client, None);
     let end = Instant::now() + Duration::from_secs(6);
@@ -2338,7 +2269,7 @@ fn a_browser_refused_for_the_mac_mute_can_lift_it() {
     app.voice.muted = true;
     app.web_voice_ctl(1, &serde_json::json!({"unmute_mac": true}));
     assert!(!app.voice.muted, "unmute_mac lifts GodTerm's own mute");
-    // Not muted: nothing changes (no toggle into a mute).
+
     app.web_voice_ctl(1, &serde_json::json!({"unmute_mac": true}));
     assert!(!app.voice.muted);
     let _ = std::fs::remove_dir_all(home);
@@ -2352,7 +2283,7 @@ fn a_request_spoken_into_a_browser_is_that_browsers() {
     let hub = Hub::new(0, "x".repeat(64), vec![], None, tx);
     let a = hub.add();
     app.web = Some(super::app_web::WebSide::new(Arc::clone(&hub)));
-    // The Mac's own mic: not a web turn.
+
     assert_eq!(app.turn_web_client(true), None);
     app.web_voice(a.id, Some(true), "open", None);
     assert_eq!(
@@ -2360,12 +2291,11 @@ fn a_request_spoken_into_a_browser_is_that_browsers() {
         Some(a.id),
         "spoken into browser a"
     );
-    // Typed on the Mac while a browser holds the voice: the Mac's.
+
     assert_eq!(app.turn_web_client(false), None);
     let _ = std::fs::remove_dir_all(home);
 }
 
-/// One response from `s`, by its Content-Length (the connection stays open).
 fn read_response(s: &mut std::net::TcpStream) -> String {
     let mut head = Vec::new();
     let mut b = [0u8; 1];
@@ -2393,9 +2323,7 @@ fn http_keeps_a_connection_for_the_next_request() {
     let cookie = format!("{}={}", auth::COOKIE, auth::cookie_value(&tok));
     let mut s = std::net::TcpStream::connect(("127.0.0.1", p)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    // Three requests on one connection, the heads sent in one write and
-    // the last two together with no pause: each gets its own answer, in
-    // order, and the server says the connection stays open.
+
     s.write_all(
         format!("GET /app.css HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n\r\n").as_bytes(),
     )
@@ -2413,7 +2341,7 @@ fn http_keeps_a_connection_for_the_next_request() {
     let r3 = read_response(&mut s);
     assert_eq!(status(&r3), "404", "{r3}");
     assert!(r3.contains("Connection: keep-alive"), "{r3}");
-    // `Connection: close` ends it after the answer; so does HTTP/1.0.
+
     s.write_all(format!("GET /app.css HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
     let r4 = read_response(&mut s);
     assert!(r4.contains("Connection: close"), "{r4}");
@@ -2437,8 +2365,6 @@ fn http_keeps_a_connection_for_the_next_request() {
 
 #[test]
 fn http_read_head_takes_the_head_only() {
-    // The head is taken exactly, in whatever pieces it arrives, and what
-    // follows it stays in the socket (a WebSocket's first frame).
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let mut c = std::net::TcpStream::connect(l.local_addr().unwrap()).unwrap();
     let (mut srv, _) = l.accept().unwrap();
@@ -2455,7 +2381,7 @@ fn http_read_head_takes_the_head_only() {
     let mut after = [0u8; 5];
     srv.read_exact(&mut after).unwrap();
     assert_eq!(&after, b"AFTER");
-    // Two heads in one write: the second is still there for the next read.
+
     c.write_all(b"GET /b HTTP/1.1\r\nConnection: close\r\n\r\nGET /c HTTP/1.0\r\n\r\n")
         .unwrap();
     let b = http::read_head(&mut srv).unwrap();
@@ -2464,7 +2390,7 @@ fn http_read_head_takes_the_head_only() {
     let c2 = http::read_head(&mut srv).unwrap();
     assert_eq!(c2.path, "/c");
     assert!(!c2.keep_alive, "HTTP/1.0 closes unless asked to keep");
-    // A closed socket: None, no answer.
+
     drop(c);
     assert!(http::read_head(&mut srv).is_none());
 }
@@ -2475,7 +2401,7 @@ fn websocket_sends_a_big_snapshot_gzipped_when_asked() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (hub, tok, h, rx) = test_hub("wsgz");
     let cookie = format!("{}={}", auth::COOKIE, auth::cookie_value(&tok));
-    // A shell with 2500 lines of colored history, then a prompt.
+
     let (p, _prx) = shell_tab(
         &[
             "lines:2500:\\e[32mline {i5}\\e[0m the quick brown fox jumps over the lazy dog",
@@ -2491,8 +2417,7 @@ fn websocket_sends_a_big_snapshot_gzipped_when_asked() {
         AppEvent::Web(ToApp::Hello(_)) => {}
         _ => panic!("not a hello"),
     }
-    // Plain first (no gz in the subscribe): a text frame. Subscribed
-    // again until the history is all there.
+
     let deadline = Instant::now() + Duration::from_secs(15);
     let plain = loop {
         ws.send(Message::text(json_str(
@@ -2521,7 +2446,7 @@ fn websocket_sends_a_big_snapshot_gzipped_when_asked() {
         "a big snapshot: {} bytes",
         plain.len()
     );
-    // With gz: binary kind 6, the same JSON once inflated.
+
     ws.send(Message::text(json_str(
         &serde_json::json!({"t": "subscribe", "tabs": [uid], "gz": true}),
     )))
@@ -2553,7 +2478,7 @@ fn websocket_sends_a_big_snapshot_gzipped_when_asked() {
         plain.len(),
         packed.len()
     );
-    // A small frame stays text even with gz on: the resume frame.
+
     let sid = v["sid"].as_str().unwrap().to_string();
     let pos = v["pos"].as_u64().unwrap();
     ws.send(Message::text(json_str(
@@ -2590,4 +2515,41 @@ fn netstat_lines_name_both_ends_of_a_connection() {
     );
     assert!(auth::parse_netstat_conn(text, "127.0.0.1", 50114).is_empty());
     assert!(auth::parse_netstat_conn(text, "127.0.0.1", 1).is_empty());
+}
+
+#[test]
+fn websocket_file_upload_is_saved_under_uploads() {
+    use tungstenite::Message;
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (hub, tok, h, rx) = test_hub("ws-file");
+    let cookie = format!("{}={}", auth::COOKIE, auth::cookie_value(&tok));
+    let mut ws = ws_client(hub.port, &cookie);
+    let _ = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let mut ask = |name: &str, data: &str| {
+        ws.send(Message::text(json_str(
+            &serde_json::json!({"t": "file", "id": "f1", "name": name, "data": data}),
+        )))
+        .unwrap();
+        loop {
+            if let Message::Text(t) = ws.read().unwrap() {
+                let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+                if v["id"] == "f1" {
+                    break v;
+                }
+            }
+        }
+    };
+    let ok = ask("../../evil name.txt", "data:text/plain;base64,aGVsbG8=");
+    let path = std::path::PathBuf::from(ok["path"].as_str().unwrap());
+    assert_eq!(ok["t"], "file");
+    assert!(path.starts_with(crate::assistant_images::uploads_dir()));
+    assert!(path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .ends_with("-evil_name.txt"));
+    assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+    let bad = ask("x", "not base64 !!");
+    assert_eq!(bad["t"], "error");
+    let _ = std::fs::remove_dir_all(&h);
 }

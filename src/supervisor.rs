@@ -1,27 +1,3 @@
-//! The supervisor: a watchdog that opens GodTerm again after an unclean
-//! exit (a crash, kill -9, a panic, the terminal window closed) and
-//! restarts one whose control socket stopped answering. GodTerm is a TUI
-//! that needs a terminal window, so the watchdog never owns the process:
-//! launchd runs `godterm supervisor run` every 20 s (a user agent,
-//! `~/Library/LaunchAgents/com.godterm.supervisor.plist`), and each run
-//! checks once and relaunches through the launcher (`open GodTerm.app`,
-//! which opens iTerm or Terminal and runs run.sh), or the command in
-//! `supervisor.launch`.
-//!
-//! GodTerm marks `<home>/last_exit.json` unclean when it starts and clean
-//! only when the user quits, so a quit is never undone. A relaunch leaves
-//! `<home>/supervisor/relaunched`, which makes the new start restore every
-//! tab at once (as after a restart to update); the assistant resumes its
-//! session and turns Remote Control back on by itself (app_resume,
-//! app_remote). At most 3 relaunches in 10 minutes, then it stops and says
-//! so (the log and a notification).
-//!
-//! Linux would need a systemd user timer and service in place of launchd
-//! (`systemctl --user enable --now godterm-supervisor.timer`), a launcher
-//! that opens a terminal (`x-terminal-emulator -e godterm`, set as
-//! supervisor.launch) and notify-send for the notice; the checks are the
-//! same.
-
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -33,12 +9,12 @@ use std::time::Duration;
 use crate::config::{app_home, env_var, Config};
 
 pub const LABEL: &str = "com.godterm.supervisor";
-/// Seconds between launchd runs.
+
 pub const INTERVAL_S: u64 = 20;
-/// Relaunches allowed per window.
+
 pub const MAX_RELAUNCHES: usize = 3;
 pub const WINDOW_S: i64 = 600;
-/// A relaunch gets this long to take the lock before another is tried.
+
 pub const GRACE_S: i64 = 45;
 
 pub fn dir() -> PathBuf {
@@ -78,7 +54,6 @@ fn save_exit(e: &LastExit) {
     }
 }
 
-/// GodTerm started: an exit from now on is unclean until a quit.
 pub fn mark_running() {
     save_exit(&LastExit {
         clean: false,
@@ -87,7 +62,6 @@ pub fn mark_running() {
     });
 }
 
-/// The user quit.
 pub fn mark_clean() {
     save_exit(&LastExit {
         clean: true,
@@ -96,18 +70,16 @@ pub fn mark_clean() {
     });
 }
 
-/// This start was a relaunch after a crash (the mark is used up).
 pub fn take_relaunched() -> bool {
     std::fs::remove_file(relaunched_path()).is_ok()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct State {
-    /// When it relaunched (unix seconds), newest last.
     pub relaunches: Vec<i64>,
-    /// The control socket has not answered since.
+
     pub hang_since: Option<i64>,
-    /// The rate limit notice went out.
+
     pub notified_at: Option<i64>,
 }
 
@@ -142,12 +114,10 @@ fn log(msg: &str) {
     }
 }
 
-/// What one check sees.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Seen {
-    /// The running GodTerm's pid (it holds the lock and is alive).
     pub running: Option<u32>,
-    /// Its control socket answered (only asked while running).
+
     pub answered: bool,
     pub last_exit: Option<LastExit>,
 }
@@ -155,16 +125,15 @@ pub struct Seen {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Nothing(String),
-    /// Not answering, not yet for long enough.
+
     HangPending(i64),
-    /// Hung: stop it (then relaunch).
+
     Restart(u32),
     Relaunch,
-    /// Too many relaunches: stop and say so (true: the notice is new).
+
     RateLimited(bool),
 }
 
-/// Decide from what was seen; `st` is updated (hang start, relaunch times).
 pub fn decide(cfg: &crate::config::SupervisorCfg, seen: &Seen, st: &mut State, t: i64) -> Action {
     if !cfg.enabled {
         return Action::Nothing("supervisor.enabled is off".into());
@@ -208,8 +177,6 @@ fn hang_s(cfg: &crate::config::SupervisorCfg) -> i64 {
         .unwrap_or(cfg.hang_s.max(10)) as i64
 }
 
-/// The control socket answers a line (any reply: the socket thread is
-/// alive; a stopped or wedged process gives none).
 pub fn ping() -> bool {
     #[cfg(unix)]
     {
@@ -237,8 +204,6 @@ pub fn ping() -> bool {
     }
 }
 
-/// SIGTERM (and SIGCONT, so a stopped one can act on it), then SIGKILL
-/// after the wait.
 fn stop(pid: u32) {
     let wait = env_var("SUPERVISOR_KILL_WAIT_S")
         .and_then(|s| s.parse().ok())
@@ -263,8 +228,6 @@ fn stop(pid: u32) {
     }
 }
 
-/// The launcher command: GODTERM_SUPERVISOR_LAUNCH, supervisor.launch, or
-/// opening GodTerm.app.
 pub fn launch_command(cfg: &crate::config::SupervisorCfg) -> String {
     if let Some(c) = env_var("SUPERVISOR_LAUNCH") {
         return c;
@@ -320,7 +283,6 @@ fn notify(text: &str) {
         .status();
 }
 
-/// One check (what launchd runs).
 pub fn run_once() -> Result<()> {
     if !Config::path().exists() {
         return Ok(());
@@ -343,7 +305,7 @@ pub fn run_once() -> Result<()> {
             hang_s(&cfg)
         ));
         stop(pid);
-        // Stopped by us: an unclean exit (whatever it wrote on the way out).
+
         save_exit(&LastExit {
             clean: false,
             pid,
@@ -403,8 +365,6 @@ fn xml(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// The launchd user agent: `exe supervisor run` every `interval` s, with
-/// the home and the GODTERM_SUPERVISOR_* settings of the installing shell.
 pub fn plist(label: &str, exe: &str, interval: u64, env: &[(String, String)]) -> String {
     let mut e = String::new();
     for (k, v) in env {
@@ -442,7 +402,6 @@ pub fn plist(label: &str, exe: &str, interval: u64, env: &[(String, String)]) ->
 fn uid() -> u32 {
     #[cfg(unix)]
     {
-        // SAFETY: getuid(2) cannot fail.
         unsafe { libc::getuid() }
     }
     #[cfg(not(unix))]
@@ -569,7 +528,6 @@ fn status(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `godterm supervisor install|uninstall|status|run`.
 pub fn command(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("run") => run_once(),
@@ -614,7 +572,7 @@ mod tests {
             decide(&cfg, &seen(None, false, Some(false)), &mut st, t),
             Action::Relaunch
         );
-        // Still starting: not twice.
+
         assert!(matches!(
             decide(&cfg, &seen(None, false, Some(false)), &mut st, t + 20),
             Action::Nothing(_)
@@ -627,7 +585,7 @@ mod tests {
             decide(&cfg, &seen(None, false, Some(false)), &mut st, t + 120),
             Action::Relaunch
         );
-        // A fourth within 10 minutes: stopped, the notice once.
+
         assert_eq!(
             decide(&cfg, &seen(None, false, Some(false)), &mut st, t + 180),
             Action::RateLimited(true)
@@ -636,12 +594,12 @@ mod tests {
             decide(&cfg, &seen(None, false, Some(false)), &mut st, t + 200),
             Action::RateLimited(false)
         );
-        // The window passes: allowed again.
+
         assert_eq!(
             decide(&cfg, &seen(None, false, Some(false)), &mut st, t + 700),
             Action::Relaunch
         );
-        // Off: nothing.
+
         let off = SupervisorCfg {
             enabled: false,
             ..Default::default()
@@ -676,7 +634,7 @@ mod tests {
             decide(&cfg, &seen(Some(7), false, Some(false)), &mut st, 200),
             Action::HangPending(100)
         );
-        // It answered again: the count starts over.
+
         decide(&cfg, &seen(Some(7), true, Some(false)), &mut st, 210);
         assert_eq!(
             decide(&cfg, &seen(Some(7), false, Some(false)), &mut st, 220),
@@ -686,7 +644,7 @@ mod tests {
             decide(&cfg, &seen(Some(7), false, Some(false)), &mut st, 340),
             Action::Restart(7)
         );
-        // Hang restarts off: a silent socket is left alone.
+
         let off = SupervisorCfg {
             hang_restart: false,
             ..Default::default()
@@ -731,7 +689,7 @@ mod tests {
         ));
         assert!(p.contains("<key>StartInterval</key><integer>20</integer>"));
         assert!(p.contains("<string>/h &amp; h</string>"));
-        // The launcher: the setting, else GodTerm.app.
+
         let c = crate::config::SupervisorCfg {
             launch: "tmux new -d x".into(),
             ..Default::default()

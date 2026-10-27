@@ -1,5 +1,3 @@
-//! Subscription usage from `GET https://api.anthropic.com/api/oauth/usage`.
-
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::path::Path;
@@ -7,38 +5,29 @@ use std::time::Duration;
 
 pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 
-/// Set to a JSON file (used for every account) or a directory holding
-/// `<account name>.json` to read usage from disk instead of the API. A file
-/// whose content is just `401` or `429` simulates that HTTP error.
 pub const FIXTURE_ENV: &str = "GODTERM_USAGE_FIXTURE";
 
-/// One rate limit window, e.g. five_hour or seven_day.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Window {
-    /// The JSON key (`model_scoped:<name>` for per model buckets).
     pub key: String,
-    /// Readable name, e.g. "Weekly Opus".
+
     pub label: String,
-    /// Compact name for tight spaces, e.g. "Opus".
+
     pub short: String,
-    /// Percent used, 0..=100 (the server may report more than 100).
+
     pub utilization: f64,
     pub resets_at: Option<DateTime<Utc>>,
 }
 
 impl Window {
-    /// Percent left, clamped to 0..=100.
     pub fn left(&self) -> f64 {
         (100.0 - self.utilization).clamp(0.0, 100.0)
     }
 
-    /// Its reset time has passed: the kept numbers are from before it.
     pub fn reset_passed(&self) -> bool {
         self.resets_at.is_some_and(|t| t <= chrono::Utc::now())
     }
 
-    /// Percent left now: full again once the reset time passed, even
-    /// while the fetch that would say so has not come back.
     pub fn left_now(&self) -> f64 {
         if self.reset_passed() {
             100.0
@@ -51,9 +40,9 @@ impl Window {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Usage {
     pub windows: Vec<Window>,
-    /// Buckets the server listed with no data (null), by readable name.
+
     pub absent: Vec<String>,
-    /// Extra usage (pay as you go overage credits) if present.
+
     pub extra: Option<Extra>,
 }
 
@@ -66,7 +55,6 @@ pub struct Extra {
 }
 
 impl Extra {
-    /// "off", "on", "on, 12.50 of 50.00 used (25%)".
     pub fn describe(&self) -> String {
         if !self.enabled {
             return "off".into();
@@ -89,7 +77,6 @@ impl Usage {
         self.windows.iter().find(|w| w.key == key)
     }
 
-    /// Every window except the 5 hour and weekly headline ones.
     pub fn others(&self) -> impl Iterator<Item = &Window> {
         self.windows
             .iter()
@@ -100,9 +87,9 @@ impl Usage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UsageError {
     NotLoggedIn,
-    /// 401 or 403, or a token whose expiry has passed.
+
     Unauthorized,
-    /// 429, with the server's Retry-After in seconds when given.
+
     RateLimited(Option<u64>),
     Http(u16),
     Network(String),
@@ -110,7 +97,6 @@ pub enum UsageError {
 }
 
 impl UsageError {
-    /// Short form for the pane footer.
     pub fn short(&self) -> String {
         match self {
             UsageError::NotLoggedIn => "not logged in".into(),
@@ -162,7 +148,6 @@ fn title_words(s: &str) -> String {
         .join(" ")
 }
 
-/// (label, short) for a top level bucket key.
 pub fn names_for(key: &str) -> (String, String) {
     match key {
         "five_hour" => ("5 hour".into(), "5h".into()),
@@ -209,7 +194,7 @@ fn parse_time(v: Option<&Value>) -> Option<DateTime<Utc>> {
             .map(|d| d.with_timezone(&Utc)),
         Value::Number(n) => {
             let t = n.as_i64()?;
-            // Accept seconds or milliseconds.
+
             let secs = if t > 10_000_000_000 { t / 1000 } else { t };
             DateTime::from_timestamp(secs, 0)
         }
@@ -228,10 +213,6 @@ fn window_from(key: &str, (label, short): (String, String), o: &Value) -> Option
     })
 }
 
-/// Lenient parse that walks every key in the reply: any object with a
-/// numeric `utilization` becomes a window, arrays of such objects (like
-/// `model_scoped`) become one window each, `extra_usage` is understood, and
-/// null buckets are remembered as absent.
 pub fn parse_usage(body: &str) -> Result<Usage, UsageError> {
     let v: Value = serde_json::from_str(body).map_err(|e| UsageError::Parse(e.to_string()))?;
     let obj = v
@@ -256,7 +237,7 @@ pub fn parse_usage(body: &str) -> Result<Usage, UsageError> {
                 None if val.get("utilization").is_some() => usage.absent.push(names_for(k).0),
                 None => {}
             },
-            // Unknown codename style null keys carry no meaning for a reader.
+
             (_, Value::Null) if k.starts_with("five_hour") || k.starts_with("seven_day") => {
                 usage.absent.push(names_for(k).0);
             }
@@ -285,7 +266,6 @@ pub fn parse_usage(body: &str) -> Result<Usage, UsageError> {
     Ok(usage)
 }
 
-/// Read usage from the fixture named by `GODTERM_USAGE_FIXTURE`, if set.
 pub fn fixture_for(account: &str) -> Option<Result<Usage, UsageError>> {
     let _ = FIXTURE_ENV;
     let base = crate::config::env_var("USAGE_FIXTURE")?;
@@ -306,8 +286,6 @@ pub fn fixture_for(account: &str) -> Option<Result<Usage, UsageError>> {
     })
 }
 
-/// One request: the status, Retry-After (seconds, or an HTTP date) and
-/// the body, whatever the status.
 pub fn fetch_usage_raw(
     url: &str,
     access_token: &str,
@@ -345,7 +323,6 @@ pub fn fetch_usage_raw(
     })
 }
 
-/// Retry-After as seconds: "120", or an HTTP date.
 pub fn retry_secs(v: &str) -> Option<u64> {
     let v = v.trim();
     if let Ok(n) = v.parse::<u64>() {
@@ -355,7 +332,6 @@ pub fn retry_secs(v: &str) -> Option<u64> {
     Some((t.with_timezone(&Utc) - Utc::now()).num_seconds().max(0) as u64)
 }
 
-/// "2h 14m", "3d 4h", "now".
 pub fn countdown(to: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let secs = (to - now).num_seconds();
     if secs <= 0 {
@@ -371,7 +347,6 @@ pub fn countdown(to: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// "under a minute", "3 min", "2 h", "3 days": how long ago, in words.
 pub fn ago_words(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let secs = (now - then).num_seconds().max(0);
     match secs {
@@ -383,7 +358,6 @@ pub fn ago_words(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// "4m", "2h", "3d": age of a past timestamp.
 pub fn age(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let secs = (now - then).num_seconds().max(0);
     match secs {
@@ -420,11 +394,11 @@ mod tests {
         assert_eq!(keys[1], "seven_day");
         assert_eq!(keys[2], "seven_day_opus");
         assert!(keys.contains(&"model_scoped:Fable"));
-        // seven_day_sonnet is null in the fixture: absent, not a window.
+
         assert!(!keys.contains(&"seven_day_sonnet"));
         assert!(u.absent.contains(&"Weekly Sonnet".to_string()));
         assert!(u.absent.contains(&"Weekly OAuth Apps".to_string()));
-        // Codename keys with null values are ignored entirely.
+
         assert!(!u.absent.iter().any(|a| a.contains("Iguana")));
         let five = u.get("five_hour").unwrap();
         assert_eq!(five.utilization, 23.0);

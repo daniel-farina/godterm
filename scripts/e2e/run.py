@@ -40,7 +40,6 @@ def main():
     ap.add_argument("--keep", action="store_true", help="keep sandbox roots")
     ap.add_argument("--no-sandbox", action="store_true", help="demo: run without sandbox-exec")
     a = ap.parse_args()
-    # A kill still writes the report and stops the tmux server.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 
     if not os.access(a.bin, os.X_OK):

@@ -1,33 +1,9 @@
 #!/usr/bin/env bash
-# GodTerm clean-machine test on a fresh Ubuntu 24.04 arm64 VM (tart).
-#
-# Clones ghcr.io/cirruslabs/ubuntu:24.04 into godterm-e2e-linux-<timestamp>,
-# installs the .deb with apt, drives godterm in tmux (first launch, demo),
-# then tries the AppImage and the tarball, and deletes the VM (unless --keep).
-#
-# Usage: scripts/sandbox/vm/linux-e2e.sh [options]
-#   --artifacts DIR   release artifacts (default dist/release of the main
-#                     checkout, or $GODTERM_ARTIFACTS): the arm64 .deb,
-#                     optionally the aarch64 AppImage, the aarch64 tarball
-#                     and SHA256SUMS
-#   --version V       expected version (default: from the .deb name)
-#   --only LIST       scenarios, comma separated (default all):
-#                     1 deb install  2 first launch  3 demo  4 onboarding
-#                     5 AppImage  6 tarball  7 apt remove
-#   --results DIR     where to write (default e2e-results/vm-<ts>/linux)
-#   --base IMAGE      tart image (default ghcr.io/cirruslabs/ubuntu:24.04)
-#   --cpu N --memory MB   VM size (default 2 / 4096, the maximum allowed)
-#   --keep            leave the VM running at the end
-#   --no-recommends   apt install without Recommends (skips ffmpeg, faster)
-#
-# Exit code: 0 when no step failed, 1 otherwise.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
-# shellcheck source=lib.sh
 source "$HERE/lib.sh"
-# shellcheck source=tui.sh
 source "$HERE/tui.sh"
 
 TS=$(date +%Y%m%d-%H%M%S)
@@ -119,7 +95,6 @@ command -v tmux >/dev/null || { sudo -n apt-get update -qq && sudo -n apt-get in
 tmux -V
 EOF
 
-# The tarball on the untouched machine, before apt brings libasound2.
 if want 6 && [ -n "$TN" ]; then
   vstep 6.tarball-clean 60 "tarball on a clean machine (before any apt install)" <<EOF
 rm -rf /tmp/tgz && mkdir /tmp/tgz && cd /tmp/tgz && tar xzf $RA/$TN || exit 1
@@ -228,7 +203,6 @@ else
 fi
 echo "\$out" | grep -q "godterm $EXPECT_VERSION "
 EOF
-    # The demo with the AppImage, extracted (works with or without FUSE).
     vrun 120 <<EOF >"$RESULTS/logs/5.appimage-extract.log" 2>&1
 rm -rf /tmp/appimg && mkdir -p /tmp/appimg && cd /tmp/appimg && $RA/$AN --appimage-extract >/dev/null && ls squashfs-root
 EOF

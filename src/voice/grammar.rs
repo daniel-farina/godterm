@@ -1,8 +1,3 @@
-//! Text helpers for speech: normalizing a transcript and finding the wake
-//! word. There is no command grammar: the instant one word commands are in
-//! `crate::instant`, and the assistant interprets everything else.
-
-/// Lowercase, strip punctuation, collapse whitespace.
 pub fn normalize(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -19,7 +14,7 @@ pub fn normalize(text: &str) -> String {
             out.push(' ');
         }
     }
-    // Trailing sentence periods are punctuation, inner dots belong to paths.
+
     out.split_whitespace()
         .map(|w| w.trim_matches(|c| c == '.' || c == '-' || c == '\''))
         .filter(|w| !w.is_empty())
@@ -43,11 +38,9 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
-/// Strip a leading wake word. Returns the rest when the transcript starts
-/// with (something close to) one of `wake_words`.
 pub fn strip_wake<'a>(norm: &'a str, wake_words: &[String]) -> Option<&'a str> {
     let words: Vec<&str> = norm.split(' ').collect();
-    // "hey go" (the wake word before the GodTerm rename) still works.
+
     let mut list = wake_words.to_vec();
     if list.iter().any(|w| normalize(w) == "hey god")
         && !list.iter().any(|w| normalize(w) == "hey go")
@@ -60,7 +53,7 @@ pub fn strip_wake<'a>(norm: &'a str, wake_words: &[String]) -> Option<&'a str> {
         if wk.is_empty() || words.len() < wk.len() {
             continue;
         }
-        // Run together or split apart: "heygo", "ago", "compute her".
+
         let squashed: String = ww.chars().filter(|c| *c != ' ').collect();
         for n in (1..=3usize.min(words.len())).rev() {
             for start in 0..=1usize.min(words.len() - n) {
@@ -72,7 +65,7 @@ pub fn strip_wake<'a>(norm: &'a str, wake_words: &[String]) -> Option<&'a str> {
                 }
             }
         }
-        // Allow the wake phrase to start at word 0 or 1 ("okay hey go").
+
         for start in 0..=1usize.min(words.len() - wk.len()) {
             let window = &words[start..start + wk.len()];
             let joined = window.join(" ");
@@ -87,23 +80,16 @@ pub fn strip_wake<'a>(norm: &'a str, wake_words: &[String]) -> Option<&'a str> {
     None
 }
 
-/// Words a sentence does not end on: a filler or a connective means
-/// more is coming.
 pub const CONNECTIVES: &[&str] = &[
     "and", "so", "but", "or", "um", "uh", "umm", "uhm", "er", "erm", "like", "because", "also",
     "plus", "if", "the", "a", "an", "to", "of",
 ];
 
-/// Words before a final "so" that make it finished ("I think so").
 const SO_FINISHED: &[&str] = &[
     "think", "hope", "guess", "believe", "suppose", "said", "do", "not", "so", "why", "is", "it's",
     "say", "seems", "appears",
 ];
 
-/// Speech that sounds unfinished: it ends on a comma, an ellipsis or a
-/// dash, or on a filler or connective ("and", "so", "um"), whatever
-/// period the recognizer put after it. A question or exclamation is
-/// finished.
 pub fn ends_unfinished(text: &str) -> bool {
     let t = text.trim();
     if t.is_empty() || t.ends_with(['?', '!']) {
@@ -121,7 +107,6 @@ pub fn ends_unfinished(text: &str) -> bool {
     CONNECTIVES.contains(&last)
 }
 
-/// Whole word mishearings of the default wake phrases.
 fn compact_alias(heard: &str, squashed_wake: &str) -> bool {
     match squashed_wake {
         "heygo" => matches!(
@@ -145,7 +130,7 @@ fn wake_like(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
-    // Short wake words ("hey", "go") are commonly heard as these.
+
     fn alias(w: &str) -> &str {
         match w {
             "hey" | "hay" | "hi" | "a" | "eh" | "hei" | "hey," | "they" | "pay" | "say"

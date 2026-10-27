@@ -1,9 +1,3 @@
-//! The assistant panel's two areas: the Loops & schedules section (its own
-//! title row, lines and divider) and the chat (its own scrollbar). They do
-//! not overlap at any height, and the wheel and the bar act on the one
-//! under the pointer. Nothing real runs: tabs are stubs, homes are test
-//! homes.
-
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
@@ -23,7 +17,6 @@ fn draw(app: &mut App, t: &mut Term) {
     t.draw(|f| crate::ui::draw(f, app)).unwrap();
 }
 
-/// A panel with `loops` session loops and `lines` chat lines.
 fn panel(tag: &str, loops: usize, lines: usize) -> (App, std::path::PathBuf) {
     let (mut app, home) = setup(tag);
     app.assistant.show = true;
@@ -124,7 +117,7 @@ fn a_divider_row_closes_the_section_before_the_chat() {
         assert_eq!(buf[(x, div)].symbol(), "─", "divider at x={x}");
     }
     assert_eq!(chat.y, div + 1, "the chat starts right under the divider");
-    // The title row is a band of its own with the title in it.
+
     let title: String = (sec.x..sec.x + sec.width)
         .map(|x| buf[(x, sec.y)].symbol().to_string())
         .collect();
@@ -157,9 +150,9 @@ fn the_chat_gets_a_scrollbar_only_when_it_overflows() {
         .collect();
     assert!(glyphs.contains(&"█"), "a thumb: {glyphs:?}");
     assert!(glyphs.iter().any(|s| *s != "█"), "a track: {glyphs:?}");
-    // At the newest line the thumb is at the bottom.
+
     assert_eq!(*glyphs.last().unwrap(), "█");
-    // The track is the panel's right border, in the panel's frame.
+
     assert_eq!(bar.x, panel.x + panel.width - 1);
     let _ = std::fs::remove_dir_all(&home);
     let _ = std::fs::remove_dir_all(&home2);
@@ -173,12 +166,12 @@ fn the_wheel_goes_to_the_area_under_the_pointer() {
     draw(&mut app, &mut t);
     let sec = app.sched_ui.rect.get();
     let g = app.assistant.chat_geo.get().unwrap();
-    // Over the chat: the chat scrolls back, the section stays.
+
     let (cx, cy) = (g.area.x + 3, g.area.y + 2);
     wheel(&mut app, MouseEventKind::ScrollUp, cx, cy);
     assert!(app.assistant.chat_off.get() > 0, "the chat scrolled");
     assert_eq!(app.sched_ui.scroll, 0, "the section did not");
-    // Over the section (a row and its divider): it scrolls, the chat stays.
+
     let off = app.assistant.chat_off.get();
     draw(&mut app, &mut t);
     wheel(&mut app, MouseEventKind::ScrollDown, sec.x + 4, sec.y + 2);
@@ -194,7 +187,7 @@ fn the_wheel_goes_to_the_area_under_the_pointer() {
     );
     assert!(app.sched_ui.scroll >= before);
     assert_eq!(app.assistant.chat_off.get(), off);
-    // The chat's wheel stops at both ends.
+
     for _ in 0..200 {
         wheel(&mut app, MouseEventKind::ScrollUp, cx, cy);
     }
@@ -228,7 +221,7 @@ fn dragging_the_thumb_scrolls_the_chat_and_a_click_on_the_track_jumps() {
     let g = app.assistant.chat_geo.get().unwrap();
     let bar = g.bar();
     let max = g.total - g.view;
-    // Thumb at the bottom; grab it and drag to the top.
+
     let (ts, tl) = crate::scrollbar::thumb(bar.height, g.total, g.view, g.top(0)).unwrap();
     press(
         &mut app,
@@ -244,7 +237,7 @@ fn dragging_the_thumb_scrolls_the_chat_and_a_click_on_the_track_jumps() {
         bar.y,
     );
     assert_eq!(app.assistant.chat_off.get(), max, "dragged to the oldest");
-    // Dragging off the bar sideways still follows the row.
+
     press(
         &mut app,
         MouseEventKind::Drag(MouseButton::Left),
@@ -259,10 +252,10 @@ fn dragging_the_thumb_scrolls_the_chat_and_a_click_on_the_track_jumps() {
         bar.y,
     );
     assert!(app.assistant.bar_drag.is_none());
-    // The drag never moved the section or selected text.
+
     assert_eq!(app.sched_ui.scroll, 0);
     assert!(app.selection.is_none());
-    // A click on the empty track jumps there (near the top).
+
     draw(&mut app, &mut t);
     press(
         &mut app,
@@ -281,7 +274,7 @@ fn dragging_the_thumb_scrolls_the_chat_and_a_click_on_the_track_jumps() {
         "{}",
         app.assistant.chat_off.get()
     );
-    // The picture follows: the thumb moved up.
+
     draw(&mut app, &mut t);
     let buf = t.backend().buffer();
     assert_eq!(buf[(bar.x, bar.y)].symbol(), "█");
@@ -323,7 +316,7 @@ fn a_scrolled_chat_keeps_its_lines_as_new_ones_arrive() {
         top_before,
         "same lines in view"
     );
-    // At the newest line it keeps following.
+
     app.assistant.chat_off.set(0);
     draw(&mut app, &mut t);
     app.assistant.log.push(Entry::new(Who::Reply, "newest"));

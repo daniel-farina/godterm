@@ -1,7 +1,3 @@
-//! The project index on a fixture tree: a monorepo with workspaces and
-//! several subprojects, a plain repo, a folder named like a subproject,
-//! and sessions that worked in them.
-
 use super::*;
 use crate::config::testing::LOCK as ENV_LOCK;
 use serde_json::json;
@@ -11,15 +7,10 @@ fn w(p: &Path, text: &str) {
     std::fs::write(p, text).unwrap();
 }
 
-/// base/code/{platform, fotmesh, billing}: platform has npm and pnpm
-/// workspaces, turbo, apps/billing-dashboard, services/webhooks (Go,
-/// README), packages/ui, plus things that must be skipped.
 fn fixture(tag: &str) -> PathBuf {
     fixture_in(&std::env::temp_dir(), tag)
 }
 
-/// Sessions in a temp folder count as scripted runs (hidden), so the
-/// app tests keep their tree in the build folder instead.
 fn app_fixture(tag: &str) -> PathBuf {
     let t = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
     fixture_in(&t, tag)
@@ -66,7 +57,7 @@ fn fixture_in(at: &Path, tag: &str) -> PathBuf {
         &pf.join("packages/ui/package.json"),
         r#"{"name": "@acme/ui", "description": "Shared UI kit"}"#,
     );
-    // Never read: dependencies, dot folders, secrets.
+
     w(
         &pf.join("node_modules/billing-leak/package.json"),
         r#"{"name": "billing-leak", "description": "should never be indexed"}"#,
@@ -77,7 +68,7 @@ fn fixture_in(at: &Path, tag: &str) -> PathBuf {
     );
     w(&pf.join("credentials.json"), r#"{"name": "leaky creds"}"#);
     w(&pf.join(".env"), "LEAK_TOKEN=abc\n");
-    // A plain repo, and a folder named exactly "billing".
+
     w(
         &base.join("code/fotmesh/Cargo.toml"),
         "[package]\nname = \"fotmesh\"\ndescription = \"Bot generator\"\n",
@@ -168,7 +159,7 @@ fn a_direct_name_ranks_above_a_deep_match() {
         .position(|x| x.rel == "apps/billing-dashboard")
         .expect("the subproject is found too");
     assert!(deep > 0 && h[0].score > h[deep].score);
-    // A subproject's name above a folder below it.
+
     let h = search(&ix, "webhooks", 10);
     assert_eq!(h[0].rel, "services/webhooks", "{h:?}");
     let _ = std::fs::remove_dir_all(&base);
@@ -204,7 +195,7 @@ fn ignored_dirs_dotfiles_secrets_and_private_roots_are_skipped() {
     for q in ["leak", "leakage", "leaky creds", "privateproj"] {
         assert!(search(&ix, q, 10).is_empty(), "{q}");
     }
-    // The deep search skips them too, names and contents.
+
     let r = deep_search(
         &[base.join("code/platform")],
         "leak",
@@ -236,7 +227,7 @@ fn caps_and_time_budgets_hold() {
         ..Default::default()
     };
     assert!(scan_root(&wide, &zero, &[]).truncated);
-    // The whole refresh stops at its budget: the rest waits.
+
     let sh: Shared = Default::default();
     let none = Limits {
         total: Duration::ZERO,
@@ -244,7 +235,7 @@ fn caps_and_time_budgets_hold() {
     };
     refresh(&sh, &roots(&base), &none, true, &[]);
     assert_eq!(sh.lock().unwrap().last.pending, 3);
-    // Deep search: entry cap, time cap, file size cap.
+
     let few = DeepLimits {
         max_entries: 5,
         ..Default::default()
@@ -290,7 +281,7 @@ fn a_change_rescans_only_that_root() {
     refresh(&sh, &rs, &Limits::default(), true, &[]);
     let st = sh.lock().unwrap().last.clone();
     assert_eq!((st.scanned, st.reused), (0, 3), "nothing changed");
-    // Not due yet: not even checked.
+
     refresh(&sh, &rs, &Limits::default(), false, &[]);
     assert_eq!(sh.lock().unwrap().last.scanned, 0);
     w(
@@ -304,7 +295,7 @@ fn a_change_rescans_only_that_root() {
         top(&sh, "payments portal").path,
         base.join("code/platform/apps/payments-portal")
     );
-    // A manifest edited in place counts too.
+
     std::thread::sleep(Duration::from_millis(20));
     w(
         &base.join("code/fotmesh/Cargo.toml"),
@@ -353,8 +344,6 @@ fn grok_rename_sets_its_manual_title() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-// ---- through the assistant's tools ----
-
 fn test_app(tag: &str) -> (crate::app::App, PathBuf) {
     use crate::creds::CredSource;
     let home = std::env::temp_dir().join(format!("godterm-pix-app-{tag}-{}", std::process::id()));
@@ -372,7 +361,6 @@ fn test_app(tag: &str) -> (crate::app::App, PathBuf) {
 const SID: &str = "5555eeee-0000-4000-8000-000000000005";
 const SID2: &str = "6666ffff-0000-4000-8000-000000000006";
 
-/// A Claude session in the monorepo that edited the billing dashboard.
 fn session_fixture(app: &crate::app::App, pf: &Path) -> PathBuf {
     let sp = app.cfg.accounts[0]
         .config_dir()
@@ -427,7 +415,7 @@ fn find_and_sessions_look_inside_projects() {
         "{v}"
     );
     assert_eq!(v["result"]["strong"], json!(true));
-    // The session that touched it, and why.
+
     let v = app.control_call("find", &json!({"query": "invoice"}));
     let s = hits(&v)
         .into_iter()
@@ -449,7 +437,7 @@ fn find_and_sessions_look_inside_projects() {
         .filter_map(|r| r["id"].as_str())
         .collect();
     assert_eq!(ids, vec![SID], "{v}");
-    // No strong hit: told to look deeper; search_projects does.
+
     let v = app.control_call("find", &json!({"query": "exponential backoff"}));
     assert_eq!(v["result"]["strong"], json!(false), "{v}");
     assert!(v["result"]["next"]
@@ -466,7 +454,7 @@ fn find_and_sessions_look_inside_projects() {
             .any(|h| Path::new(h["path"].as_str().unwrap()).ends_with("retry/backoff.go")),
         "{v}"
     );
-    // The subproject path is something open_path takes.
+
     let v = app.control_call(
         "open_path",
         &json!({"paths": [pf.join("services/webhooks").to_string_lossy()]}),
@@ -494,7 +482,7 @@ fn saved_descriptions_come_first_and_go_stale() {
         &json!({"path": hooks.to_string_lossy(), "description": "Delivers customer webhooks with retries", "aliases": ["hook relay", "the pinger"], "tags": ["go"]}),
     );
     assert_eq!(v["ok"], json!(true), "{v}");
-    // Spoken forms of an alias.
+
     for q in ["hook relay", "the hook re lay", "pinger"] {
         let v = app.control_call("find", &json!({"query": q}));
         let h = hits(&v);
@@ -514,7 +502,7 @@ fn saved_descriptions_come_first_and_go_stale() {
         );
         assert!(h[0]["saved"]["stale"].is_null(), "{v}");
     }
-    // A session description shows in sessions and find.
+
     let v = app.control_call(
         "describe_session",
         &json!({"id": &SID[..8], "description": "Totals bug in the invoices page", "aliases": ["totals fix"]}),
@@ -527,7 +515,7 @@ fn saved_descriptions_come_first_and_go_stale() {
         v["result"]["sessions"][0]["saved"]["description"], "Totals bug in the invoices page",
         "{v}"
     );
-    // Old: marked stale. A deep search on its root refreshes the date.
+
     let mut store = crate::project_memory::load();
     let old = (chrono::Local::now() - chrono::Duration::days(30))
         .format("%Y-%m-%d")
@@ -559,7 +547,7 @@ fn saved_descriptions_come_first_and_go_stale() {
         .as_str()
         .unwrap()
         .contains(&format!("deep-searched {today}")));
-    // The tree changed a lot since it was saved: stale again.
+
     for i in 0..12 {
         std::fs::create_dir_all(hooks.join(format!("handlers/h{i}"))).unwrap();
     }
@@ -584,7 +572,7 @@ fn rename_session_offline_live_and_batch() {
     let pf = base.join("code/platform");
     let file = session_fixture(&app, &pf);
     app.kick_index(true);
-    // Offline: the title records are appended, the index sees the name.
+
     let v = app.control_call(
         "rename_session",
         &json!({"id": &SID[..8], "name": "Billing retries"}),
@@ -607,7 +595,7 @@ fn rename_session_offline_live_and_batch() {
     }
     let v = app.control_call("find", &json!({"query": "billing retries"}));
     assert!(hits(&v).iter().any(|h| h["id"] == SID), "{v}");
-    // Live in a tab: /rename goes to claude there, the tab is renamed.
+
     let t = app.panes[0].add_tab(pf.clone());
     app.panes[0].tabs[t].session_id = Some(SID2.into());
     app.panes[0].tabs[t].pending = Some(crate::pane::LaunchKind::Resume(SID2.into()));
@@ -633,7 +621,7 @@ fn rename_session_offline_live_and_batch() {
     );
     let after = std::fs::read_to_string(file.with_file_name(format!("{SID2}.jsonl"))).unwrap();
     assert_eq!(before, after, "the live file is left to claude");
-    // Several at once ask first.
+
     let v = app.control_call(
         "rename_session",
         &json!({"id": [SID, SID2], "name": ["One", "Two"]}),

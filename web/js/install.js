@@ -1,7 +1,3 @@
-// Installing the app: Chrome's install prompt (kept for an Install button
-// in Manage and a one time hint), Safari's "Share > Add to Home Screen"
-// hint (once, only in Safari, not when already installed), and photos
-// shared to the installed app (Share > GodTerm).
 import { h, on, toast, store, li, group, icon } from './util.js';
 import { S } from './state.js';
 import { openSheet, closeSheet } from './sheet.js';
@@ -41,13 +37,12 @@ export function initInstall() {
   addEventListener('appinstalled', () => { prompt = null; });
   if (ios() && safari() && !standalone() && !store.get('install-hint', false)) {
     store.set('install-hint', true);
-    // After a minute of use, for 10 s (it has an x and a tap dismisses it).
+
     setTimeout(() => toast('Tip: Share, then Add to Home Screen, makes GodTerm an app', 'info', { label: 'How', fn: iosSheet }, 10000), 60000);
   }
   shared();
 }
 
-// Photos shared to the app: the service worker kept them; ask where.
 async function shared() {
   const n = new URLSearchParams(location.search).get('share');
   if (n == null) return;
@@ -63,7 +58,7 @@ async function shared() {
     }
   } catch {}
   if (!files.length && !text) return;
-  // Wait for the tab list.
+
   if (!S.tabs.length) await new Promise((r) => { const off = on('state', () => { if (S.tabs.length) { off(); r(); } }); setTimeout(r, 8000); });
   const to = async (id) => {
     closeSheet();

@@ -1,41 +1,19 @@
-//! Long-lived account tokens (`claude setup-token`): kept ONLY in the
-//! macOS keychain (generic password, service `godterm-token`, account =
-//! the GodTerm account's name), never in config, state, logs, the sync or
-//! a WebSocket frame.
-//!
-//! - The token is caught from the setup-token tab's output by `Scrub`
-//!   before the terminal parser sees it: the screen (the terminal UI, the
-//!   web tap and every snapshot) only ever gets `sk-ant-` and dots.
-//! - It is written with `security -i` (the command goes on stdin, so the
-//!   token is never in a process's arguments) and read back only to hand
-//!   it to the account's own headless processes (CLAUDE_CODE_OAUTH_TOKEN)
-//!   or to the Mac's clipboard on the user's confirmed request.
-//! - What may be shown: that one exists, when it was made and its last
-//!   four characters (kept in the item's comment).
-//!
-//! Demo mode never touches the keychain: tokens there are a file in the
-//! demo home (fake tokens of the fake CLI). Tests use their own service
-//! name (GODTERM_TOKEN_SERVICE) and remove what they made.
-
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 pub const SERVICE: &str = "godterm-token";
-/// What a Claude long-lived token starts with.
+
 pub const PREFIX: &str = "sk-ant-";
-/// Shortest run after the prefix that counts as a token.
+
 const MIN_BODY: usize = 30;
 
-/// A token's public facts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Meta {
-    /// When it was stored (local time, "2026-10-26 14:03").
     pub created: Option<String>,
     pub last4: String,
 }
 
-/// The token shown masked: its kind and the last four characters.
 pub fn mask(token: &str) -> String {
     format!("sk-ant-…{}", last4(token))
 }
@@ -49,7 +27,6 @@ fn token_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
-/// A whole string is a plausible token (what is stored).
 pub fn plausible(t: &str) -> bool {
     t.starts_with(PREFIX)
         && t.len() >= PREFIX.len() + MIN_BODY
@@ -57,7 +34,6 @@ pub fn plausible(t: &str) -> bool {
         && t.bytes().all(token_char)
 }
 
-/// Every `sk-ant-` run in some text masked (logs, a screen).
 pub fn mask_all(text: &str) -> String {
     let b = text.as_bytes();
     let mut out = String::with_capacity(text.len());
@@ -80,28 +56,20 @@ pub fn mask_all(text: &str) -> String {
     out
 }
 
-// ---------- the output filter ----------
-
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 enum Esc {
     #[default]
     None,
-    /// Just saw ESC.
+
     Start,
     Csi,
     Osc,
-    /// ESC inside an OSC (its ST is ESC \).
+
     OscSt,
 }
 
-/// Takes long-lived tokens out of a PTY stream as it is read: each token
-/// character becomes a dot, and the token is kept for `take`. A token the
-/// CLI wrapped onto the next lines (newlines and colors between its
-/// pieces) is followed across them; a blank line, a space, a cursor move
-/// or anything that is not a token character ends it.
 #[derive(Debug, Default)]
 pub struct Scrub {
-    /// Bytes that may begin the prefix, held to the next read.
     hold: Vec<u8>,
     capturing: bool,
     cur: String,
@@ -117,20 +85,17 @@ impl Scrub {
         Scrub::default()
     }
 
-    /// Filter one read into `out`.
     pub fn filter(&mut self, input: &[u8], out: &mut Vec<u8>) {
         for &b in input {
             self.byte(b, out);
         }
     }
 
-    /// The stream ended: what was held goes out, a token in progress ends.
     pub fn flush(&mut self, out: &mut Vec<u8>) {
         out.append(&mut self.hold);
         self.end();
     }
 
-    /// A token caught since the last call (each once).
     pub fn take(&mut self) -> Option<String> {
         if self.caught.is_empty() {
             None
@@ -172,7 +137,7 @@ impl Scrub {
             }
             return;
         }
-        // Inside an escape sequence: passed on whole.
+
         match self.esc {
             Esc::Start => {
                 self.esc = match b {
@@ -187,7 +152,7 @@ impl Scrub {
                 out.push(b);
                 if (0x40..=0x7e).contains(&b) {
                     self.esc = Esc::None;
-                    // Colors keep the token going; a cursor move ends it.
+
                     if b != b'm' {
                         self.end();
                     }
@@ -233,26 +198,20 @@ impl Scrub {
             }
             _ => {
                 self.end();
-                // Not part of the token: read again as plain output.
+
                 self.byte(b, out);
             }
         }
     }
 }
 
-// ---------- the store ----------
-
-/// Where tokens live.
 #[derive(Debug, Clone)]
 pub enum Store {
-    /// The login keychain, through `security`.
     Keychain { service: String },
-    /// Demo mode: a 0600 file of fake tokens in the demo home.
+
     DemoFile(PathBuf),
 }
 
-/// The store for this run: the keychain (service `godterm-token`, or
-/// GODTERM_TOKEN_SERVICE for a test), or the demo's file.
 pub fn store() -> Store {
     if crate::demo::active() {
         return Store::DemoFile(crate::config::app_home().join("demo-tokens.json"));
@@ -262,8 +221,6 @@ pub fn store() -> Store {
     }
 }
 
-/// An account name as a keychain account (GodTerm's names are letters,
-/// digits, - _ . already; anything else is refused).
 fn safe_name(account: &str) -> Result<&str, String> {
     if !account.is_empty()
         && account.len() <= 64
@@ -292,7 +249,7 @@ fn run_security(args: &[&str], stdin: Option<&str>) -> Result<std::process::Outp
         use std::io::Write;
         let _ = w.write_all(s.as_bytes());
     }
-    // `security` can wait on a locked keychain's password dialog.
+
     let t0 = std::time::Instant::now();
     loop {
         match child.try_wait() {
@@ -319,7 +276,6 @@ fn demo_read(p: &PathBuf) -> serde_json::Value {
         .unwrap_or_else(|| serde_json::json!({}))
 }
 
-/// "20261026043743Z" (a keychain timedate) as local "2026-10-26 04:37".
 fn keychain_date(s: &str) -> Option<String> {
     let t = chrono::NaiveDateTime::parse_from_str(s.trim_end_matches('Z'), "%Y%m%d%H%M%S").ok()?;
     let utc = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(t, chrono::Utc);
@@ -330,14 +286,12 @@ fn keychain_date(s: &str) -> Option<String> {
     )
 }
 
-/// The attributes `security find-generic-password` prints: (cdat, icmt).
 pub fn parse_attrs(text: &str) -> (Option<String>, Option<String>) {
     let mut cdat = None;
     let mut icmt = None;
     for l in text.lines() {
         let l = l.trim();
         if let Some(r) = l.strip_prefix("\"cdat\"<timedate>=") {
-            // 0x3230...  "20261026043743Z\000"
             if let Some(q) = r.split('"').nth(1) {
                 cdat = Some(q.trim_end_matches("\\000").to_string());
             }
@@ -349,7 +303,6 @@ pub fn parse_attrs(text: &str) -> (Option<String>, Option<String>) {
 }
 
 impl Store {
-    /// Save (or replace) `account`'s token.
     pub fn put(&self, account: &str, token: &str) -> Result<(), String> {
         let account = safe_name(account)?;
         if !plausible(token) {
@@ -365,7 +318,7 @@ impl Store {
                 if !o.status.success() {
                     return Err("the keychain refused it".into());
                 }
-                // `security -i` says nothing on success; check it is there.
+
                 if self.meta(account).is_none() {
                     return Err("the keychain did not keep it".into());
                 }
@@ -385,7 +338,6 @@ impl Store {
         }
     }
 
-    /// The token itself, for the account's own processes or the clipboard.
     pub fn get(&self, account: &str) -> Option<String> {
         let account = safe_name(account).ok()?;
         match self {
@@ -405,7 +357,6 @@ impl Store {
         }
     }
 
-    /// When it was made and its last four characters (no secret is read).
     pub fn meta(&self, account: &str) -> Option<Meta> {
         let account = safe_name(account).ok()?;
         match self {
@@ -441,7 +392,6 @@ impl Store {
         }
     }
 
-    /// Remove it. Ok(false): there was none.
     pub fn delete(&self, account: &str) -> Result<bool, String> {
         let account = safe_name(account)?;
         match self {
@@ -469,16 +419,8 @@ impl Store {
     }
 }
 
-// ---------- what each token is set to do ----------
-
-/// `<app home>/account-tokens.json`: per account choices about its token
-/// (use it for the assistant, sync it), when it was saved, a short hash
-/// to tell tokens apart, where a synced one came from, and tombstones of
-/// synced tokens deleted here. Never the token. Never synced itself
-/// (sync::collect::NEVER_FILES).
 pub const USE_FILE: &str = "account-tokens.json";
 
-/// A synced token deleted here: deleted on every machine at the next sync.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Tomb {
     pub account: String,
@@ -488,23 +430,21 @@ pub struct Tomb {
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Prefs {
-    /// Accounts whose assistant runs with its token.
     #[serde(default, rename = "use")]
     pub use_for: Vec<String>,
-    /// "Sync tokens to my other machines" (off by default): without it no
-    /// token goes to the state repo or comes from it.
+
     #[serde(default)]
     pub sync_all: bool,
-    /// Accounts whose token syncs (with `sync_all`).
+
     #[serde(default)]
     pub sync: Vec<String>,
-    /// When each token was saved here (ms).
+
     #[serde(default)]
     pub at: std::collections::BTreeMap<String, i64>,
-    /// sha256 of each token, first 16 hex: which token it is.
+
     #[serde(default)]
     pub sha: std::collections::BTreeMap<String, String>,
-    /// A token restored from the sync: the machine it came from.
+
     #[serde(default)]
     pub from: std::collections::BTreeMap<String, String>,
     #[serde(default)]
@@ -541,7 +481,6 @@ impl Prefs {
         .map_err(|e| e.to_string())
     }
 
-    /// A token was saved for `account` (made here or restored).
     pub fn saved(&mut self, account: &str, token: &str, at_ms: i64, from: Option<&str>) {
         self.at.insert(account.into(), at_ms);
         self.sha.insert(account.into(), sha16(token));
@@ -556,7 +495,6 @@ impl Prefs {
         self.tombstones.retain(|t| t.account != account);
     }
 
-    /// The token was deleted: a synced one leaves a tombstone.
     pub fn deleted(&mut self, account: &str, now_ms: i64) {
         let synced = self.sync.iter().any(|a| a == account);
         if let (true, Some(sha)) = (synced, self.sha.get(account).cloned()) {
@@ -571,7 +509,6 @@ impl Prefs {
         self.forget(account);
     }
 
-    /// Everything about `account`'s token but its tombstone.
     pub fn forget(&mut self, account: &str) {
         self.use_for.retain(|a| a != account);
         self.sync.retain(|a| a != account);
@@ -612,8 +549,6 @@ pub fn set_uses_token(account: &str, on: bool) -> Result<(), String> {
     })
 }
 
-/// The environment for `account`'s headless processes: its token when it
-/// has one and is set to use it.
 pub fn env_for(account: &str) -> Option<(String, String)> {
     if !uses_token(account) {
         return None;
@@ -623,7 +558,6 @@ pub fn env_for(account: &str) -> Option<(String, String)> {
         .map(|t| ("CLAUDE_CODE_OAUTH_TOKEN".to_string(), t))
 }
 
-/// Put the token on the Mac's clipboard (the user confirmed it).
 pub fn to_clipboard(token: &str) -> Result<(), String> {
     #[cfg(test)]
     {
@@ -704,7 +638,6 @@ mod tests {
 
     #[test]
     fn scrub_follows_a_wrapped_token_split_across_reads() {
-        // Wrapped at 40 columns the way Ink wraps (color off, CRLF, on).
         let mut text = String::from("\x1b[33m");
         for (i, ch) in FAKE.chars().enumerate() {
             if i > 0 && i % 40 == 0 {
@@ -713,7 +646,7 @@ mod tests {
             text.push(ch);
         }
         text.push_str("\x1b[39m\r\r\n\r\r\nStore this token securely.");
-        // Every split point: one byte at a time.
+
         let bytes = text.as_bytes();
         let chunks: Vec<&[u8]> = bytes.chunks(1).collect();
         let mut s = Scrub::new();
@@ -737,12 +670,12 @@ mod tests {
         let out = run(&mut s, &raw.chunks(7).collect::<Vec<_>>());
         assert_eq!(out, raw);
         assert_eq!(s.take(), None);
-        // A cursor move ends a token: the text after it is not eaten.
+
         let mut s = Scrub::new();
         let out = run(&mut s, &[format!("{FAKE}\x1b[2BStore").as_bytes()]);
         assert!(String::from_utf8(out).unwrap().ends_with("Store"));
         assert_eq!(s.take().as_deref(), Some(FAKE));
-        // Words that only start like it pass.
+
         let mut s = Scrub::new();
         let out = run(&mut s, &[b"tasks skills sk-an sk-x"]);
         assert_eq!(out, b"tasks skills sk-an sk-x");
@@ -759,8 +692,6 @@ mod tests {
             .starts_with("2026-10-2"));
     }
 
-    /// A real keychain round trip under a test service of its own,
-    /// removed at the end (macOS only; never the real service).
     #[test]
     #[cfg(target_os = "macos")]
     fn keychain_round_trip_with_a_test_service() {
@@ -773,7 +704,6 @@ mod tests {
         let _ = st.delete(name);
         assert!(st.meta(name).is_none());
         if let Err(e) = st.put(name, FAKE) {
-            // A locked keychain on a build machine: nothing was written.
             eprintln!("keychain unavailable: {e}");
             return;
         }
@@ -784,7 +714,7 @@ mod tests {
         assert_eq!(st.delete(name), Ok(true));
         assert!(st.meta(name).is_none() && st.get(name).is_none());
         assert_eq!(st.delete(name), Ok(false));
-        // Bad names never reach `security`.
+
         assert!(st.put("a b", FAKE).is_err());
         assert!(st.put("x;rm", FAKE).is_err());
     }

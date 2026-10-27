@@ -1,9 +1,3 @@
-//! Drawing the live map: a Braille canvas of the core, the account ring,
-//! the tab satellites and the token particles, a glow pass on the cell
-//! backgrounds, shaded block glyphs for the core, and the HUD (totals,
-//! sparklines, legend, ticker, tooltip). This view alone is vivid on
-//! purpose: it is a showpiece; the rest of the app keeps its calm palette.
-
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::time::Instant;
@@ -38,10 +32,6 @@ const PAUSED: C = (96, 108, 140);
 const TEXT: C = (226, 230, 242);
 const MUTE: C = (120, 128, 156);
 const PANEL: C = (14, 16, 30);
-
-// ---------------------------------------------------------------------
-// Color helpers
-// ---------------------------------------------------------------------
 
 fn col(c: C) -> Color {
     crate::theme::rgb(c)
@@ -84,7 +74,6 @@ fn to_hsv(c: C) -> (f64, f64, f64) {
     (h, if mx == 0.0 { 0.0 } else { d / mx }, mx)
 }
 
-/// An account's calm color turned up for the showpiece.
 fn vivid(c: C) -> C {
     let (h, s, _) = to_hsv(c);
     hsv(h, (s * 3.0).clamp(0.62, 0.95), 1.0)
@@ -102,7 +91,6 @@ fn scale(c: C, k: f64) -> C {
     (m(c.0), m(c.1), m(c.2))
 }
 
-/// Percent left to a vivid traffic light: green, yellow, orange, red.
 fn quota_color(left: f64) -> C {
     let l = left.clamp(0.0, 100.0);
     if l >= 60.0 {
@@ -114,11 +102,6 @@ fn quota_color(left: f64) -> C {
     }
 }
 
-// ---------------------------------------------------------------------
-// Painting dots
-// ---------------------------------------------------------------------
-
-/// Dots with y pointing down, on a canvas of `h` dot rows.
 struct Pen<'p, 'a, 'b> {
     p: &'p mut Painter<'a, 'b>,
     h: f64,
@@ -131,8 +114,6 @@ impl Pen<'_, '_, '_> {
         }
     }
 
-    /// An arc from angle a0 to a1 (radians, clockwise on screen as y is
-    /// down). `dash` = (on, off) in dots.
     #[allow(clippy::too_many_arguments)]
     fn arc(&mut self, x: f64, y: f64, r: f64, a0: f64, a1: f64, c: C, dash: Option<(f64, f64)>) {
         if r <= 0.0 {
@@ -194,7 +175,6 @@ impl Pen<'_, '_, '_> {
         }
     }
 
-    /// A straight line; `dash` with a moving `phase`.
     #[allow(clippy::too_many_arguments)]
     fn seg(
         &mut self,
@@ -233,7 +213,6 @@ fn inside(pts: &[(f64, f64)], x: f64, y: f64) -> bool {
     c
 }
 
-/// A point on the quadratic curve p0 -> p2 bent toward p1.
 fn bez(p0: (f64, f64), p1: (f64, f64), p2: (f64, f64), t: f64) -> (f64, f64) {
     let u = 1.0 - t;
     (
@@ -242,15 +221,12 @@ fn bez(p0: (f64, f64), p1: (f64, f64), p2: (f64, f64), t: f64) -> (f64, f64) {
     )
 }
 
-/// The control point of the core to account link: a gentle swirl.
 fn swirl(core: (f64, f64), a: (f64, f64)) -> (f64, f64) {
     let (mx, my) = ((core.0 + a.0) / 2.0, (core.1 + a.1) / 2.0);
     let (dx, dy) = (a.0 - core.0, a.1 - core.1);
     (mx - dy * 0.22, my + dx * 0.22)
 }
 
-/// Where a particle is: in goes core, account, tab; out the other way.
-/// The first 72% of the trip is the swirl to the account.
 fn along(core: (f64, f64), acc: Option<(f64, f64)>, end: (f64, f64), t: f64) -> (f64, f64) {
     match acc {
         Some(a) => {
@@ -268,10 +244,6 @@ fn along(core: (f64, f64), acc: Option<(f64, f64)>, end: (f64, f64), t: f64) -> 
         }
     }
 }
-
-// ---------------------------------------------------------------------
-// The scene
-// ---------------------------------------------------------------------
 
 struct Scene<'a> {
     lm: &'a LiveMap,
@@ -298,7 +270,7 @@ impl Scene<'_> {
 
     fn back(&self, pen: &mut Pen) {
         let t = self.lm.t;
-        // Stars.
+
         let n = ((self.w * self.h) / 380.0) as u64;
         for i in 0..n {
             let x = hash01(i * 7 + 1) * self.w;
@@ -319,7 +291,7 @@ impl Scene<'_> {
         }
         let (cx, cy) = self.placed.core;
         let (rx, ry) = self.placed.ring;
-        // The account ring: a faint dashed ellipse whose dashes travel.
+
         if !self.lm.snap.accounts.is_empty() {
             let steps = ((rx + ry) * 2.2) as usize;
             for i in 0..steps {
@@ -331,7 +303,7 @@ impl Scene<'_> {
                 }
             }
         }
-        // Orbit guides around the accounts that have tabs.
+
         for (i, ac) in self.acc_colors.iter().enumerate() {
             let Some(a) = self.acc_pos(i) else { continue };
             let mut radii: Vec<f64> = self
@@ -348,8 +320,7 @@ impl Scene<'_> {
                 pen.circle(a.0, a.1, r, scale(*ac, 0.22), Some((1.0, 3.0)));
             }
         }
-        // Links: core to accounts (a swirl with a travelling shimmer),
-        // accounts to their busy tabs, the brain, other terminals.
+
         for (i, ac) in self.acc_colors.iter().enumerate() {
             let Some(a) = self.acc_pos(i) else { continue };
             let busy = self.lm.snap.tabs.iter().any(|tb| {
@@ -441,7 +412,7 @@ impl Scene<'_> {
                     (None, (n.x, n.y))
                 }
             };
-            // Out flows from the tab back to the core.
+
             let pos = |t: f64| {
                 let t = t.clamp(0.0, 1.0);
                 along(core, acc, end, if p.out { 1.0 - t } else { t })
@@ -453,7 +424,7 @@ impl Scene<'_> {
                 (_, true) => (OUT, OUT_HOT),
             };
             let shade = mix(base, hot, p.shade * 0.6 + if p.burst { 0.4 } else { 0.0 });
-            // Sideways wobble, so a stream reads as a stream.
+
             let (x0, y0) = pos(p.t);
             let (x1, y1) = pos(p.t + 0.01);
             let (dx, dy) = (x1 - x0, y1 - y0);
@@ -516,7 +487,7 @@ impl Scene<'_> {
             scale(hsv(hue + 0.66, 0.7, 1.0), 0.6),
             Some((1.0, 2.0)),
         );
-        // Sunburst: rays that turn slowly and breathe with the token flow.
+
         let rays = 14;
         for i in 0..rays {
             let a = t * 0.18 + TAU * i as f64 / rays as f64;
@@ -533,7 +504,7 @@ impl Scene<'_> {
                 pen.dot(cx + rr * a.cos(), cy + rr * a.sin(), c);
             }
         }
-        // Motes circling at different speeds.
+
         for i in 0..10 {
             let sp = 0.25 + hash01(900 + i) * 0.9;
             let dir = if i % 2 == 0 { 1.0 } else { -1.0 };
@@ -547,7 +518,7 @@ impl Scene<'_> {
                 scale(c, 0.5),
             );
         }
-        // A slow expanding halo.
+
         let k = (t * 0.45).fract();
         pen.circle(
             cx,
@@ -584,7 +555,7 @@ impl Scene<'_> {
             } else {
                 pen.circle(x, y, r, scale(c, 0.6), Some((1.0, 1.0)));
             }
-            // Ring gauges: 5 hour inside, weekly outside, from 12 o'clock.
+
             for (k, left) in [(0, a.five_left), (1, a.week_left)] {
                 let rr = r + 2.6 + k as f64 * 2.2;
                 match left {
@@ -610,7 +581,7 @@ impl Scene<'_> {
                                 None,
                             );
                         }
-                        // A bright tip where the quota ends.
+
                         let tip = -FRAC_PI_2 + ext;
                         pen.disc(
                             x + (rr + 0.4) * tip.cos(),
@@ -743,10 +714,6 @@ impl Shape for Layer<'_, '_> {
     }
 }
 
-// ---------------------------------------------------------------------
-// Glow, core orb, labels
-// ---------------------------------------------------------------------
-
 struct Glow {
     w: usize,
     h: usize,
@@ -756,7 +723,7 @@ struct Glow {
 impl Glow {
     fn new(w: usize, h: usize) -> Glow {
         let mut px = vec![[0.0f32; 3]; w * h];
-        // Deep space: a violet center fading to near black.
+
         let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
         for y in 0..h {
             for x in 0..w {
@@ -769,13 +736,11 @@ impl Glow {
         Glow { w, h, px }
     }
 
-    /// A soft light at cell (x, y), `r` cells wide (cells are twice as tall
-    /// as wide, so the falloff is round on screen).
     fn add(&mut self, x: f64, y: f64, r: f64, c: C, k: f64) {
         if r <= 0.0 || k <= 0.0 {
             return;
         }
-        // Reach far enough that the falloff ends below one step of color.
+
         let reach = r * ((k * 255.0).max(1.0).ln() / 1.5).sqrt().max(1.0);
         let (x0, x1) = (
             (x - reach * 2.0).floor().max(0.0) as usize,
@@ -817,12 +782,10 @@ impl Glow {
     }
 }
 
-/// Cell coordinates of a dot point.
 fn cell_of(x: f64, y: f64) -> (f64, f64) {
     (x / 2.0, y / 4.0)
 }
 
-/// The core: a shaded orb of block glyphs, hottest in the middle.
 fn draw_core(buf: &mut Buffer, area: Rect, placed: &Placed, t: f64, hue: f64) {
     let (cx, cy) = cell_of(placed.core.0, placed.core.1);
     let pulse = 1.0 + 0.08 * (t * 2.2).sin();
@@ -852,7 +815,7 @@ fn draw_core(buf: &mut Buffer, area: Rect, placed: &Placed, t: f64, hue: f64) {
             } else {
                 '░'
             };
-            // Swirling color across the orb.
+
             let ang = dy.atan2(dx);
             let c = hsv(hue + ang / TAU * 0.25 + d * 0.2, 0.25 + 0.65 * d, 1.0);
             let c = mix((255, 255, 255), c, d.powf(0.7));
@@ -862,7 +825,6 @@ fn draw_core(buf: &mut Buffer, area: Rect, placed: &Placed, t: f64, hue: f64) {
     }
 }
 
-/// Labels avoid each other with a coarse occupancy grid.
 struct Labels {
     w: u16,
     taken: Vec<bool>,
@@ -911,7 +873,6 @@ fn put(buf: &mut Buffer, area: Rect, x: u16, y: u16, spans: &[(String, Style)]) 
     }
 }
 
-/// The end of a long path: "…/code/api".
 fn tail(s: &str, n: usize) -> String {
     let len = s.chars().count();
     if len <= n {
@@ -930,10 +891,6 @@ fn truncate(s: &str, n: usize) -> String {
         t
     }
 }
-
-// ---------------------------------------------------------------------
-// The view
-// ---------------------------------------------------------------------
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let started = Instant::now();
@@ -989,14 +946,13 @@ fn draw_full(f: &mut Frame, app: &mut App, area: Rect) {
         });
     f.render_widget(cv, canvas);
 
-    // Glow on the cell backgrounds.
     let t = lm.t;
     let hue = t * 0.045;
     let mut glow = Glow::new(canvas.width as usize, canvas.height as usize);
     let (tin, tout) = lm.totals();
     let energy = ((1.0 + tin + tout).log10() / 3.5).clamp(0.0, 1.0);
     let (ccx, ccy) = cell_of(placed.core.0, placed.core.1);
-    // Faint nebula clouds drifting behind everything.
+
     let (cw, ch) = (canvas.width as f64, canvas.height as f64);
     for (i, c) in [
         (150, 40, 200),
@@ -1076,9 +1032,8 @@ fn draw_full(f: &mut Frame, app: &mut App, area: Rect) {
     glow.write(buf, canvas);
     draw_core(buf, canvas, &placed, t, hue);
 
-    // Labels.
     let mut occ = Labels::new(canvas);
-    // Reserve the core's cells.
+
     let (cr_x, cr_y) = (placed.core_r / 2.0, placed.core_r / 4.0);
     for y in (ccy - cr_y).max(0.0) as u16..((ccy + cr_y + 1.0) as u16).min(canvas.height) {
         let x0 = (ccx - cr_x).max(0.0) as u16;
@@ -1127,7 +1082,6 @@ fn draw_full(f: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     if lm.labels {
-        // Busy tabs first, so they keep their label when space runs out.
         let mut order: Vec<&Node> = placed
             .nodes
             .iter()
@@ -1218,7 +1172,6 @@ fn draw_full(f: &mut Frame, app: &mut App, area: Rect) {
     draw_tooltip(f, app, canvas);
 }
 
-/// Unicode sparkline of the last `n` values, scaled to their max.
 fn spark(vals: &[f64], n: usize) -> Vec<(char, f64)> {
     const B: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let take: Vec<f64> = vals.iter().rev().take(n).rev().copied().collect();
@@ -1315,7 +1268,6 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
     }
     put(buf, area, 0, 0, &row);
 
-    // Second row: token sparklines and quota.
     let (tin, tout) = lm.totals();
     let ins: Vec<f64> = lm.hist.iter().map(|h| h.0).collect();
     let outs: Vec<f64> = lm.hist.iter().map(|h| h.1).collect();
@@ -1454,7 +1406,7 @@ fn draw_ticker(f: &mut Frame, app: &App, area: Rect) {
     let buf = f.buffer_mut();
     let w = area.width as usize;
     let lead = 13usize;
-    // A fixed lead, then the strip scrolling right to left.
+
     let head = " ⟫ EVENTS  ";
     for x in 0..area.width {
         buf[(area.x + x, area.y)].reset();
@@ -1698,7 +1650,6 @@ fn draw_tooltip(f: &mut Frame, app: &App, canvas: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), r);
 }
 
-/// Under about 80x24: a radial list, still animated.
 fn draw_compact(f: &mut Frame, app: &App, area: Rect) {
     let lm = &app.livemap;
     let s = &lm.snap;

@@ -1,14 +1,3 @@
-//! The small status label at the end of a tab's row: "blocked" (a
-//! permission, plan or trust prompt is open), "confirm" (the assistant
-//! waits on the user's yes about this tab), "limit" (its screen says it
-//! hit a usage limit), "error" (claude exited with an error or failed to
-//! start), "background" (its turn ended but background agents or shells
-//! it started still run: not finished yet), "finished" (a real turn ended,
-//! with nothing left running, while the user looked elsewhere) and
-//! "queued" (a prompt on its way in). One label per tab, in that
-//! order. All from real state: the tab's activity, pending_confirms, the
-//! failover scan, the process state, the finished mark and deliveries.
-
 use ratatui::style::Color;
 
 use crate::app::{App, View};
@@ -26,7 +15,6 @@ pub enum TabLabel {
     Queued,
 }
 
-/// Every label, in precedence order.
 pub const ALL: [TabLabel; 7] = [
     TabLabel::Blocked,
     TabLabel::Confirm,
@@ -37,7 +25,6 @@ pub const ALL: [TabLabel; 7] = [
     TabLabel::Queued,
 ];
 
-/// How much of a label fits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fit {
     Full,
@@ -82,7 +69,6 @@ impl TabLabel {
         }
     }
 
-    /// The hover text.
     pub fn hint(self) -> &'static str {
         match self {
             TabLabel::Blocked => "Blocked: it waits for your approval",
@@ -97,7 +83,6 @@ impl TabLabel {
         }
     }
 
-    /// The pill's text at a fit: " finished ", " done ", or a dot.
     pub fn pill(self, fit: Fit) -> String {
         match fit {
             Fit::Full => format!(" {} ", self.word()),
@@ -107,8 +92,6 @@ impl TabLabel {
     }
 }
 
-/// The widest form of `l` that leaves the name `min_name` columns of
-/// `room`, with one space before the pill.
 pub fn fit(l: TabLabel, room: usize, min_name: usize) -> Fit {
     let need = |f: Fit| l.pill(f).chars().count() + 1 + min_name;
     if room >= need(Fit::Full) {
@@ -120,7 +103,6 @@ pub fn fit(l: TabLabel, room: usize, min_name: usize) -> Fit {
     }
 }
 
-/// `c` mixed into `bg` (a Reset background counts as the usual dark one).
 pub fn tint(bg: Color, c: Color, pct: u16) -> Color {
     let rgb = |c: Color| match c {
         Color::Rgb(r, g, b) => (r, g, b),
@@ -131,7 +113,6 @@ pub fn tint(bg: Color, c: Color, pct: u16) -> Color {
     Color::Rgb(mix(r0, r1), mix(g0, g1), mix(b0, b1))
 }
 
-/// "2 finished · 1 blocked" (or "2 done · 1 blk" when `short`).
 pub fn summary(counts: &[(TabLabel, usize)], short: bool) -> String {
     counts
         .iter()
@@ -141,7 +122,6 @@ pub fn summary(counts: &[(TabLabel, usize)], short: bool) -> String {
 }
 
 impl App {
-    /// Tabs (by uid) an answerable confirmation is about.
     pub fn confirm_uids(&self) -> Vec<u64> {
         let mut out = vec![];
         for p in self.pending_confirms.iter().filter(|p| p.answerable()) {
@@ -155,14 +135,12 @@ impl App {
         out
     }
 
-    /// The tab the user looks at: the focused pane's shown tab.
     pub fn tab_in_view(&self, s: usize, t: usize) -> bool {
         self.view == View::Grid
             && s == self.focus
             && self.panes.get(s).is_some_and(|p| p.active == t)
     }
 
-    /// The label on tab `t` of pane `s`, if any (highest first).
     pub fn tab_label(&self, s: usize, t: usize) -> Option<TabLabel> {
         let tab = self.panes.get(s)?.tabs.get(t)?;
         let uid = tab.uid;
@@ -190,7 +168,6 @@ impl App {
         None
     }
 
-    /// The user looked at this tab: no longer "finished".
     pub fn mark_seen(&mut self, s: usize, t: usize) {
         if let Some(tab) = self.panes.get_mut(s).and_then(|p| p.tabs.get_mut(t)) {
             if tab.finished {
@@ -200,9 +177,6 @@ impl App {
         }
     }
 
-    /// Labels of the tabs of pane `i` that the list does not show as rows
-    /// (the list collapsed or absent: all; else those in folded groups),
-    /// counted, in precedence order.
     pub fn hidden_label_counts(&self, i: usize, all: bool) -> Vec<(TabLabel, usize)> {
         let Some(slot) = self.panes.get(i) else {
             return vec![];

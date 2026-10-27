@@ -1,6 +1,3 @@
-//! View ▾ > Tab history: every tab opened and closed, grouped by day,
-//! with search, sort, and Reopen / Open folder / Copy session id.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -13,17 +10,15 @@ use crate::theme::{self, DIM, FAINT, FG, SEL_BG};
 
 #[derive(Debug, Clone, Default)]
 pub struct TabHistUi {
-    /// Every record, newest first (one per event).
     pub all: Vec<Record>,
     pub sel: usize,
     pub filter: String,
     pub searching: bool,
-    /// 0 newest first, 1 oldest first, 2 by name.
+
     pub sort: u8,
 }
 
 impl TabHistUi {
-    /// The rows shown: filtered by the search (misheard names are fine).
     pub fn rows(&self) -> Vec<Record> {
         let f = crate::tab_history::Filter {
             text: (!self.filter.trim().is_empty()).then(|| self.filter.clone()),
@@ -150,7 +145,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let limit = area.x + area.width;
     let rows = app.th.rows();
     let mut hits = app.hits.borrow_mut();
-    // Header: title, search, sort and actions.
+
     let sort = ["newest first", "oldest first", "by name"][app.th.sort.min(2) as usize];
     let mut x = crate::hits::text(
         buf,
@@ -217,7 +212,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             c,
         ) + 1;
     }
-    // Rows grouped by day, the selected one in view.
+
     let body_top = area.y + 2;
     let height = area.bottom().saturating_sub(body_top) as usize;
     let mut lines: Vec<(Option<usize>, String)> = vec![];

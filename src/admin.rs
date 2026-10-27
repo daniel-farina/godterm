@@ -1,8 +1,3 @@
-//! Account administration for the assistant, the pure part: the catalog
-//! of well known MCP servers, what each account has (read from its config
-//! dir, never its credentials), the exact commands an install runs, and
-//! parsing what `claude mcp list` / `grok mcp list` print.
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -10,8 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::harness::Harness;
-
-// ---------- the catalog ----------
 
 const CATALOG: &str = include_str!("../data/mcp_catalog.json");
 
@@ -27,16 +20,16 @@ pub struct Entry {
     pub name: String,
     #[serde(default)]
     pub aliases: Vec<String>,
-    /// A Claude Code plugin (`name@marketplace`) that brings the server.
+
     #[serde(default)]
     pub plugin: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
     pub command: Option<Vec<String>>,
-    /// http, sse, stdio or connector.
+
     pub transport: String,
-    /// oauth, token or none.
+
     pub auth: String,
     #[serde(default)]
     pub oauth: Option<OAuthClient>,
@@ -62,7 +55,6 @@ fn norm(s: &str) -> String {
         .collect()
 }
 
-/// A catalog entry by id, name or alias ("Slack", "slack connector", "jira").
 pub fn find(q: &str) -> Option<Entry> {
     let n = norm(q.trim_end_matches(" mcp").trim_end_matches(" connector"));
     if n.is_empty() {
@@ -76,18 +68,16 @@ pub fn find(q: &str) -> Option<Entry> {
     })
 }
 
-// ---------- what an account has ----------
-
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Server {
     pub name: String,
-    /// http, sse, stdio, ws, or "connector" (claude.ai).
+
     pub transport: String,
-    /// The URL without its query, or the command.
+
     pub target: String,
-    /// user, local, project, plugin, claude.ai
+
     pub scope: String,
-    /// connected, needs-auth, failed, pending, disabled or unknown.
+
     pub status: String,
 }
 
@@ -95,7 +85,7 @@ pub struct Server {
 pub struct Plugin {
     pub id: String,
     pub enabled: bool,
-    /// MCP servers it brings (by name).
+
     pub servers: Vec<String>,
 }
 
@@ -105,7 +95,7 @@ pub struct Caps {
     pub plugins: Vec<Plugin>,
     pub marketplaces: Vec<String>,
     pub skills: Vec<String>,
-    /// Hook events configured (PreToolUse, Stop, ...).
+
     pub hooks: Vec<String>,
 }
 
@@ -113,7 +103,6 @@ fn read_json(p: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
 }
 
-/// A URL shown or logged: no query (it can carry tokens) and no userinfo.
 pub fn safe_target(t: &str) -> String {
     let t = t.split(['?', '#']).next().unwrap_or("").to_string();
     match t.split_once("://") {
@@ -152,9 +141,6 @@ fn server_of(name: &str, v: &Value, scope: &str) -> Server {
     }
 }
 
-/// What a Claude Code config dir has: user and local MCP servers, plugins
-/// (and the servers they bring), marketplaces, skills and hooks. Only
-/// these keys are read; credentials, headers and env values never are.
 pub fn claude_caps(dir: &Path) -> Caps {
     let mut c = Caps::default();
     if let Some(cj) = read_json(&dir.join(".claude.json")) {
@@ -222,7 +208,6 @@ pub fn claude_caps(dir: &Path) -> Caps {
     c
 }
 
-/// What a Grok home has: `[mcp_servers]`, plugins, skills.
 pub fn grok_caps(dir: &Path) -> Caps {
     let mut c = Caps::default();
     let text = std::fs::read_to_string(dir.join("config.toml")).unwrap_or_default();
@@ -293,11 +278,6 @@ pub fn caps(h: Harness, dir: &Path) -> Caps {
     }
 }
 
-// ---------- mcp list ----------
-
-/// `claude mcp list` lines: "name: target (HTTP) - ✓ Connected",
-/// "plugin:slack:slack: https://mcp.slack.com/mcp (HTTP) - ! Needs
-/// authentication", "claude.ai Gmail: https://... - ✓ Connected".
 pub fn parse_mcp_list(out: &str) -> Vec<Server> {
     let mut v = vec![];
     for l in out.lines() {
@@ -353,8 +333,6 @@ pub fn parse_mcp_list(out: &str) -> Vec<Server> {
     v
 }
 
-/// `grok mcp list --json`: an array (or {servers: [...]}) of objects with
-/// name, url/command, enabled, and a status when it has one.
 pub fn parse_grok_list(out: &str) -> Vec<Server> {
     let v: Value = serde_json::from_str(out.trim()).unwrap_or(Value::Null);
     let arr = v
@@ -387,18 +365,13 @@ pub fn parse_grok_list(out: &str) -> Vec<Server> {
         .collect()
 }
 
-// ---------- commands ----------
-
-/// What an install runs on one account: argv after the program.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Install {
-    /// The server name to check afterwards ("linear", "plugin:slack:slack").
     pub check: String,
     pub steps: Vec<Vec<String>>,
     pub auth: String,
 }
 
-/// The source of an install, as the model gives it.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Source {
@@ -410,9 +383,6 @@ pub enum Source {
 pub const OFFICIAL_MARKETPLACE: &str = "claude-plugins-official";
 pub const OFFICIAL_MARKETPLACE_REPO: &str = "anthropics/claude-plugins-official";
 
-/// The steps for `name` from `src` on a harness. `via_plugin`: a catalog
-/// entry with a plugin installs that (Claude only); `has_market`: the
-/// official marketplace is already known to the account.
 pub fn install_steps(
     h: Harness,
     name: &str,
@@ -463,7 +433,7 @@ pub fn install_steps(
             };
             let mut i = install_steps(h, name, &inner, false, has_market, env)?;
             if let (Harness::Claude, Some(o)) = (h, &e.oauth) {
-                // The provider's registered OAuth client (Slack needs it).
+
                 let st = &mut i.steps[0];
                 let at = st.iter().position(|x| x == name).unwrap_or(st.len());
                 st.splice(
@@ -507,7 +477,6 @@ pub fn install_steps(
     }
 }
 
-/// `mcp remove`: user scope, where installs go.
 pub fn remove_steps(h: Harness, name: &str) -> Vec<Vec<String>> {
     match h {
         Harness::Claude => vec![vec![
@@ -522,7 +491,6 @@ pub fn remove_steps(h: Harness, name: &str) -> Vec<Vec<String>> {
     }
 }
 
-/// `plugin install|uninstall|enable|disable`.
 pub fn plugin_steps(
     h: Harness,
     action: &str,
@@ -555,7 +523,6 @@ pub fn list_args(h: Harness) -> Vec<String> {
     }
 }
 
-/// One command as it reads in a confirmation: "claude mcp add ...".
 pub fn shown(program: &str, argv: &[String]) -> String {
     let p = Path::new(program)
         .file_name()
@@ -565,7 +532,6 @@ pub fn shown(program: &str, argv: &[String]) -> String {
     let args: Vec<String> = argv
         .iter()
         .map(|a| {
-            // Values of -e KEY=VALUE are masked.
             let a = match a.split_once('=') {
                 Some((k, _))
                     if k.chars().all(|c| c.is_ascii_uppercase() || c == '_') && !k.is_empty() =>
@@ -584,8 +550,6 @@ pub fn shown(program: &str, argv: &[String]) -> String {
     format!("{p} {}", args.join(" "))
 }
 
-/// Run `program argv` for an account: its home in the harness's env var,
-/// the environment scrubbed as for tabs. (exit ok, stdout + stderr)
 pub fn run(
     program: &str,
     argv: &[String],
@@ -617,7 +581,6 @@ pub fn run(
     }
 }
 
-/// The first https URL in some text (a login or OAuth page).
 pub fn first_url(text: &str) -> Option<String> {
     let i = text.find("https://")?;
     let u: String = text[i..]
@@ -627,14 +590,12 @@ pub fn first_url(text: &str) -> Option<String> {
     (u.len() > 10).then_some(u)
 }
 
-/// A login URL on a terminal screen: lines are joined first, since a long
-/// URL wraps across them.
 pub fn url_on_screen(screen: &str) -> Option<String> {
     let lines: Vec<&str> = screen.lines().map(str::trim_end).collect();
     for (i, l) in lines.iter().enumerate() {
         if let Some(at) = l.find("https://") {
             let mut u = l[at..].trim().to_string();
-            // Continue while the next lines are unbroken URL text.
+
             for next in lines.iter().skip(i + 1) {
                 let n = next.trim();
                 if n.is_empty() || n.contains(' ') || n.len() < 8 && !u.ends_with('=') {
@@ -648,7 +609,6 @@ pub fn url_on_screen(screen: &str) -> Option<String> {
     None
 }
 
-/// Open a URL in the browser (tests record it instead).
 pub fn open_url(url: &str) {
     #[cfg(test)]
     {
@@ -680,7 +640,6 @@ pub fn open_url(url: &str) {
 #[cfg(test)]
 pub static OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-/// The clipboard, read only for a login code on the user's command.
 pub fn read_clipboard() -> Option<String> {
     #[cfg(test)]
     {
@@ -711,7 +670,6 @@ pub fn read_clipboard() -> Option<String> {
 #[cfg(test)]
 pub static TEST_CLIPBOARD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// A short summary of an account's capabilities for the state block.
 pub fn summary(c: &Caps) -> String {
     let mut parts = vec![];
     let servers: Vec<String> = c
@@ -932,7 +890,7 @@ mod tests {
         assert_eq!(c.skills, vec!["review"]);
         assert_eq!(c.hooks, vec!["Stop"]);
         assert_eq!(summary(&c), "mcp linear, slack; plugins slack; 1 skills");
-        // Grok.
+
         let g = d.join("grok");
         std::fs::create_dir_all(g.join("installed-plugins/gdrive")).unwrap();
         std::fs::write(g.join("config.toml"), "disabled_mcp_servers = [\"sentry\"]\n[mcp_servers.sentry]\nurl = \"https://mcp.sentry.dev/mcp\"\n[plugins]\nenabled = [\"gdrive\"]\n").unwrap();

@@ -107,7 +107,6 @@ def main():
         step("serving", built_in)
 
         def switch_to_copy():
-            # A marker so the copy's build is not the repo's.
             with open(os.path.join(web, "js", "util.js"), "a") as f:
                 f.write("\n// e2e copy\n")
             cfg = os.path.join(app, "config.toml")
@@ -150,7 +149,6 @@ def main():
             s, body, hd = get(a.port, f"/js/util.js?v={b}", st["cookie"])
             assert s == 200 and b"E2E_HOT" in body, s
             assert "immutable" in hd.get("cache-control", ""), hd
-            # An older build's URL gets today's file, never kept for good.
             s, _, hd = get(a.port, f"/js/util.js?v={st['build']}", st["cookie"])
             assert s == 200 and hd.get("cache-control") == "no-cache", hd
             s, body, _ = get(a.port, "/sw.js", st["cookie"])

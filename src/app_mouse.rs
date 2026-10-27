@@ -1,6 +1,3 @@
-//! Mouse handling: look clicks up in the hit registry of the last frame and
-//! run the action. Hover updates the highlight and the status bar hint.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::time::{Duration, Instant};
 
@@ -8,10 +5,9 @@ use crate::app::{App, Modal, View};
 use crate::hits::{contains, List, UiAction};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(450);
-/// Wheel events closer than this are a stream (a trackpad, a fast spin).
+
 const WHEEL_STREAM: Duration = Duration::from_millis(60);
 
-/// Tour steps: (title, text).
 pub const TOUR: &[(&str, &str)] = &[
     (
         "Menu bar",
@@ -43,17 +39,11 @@ pub const TOUR: &[(&str, &str)] = &[
     ),
 ];
 
-/// Encode a mouse event for a child that enabled mouse reporting (SGR).
 #[cfg(test)]
 pub fn encode_mouse(m: &MouseEvent, col: u16, row: u16) -> Option<Vec<u8>> {
     encode_mouse_as(m, col, row, vt100::MouseProtocolEncoding::Sgr)
 }
 
-/// Encode a mouse event in the encoding the child turned on: SGR (1006)
-/// `ESC [ < b ; x ; y M/m`, else the classic X10 `ESC [ M b x y` with
-/// each value plus 32 in one byte (UTF-8, mode 1005, for values past 127).
-/// None for an event that has no report, or a cell too far right or down
-/// for the classic encoding (xterm sends nothing then either).
 pub fn encode_mouse_as(
     m: &MouseEvent,
     col: u16,
@@ -91,7 +81,7 @@ pub fn encode_mouse_as(
             .into_bytes(),
         );
     }
-    // The classic encodings have no button on a release (3: "released").
+
     let b = if release { 3 } else { code } + mods;
     let mut out = b"\x1b[M".to_vec();
     for v in [b as u32 + 32, col as u32 + 33, row as u32 + 33] {
@@ -106,12 +96,6 @@ pub fn encode_mouse_as(
     Some(out)
 }
 
-/// What `n` wheel notches at screen cell (col, row) send the app of
-/// `screen`, as the terminal UI's wheel over a pane does: mouse reports in
-/// the app's own encoding when it turned reporting on, else arrow keys on
-/// the alternate screen (the terminal's "alternate scroll"). None when the
-/// app takes no wheel (the main screen without mouse reports: the history
-/// is the terminal's to scroll).
 pub fn wheel_input(
     screen: &vt100::Screen,
     up: bool,
@@ -151,7 +135,6 @@ pub fn wheel_input(
     None
 }
 
-/// A wheel event (up or down).
 pub fn is_wheel(m: &MouseEvent) -> bool {
     matches!(
         m.kind,
@@ -159,13 +142,8 @@ pub fn is_wheel(m: &MouseEvent) -> bool {
     )
 }
 
-/// Most wheel events taken as one.
 pub const WHEEL_BURST: u16 = 64;
 
-/// After wheel event `first`, take the ones already waiting (`next` gives
-/// one, or None when nothing is queued) that go the same way at the same
-/// place. Returns how many there were in all and the first other event
-/// read, which the caller handles next.
 pub fn coalesce_wheel(
     first: &MouseEvent,
     next: &mut dyn FnMut() -> Option<crossterm::event::Event>,
@@ -188,7 +166,6 @@ pub fn coalesce_wheel(
     (n, None)
 }
 
-/// The assistant panel's areas that scroll on their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelArea {
     Schedules,
@@ -204,7 +181,6 @@ fn button_code(b: MouseButton) -> u16 {
 }
 
 impl App {
-    /// Menus, context menus and popovers: a click outside closes them.
     pub fn is_popup(&self) -> bool {
         matches!(
             self.modal,
@@ -224,8 +200,6 @@ impl App {
         )
     }
 
-    /// The region under (col, row), honoring an open modal: only the
-    /// modal's own regions are live while it is open.
     pub fn region_at(&self, col: u16, row: u16) -> Option<crate::hits::Region> {
         let regions = &self.last_hits.regions;
         let from = if self.modal != Modal::None {
@@ -240,7 +214,6 @@ impl App {
             .cloned()
     }
 
-    /// Status bar hint for whatever is under the mouse.
     pub fn hover_hint(&self) -> Option<String> {
         let (c, r) = self.mouse_pos?;
         self.region_at(c, r)
@@ -250,7 +223,7 @@ impl App {
 
     pub fn on_mouse_event(&mut self, m: MouseEvent) {
         self.mouse_pos = Some((m.column, m.row));
-        // Dragging a pane border.
+
         if let Some(b) = self.dragging.clone() {
             match m.kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
@@ -264,7 +237,7 @@ impl App {
                 _ => self.dragging = None,
             }
         }
-        // Dragging a pane header: drop on another pane to swap.
+
         if let Some((from, _)) = self.pane_drag {
             match m.kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
@@ -286,8 +259,7 @@ impl App {
                 _ => self.pane_drag = None,
             }
         }
-        // Dragging a tab: onto a group header it joins the group; onto
-        // another tab it moves there.
+
         if let Some((s, t, moved)) = self.tab_drag {
             match m.kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
@@ -305,7 +277,7 @@ impl App {
                 _ => self.tab_drag = None,
             }
         }
-        // Dragging the top edge of a loops drawer.
+
         if let Some(i) = self.loops_drawer_drag {
             match m.kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
@@ -319,7 +291,7 @@ impl App {
                 _ => self.loops_drawer_drag = None,
             }
         }
-        // Dragging the edge of a tab list.
+
         if let Some(i) = self.sidebar_drag {
             match m.kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
@@ -333,7 +305,7 @@ impl App {
                 _ => self.sidebar_drag = None,
             }
         }
-        // Dragging the chat's scrollbar thumb.
+
         if let Some(grab) = self.assistant.bar_drag {
             match m.kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
@@ -347,7 +319,7 @@ impl App {
                 _ => self.assistant.bar_drag = None,
             }
         }
-        // Dragging the assistant panel's left edge.
+
         if self.assistant.edge_drag {
             match m.kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
@@ -364,12 +336,12 @@ impl App {
         if self.livemap_mouse(&m) {
             return;
         }
-        // In the assistant's input: the caret, or a selection there.
+
         if self.input_mouse(&m) {
             return;
         }
         let region = self.region_at(m.column, m.row);
-        // Dragging over text selects it (a plain click goes on as before).
+
         if self.selection_mouse(&m, region.as_ref()) {
             return;
         }
@@ -381,9 +353,6 @@ impl App {
             MouseEventKind::Down(MouseButton::Left | MouseButton::Right)
                 if region.is_none() && self.is_popup() =>
             {
-                // Outside an open menu or popover: another menu title
-                // switches to it; anywhere else closes it, and the click
-                // stops there (as on macOS).
                 let title = self
                     .last_hits
                     .regions
@@ -402,7 +371,6 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 let Some(region) = region else {
-                    // A click outside a popup closes the simple ones.
                     if matches!(
                         self.modal,
                         Modal::Help
@@ -415,16 +383,13 @@ impl App {
                     }
                     return;
                 };
-                // Only a click inside the panel's own rect (this frame's,
-                // docked or floating) keeps the keys there; anywhere else
-                // (a tab, a pane, the menu bar, the status bar) takes them.
+
                 if self.modal == Modal::None {
                     let panel = self
                         .last_hits
                         .find(&UiAction::AssistantFocus)
                         .map(|p| p.rect);
                     match panel {
-                        // Its buttons and rows too give it the keys.
                         Some(p) if crate::hits::contains(p, m.column, m.row) => {
                             self.assistant.focused = true
                         }
@@ -438,27 +403,24 @@ impl App {
                 self.last_click = Some((Instant::now(), region.action.clone()));
                 self.click(region.action, double, &m);
             }
-            MouseEventKind::Down(MouseButton::Right) => {
-                // Right click on a tab: its menu.
-                match region.map(|r| r.action) {
-                    Some(UiAction::SelectTab(s, t)) => self.open_tab_menu(s, t),
-                    Some(UiAction::GroupHeader(s, g)) => self.open_group_menu(s, g),
-                    Some(UiAction::ArchivedRow(s, id)) => {
-                        self.focus = s;
-                        self.open_archive_menu(id);
-                    }
-                    Some(UiAction::Row(List::Overview, i)) => {
-                        if let Some(&(s, t)) = self.overview_rows().get(i) {
-                            self.open_tab_menu(s, t);
-                        }
-                    }
-                    Some(UiAction::PaneBody(i)) => {
-                        self.forward_mouse(i, &m);
-                    }
-                    Some(UiAction::PathClick(i)) => self.modal = Modal::PathMenu(i),
-                    _ => {}
+            MouseEventKind::Down(MouseButton::Right) => match region.map(|r| r.action) {
+                Some(UiAction::SelectTab(s, t)) => self.open_tab_menu(s, t),
+                Some(UiAction::GroupHeader(s, g)) => self.open_group_menu(s, g),
+                Some(UiAction::ArchivedRow(s, id)) => {
+                    self.focus = s;
+                    self.open_archive_menu(id);
                 }
-            }
+                Some(UiAction::Row(List::Overview, i)) => {
+                    if let Some(&(s, t)) = self.overview_rows().get(i) {
+                        self.open_tab_menu(s, t);
+                    }
+                }
+                Some(UiAction::PaneBody(i)) => {
+                    self.forward_mouse(i, &m);
+                }
+                Some(UiAction::PathClick(i)) => self.modal = Modal::PathMenu(i),
+                _ => {}
+            },
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 if matches!(self.modal, Modal::Updates(_)) =>
             {
@@ -475,15 +437,12 @@ impl App {
                 let up = m.kind == MouseEventKind::ScrollUp;
                 let n = self.wheel_n.max(1) as isize;
                 let d = if up { -n } else { n };
-                // Anywhere in a pane's tab list (a row, a group header,
-                // the search row, the empty space, the separator): the
-                // list, never the pane beside it.
+
                 if let Some(s) = self.tab_list_at(m.column, m.row) {
                     self.scroll_tabs(s, d);
                     return;
                 }
-                // The Loops & schedules section and the chat each take the
-                // wheel over their own area, and only that area.
+
                 if let Some(over) = self.panel_region_at(m.column, m.row) {
                     match over {
                         PanelArea::Schedules => self.sched_scroll_by(d),
@@ -520,8 +479,6 @@ impl App {
         }
     }
 
-    /// Which of the assistant panel's two scrolling areas is under the
-    /// pointer (as last drawn; none while a popup or dialog is open).
     pub fn panel_region_at(&self, col: u16, row: u16) -> Option<PanelArea> {
         if self.modal != Modal::None {
             return None;
@@ -540,7 +497,6 @@ impl App {
         None
     }
 
-    /// Scroll the chat by `d` lines (positive: towards older ones).
     pub fn chat_scroll_by(&mut self, d: isize) {
         let Some(g) = self.assistant.chat_geo.get() else {
             return;
@@ -550,8 +506,6 @@ impl App {
         self.assistant.chat_off.set(off as usize);
     }
 
-    /// A press on the scrollbar: on the thumb it is grabbed, elsewhere the
-    /// thumb jumps there and is held.
     fn chat_bar_press(&mut self, row: u16) {
         let Some(g) = self.assistant.chat_geo.get() else {
             return;
@@ -569,7 +523,6 @@ impl App {
         }
     }
 
-    /// The thumb follows the pointer at `row`, held `grab` rows in.
     fn chat_bar_to(&mut self, row: u16, grab: u16) {
         let Some(g) = self.assistant.chat_geo.get() else {
             return;
@@ -581,14 +534,6 @@ impl App {
         self.assistant.chat_off.set(max - top.min(max));
     }
 
-    /// The wheel over pane `i`'s body. Who scrolls depends on the screen the
-    /// agent is on: on the alternate screen (no history of ours) it gets the
-    /// wheel as mouse events when it asked for them, else as arrow keys (the
-    /// terminal's "alternate scroll"); on the main screen the history is
-    /// ours and the wheel scrolls it, unless the agent reports the mouse and
-    /// there is no history yet. Before, an agent that turned the mouse on
-    /// from the main screen took every wheel event and a pane with history
-    /// never scrolled (until a key reset its state).
     fn wheel_pane(&mut self, i: usize, m: &MouseEvent, up: bool, n: usize) {
         let in_body = self
             .term_rects
@@ -629,11 +574,7 @@ impl App {
             .scroll_by(if up { lines } else { -lines });
     }
 
-    /// A burst of `n` wheel events read together (a trackpad sends many):
-    /// handled as one, so the pane scrolls once and claude gets them in
-    /// one write.
     pub fn on_wheel(&mut self, m: MouseEvent, n: u16) {
-        // The live map's zoom and the Updates dialog: one at a time.
         if n <= 1 || self.view == View::LiveMap || matches!(self.modal, Modal::Updates(_)) {
             for _ in 0..n.max(1) {
                 self.on_mouse_event(m);
@@ -645,9 +586,6 @@ impl App {
         self.wheel_n = 1;
     }
 
-    /// Lines of history a wheel event scrolls: 3 for a lone notch, 1 per
-    /// event in a stream of them (a trackpad, a fast spin), so a trackpad
-    /// glides instead of jumping 3 lines a tick.
     fn wheel_lines(&mut self, up: bool, n: usize) -> isize {
         let now = Instant::now();
         let stream = n > 1
@@ -662,7 +600,6 @@ impl App {
         }
     }
 
-    /// The pane whose tab list (as last drawn) is on top at (col, row).
     pub fn tab_list_at(&self, col: u16, row: u16) -> Option<usize> {
         let regions = &self.last_hits.regions;
         let from = if self.modal != Modal::None {
@@ -680,13 +617,10 @@ impl App {
             .map(|&(s, _, _)| s)
     }
 
-    /// Pass a mouse event to the claude in pane `i` if it asked for mouse
-    /// reporting. Returns true when forwarded.
     fn forward_mouse(&mut self, i: usize, m: &MouseEvent) -> bool {
         self.forward_mouse_n(i, m, 1)
     }
 
-    /// The same, `n` times in one write (a burst of wheel events).
     fn forward_mouse_n(&mut self, i: usize, m: &MouseEvent, n: usize) -> bool {
         let Some(term) = self.term_rects.get(i).copied() else {
             return false;
@@ -784,7 +718,6 @@ impl App {
         self.on_command(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
 
-    /// Buttons and fields of the New Tab dialog.
     pub fn picker_click(&mut self, p: crate::hits::PickerUi) {
         use crate::hits::PickerUi;
         use crate::picker::Mode;
@@ -847,14 +780,10 @@ impl App {
         }
     }
 
-    /// Scroll a pane's tab list.
-    /// By rows of the list as drawn (headers, pinned, the sort and the
-    /// search included), from the window on screen, within its ends.
     pub fn scroll_tabs(&mut self, s: usize, d: isize) {
         if let Some(slot) = self.panes.get_mut(s) {
             let (first, max) = slot.list_window.get();
             if max == 0 {
-                // Everything fits: nothing to scroll, keep following.
                 return;
             }
             let base = if slot.sidebar_scroll == crate::slot::FOLLOW {
@@ -868,7 +797,6 @@ impl App {
         }
     }
 
-    /// Entries of a pane's account menu: (label, action).
     pub fn account_menu_entries(&self, slot: usize) -> Vec<(String, UiAction)> {
         let mut v = vec![];
         for (i, a) in self.cfg.accounts.iter().enumerate() {
@@ -915,7 +843,7 @@ impl App {
                 v.push(("  Close this pane".into(), UiAction::ClosePane(slot)));
             }
         }
-        // Move the pane: neighbours, or straight to a slot.
+
         let vis = self.visible_panes();
         if vis.len() > 1 && !self.panes[slot].hidden {
             for (l, c) in [("←", 0u8), ("→", 1), ("↑", 2), ("↓", 3)] {
@@ -996,16 +924,14 @@ impl App {
         v
     }
 
-    /// Run a clicked action.
     pub fn click(&mut self, action: UiAction, double: bool, m: &MouseEvent) {
-        // A click anywhere else gives the keys back from a tab search.
         if !matches!(
             action,
             UiAction::TabSearch(_) | UiAction::TabSearchClear(_) | UiAction::SelectTab(..)
         ) {
             self.tab_search = None;
         }
-        // A click outside a loops drawer gives the keys back to the tab.
+
         if !matches!(
             action,
             UiAction::LoopsDrawer(_)
@@ -1015,8 +941,7 @@ impl App {
         ) {
             self.loops_drawer_focus = None;
         }
-        // The section keeps the keys only after a click in it (or on
-        // its card).
+
         let card = matches!(self.modal, Modal::SchedCard(_));
         self.sched_ui.focus = (matches!(
             action,
@@ -1029,10 +954,8 @@ impl App {
         ) || (card && action == UiAction::ModalCancel))
             && self.sched_open;
         match action {
-            // The button of the view on screen toggles back home.
             UiAction::Key(c) if self.active_menu_key() == Some(c) => self.go_home(),
             UiAction::Key(c) => {
-                // Buttons in popups (help, account menu) close them first.
                 if matches!(self.modal, Modal::Help | Modal::AccountMenu(..)) {
                     self.modal = Modal::None;
                 }
@@ -1041,7 +964,7 @@ impl App {
             UiAction::FocusPane(i) => {
                 self.focus = i;
                 self.view = View::Grid;
-                // A click in a pane gives it the keys.
+
                 self.assistant.focused = false;
             }
             UiAction::AssistantFocus => self.assistant.focused = true,
@@ -1221,7 +1144,6 @@ impl App {
             UiAction::UpdatesLater => self.updates_later(),
             UiAction::UpdatesPage => self.updates_release_page(),
             UiAction::AssistantAnswer(yes) => {
-                // Its own question (moving to another account) is answered here.
                 if self.pending_confirms.is_empty() && self.answer_self_switch(yes) {
                     return;
                 }
@@ -1564,7 +1486,7 @@ impl App {
                 self.jump_to(s, t);
             }
             UiAction::Row(list, i) => self.click_row(list, i, double),
-            // off -> push to talk -> wake word -> open mic -> off
+
             UiAction::VoiceCycle => {
                 if self.voice.engine.is_none() {
                     self.start_voice(false);
@@ -1579,7 +1501,6 @@ impl App {
                 }
             }
             UiAction::VoiceMenu => {
-                // From the status bar chip: hang the menu from it.
                 let at = self.mouse_pos;
                 self.modal = Modal::Menu(crate::menus::Open::new(crate::menus::MenuId::Voice, at));
             }
@@ -1777,8 +1698,7 @@ impl App {
             }
             List::Overview => {
                 self.sel_overview = i;
-                // Double click: move the tab to another account (Enter
-                // still jumps to it).
+
                 if double {
                     if let Some(&(s, t)) = self.overview_rows().get(i) {
                         self.open_move_picker(s, t, false);
@@ -1841,7 +1761,7 @@ impl App {
             List::AccountMenu => {
                 if let Modal::AccountMenu(slot, _) = self.modal {
                     self.modal = Modal::AccountMenu(slot, i);
-                    // Menus act on a single click.
+
                     if let Some((_, a)) = self.account_menu_entries(slot).get(i).cloned() {
                         let m = MouseEvent {
                             kind: MouseEventKind::Down(MouseButton::Left),
@@ -1857,7 +1777,6 @@ impl App {
         }
     }
 
-    /// [OK] in a dialog: the same as Enter.
     pub fn modal_ok(&mut self) {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         match &self.modal {
@@ -1904,14 +1823,12 @@ impl App {
         let _ = std::fs::write(crate::config::app_home().join("tour_done"), "1");
     }
 
-    /// Show the tour on the very first launch.
     pub fn maybe_start_tour(&mut self) {
         if !crate::config::app_home().join("tour_done").exists() && self.modal == Modal::None {
             self.modal = Modal::Tour(0);
         }
     }
 
-    /// Log a slot's account out (`claude auth logout` in its config dir).
     pub fn logout_account(&mut self, a: usize) {
         let acfg = self.cfg.accounts[a].clone();
         let dir = acfg.config_dir();
@@ -1996,7 +1913,7 @@ mod tests {
             encode_mouse_as(&up, 0, 0, E::Default).unwrap(),
             b"\x1b[M#!!"
         );
-        // Past column 222 the classic encoding has no byte; UTF-8 does.
+
         assert!(encode_mouse_as(&m, 230, 0, E::Default).is_none());
         let u = encode_mouse_as(&m, 230, 0, E::Utf8).unwrap();
         assert_eq!(u, "\x1b[M`\u{107}!".as_bytes());
@@ -2005,10 +1922,9 @@ mod tests {
     #[test]
     fn wheel_input_follows_the_apps_modes() {
         let mut p = vt100::Parser::new(10, 40, 0);
-        // The main screen, no reports: the terminal's own history.
+
         assert!(wheel_input(p.screen(), true, 3, 1, 1).is_none());
-        // Reports in SGR (Claude Code's fullscreen view): one per notch,
-        // at the cell given, clamped to the screen.
+
         p.process(b"\x1b[?1049h\x1b[?1003h\x1b[?1006h");
         assert_eq!(
             wheel_input(p.screen(), true, 2, 4, 2).unwrap(),
@@ -2018,14 +1934,13 @@ mod tests {
             wheel_input(p.screen(), false, 1, 99, 99).unwrap(),
             b"\x1b[<65;40;10M"
         );
-        // The classic encoding when 1006 is off.
+
         p.process(b"\x1b[?1006l");
         assert_eq!(
             wheel_input(p.screen(), true, 1, 0, 0).unwrap(),
             b"\x1b[M`!!"
         );
-        // No reports on the alternate screen: arrow keys (application
-        // cursor mode too).
+
         p.process(b"\x1b[?1003l\x1b[?1h");
         assert_eq!(
             wheel_input(p.screen(), false, 2, 0, 0).unwrap(),

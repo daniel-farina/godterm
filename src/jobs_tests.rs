@@ -1,11 +1,3 @@
-//! GodTerm's own jobs end to end (jobs.rs, app_jobs.rs): the scheduler
-//! firing with an injected clock, missed runs and their policy, a target
-//! that was closed or archived woken first, busy tabs, failures said, the
-//! assistant's tools and their confirmation flow, archiving a tab that
-//! owns jobs, the Loops & schedules section (render, collapse, hit
-//! tests), and how GodTerm starts (panel open, mic off unless it was on).
-//! Nothing real runs: tabs are stubs and homes are test homes.
-
 use crate::app::App;
 use crate::app_jobs::{SchedKind, OP_ADOPT, OP_DELETE, OP_PAUSE, OP_RUN};
 use crate::config::testing::LOCK as ENV_LOCK;
@@ -19,7 +11,6 @@ use serde_json::{json, Value};
 
 const T0: i64 = 1_800_000_000;
 
-/// A running, idle tab on pane `s` with a session; returns its index.
 pub(crate) fn running(app: &mut App, s: usize, name: &str, sid: &str) -> usize {
     let dir = app.cfg.accounts[app.panes[s].account.unwrap()].work_dir();
     let t = app.panes[s].add_tab(dir);
@@ -89,11 +80,11 @@ fn the_scheduler_fires_a_due_job_with_an_injected_clock() {
     let t = running(&mut app, 0, "billing", "sess-b");
     let uid = app.panes[0].tabs[t].uid;
     let id = add(&mut app, 0, t, "status", "status of the build?", 15);
-    // Not due yet.
+
     app.job_clock = Some(T0 + 14 * 60);
     app.jobs_tick();
     assert!(deliveries_for(&app, "status of the build?").is_empty());
-    // Due: delivered to that tab, through the ordinary deliveries.
+
     app.job_clock = Some(T0 + 15 * 60 + 2);
     app.jobs_tick();
     let d = deliveries_for(&app, "status of the build?");
@@ -108,10 +99,10 @@ fn the_scheduler_fires_a_due_job_with_an_injected_clock() {
         Some(T0 + 30 * 60),
         "the rhythm, not the lateness"
     );
-    // Persisted: a fresh load sees the run.
+
     let on_disk = crate::jobs::Store::load();
     assert_eq!(on_disk.find(&id).unwrap().runs, 1);
-    // Not again before the next time.
+
     app.job_clock = Some(T0 + 20 * 60);
     app.jobs_tick();
     assert_eq!(deliveries_for(&app, "status of the build?").len(), 1);
@@ -139,7 +130,7 @@ fn a_busy_tab_gets_it_queued_after_its_work() {
     );
     let r = app.jobs.find(&id).unwrap().last_result.clone().unwrap();
     assert!(r.detail.contains("queued after"), "{}", r.detail);
-    // A second period passes with the first still waiting: no pile up.
+
     app.job_clock = Some(T0 + 10 * 60);
     app.jobs_tick();
     assert_eq!(deliveries_for(&app, "how far along?").len(), 1);
@@ -157,7 +148,7 @@ fn missed_runs_follow_the_catch_up_policy() {
     let once = add(&mut app, 0, t, "once", "run once please", 60);
     let skip = add(&mut app, 0, t, "skip", "skip me", 60);
     app.jobs.find_mut(&skip).unwrap().catch_up = CatchUp::Skip;
-    // GodTerm was off for ten hours.
+
     app.job_clock = Some(T0 + 10 * 3600 + 30);
     app.jobs_tick();
     assert_eq!(
@@ -181,7 +172,7 @@ fn missed_runs_follow_the_catch_up_policy() {
     assert_eq!(s.runs, 0);
     assert_eq!(s.next_run, Some(T0 + 11 * 3600), "back on its rhythm");
     assert_eq!(o.next_run, s.next_run);
-    // The skip was said to the assistant.
+
     assert!(app
         .assistant
         .log
@@ -198,7 +189,7 @@ fn a_job_survives_a_restart_and_catches_up_on_the_first_tick() {
     add(&mut app, 0, t, "daily", "daily report", 1440);
     app.jobs.save().unwrap();
     drop(app);
-    // A new process: the store is read from disk; two days later.
+
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut cfg = crate::config::Config::default();
     cfg.claude_bin = Some(crate::test_stub::true_bin());
@@ -206,7 +197,7 @@ fn a_job_survives_a_restart_and_catches_up_on_the_first_tick() {
     assert_eq!(next.jobs.jobs.len(), 1);
     next.job_clock = Some(T0 + 2 * 86_400 + 50);
     next.jobs_tick();
-    // The tab is not open any more: it was woken (reopened on its session).
+
     assert_eq!(
         next.deliveries
             .iter()
@@ -243,7 +234,7 @@ fn a_closed_target_is_reopened_on_its_session_then_the_prompt_is_delivered() {
     assert_eq!((app.focus, app.view), shown, "the screen was not taken");
     let r = app.jobs.find(&id).unwrap().last_result.clone().unwrap();
     assert!(r.detail.contains("reopened"), "{}", r.detail);
-    // The target follows the new tab.
+
     assert_eq!(app.jobs.find(&id).unwrap().target.uid, Some(d[0].1));
     let _ = std::fs::remove_dir_all(home);
 }
@@ -254,7 +245,7 @@ fn an_archived_target_is_restored_from_the_archive_then_delivered() {
     let (mut app, home) = setup("jobs-archived");
     let t = running(&mut app, 0, "old", "sess-old");
     let id = add(&mut app, 0, t, "weekly", "weekly summary", 60);
-    // Archiving keeps the job and says it will wake the tab.
+
     let uid = app.panes[0].tabs[t].uid;
     let note = app.jobs_wake_note(uid).unwrap();
     assert!(
@@ -289,7 +280,7 @@ fn an_archived_target_is_restored_from_the_archive_then_delivered() {
 fn a_run_that_cannot_open_its_tab_is_a_failed_receipt_that_is_said() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = setup("jobs-fail");
-    // A target with no session and no tab: nothing to resume.
+
     let mut j = job_for(&app, 0, 0, "lost", "hello?", 5);
     j.target = Target {
         uid: Some(99_999),
@@ -310,7 +301,7 @@ fn a_run_that_cannot_open_its_tab_is_a_failed_receipt_that_is_said() {
         .log
         .iter()
         .any(|e| e.text.contains("\"lost\"") && e.text.contains("failed")));
-    // It runs again at its next time; a dropped delivery fails the run too.
+
     let t = running(&mut app, 0, "x", "sess-x");
     let j2 = add(&mut app, 0, t, "drops", "will drop", 5);
     app.job_clock = Some(T0 + 10 * 60);
@@ -368,7 +359,7 @@ fn a_one_time_job_runs_once_and_an_end_date_is_said() {
     app.jobs_tick();
     assert_eq!(deliveries_for(&app, "just once").len(), 1);
     assert!(!app.jobs.find(&once).unwrap().active());
-    // Two days and 20 hours in: the warning, once.
+
     app.job_clock = Some(T0 + 3 * 86_400 - 4 * 3600);
     app.jobs_tick();
     let warned = |app: &App| {
@@ -382,7 +373,7 @@ fn a_one_time_job_runs_once_and_an_end_date_is_said() {
     app.job_clock = Some(T0 + 3 * 86_400 - 3 * 3600);
     app.jobs_tick();
     assert_eq!(warned(&app), 1, "once");
-    // Past the end: stopped and said, not silently dropped.
+
     app.job_clock = Some(T0 + 3 * 86_400 + 5);
     app.jobs_tick();
     let j = app.jobs.find(&ends).unwrap();
@@ -395,13 +386,10 @@ fn a_one_time_job_runs_once_and_an_end_date_is_said() {
     let _ = std::fs::remove_dir_all(home);
 }
 
-// ---- the assistant's tools ----
-
 fn call(app: &mut App, tool: &str, args: Value) -> Value {
     app.control_call(tool, &args)
 }
 
-/// The user's yes in a later turn.
 fn yes(app: &mut App) {
     app.assistant_turn += 1;
     app.assistant.last_user = "yes".into();
@@ -413,7 +401,7 @@ fn create_job_asks_once_then_creates_and_the_state_lists_it() {
     let (mut app, home) = setup("jobs-create");
     let t = running(&mut app, 0, "billing", "sess-b");
     let tid = crate::control::tab_id(app.panes[0].tabs[t].uid);
-    // Needs a tab, a prompt and a schedule.
+
     let v = call(
         &mut app,
         "create_job",
@@ -454,9 +442,9 @@ fn create_job_asks_once_then_creates_and_the_state_lists_it() {
         .as_str()
         .unwrap()
         .contains("survives restarts"));
-    // Persisted.
+
     assert_eq!(crate::jobs::Store::load().jobs.len(), 1);
-    // get_state has the summary; list_jobs the detail.
+
     let st = call(&mut app, "get_state", json!({}));
     assert_eq!(st["result"]["jobs"]["count"], json!(1), "{st}");
     assert_eq!(
@@ -483,11 +471,11 @@ fn update_pause_needs_no_question_but_changing_the_prompt_does() {
     );
     assert_eq!(v["ok"], json!(true), "{v}");
     assert!(!app.jobs.find(&id).unwrap().enabled);
-    // Paused jobs do not fire.
+
     app.job_clock = Some(T0 + 3600);
     app.jobs_tick();
     assert!(deliveries_for(&app, "old prompt").is_empty());
-    // Resume: the next regular time, nothing missed while paused.
+
     let v = call(
         &mut app,
         "update_job",
@@ -495,7 +483,7 @@ fn update_pause_needs_no_question_but_changing_the_prompt_does() {
     );
     assert_eq!(v["ok"], json!(true), "{v}");
     assert_eq!(app.jobs.find(&id).unwrap().next_run, Some(T0 + 3600 + 600));
-    // A new prompt asks.
+
     let v = call(
         &mut app,
         "update_job",
@@ -508,7 +496,7 @@ fn update_pause_needs_no_question_but_changing_the_prompt_does() {
     let v = call(&mut app, "update_job", json!({"confirm_token": tok}));
     assert_eq!(v["ok"], json!(true), "{v}");
     assert_eq!(app.jobs.find(&id).unwrap().prompt, "new prompt");
-    // A new schedule too; "nothing to change" is an error.
+
     let v = call(
         &mut app,
         "update_job",
@@ -596,7 +584,7 @@ fn adopt_loop_turns_a_session_loop_into_a_job_and_cancels_the_original() {
         session_loop("e0e3839a", "*/15 * * * *", "continue the map"),
     );
     app.loops = vec![row];
-    // list_jobs shows it as a session loop that dies with its session.
+
     let l = call(&mut app, "list_jobs", json!({}));
     let sl = &l["result"]["session_loops"][0];
     assert_eq!(sl["kind"], json!("session"), "{l}");
@@ -617,12 +605,12 @@ fn adopt_loop_turns_a_session_loop_into_a_job_and_cancels_the_original() {
     assert_eq!(j.prompt, "continue the map");
     assert_eq!(j.adopted_from.as_deref(), Some("e0e3839a"));
     assert_eq!(j.target.session_id.as_deref(), Some("sess-b"));
-    // The tab is asked to cancel its own loop.
+
     assert!(app
         .stop_reqs
         .iter()
         .any(|q| q.ids == vec!["e0e3839a".to_string()]));
-    // A dynamic loop has no schedule of its own.
+
     let mut wake = session_loop("w1", "", "keep going");
     wake.kind = Kind::Wakeup;
     wake.cron = None;
@@ -669,8 +657,6 @@ fn archive_tabs_says_the_jobs_will_wake_the_tab() {
     assert_eq!(app.jobs.jobs.len(), 1);
     let _ = std::fs::remove_dir_all(home);
 }
-
-// ---- the section ----
 
 pub(crate) fn screen(t: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
     let b = t.backend().buffer();
@@ -726,13 +712,12 @@ fn the_section_lists_managed_session_and_durable_rows_open_by_default() {
         "session",
         "durable",
         "morning status",
-        // The name is what gets cut first on a narrow panel.
         "continue the",
         "every 15 minutes",
     ] {
         assert!(s.contains(want), "{want} is shown:\n{s}");
     }
-    // It sits above the conversation: the header row is above the composer.
+
     let head = s
         .lines()
         .position(|l| l.contains("Loops & schedules"))
@@ -770,7 +755,7 @@ fn collapsing_hides_the_rows_and_is_kept_in_the_state() {
     let s = screen(&t);
     assert!(s.contains("▸ Loops & schedules"), "{s}");
     assert!(!s.contains("continue the"), "{s}");
-    // Saved with the state, and a fresh app comes back collapsed.
+
     let st = app.snapshot_state();
     assert!(st.sched_collapsed);
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -778,7 +763,7 @@ fn collapsing_hides_the_rows_and_is_kept_in_the_state() {
     assert!(next.sched_open);
     next.restore(st);
     assert!(!next.sched_open);
-    // Open again: the default state serializes to nothing.
+
     click(&mut app, &UiAction::SchedToggle);
     assert!(app.sched_open && !app.snapshot_state().sched_collapsed);
     let _ = std::fs::remove_dir_all(home);
@@ -811,11 +796,11 @@ fn clicking_a_row_jumps_to_its_tab_and_the_buttons_act() {
         "Open tab jumped to the job's tab"
     );
     assert_eq!(app.modal, crate::app::Modal::None);
-    // Run now: a delivery to that tab.
+
     draw(&mut app, &mut t);
     click(&mut app, &UiAction::SchedAct(id.clone(), OP_RUN));
     assert_eq!(deliveries_for(&app, "status of billing?").len(), 1);
-    // Pause, then resume.
+
     draw(&mut app, &mut t);
     click(&mut app, &UiAction::SchedAct(id.clone(), OP_PAUSE));
     assert!(!app.jobs.find(&id).unwrap().enabled);
@@ -823,15 +808,14 @@ fn clicking_a_row_jumps_to_its_tab_and_the_buttons_act() {
     assert!(screen(&t).contains("paused"));
     click(&mut app, &UiAction::SchedAct(id.clone(), OP_PAUSE));
     assert!(app.jobs.find(&id).unwrap().enabled);
-    // Delete takes two clicks.
+
     draw(&mut app, &mut t);
     click(&mut app, &UiAction::SchedAct(id.clone(), OP_DELETE));
     assert!(app.jobs.find(&id).is_some());
     draw(&mut app, &mut t);
     click(&mut app, &UiAction::SchedAct(id.clone(), OP_DELETE));
     assert!(app.jobs.find(&id).is_none());
-    // A session loop has no bare adopt button: its card's Manage with
-    // GodTerm makes it a job.
+
     draw(&mut app, &mut t);
     let key = format!("{}:e0e3839a", app.panes[0].tabs[billing].uid);
     assert!(find(&app, &UiAction::SchedAct(key.clone(), OP_ADOPT)).is_none());
@@ -876,7 +860,7 @@ fn many_rows_fill_the_panel_height_and_a_small_screen_still_fits() {
             10 + k,
         );
     }
-    // A tall panel shows them all: one tab header and its nine rows.
+
     let mut tm = term();
     draw(&mut app, &mut tm);
     let s = screen(&tm);
@@ -886,17 +870,17 @@ fn many_rows_fill_the_panel_height_and_a_small_screen_still_fits() {
         !s.contains(" of 10"),
         "no scroll indicator when all fit:\n{s}"
     );
-    // 80x24, docked: the section keeps the composer and some chat.
+
     let mut small = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
     small.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let s = screen(&small);
     assert!(s.contains("Loops & schedules"), "{s}");
     assert!(find(&app, &UiAction::AssistantAnswer(true)).is_none());
-    // Overlay mode works the same.
+
     app.cfg.assistant.panel = "overlay".into();
     small.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     assert!(screen(&small).contains("Loops & schedules"));
-    // A very short screen drops it before the composer.
+
     let mut tiny = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 12)).unwrap();
     tiny.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     assert!(find(&app, &UiAction::AssistantFocus).is_some());
@@ -911,7 +895,7 @@ fn a_prompt_is_not_sent_into_a_question_dialog() {
     add(&mut app, 0, t, "check", "run the check", 5);
     app.job_clock = Some(T0 + 5 * 60);
     app.jobs_tick();
-    // The paste is in; then a question opens: Enter would answer it.
+
     let screen = std::fs::read_to_string(format!(
         "{}/tests/fixtures/screens/ask_question.txt",
         env!("CARGO_MANIFEST_DIR")

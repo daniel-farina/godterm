@@ -1,26 +1,16 @@
-//! Near field gating: the user talks close to the mic; a phone call on
-//! speaker or a TV across the room is much quieter and duller (distance
-//! and narrowband phone audio take the highs away, reverb smears them).
-//! An utterance far under the user's usual level that also has much less
-//! high frequency energy than the user's voice is dropped.
-
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 use super::speaker_fbank::{Fbank, NUM_BINS};
 
-/// How an utterance sounds: speech level and brightness.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Acoustic {
-    /// Mean level of the speech frames (dBFS).
     pub level_db: f32,
-    /// Energy over 3.4 kHz relative to 300 Hz to 3.4 kHz, over the speech
-    /// frames (dB; lower is duller).
+
     pub hf_db: f32,
 }
 
 fn bin_hz(b: usize) -> f32 {
-    // Bin centers of the 80 bin mel bank (20 Hz to 7.6 kHz).
     let mel = |f: f32| 1127.0 * (1.0 + f / 700.0).ln();
     let (lo, hi) = (mel(20.0), mel(7_600.0));
     let m = lo + (b + 1) as f32 * (hi - lo) / (NUM_BINS + 1) as f32;
@@ -60,19 +50,16 @@ impl Acoustic {
     }
 }
 
-/// The user's reference level and brightness: enrollment clips plus the
-/// most recent accepted utterances.
 #[derive(Debug, Clone, Default)]
 pub struct NearField {
     enrolled: Vec<Acoustic>,
     recent: VecDeque<Acoustic>,
 }
 
-/// How much duller than the user counts as distant (dB of HF ratio).
 pub const DULL_DB: f32 = 6.0;
-/// This much under the quiet bar is rejected even when bright.
+
 pub const VERY_QUIET_EXTRA_DB: f32 = 10.0;
-/// References needed before the gate does anything.
+
 pub const MIN_REFS: usize = 3;
 
 fn median(mut v: Vec<f32>) -> Option<f32> {
@@ -91,7 +78,6 @@ impl NearField {
         }
     }
 
-    /// Remember an accepted utterance (the last 20).
     pub fn accept(&mut self, a: Acoustic) {
         self.recent.push_back(a);
         while self.recent.len() > 20 {
@@ -107,7 +93,6 @@ impl NearField {
             .collect()
     }
 
-    /// (median level, median brightness) of the user, once known.
     pub fn reference(&self) -> Option<(f32, f32)> {
         let r = self.refs();
         if r.len() < MIN_REFS {
@@ -119,9 +104,6 @@ impl NearField {
         ))
     }
 
-    /// Why this utterance sounds like someone far away, if it does:
-    /// more than `quiet_db` under the user's median level and duller than
-    /// the user, or quieter still regardless of brightness.
     pub fn check(&self, a: Acoustic, quiet_db: f32) -> Option<String> {
         let (level, hf) = self.reference()?;
         let under = level - a.level_db;
@@ -148,26 +130,25 @@ mod tests {
 
     #[test]
     fn level_gate() {
-        // Nothing known yet: never rejects.
         let g = NearField::new(vec![a(-22.0, -12.0)]);
         assert_eq!(g.check(a(-70.0, -40.0), 12.0), None);
         let mut g = NearField::new(vec![a(-22.0, -12.0), a(-24.0, -13.0), a(-21.0, -11.0)]);
         assert_eq!(g.reference(), Some((-22.0, -12.0)));
-        // The user, a bit quieter: fine.
+
         assert_eq!(g.check(a(-28.0, -14.0), 12.0), None);
-        // Much quieter but just as bright (the user leaning back): fine.
+
         assert_eq!(g.check(a(-37.0, -12.0), 12.0), None);
-        // Much quieter and duller: a speakerphone across the room.
+
         let why = g.check(a(-38.0, -25.0), 12.0).expect("rejected");
         assert!(
             why.contains("16 dB under") && why.contains("duller"),
             "{why}"
         );
-        // Very quiet: rejected even when bright.
+
         assert!(g.check(a(-46.0, -12.0), 12.0).is_some());
-        // A looser setting lets it through.
+
         assert_eq!(g.check(a(-38.0, -25.0), 20.0), None);
-        // Accepted utterances move the reference.
+
         for _ in 0..10 {
             g.accept(a(-36.0, -24.0));
         }
@@ -177,7 +158,7 @@ mod tests {
     #[test]
     fn acoustics_of_bright_and_dull_audio() {
         let fb = Fbank::new();
-        // White-ish noise (bright) vs the same noise low passed (dull).
+
         let mut seed = 12345u32;
         let noise: Vec<i16> = (0..32_000)
             .map(|_| {
@@ -185,7 +166,7 @@ mod tests {
                 ((seed >> 16) as i16 as f32 * 0.3) as i16
             })
             .collect();
-        // Three one pole low passes around 500 Hz (18 dB per octave).
+
         let mut x: Vec<f32> = noise.iter().map(|s| *s as f32).collect();
         for _ in 0..3 {
             let mut y = 0f32;

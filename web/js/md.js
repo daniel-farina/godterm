@@ -1,9 +1,3 @@
-// A small, safe markdown renderer for the chat: fences (with a language
-// label and a Copy button the chat wires up), headings, nested lists and
-// task lists, tables, quotes, rules, paragraphs, inline code, bold,
-// italic, strikethrough, images and links (http(s) only, opened in a new
-// tab). Input is escaped first; nothing of the source reaches the page
-// as HTML.
 import { esc } from './util.js';
 
 const trimPunct = (u) => { const t = u.match(/[.,;:!?)]+$/); return t ? [u.slice(0, -t[0].length), t[0]] : [u, '']; };
@@ -22,14 +16,11 @@ function inline(s) {
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${esc(codes[i])}</code>`);
 }
 
-// A fenced block: the language as a label, Copy (chat.js handles the
-// click), the code as typed.
 function fenceHtml(lang, body) {
   const l = (lang || '').toLowerCase().slice(0, 20);
   return `<div class="cb"><div class="cb-h"><span class="cb-l">${esc(l)}</span><button type="button" class="cb-copy" aria-label="Copy the code">Copy</button></div><pre><code${l ? ` class="lang-${esc(l)}"` : ''}>${esc(body)}</code></pre></div>`;
 }
 
-// List lines ({indent, t, text}) as nested lists by their indentation.
 function listHtml(items) {
   let out = '';
   const stack = [];

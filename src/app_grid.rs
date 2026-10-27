@@ -1,11 +1,3 @@
-//! Which accounts the grid shows, and how: closing an account takes it
-//! out of the grid (it stays configured and logged in, its tabs keep
-//! running), opening brings it back in place, collapsing folds its pane
-//! to a one row strip (its siblings take the space), and any split of the
-//! panes is a layout. All of it by voice (close_accounts, open_accounts,
-//! collapse_accounts, expand_accounts, set_layout), from the View menu,
-//! and saved in config.toml.
-
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -20,8 +12,6 @@ impl App {
             .is_some_and(|x| self.cfg.closed_accounts.contains(&x.name))
     }
 
-    /// Accounts named by a flexible target: a number, a label, a list,
-    /// "all", or a harness ("grok", "grok accounts", "claude").
     pub fn grid_targets(&self, v: &Value) -> Result<Vec<usize>, String> {
         let n = self.cfg.accounts.len();
         let one = |x: &Value| -> Result<Vec<usize>, String> {
@@ -66,8 +56,6 @@ impl App {
         Ok(out)
     }
 
-    /// Accounts by where their panes are on screen: "top two", "the
-    /// bottom row", "left", "right pane", "the top 3".
     fn accounts_at(&self, s: &str) -> Option<Vec<usize>> {
         let low = s.to_lowercase();
         let words: Vec<&str> = low
@@ -81,7 +69,7 @@ impl App {
             "right" | "rightmost" => Some(3),
             _ => None,
         })?;
-        // Only position words, a count and filler: "top two ones".
+
         const FILL: &[&str] = &[
             "the",
             "top",
@@ -197,8 +185,6 @@ impl App {
         self.account_fold(a) != Fold::Open
     }
 
-    /// Which way an account's pane is collapsed (sideways wins if a hand
-    /// edited config names it in both lists).
     pub fn account_fold(&self, a: usize) -> Fold {
         let Some(x) = self.cfg.accounts.get(a) else {
             return Fold::Open;
@@ -212,8 +198,6 @@ impl App {
         }
     }
 
-    /// How pane `p` is drawn: open, a row strip or a column strip (open
-    /// while zoomed).
     pub fn pane_fold(&self, p: usize) -> Fold {
         if self.zoom {
             return Fold::Open;
@@ -225,7 +209,6 @@ impl App {
             .unwrap_or(Fold::Open)
     }
 
-    /// Pane `p` is drawn as a collapsed strip (not while zoomed).
     pub fn pane_folded(&self, p: usize) -> bool {
         self.pane_fold(p) != Fold::Open
     }
@@ -249,9 +232,6 @@ impl App {
         self.state_dirty = true;
     }
 
-    /// Fold accounts' panes to a one row strip (Fold::Row) or sideways to
-    /// a column strip (Fold::Col); their siblings take the space. Nothing
-    /// stops; their PTYs keep their size.
     pub fn collapse_accounts_dir(&mut self, accts: &[usize], dir: Fold) -> String {
         let mut done = vec![];
         for &a in accts {
@@ -317,14 +297,10 @@ impl App {
         format!("Expanded {}.", self.names_of(&had))
     }
 
-    /// The header's minimize, a row strip's restore, Ctrl-a _: collapse
-    /// the pane to a row strip or expand it.
     pub fn toggle_fold_pane(&mut self, p: usize) {
         self.toggle_fold_dir(p, Fold::Row);
     }
 
-    /// The header's caret, a column strip, Ctrl-a backslash: collapse the
-    /// pane sideways or expand it.
     pub fn toggle_fold_sideways(&mut self, p: usize) {
         self.toggle_fold_dir(p, Fold::Col);
     }
@@ -334,7 +310,7 @@ impl App {
             self.flash("This pane has no account to collapse");
             return;
         };
-        // A strip of either kind expands from either control.
+
         let say = if self.account_collapsed(a) {
             self.focus = p;
             self.expand_accounts(&[a])
@@ -344,8 +320,6 @@ impl App {
         self.flash(say);
     }
 
-    /// After focus moved by keys or the assistant: expand a collapsed pane
-    /// when the setting asks for it.
     pub fn expand_on_focus(&mut self, before: usize) {
         if self.focus == before || !self.cfg.expand_collapsed_on_focus {
             return;
@@ -357,7 +331,6 @@ impl App {
         }
     }
 
-    /// Close accounts in the grid (not a logout; nothing stops).
     pub fn close_accounts(&mut self, accts: &[usize]) -> String {
         let mut done = vec![];
         for &a in accts {
@@ -403,7 +376,6 @@ impl App {
         )
     }
 
-    /// Open accounts again (in place). `only`: close every other one.
     pub fn open_accounts(&mut self, accts: &[usize], only: bool) -> String {
         let names: Vec<String> = accts
             .iter()
@@ -420,15 +392,14 @@ impl App {
         } else {
             self.cfg.closed_accounts.retain(|n| !names.contains(n));
         }
-        // A pane hidden from the layout (Hide pane, or closing its last
-        // tab with the header's x) is opened too: open means on screen.
+
         for p in self.panes.iter_mut() {
             if p.hidden && p.account.is_some_and(|a| accts.contains(&a)) {
                 p.hidden = false;
                 self.state_dirty = true;
             }
         }
-        // An account without a pane gets one.
+
         for &a in accts {
             if !self.panes.iter().any(|p| p.account == Some(a)) {
                 self.panes.push(crate::slot::Slot::new(
@@ -460,7 +431,6 @@ impl App {
         }
     }
 
-    /// The custom layout, if one is set and valid.
     pub fn layout_tree(&self) -> Option<Node> {
         if self.cfg.layout_tree.trim().is_empty() {
             return None;
@@ -469,8 +439,6 @@ impl App {
         grid_layout::parse(&v, &|x| self.account_arg(x).ok()).ok()
     }
 
-    /// set_layout: a mode name ("auto", "grid" with "3x2", "columns",
-    /// "rows", "focus") or a split tree.
     pub fn apply_layout(
         &mut self,
         mode: Option<&str>,
@@ -491,7 +459,7 @@ impl App {
             self.rt_layout = Some("custom".into());
             self.state_dirty = true;
             self.view = crate::app::View::Grid;
-            // Accounts it names are opened.
+
             let mut named = vec![];
             fn walk(n: &Node, out: &mut Vec<usize>) {
                 match n {
@@ -535,7 +503,6 @@ impl App {
         ))
     }
 
-    /// The grid line for the assistant's state block.
     pub fn grid_state_line(&self) -> String {
         let open: Vec<String> = (0..self.cfg.accounts.len())
             .filter(|a| !self.account_closed(*a))
@@ -562,8 +529,6 @@ impl App {
         )
     }
 
-    /// close_accounts / open_accounts / collapse_accounts /
-    /// expand_accounts / set_layout; None for other tools.
     pub fn grid_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         let r = match tool {
             "close_accounts" | "open_accounts" | "collapse_accounts" | "expand_accounts" => {

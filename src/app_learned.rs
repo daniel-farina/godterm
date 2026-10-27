@@ -1,8 +1,3 @@
-//! The learned rules in the app: the brain's tools for them (with the
-//! checks that they come from the user and stay within the safety rules),
-//! refreshing the brain when they change, and the Learned rules view
-//! (Settings > Assistant, View ▾).
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -26,9 +21,9 @@ pub const TOOL_NAMES: &[&str] = &[
 #[derive(Debug, Clone, Default)]
 pub struct LearnedUi {
     pub sel: usize,
-    /// Showing the revision history instead of the rules.
+
     pub history: bool,
-    /// Editing the selected rule's text.
+
     pub edit: Option<String>,
 }
 
@@ -37,7 +32,6 @@ fn ok(v: Value) -> Value {
 }
 
 impl App {
-    /// Run a learned rules tool; None when `tool` is not one of them.
     pub fn learned_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         if !TOOL_NAMES.contains(&tool) {
             return None;
@@ -96,8 +90,6 @@ impl App {
                     Ok(ok(json!({"revisions": revs})))
                 }
                 _ => {
-                    // Changes come from the user's own words, in a turn the
-                    // user started, never from what a tab or file said.
                     self.check_learning_source()?;
                     let by = "assistant";
                     let reason = s("reason").unwrap_or_default();
@@ -171,9 +163,6 @@ impl App {
         Some(r)
     }
 
-    /// A change to the rules must come from the user in this turn: a turn
-    /// they started by speaking or typing, whose words teach something,
-    /// and not one where tab or file contents could have planted it.
     fn check_learning_source(&self) -> Result<(), String> {
         let said = self.assistant.last_user.trim();
         if said.is_empty() || self.assistant.conv.is_none() {
@@ -189,15 +178,11 @@ impl App {
             && !said.to_lowercase().contains("remember")
             && !said.to_lowercase().contains("learn")
         {
-            // Text from tabs or files is in this turn: only an explicit
-            // "remember" / "learn" from the user makes it a rule.
             return Err("refused: this turn read tab or file contents; a rule must come from the user's own words (they can say \"remember that ...\")".into());
         }
         Ok(())
     }
 
-    /// The rules changed: a toast, and the brain picks them up at the next
-    /// turn boundary (its system prompt changes then, not mid turn).
     pub fn learned_changed(&mut self, say: &str) {
         self.assistant.prompt_dirty = true;
         self.assistant.log.push(crate::app_assistant::Entry::new(
@@ -207,8 +192,6 @@ impl App {
         self.flash(format!("Assistant learned: {say}"));
     }
 
-    /// At a turn boundary: restart the brain if its rules changed, keeping
-    /// the conversation (it is carried over like any reset).
     pub fn refresh_brain_for_rules(&mut self) {
         if !self.assistant.prompt_dirty || self.assistant.busy || self.assistant.brain.is_none() {
             return;

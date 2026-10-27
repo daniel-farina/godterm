@@ -1,8 +1,3 @@
-//! Tabs are named by their project or task when GodTerm reports on them:
-//! the name order, the user's own name and the home folder skipped, the
-//! account added only on a clash, and attention notices that never name
-//! only an account and a tab number. Temp folders only.
-
 use std::path::{Path, PathBuf};
 
 use crate::app::App;
@@ -30,7 +25,6 @@ fn tab_in(app: &mut App, slot: usize, dir: &Path, name: Option<&str>) -> u64 {
     tb.uid
 }
 
-/// "Account 2 tab three finished", "Account 1 needs approval".
 fn only_account_and_number(text: &str) -> bool {
     let rest = text
         .trim_end_matches(" finished")
@@ -47,7 +41,7 @@ fn names_come_in_order_tab_name_description_project_task() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("order");
     let mut store = Store::default();
-    // 1. A meaningful tab name wins over everything.
+
     let hyper = home.join("work").join("hyper");
     let a = tab_in(&mut app, 0, &hyper, Some("hyper demo"));
     store
@@ -55,7 +49,7 @@ fn names_come_in_order_tab_name_description_project_task() {
         .aliases
         .push("trading room bot".into());
     assert_eq!(app.tab_base_name(&store, a).unwrap(), "hyper demo");
-    // 2. A generic folder: the saved alias, else the description.
+
     let bot = home.join("bot").join("src");
     let b = tab_in(&mut app, 0, &bot, None);
     store
@@ -74,7 +68,7 @@ fn names_come_in_order_tab_name_description_project_task() {
         app.tab_base_name(&store, c).unwrap(),
         "the billing dashboard for the shop"
     );
-    // 3. Nothing saved: the subproject's name from the project index.
+
     let root = home.join("acme");
     let sub = root.join("packages").join("api").join("src");
     let d = tab_in(&mut app, 0, &sub, None);
@@ -91,7 +85,7 @@ fn names_come_in_order_tab_name_description_project_task() {
         },
     );
     assert_eq!(app.tab_base_name(&store, d).unwrap(), "billing-api");
-    // 4. Nothing about the folder: what the tab was asked to do.
+
     let tmp = home.join("tmp");
     let e = tab_in(&mut app, 0, &tmp, None);
     app.register_follow_up(e, "Fix the login bug on checkout");
@@ -113,7 +107,7 @@ fn the_users_name_and_home_folder_are_not_names() {
     assert!(meaningful("hyper", Some("alice")));
     let (mut app, home) = test_app("home");
     let store = Store::default();
-    // A tab in the home folder, named after it: not "alice".
+
     let t = app.panes[0].add_tab(crate::config::home_dir());
     let uid = app.panes[0].tabs[t].uid;
     let user = crate::config::home_dir()
@@ -124,7 +118,7 @@ fn the_users_name_and_home_folder_are_not_names() {
     let n = app.tab_base_name(&store, uid).unwrap();
     assert_ne!(n, user);
     assert_eq!(n, "a fresh tab");
-    // Its task names it instead.
+
     app.register_follow_up(uid, "Summarize the trading room logs");
     let n = app.tab_base_name(&store, uid).unwrap();
     assert!(n.contains("Summarize the trading room logs"), "{n}");
@@ -181,8 +175,7 @@ fn attention_notices_name_the_project_not_account_and_tab_number() {
         from: Activity::Working,
     });
     app.voice_tick();
-    // Nothing is said by GodTerm itself: both are events for the
-    // assistant, named by project or task.
+
     assert!(
         !app.told.borrow().ring.iter().any(|e| e.kind == "attention"),
         "the announcer says nothing"

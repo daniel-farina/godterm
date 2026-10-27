@@ -1,9 +1,3 @@
-//! The Loops & schedules section's state and its detail card: rows
-//! grouped by tab, scrolled when they do not fit, the keys while the
-//! section has them, and the card a click on a row opens (what the loop
-//! or job is in plain words, who runs it, when, and labeled buttons:
-//! Manage with GodTerm, Run now, Stop, Pause, Delete, Open tab).
-
 use std::cell::Cell;
 use std::collections::HashSet;
 
@@ -19,39 +13,36 @@ use crate::control::tab_id;
 use crate::loops::{describe_cron, Kind, Loop};
 use crate::theme;
 
-/// The section's view state.
 #[derive(Debug, Default)]
 pub struct SchedUi {
-    /// The first line shown.
     pub scroll: usize,
-    /// The selected line (keys).
+
     pub sel: usize,
-    /// The section has the keys (after a click in it).
+
     pub focus: bool,
-    /// Tab groups folded by the user.
+
     pub folded: HashSet<String>,
-    /// As last drawn: (lines shown, lines in all).
+
     pub view: Cell<(usize, usize)>,
-    /// The whole section as last drawn (title row to divider); empty when
-    /// it is not on screen.
+
     pub rect: Cell<ratatui::layout::Rect>,
 }
 
-/// One line of the section's body.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SchedLine {
-    /// A tab with more than one loop or job: "t12 hacker sim · 3 loops".
     Group {
         key: String,
         label: String,
         count: String,
         folded: bool,
     },
-    /// Row `idx` of `sched_rows`, indented under its group header.
-    Row { idx: usize, indent: bool },
+
+    Row {
+        idx: usize,
+        indent: bool,
+    },
 }
 
-/// "2 jobs · 1 loop".
 fn group_count(rows: &[&SchedRow]) -> String {
     let jobs = rows.iter().filter(|r| r.kind == SchedKind::Managed).count();
     let loops = rows.len() - jobs;
@@ -65,8 +56,6 @@ fn group_count(rows: &[&SchedRow]) -> String {
     v.join(" · ")
 }
 
-/// The body's lines: rows grouped by tab (in the order their first row
-/// comes), a header over a tab with more than one, its jobs first.
 pub fn sched_lines(rows: &[SchedRow], folded: &HashSet<String>) -> Vec<SchedLine> {
     let mut order: Vec<&str> = vec![];
     for r in rows {
@@ -103,9 +92,6 @@ pub fn sched_lines(rows: &[SchedRow], folded: &HashSet<String>) -> Vec<SchedLine
     out
 }
 
-/// How many body lines the section shows for `lines` of them: as many as
-/// fit, up to about 40% of the panel (at least 3), within `avail` rows
-/// (header included). Returns (body lines, total height).
 pub fn plan(open: bool, lines: usize, panel_h: u16, avail: u16) -> (usize, u16) {
     if avail == 0 {
         return (0, 0);
@@ -118,12 +104,10 @@ pub fn plan(open: bool, lines: usize, panel_h: u16, avail: u16) -> (usize, u16) 
     (body, 1 + body as u16)
 }
 
-/// The first line to show: never past the end.
 pub fn clamp_scroll(scroll: usize, total: usize, shown: usize) -> usize {
     scroll.min(total.saturating_sub(shown))
 }
 
-/// "3 to 9 of 14" when not every line shows.
 pub fn scroll_words(scroll: usize, total: usize, shown: usize) -> Option<String> {
     (shown > 0 && total > shown).then(|| {
         let s = clamp_scroll(scroll, total, shown);
@@ -131,9 +115,6 @@ pub fn scroll_words(scroll: usize, total: usize, shown: usize) -> Option<String>
     })
 }
 
-// ---- the card ----
-
-/// How a card button looks: the main action, a plain one, a destructive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BtnTone {
     Primary,
@@ -150,28 +131,25 @@ pub struct CardBtn {
     pub tone: BtnTone,
 }
 
-/// Close (Esc): not an op on the row.
 pub const OP_CLOSE: u8 = 9;
 
-/// What the detail card shows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchedCard {
     pub key: String,
     pub kind: SchedKind,
     pub name: String,
-    /// Small colored labels: kind, schedule or loop, paused, failed.
+
     pub badges: Vec<(String, Color)>,
-    /// Exactly what it sends.
+
     pub prompt: String,
-    /// (label, text, color).
+
     pub facts: Vec<(&'static str, String, Color)>,
     pub buttons: Vec<CardBtn>,
-    /// Under the buttons: what Manage with GodTerm does.
+
     pub note: Option<String>,
 }
 
 impl SchedCard {
-    /// Every line of text in it (tests).
     #[cfg(test)]
     pub fn text(&self) -> String {
         let mut v = vec![self.name.clone()];
@@ -193,14 +171,12 @@ pub fn kind_color(k: SchedKind) -> Color {
     }
 }
 
-/// "Thu Oct 15 02:07".
 fn abs_local(t: DateTime<Utc>) -> String {
     t.with_timezone(&Local)
         .format("%a %b %-d %H:%M")
         .to_string()
 }
 
-/// "Thu Oct 15 02:07 (in 3h)".
 fn when(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     format!("{} ({})", abs_local(t), crate::loops::rel(t, now))
 }
@@ -209,7 +185,6 @@ fn ts(t: i64) -> Option<DateTime<Utc>> {
     Utc.timestamp_opt(t, 0).single()
 }
 
-/// "Schedule: cron 7 2,4,6 * * *, i.e. at 2:07, 4:07 and 6:07 every day".
 pub fn cron_words(c: &str, recurring: bool) -> String {
     let d = describe_cron(c);
     let head = if recurring { "Schedule" } else { "One time" };
@@ -222,7 +197,6 @@ pub fn cron_words(c: &str, recurring: bool) -> String {
     }
 }
 
-/// What kind of loop it is, in words.
 pub fn loop_kind_words(l: &Loop) -> String {
     if let Some(e) = &l.every {
         return if l.recurring {
@@ -240,7 +214,6 @@ pub fn loop_kind_words(l: &Loop) -> String {
     }
 }
 
-/// What kind of job it is, in words.
 pub fn job_kind_words(j: &crate::jobs::Job) -> String {
     if let Some(n) = j.every_min {
         return format!("Recurring {}", crate::jobs::every_words(n));
@@ -267,23 +240,18 @@ fn btn(label: &str, op: u8, key: char, hint: &str, tone: BtnTone) -> CardBtn {
 pub const MANAGE_NOTE: &str = "Manage with GodTerm: GodTerm takes it over and stops the copy inside the session, so it keeps running even if the tab closes.";
 
 impl App {
-    // ---- the section ----
-
-    /// The section's lines as they are now.
     pub fn sched_view(&self) -> (Vec<SchedRow>, Vec<SchedLine>) {
         let rows = self.sched_rows();
         let lines = sched_lines(&rows, &self.sched_ui.folded);
         (rows, lines)
     }
 
-    /// The wheel over the section.
     pub fn sched_scroll_by(&mut self, d: isize) {
         let (shown, total) = self.sched_ui.view.get();
         let s = (self.sched_ui.scroll as isize + d).max(0) as usize;
         self.sched_ui.scroll = clamp_scroll(s, total, shown);
     }
 
-    /// Fold or unfold a tab group.
     pub fn sched_toggle_group(&mut self, key: &str) {
         if !self.sched_ui.folded.remove(key) {
             self.sched_ui.folded.insert(key.to_string());
@@ -291,9 +259,6 @@ impl App {
         self.sched_ui.focus = true;
     }
 
-    /// Keys while the section has them: Up / Down select, Page keys
-    /// scroll, Enter opens the card (or folds a group), Esc lets go.
-    /// Anything else gives the keys back (false: not taken).
     pub fn sched_key(&mut self, k: &KeyEvent) -> bool {
         if !self.sched_ui.focus || !self.sched_open {
             self.sched_ui.focus = false;
@@ -337,7 +302,7 @@ impl App {
             }
         };
         self.sched_ui.sel = new_sel;
-        // Keep the selection in view.
+
         if new_sel < self.sched_ui.scroll {
             self.sched_ui.scroll = new_sel;
         } else if new_sel >= self.sched_ui.scroll + shown {
@@ -345,8 +310,6 @@ impl App {
         }
         true
     }
-
-    // ---- actions on session loops ----
 
     fn loop_of(&self, key: &str) -> Option<crate::app_loops::LoopRow> {
         let (uid, id) = key.split_once(':')?;
@@ -357,8 +320,6 @@ impl App {
             .cloned()
     }
 
-    /// Manage with GodTerm: the loop becomes a GodTerm job and the tab is
-    /// asked to cancel its own copy. Returns the new job's id.
     pub fn sched_adopt(&mut self, key: &str) -> Option<String> {
         let (uid, id) = key.split_once(':')?;
         let (uid, id) = (uid.parse::<u64>().unwrap_or(0), id.to_string());
@@ -377,7 +338,6 @@ impl App {
         }
     }
 
-    /// Run now: the loop's prompt goes to its tab (queued if busy).
     pub fn sched_run_loop(&mut self, key: &str) {
         let Some(r) = self.loop_of(key) else {
             self.flash("That loop is not running any more");
@@ -398,8 +358,6 @@ impl App {
         ));
     }
 
-    /// Stop: two clicks, then the tab is asked to cancel it when idle.
-    /// True when the stop was asked for.
     pub fn sched_stop_loop(&mut self, key: &str) -> bool {
         let Some(r) = self.loop_of(key) else {
             self.flash("That loop is not running any more");
@@ -421,9 +379,6 @@ impl App {
         true
     }
 
-    // ---- the card ----
-
-    /// A click on a row: its card.
     pub fn open_sched_card(&mut self, key: &str) {
         self.sched_ui.focus = true;
         let (rows, lines) = self.sched_view();
@@ -436,7 +391,6 @@ impl App {
         self.modal = Modal::SchedCard(key.to_string());
     }
 
-    /// The card for row `key`; None when it is gone.
     pub fn sched_card(&self, key: &str) -> Option<SchedCard> {
         let rows = self.sched_rows();
         let r = rows.iter().find(|r| r.key == key)?;
@@ -760,7 +714,6 @@ impl App {
         })
     }
 
-    /// A card button (or its key).
     pub fn sched_card_act(&mut self, op: u8) {
         let Modal::SchedCard(key) = self.modal.clone() else {
             return;
@@ -794,7 +747,6 @@ impl App {
         }
     }
 
-    /// Keys on the card: each button's letter; Esc and q close.
     pub fn on_sched_card_key(&mut self, k: KeyEvent) {
         let Modal::SchedCard(key) = self.modal.clone() else {
             return;

@@ -1,29 +1,17 @@
-//! The demo's made up world: six accounts (four Claude, two Grok) with
-//! fake logins and usage, sixteen sessions with scenarios and history,
-//! past sessions to search, and one "external" session in another
-//! terminal. Written into the demo home by `godterm --demo`.
-//!
-//! `godterm --demo --demo-harnesses` builds the other world: one account
-//! per agent CLI GodTerm runs (Claude Code, Grok Build, Codex, Cursor,
-//! Antigravity, OpenCode), each with a tab of the demo agent drawn as
-//! that CLI. Both worlds get made up Chrome profiles for the per-tab
-//! Browser button (the real Chrome folder is never read in demo mode).
-
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 use crate::demo_agent::{Flavor, Transcript};
 
-/// One demo account.
 pub struct Acct {
     pub name: &'static str,
     pub label: &'static str,
-    /// The account's agent CLI (`harness::Harness::of`).
+
     pub harness: &'static str,
     pub color: &'static str,
     pub email: &'static str,
-    /// Five hour and weekly % left (grok: weekly only).
+
     pub five: f64,
     pub week: f64,
 }
@@ -85,8 +73,6 @@ pub const ACCOUNTS: &[Acct] = &[
     },
 ];
 
-/// The other agent CLIs' accounts (the `--demo-harnesses` world). Their
-/// CLIs manage their own logins, so they have no login or usage files.
 pub const CLI_ACCOUNTS: &[Acct] = &[
     Acct {
         name: "backend",
@@ -135,22 +121,18 @@ impl Acct {
         Flavor::of_harness(crate::harness::Harness::of(self.harness))
     }
 
-    /// GodTerm keeps this CLI's login and usage (Claude, Grok).
     fn integrated(&self) -> bool {
         crate::harness::Harness::of(self.harness).integrated()
     }
 }
 
-/// Which world to build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum World {
-    /// Six Claude and Grok accounts, sixteen tabs (the default).
     Full,
-    /// One account per agent CLI, a tab each.
+
     Harnesses,
 }
 
-/// The accounts of a world, in slot order.
 pub fn accounts(world: World) -> Vec<&'static Acct> {
     match world {
         World::Full => ACCOUNTS.iter().collect(),
@@ -163,7 +145,6 @@ pub fn accounts(world: World) -> Vec<&'static Acct> {
     }
 }
 
-/// Any demo account by name.
 pub fn find_account(name: &str) -> Option<&'static Acct> {
     ACCOUNTS
         .iter()
@@ -171,18 +152,14 @@ pub fn find_account(name: &str) -> Option<&'static Acct> {
         .find(|a| a.name == name)
 }
 
-/// The made up Chrome profiles: (folder, name, email, has the extension
-/// turned on).
 pub const CHROME_PROFILES: &[(&str, &str, &str, bool)] = &[
     ("Default", "Work", "alex@example.com", true),
     ("Profile 1", "Personal", "alex.rivera@example.net", false),
     ("Profile 2", "QA", "", true),
 ];
 
-/// The account that runs out during the demo.
 pub const BURN_ACCOUNT: &str = "work";
 
-/// One open tab: (account, project folder, tab name, group, pinned, accent).
 struct Tab {
     acct: &'static str,
     project: &'static str,
@@ -190,7 +167,7 @@ struct Tab {
     group: Option<&'static str>,
     pinned: bool,
     accent: Option<&'static str>,
-    /// The Chrome profile folder bound to the tab's Browser button.
+
     browser: Option<&'static str>,
 }
 
@@ -278,9 +255,6 @@ fn tabs(world: World) -> Vec<Tab> {
     ]
 }
 
-// ---------------------------------------------------------------------
-// Scenario building blocks
-
 fn think(secs: f32) -> Value {
     json!({"kind": "think", "secs": secs})
 }
@@ -315,7 +289,6 @@ fn task(prompt: &str, steps: Vec<Value>, summary: &str) -> Value {
     json!({"prompt": prompt, "steps": steps, "summary": summary})
 }
 
-/// Every project's scenario, by folder name.
 pub fn scenarios() -> Vec<(&'static str, Value)> {
     let claude = |title: &str, history: Vec<Value>, tasks: Vec<Value>, extra: Value| {
         let mut v = json!({
@@ -337,7 +310,7 @@ pub fn scenarios() -> Vec<(&'static str, Value)> {
         v["plan"] = json!("SuperGrok Heavy");
         v
     };
-    // Codex, Cursor, Antigravity, OpenCode: each CLI names its own model.
+
     let cli = |title: &str, history: Vec<Value>, tasks: Vec<Value>, extra: Value| {
         let mut v = claude(title, history, tasks, extra);
         v["model"] = json!("");
@@ -717,9 +690,7 @@ pub fn scenarios() -> Vec<(&'static str, Value)> {
     ]
 }
 
-/// Sessions that are not open, for the sessions list and its search.
 fn past_sessions() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
-    // (account, project, title, first prompt)
     vec![
         (
             "work",
@@ -778,9 +749,6 @@ fn past_sessions() -> Vec<(&'static str, &'static str, &'static str, &'static st
     ]
 }
 
-// ---------------------------------------------------------------------
-// Writing it all
-
 fn w(p: &Path, text: impl AsRef<[u8]>) -> Result<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
@@ -789,7 +757,6 @@ fn w(p: &Path, text: impl AsRef<[u8]>) -> Result<()> {
     Ok(())
 }
 
-/// Usage fixture text for an account with these % left.
 pub fn usage_json(a: &Acct, five_left: f64, week_left: f64) -> String {
     let now = chrono::Utc::now();
     if a.grok() {
@@ -841,10 +808,6 @@ impl Paths {
     }
 }
 
-/// Link (or copy) the running godterm as the demo's agent CLIs
-/// (`bin/claude`, `bin/grok`, `bin/codex`, `bin/cursor-agent`, `bin/agy`,
-/// `bin/opencode`).
-/// The path of a demo agent's program (a Windows one is `name.exe`).
 fn agent_bin(p: &Paths, f: Flavor) -> String {
     let name = f.bin();
     let file = if cfg!(windows) {
@@ -857,9 +820,7 @@ fn agent_bin(p: &Paths, f: Flavor) -> String {
 
 fn link_agents(p: &Paths) -> Result<()> {
     std::fs::create_dir_all(&p.bin)?;
-    // In tests the running binary is the test harness: started as an
-    // agent it would run the whole suite again, and again (a fork bomb).
-    // Tests link a program that exits at once instead.
+
     #[cfg(test)]
     let exe = PathBuf::from(crate::test_stub::true_bin());
     #[cfg(not(test))]
@@ -898,7 +859,6 @@ fn project_files(dir: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Write a session's history into its transcript.
 fn write_history(
     flavor: Flavor,
     config: &Path,
@@ -920,8 +880,6 @@ fn write_history(
     }
 }
 
-/// Made up Chrome profiles for the Browser button (`demo::browser_env`
-/// points GodTerm here instead of the real Chrome folder).
 fn chrome(home: &Path) -> Result<()> {
     let root = home.join("chrome");
     let mut cache = serde_json::Map::new();
@@ -952,21 +910,17 @@ fn chrome(home: &Path) -> Result<()> {
     )
 }
 
-/// Make the default demo world in `home` (which must be empty or a demo
-/// home).
 #[cfg(test)]
 pub fn seed(home: &Path) -> Result<Paths> {
     seed_world(home, World::Full)
 }
 
-/// Make `world` in `home` (which must be empty or a demo home).
 pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
     if crate::config::is_real_user_dir(home) {
         bail!("refusing to use {} as the demo home", home.display());
     }
     let marker = home.join(".godterm-demo");
-    // The web app's sign in outlives the rebuild, so a browser signed in
-    // to the demo reconnects after a restart.
+
     let web_token = Paths::of(home).app.join("web-token");
     let kept_token = marker
         .is_file()
@@ -982,7 +936,7 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
                 home.display()
             );
         }
-        // A fresh world each time: the demo always starts the same way.
+
         std::fs::remove_dir_all(home)?;
     }
     std::fs::create_dir_all(home)?;
@@ -1007,10 +961,9 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
             let _ = f.write_all(&t);
         }
     }
-    // Scenarios.
+
     let mut scen = scenarios();
     if world == World::Harnesses {
-        // Claude keeps working next to the others (no pause after a task).
         for (name, v) in scen.iter_mut() {
             if *name == "payments-api" {
                 v["pause_after"] = json!(0);
@@ -1024,7 +977,7 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
             &home.join("scenarios").join(format!("{name}.json")),
             serde_json::to_string_pretty(s)?,
         )?;
-        // A folder the assistant makes (pricing-page) is not there yet.
+
         if *name != "pricing-page" {
             project_files(&p.work.join(name), name)?;
         }
@@ -1032,7 +985,7 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
     let scenario = |n: &str| scen.iter().find(|(k, _)| *k == n).map(|(_, v)| v.clone());
     chrome(home)?;
     let accts = accounts(world);
-    // Accounts: config, fake logins, profiles, usage.
+
     let far = chrono::Utc::now().timestamp_millis() + 30 * 24 * 3600 * 1000;
     let mut toml = String::new();
     toml.push_str(&format!(
@@ -1073,7 +1026,6 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
             }
         ));
         if !a.integrated() {
-            // Codex, Cursor, Antigravity, OpenCode keep their own logins.
         } else if a.grok() {
             w(
                 &dir.join("auth.json"),
@@ -1101,7 +1053,7 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
     }
     w(&p.app.join("config.toml"), toml)?;
     w(&p.app.join("tour_done"), "")?;
-    // Open tabs, with their history.
+
     let mut slots: Vec<Value> = accts
         .iter()
         .map(|a| json!({"account": a.name, "active": 0, "tabs": [], "groups": []}))
@@ -1114,8 +1066,7 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
         let cwd = p.work.join(t.project);
         let sc = scenario(t.project).unwrap_or_default();
         let mut tv = json!({"cwd": cwd, "uid": uid, "opened": now - 3600 * (uid % 5 + 1)});
-        // GodTerm reads Claude's and Grok's transcripts (the others' tabs
-        // start fresh and show their history on screen).
+
         if a.integrated() {
             let sid = crate::session_ops::new_uuid();
             write_history(
@@ -1160,7 +1111,7 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
         &p.app.join("state.json"),
         serde_json::to_string_pretty(&state)?,
     )?;
-    // Past sessions (not open).
+
     for (acct, project, title, prompt) in past_sessions() {
         let Some(a) = accts.iter().find(|a| a.name == acct) else {
             continue;
@@ -1175,8 +1126,7 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
             &[task(prompt, vec![], "Done.")],
         );
     }
-    // The main ~/.claude stand in: the external session's past, plus two
-    // old sessions of its own.
+
     for (project, title, prompt) in [
         (
             "legacy-api",
@@ -1256,7 +1206,7 @@ mod tests {
             explicit_home: true,
             mains: true,
         });
-        // A folder of the user's that is not a demo home is never wiped.
+
         let d = scratch("notdemo");
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("keep.txt"), "mine").unwrap();
@@ -1269,7 +1219,7 @@ mod tests {
     fn the_world_stays_in_its_home() {
         let home = scratch("world");
         let p = seed(&home).unwrap();
-        // Reseeding a demo home replaces it.
+
         let p2 = seed(&home).unwrap();
         assert_eq!(p.app, p2.app);
         let mut all = vec![];
@@ -1282,7 +1232,7 @@ mod tests {
                 f.display()
             );
         }
-        // Six made up accounts: four Claude, two Grok, fake file logins.
+
         let cfg: toml::Value =
             toml::from_str(&std::fs::read_to_string(p.app.join("config.toml")).unwrap()).unwrap();
         let accts = cfg["account"].as_array().unwrap();
@@ -1304,7 +1254,6 @@ mod tests {
             if a.grok() {
                 assert!(crate::harness::grok::logged_in(&dir));
             } else {
-                // (Read as the file it is: tests never look in the keychain.)
                 let c = crate::creds::parse_creds(
                     &std::fs::read_to_string(dir.join(".credentials.json")).unwrap(),
                 )
@@ -1313,7 +1262,7 @@ mod tests {
                 assert!(!c.is_expired(chrono::Utc::now().timestamp_millis()));
             }
         }
-        // Sixteen open tabs, with groups and pins, each with history.
+
         let st: Value =
             serde_json::from_str(&std::fs::read_to_string(p.app.join("state.json")).unwrap())
                 .unwrap();
@@ -1326,7 +1275,7 @@ mod tests {
         assert_eq!(tabs.len(), 16);
         assert!(tabs.iter().any(|t| t["pinned"] == true));
         assert!(tabs.iter().filter(|t| t["group"].is_string()).count() >= 4);
-        // Every scenario parses.
+
         for (name, _) in scenarios() {
             let s: crate::demo_agent::Scenario = serde_json::from_str(
                 &std::fs::read_to_string(home.join("scenarios").join(format!("{name}.json")))
@@ -1335,13 +1284,11 @@ mod tests {
             .unwrap();
             assert!(!s.title.is_empty(), "{name}");
         }
-        // The agents are marked as the demo's.
+
         assert!(p.bin.join(crate::demo::AGENT_MARKER).is_file());
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// The demo's agent links are never the test binary (started as
-    /// "claude" it would run the suite again, recursively). Spawns nothing.
     #[test]
     fn agent_links_are_never_the_test_binary() {
         let home = scratch("links");
@@ -1362,9 +1309,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// `--demo-harnesses`: one account per agent CLI, each with a tab run
-    /// by the demo agent under that CLI's name, made up Chrome profiles
-    /// bound to tabs, and nothing outside the demo home.
     #[test]
     fn the_harness_world_runs_every_cli() {
         let home = scratch("harnesses");
@@ -1383,7 +1327,7 @@ mod tests {
         for &h in crate::harness::ALL {
             let bin = cfg.harness_bin(h);
             assert!(bin.starts_with(&*home.to_string_lossy()), "{bin}");
-            // The link is named so the demo agent knows which CLI to be.
+
             let name = crate::procs::program_name(&bin);
             assert_eq!(
                 Flavor::of_program(&name),
@@ -1401,7 +1345,7 @@ mod tests {
         for (i, s) in slots.iter().enumerate() {
             let tabs = s["tabs"].as_array().unwrap();
             assert_eq!(tabs.len(), 1, "slot {i}");
-            // Only Claude and Grok tabs have a session GodTerm can read.
+
             assert_eq!(tabs[0]["session_id"].is_string(), i < 2, "slot {i}");
             let name = tabs[0]["cwd"]
                 .as_str()
@@ -1418,8 +1362,7 @@ mod tests {
             );
         }
         assert_eq!(slots[0]["tabs"][0]["browser"], "Default");
-        // The made up Chrome profiles read as Chrome's: two with the
-        // extension on, one without.
+
         let ext = crate::browser::chrome_extensions(&home.join("chrome"));
         assert_eq!(ext.len(), 3);
         assert_eq!(
@@ -1429,7 +1372,7 @@ mod tests {
             2
         );
         assert_eq!(ext[0].profile.name, "Work");
-        // No login or usage files for the CLIs that keep their own.
+
         for a in CLI_ACCOUNTS {
             let d = p.app.join("accounts").join(a.name);
             assert!(!d.join(".credentials.json").exists() && !d.join("auth.json").exists());

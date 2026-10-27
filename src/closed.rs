@@ -1,9 +1,3 @@
-//! Closing tabs and windows, with a way back: the last 20 closed tabs are
-//! kept (in state.json), a 10 second "Closed 'x' · Undo" toast reopens the
-//! last close (a whole window at once), and Tabs ▾ has Reopen closed tab
-//! and Recently closed ▸. Reopening resumes the session in its folder on
-//! its account (or the best one of the same agent) and its loops.
-
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -11,9 +5,8 @@ use std::time::{Duration, Instant};
 use crate::app::{App, Modal};
 use crate::pane::LaunchKind;
 
-/// How many closed tabs are kept.
 pub const KEEP: usize = 20;
-/// How long the Undo toast stays.
+
 pub const TOAST: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -24,14 +17,13 @@ pub struct SavedLoop {
     pub prompt: String,
     #[serde(default)]
     pub recurring: bool,
-    /// A dynamic /loop (ScheduleWakeup) rather than a cron job.
+
     #[serde(default)]
     pub wakeup: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClosedTab {
-    /// Account name (config `name`).
     pub account: String,
     pub cwd: String,
     #[serde(default)]
@@ -42,26 +34,25 @@ pub struct ClosedTab {
     pub accent: Option<String>,
     #[serde(default)]
     pub loops: Vec<SavedLoop>,
-    /// Tabs closed together (a window) share a group and reopen together.
+
     pub group: u64,
-    /// Unix seconds.
+
     pub closed_at: i64,
-    /// What the tab was called.
+
     pub label: String,
-    /// Its tab group's name, and whether it was pinned.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_group: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
-    /// The tab's Chrome profile folder (its Browser binding).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<String>,
-    /// Its more profiles beside that one.
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub browser_also: Vec<String>,
 }
 
-/// When to ask before closing one tab (config `confirm_close`).
 pub fn needs_confirm(mode: &str, running: bool, busy: bool, loops: usize) -> bool {
     match mode {
         "never" => false,
@@ -71,15 +62,10 @@ pub fn needs_confirm(mode: &str, running: bool, busy: bool, loops: usize) -> boo
 }
 
 impl App {
-    // (tab_busy, in activity.rs: working, waiting for an answer, or work
-    // running in the background.)
-
-    /// Close a tab, asking first per `confirm_close` (busy or looping
-    /// tabs by default).
     pub fn request_close(&mut self, s: usize, t: usize) {
         self.jump_to(s, t);
         let tab = &self.panes[s].tabs[t];
-        // Pinned tabs always ask (unless confirm_close is never).
+
         let ask = needs_confirm(
             &self.cfg.confirm_close,
             tab.is_running(),
@@ -97,7 +83,7 @@ impl App {
         let slot = self.panes.get(s)?;
         let a = slot.account?;
         let tab = slot.tabs.get(t)?;
-        // A tab that never ran has nothing to come back to.
+
         if !tab.is_running() && tab.session_id.is_none() {
             return None;
         }
@@ -135,7 +121,6 @@ impl App {
         chrono::Utc::now().timestamp_millis() as u64 * 1000 + (self.closed_seq % 1000)
     }
 
-    /// Remember tab (s, t) as closed in `group`.
     pub fn remember_closed(&mut self, s: usize, t: usize, group: u64) -> bool {
         let Some(c) = self.snapshot_tab(s, t, group) else {
             return false;
@@ -154,12 +139,10 @@ impl App {
         self.undo_toast = Some((Instant::now(), msg));
     }
 
-    /// Close tab `t` of pane `s` now, remembering it.
     pub fn close_tab_at(&mut self, s: usize, t: usize) {
         self.close_tab_by(s, t, "user")
     }
 
-    /// Close a tab, recording who did it (user or assistant).
     pub fn close_tab_by(&mut self, s: usize, t: usize, by: &str) {
         let g = self.next_close_group();
         let label = self.panes[s]
@@ -188,14 +171,12 @@ impl App {
         }
     }
 
-    /// Ask before closing a whole window (pane): it names the tabs.
     pub fn request_close_window(&mut self, s: usize) {
         if s < self.panes.len() {
             self.modal = Modal::ConfirmCloseWindow(s);
         }
     }
 
-    /// Lines for the close window dialog.
     pub fn close_window_lines(&self, s: usize) -> Vec<String> {
         let Some(slot) = self.panes.get(s) else {
             return vec![];
@@ -242,7 +223,6 @@ impl App {
         v
     }
 
-    /// Close every tab of pane `s` (remembered as one group) and hide it.
     pub fn close_window(&mut self, s: usize) {
         if s >= self.panes.len() {
             return;
@@ -269,7 +249,7 @@ impl App {
         self.panes[s].kill_all();
         self.panes[s].tabs = vec![crate::pane::Pane::new(fallback)];
         self.panes[s].active = 0;
-        // Hidden unless it is the last one on screen.
+
         if self.visible_panes().len() > 1 {
             self.panes[s].hidden = true;
             if self.focus == s {
@@ -291,7 +271,6 @@ impl App {
         }
     }
 
-    /// Reopen the last close (a whole window at once).
     pub fn reopen_closed(&mut self) -> Result<String, String> {
         let g = self
             .closed
@@ -320,7 +299,6 @@ impl App {
         Ok(msg)
     }
 
-    /// Reopen entry `i` of the stack (Recently closed ▸; newest is 0).
     pub fn reopen_closed_at(&mut self, i: usize) -> Result<String, String> {
         let n = self.closed.len();
         let k = n.checked_sub(1 + i).ok_or("no such closed tab")?;
@@ -331,7 +309,6 @@ impl App {
         Ok(msg)
     }
 
-    /// Reopen one closed tab (also used for tab history records).
     pub fn reopen_closed_tab(&mut self, c: ClosedTab) -> Result<String, String> {
         self.reopen_one(c)
     }
@@ -339,7 +316,7 @@ impl App {
     fn reopen_one(&mut self, c: ClosedTab) -> Result<String, String> {
         let orig = self.cfg.accounts.iter().position(|a| a.name == c.account);
         let harness = orig.map(|a| self.cfg.accounts[a].harness());
-        // Its own account when it can run, else the best of the same agent.
+
         let usable = |app: &App, a: usize| app.accounts[a].login.can_start();
         let a = match orig {
             Some(a) if usable(self, a) => a,
@@ -361,7 +338,7 @@ impl App {
                     .ok_or(format!("no account to reopen '{}' on", c.label))?
             }
         };
-        // The session moves with it when it reopens on another account.
+
         let mut session = c.session_id.clone();
         if let (Some(o), Some(sid)) = (orig, &c.session_id) {
             if o != a {
@@ -387,7 +364,7 @@ impl App {
                 }
             }
         }
-        // Its account's pane (shown again if hidden), or a new one.
+
         let p = match self
             .panes
             .iter()
@@ -410,7 +387,7 @@ impl App {
         } else {
             self.cfg.accounts[a].work_dir()
         };
-        // Reuse a fresh placeholder tab, else open a new one.
+
         let cur = self.panes[p].cur();
         let t = if !cur.is_running()
             && cur.session_id.is_none()
@@ -425,7 +402,7 @@ impl App {
         self.panes[p].tabs[t].custom_name = c.name.clone();
         self.panes[p].tabs[t].accent = c.accent.clone();
         self.panes[p].tabs[t].pinned = c.pinned;
-        // Its Browser binding comes back too (a folder name only).
+
         self.panes[p].tabs[t].browser = c
             .browser
             .clone()
@@ -468,7 +445,6 @@ impl App {
         Ok(msg)
     }
 
-    /// The Undo toast, while it lasts.
     pub fn toast_text(&self) -> Option<&str> {
         self.undo_toast
             .as_ref()

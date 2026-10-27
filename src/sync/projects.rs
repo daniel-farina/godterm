@@ -1,25 +1,15 @@
-//! Every known project is part of the machine state (its bindings, .env
-//! files and conversations) whether or not it has a repo. GodTerm never
-//! commits to, pushes or creates a project repo on its own: that is only
-//! ever the user's action in the Git section. What the sync can do is
-//! say which projects are not backed up, read only: no repo, no GitHub
-//! remote, a remote that is only a folder here, unpushed commits,
-//! uncommitted changes.
-
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Health {
-    /// Portable path.
     pub path: String,
-    /// "not backed up: no git repo", "12 unpushed commits", ...
+
     pub warnings: Vec<String>,
 }
 
 fn git_ro(dir: &Path, args: &[&str]) -> Option<String> {
-    // Read only commands, with no optional locks (never writes the index).
     let out = Command::new("git")
         .arg("--no-optional-locks")
         .arg("-C")
@@ -38,7 +28,6 @@ fn git_ro(dir: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The warnings for one project folder (empty: backed up on GitHub).
 pub fn check(dir: &Path) -> Vec<String> {
     let mut w = vec![];
     if git_ro(dir, &["rev-parse", "--show-toplevel"]).is_none() {

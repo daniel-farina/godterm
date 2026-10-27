@@ -1,10 +1,3 @@
-//! Tabs and subagents never talk to the user themselves: a finished turn
-//! or an approval becomes an event for the assistant (with the tab, its
-//! project and its last message), and the assistant decides what the user
-//! hears. Nothing is said, flashed or queued for speech by GodTerm on a
-//! finish; subagents finishing are never news; direct mode keeps its own
-//! voice. A stub claude and temp transcripts; nothing real is touched.
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -31,7 +24,6 @@ fn test_app(tag: &str) -> (App, PathBuf) {
     (app, home)
 }
 
-/// A brain stub that records what it is sent.
 fn with_brain(app: &mut App, home: &Path) -> PathBuf {
     let rec = home.join("brain-in.txt");
     let stub = crate::test_stub::claude(
@@ -45,8 +37,6 @@ fn with_brain(app: &mut App, home: &Path) -> PathBuf {
     rec
 }
 
-/// A tab named `name` in project folder `name`, whose transcript ends
-/// with `last` from the agent.
 fn tab(app: &mut App, home: &Path, name: &str, last: &str) -> u64 {
     let proj = home.join("newtabs").join(name);
     std::fs::create_dir_all(&proj).unwrap();
@@ -79,7 +69,6 @@ fn attention(app: &mut App, uid: u64, what: Activity) {
     });
 }
 
-/// Nothing GodTerm said, flashed or queued to say about tabs.
 fn told_nothing(app: &App) {
     let log = app.told.borrow();
     let bad: Vec<String> = log
@@ -127,14 +116,14 @@ fn a_finished_tab_is_not_announced_and_the_assistant_gets_the_event() {
     attention(&mut app, uid, Activity::Ready);
     app.voice_tick();
     told_nothing(&app);
-    // The event, with its context.
+
     let e = &app.assistant.events.events[0];
     assert_eq!(e.kind, EventKind::Finished);
     assert_eq!(e.uid, uid);
     assert_eq!(e.tab, "minitest");
     assert!(e.project.ends_with("minitest"), "{}", e.project);
     assert_eq!(e.text, "All 42 tests pass on the parser.");
-    // Handed to the assistant in a turn of its own, which decides.
+
     assert!(app.assistant.busy && app.assistant.system_turn);
     assert!(app.assistant.events.events[0].delivered);
     let s = sent(&rec);
@@ -145,7 +134,7 @@ fn a_finished_tab_is_not_announced_and_the_assistant_gets_the_event() {
             && s.contains("call ignore"),
         "{s}"
     );
-    // Kept for later questions: the snapshot lists it.
+
     app.assistant.brain = None;
     app.assistant.busy = false;
     let snap = app.state_preamble();
@@ -164,14 +153,14 @@ fn finished_work_is_batched_but_approvals_go_at_once() {
     let a = tab(&mut app, &home, "alpha", "Done with the docs.");
     let b = tab(&mut app, &home, "beta", "Deployed.");
     let c = tab(&mut app, &home, "gamma", "Ready to apply?");
-    // A turn delivered events just now.
+
     app.assistant.events.last_turn = Some(Instant::now());
     app.tab_finished_event(a);
     app.tab_finished_event(b);
     app.events_tick();
     assert!(!app.assistant.busy, "finished work waits for the gap");
     assert!(app.assistant.events.events.iter().all(|e| !e.delivered));
-    // An approval goes at the next quiet moment, with the finishes.
+
     let (s, t) = app.find_tab(c).unwrap();
     app.panes[s].tabs[t].activity = Activity::Permission;
     app.tab_approval_event(c);
@@ -208,7 +197,7 @@ fn approvals_reach_the_user_through_the_assistant() {
         "{s}"
     );
     app.assistant.brain = None;
-    // An approval answered before the turn is not news any more.
+
     let (mut app2, home2) = test_app("approval-stale");
     let u2 = tab(&mut app2, &home2, "stale", "x");
     let (s2, t2) = app2.find_tab(u2).unwrap();
@@ -254,15 +243,14 @@ fn direct_mode_keeps_its_own_voice_and_events_wait() {
         confirm: None,
     });
     assert!(app.direct_with(mine));
-    // The direct tab speaks for itself there: no event for it.
+
     attention(&mut app, mine, Activity::Ready);
     attention(&mut app, other, Activity::Ready);
     app.voice_tick();
     told_nothing(&app);
     let uids: Vec<u64> = app.assistant.events.events.iter().map(|e| e.uid).collect();
     assert_eq!(uids, vec![other]);
-    // Other tabs' events wait until direct mode ends (the brain stays out
-    // of a one on one).
+
     assert!(!app.assistant.busy);
     assert!(!app.assistant.events.events[0].delivered);
     app.direct.on = None;
@@ -293,7 +281,7 @@ fn update_mode_news_goes_to_the_assistant() {
     with_brain(&mut app, &home);
     app.update_event("hyper finished: all green.");
     assert_eq!(app.assistant.events.events[0].kind, EventKind::Update);
-    // Urgent: not held by the gap for finished work.
+
     app.assistant.events.last_turn = Some(Instant::now());
     app.events_tick();
     assert!(app.assistant.busy && app.assistant.events.events[0].delivered);

@@ -1,25 +1,3 @@
-// The web app's merge gate (scripts/e2e/gate.sh runs it): one browser, the
-// dev mock, a couple of minutes. It fails loudly on what slipped past
-// before: dialogs whose buttons were invisible (a CSS class shared by two
-// features), a confirm button clipped at 390 px, a moved tab left on screen
-// under its old id, a Talk button missing while the Assistant is open.
-//
-//   node scripts/e2e/web_gate.mjs --url http://127.0.0.1:7993/ [--out DIR]
-//        [--engine chromium|webkit|both] [--sizes 320,390,820,1440,2560]
-//        [--only text] [--keep-going]
-//
-// (a) every sheet, dialog, popover and menu is opened at 320x640 and
-//     390x844 (touch), 820x1180 (touch), 1440x900 and 2560x1440, and every
-//     button and input in it must be visible, inside the viewport and inside
-//     what clips it, not covered (elementFromPoint at its centre), not
-//     text-clipped, and clickable;
-// (b) feature combinations (push to talk with the Assistant open, a muted mic
-//     with the chat, panel + chat in a squeezed window, a message over a
-//     sheet);
-// (c) flows through the UI with real clicks (move a tab and the pane follows
-//     its new id, move now, a prompt, approve and deny, the pane layouts,
-//     rename, archive and restore);
-// (d) a screenshot per screen in DIR/<size>/.
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
@@ -34,7 +12,7 @@ const ONLY = arg('only', '');
 const PW = process.env.PW_DIR || path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'web', 'dev', 'node_modules');
 const { chromium, webkit, devices } = createRequire(PW.endsWith('/') ? PW : PW + '/')('playwright');
 const origin = new URL(URL0).origin;
-// (GATE_SLOW=1 for slow machines: the settle waits are scaled.)
+
 const SLOW = +(process.env.GATE_SLOW || 0.35);
 const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(40, ms * SLOW)));
 
@@ -51,7 +29,6 @@ const passed = [];
 const notes = [];
 fs.mkdirSync(OUT, { recursive: true });
 
-// ---- in the page ------------------------------------------------------
 function pageSide() {
   window.__g = {
     mods: {},
@@ -60,7 +37,7 @@ function pageSide() {
       const u = l.href.replace(/\?.*$/, '').replace(/js\/[a-z]+\.js$/, `js/${n}.js`);
       return (this.mods[n] ||= await import(u));
     },
-    // What the user would call a broken control, for every control in `roots`.
+
     audit(roots) {
       const out = [];
       const vw = innerWidth, vh = innerHeight;
@@ -70,7 +47,7 @@ function pageSide() {
         return `${e.tagName.toLowerCase()}${e.id ? '#' + e.id : ''}${e.className && typeof e.className === 'string' ? '.' + e.className.trim().split(/\s+/).slice(0, 2).join('.') : ''} "${t}"`;
       };
       const shown = (e) => {
-        // (A message's actions show on hover or under the last reply only.)
+
         if (e.closest('[hidden], [aria-hidden=true], .sr-only, .xterm, template, .msg:not(:last-child) .acts')) return false;
         const dt = e.closest('details:not([open])'); if (dt && !(e.tagName === 'SUMMARY' && e.parentElement === dt)) return false;
         if (e.tagName === 'INPUT' && (e.type === 'hidden' || e.type === 'file')) return false;
@@ -81,14 +58,13 @@ function pageSide() {
         return true;
       };
       const seen = new Set();
-      // A modal sheet or menu owns the screen: what is behind its scrim is not
-      // reachable by design.
+
       const modal = document.querySelector('#sheet.on') ? '#sheet' : (document.querySelector('#pop:not([hidden])') ? '#pop' : '');
       for (const sel of roots) {
         const root = typeof sel === 'string' ? document.querySelector(sel) : sel;
         if (!root || !shown(root)) continue;
         if (modal && typeof sel === 'string' && sel !== modal && sel !== '#toasts') continue;
-        // The container itself: on screen, no sideways scroll.
+
         const rr = root.getBoundingClientRect();
         if (rr.right > vw + 1 || rr.left < -1 || rr.bottom > vh + 1 || rr.top < -1) out.push({ el: desc(root), kind: 'container outside the viewport', detail: `${Math.round(rr.left)},${Math.round(rr.top)} ${Math.round(rr.width)}x${Math.round(rr.height)} in ${vw}x${vh}` });
         const body = root.querySelector('#sheet-body') || root;
@@ -106,7 +82,7 @@ function pageSide() {
           if (op < 0.5 && !e.disabled && e.getAttribute('aria-disabled') !== 'true') bad('invisible', 'opacity ' + op.toFixed(2));
           if (cs.pointerEvents === 'none' || (e.parentElement && getComputedStyle(e.parentElement).pointerEvents === 'none')) bad('not clickable', 'pointer-events: none');
           if (r.left < -1 || r.top < -1 || r.right > vw + 1 || r.bottom > vh + 1) bad('outside the viewport', `${Math.round(r.left)},${Math.round(r.top)}..${Math.round(r.right)},${Math.round(r.bottom)} in ${vw}x${vh}`);
-          // Clipped by an ancestor that hides overflow (the root's own edge counts).
+
           for (let x = e.parentElement; x && x !== document.body && x !== document.documentElement; x = x.parentElement) {
             const c = getComputedStyle(x);
             if (c.overflowX === 'visible' && c.overflowY === 'visible') continue;
@@ -136,7 +112,6 @@ function pageSide() {
   };
 }
 
-// ---- helpers ---------------------------------------------------------
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 async function run() {
@@ -148,7 +123,7 @@ async function run() {
         ? { viewport: { width: size.w, height: size.h }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: devices['iPhone 15 Pro'].userAgent }
         : { viewport: { width: size.w, height: size.h }, deviceScaleFactor: 1 };
       if (engine === 'chromium') opts.permissions = ['microphone', 'clipboard-read', 'clipboard-write'];
-      if (engine === 'chromium' && opts.userAgent) { /* the UA only, no webkit-only fields */ }
+      if (engine === 'chromium' && opts.userAgent) {  }
       const ctx = await browser.newContext(opts);
       const page = await ctx.newPage();
       const label = `${engine} ${size.id}`;
@@ -175,10 +150,10 @@ async function run() {
       ctxo.R = R;
       const shot = async (screen) => { await page.screenshot({ path: path.join(shotDir, slug(screen) + '.png') }).catch(() => {}); };
       ctxo.shot = shot;
-      // Audit the roots, report once per distinct problem.
+
       const audit = async (screen, roots) => {
         if (!/message/.test(screen)) await page.evaluate(() => document.querySelector('#toasts')?.replaceChildren());
-        // Let a sliding sheet, drawer or menu come to rest first.
+
         await page.evaluate(() => new Promise((res) => {
           const sels = ['#sheet', '#side', '#pop', '#tabpanel', '#chat'];
           const snap = () => sels.map((s) => { const e = document.querySelector(s); if (!e) return ''; const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height].map((v) => v.toFixed(1)).join(','); }).join('|');
@@ -227,17 +202,14 @@ async function run() {
   }
 }
 
-// click a control by its text in the open overlay (a real click: it must be clickable)
 async function clickText(c, re, scopes = '#sheet-body, #tp-body, #pop', tag = 'button, [role=menuitem], .li', timeout = 4000) {
   const loc = c.page.locator(scopes.split(',').map((s) => `${s.trim()} :is(${tag})`).join(', '), { hasText: re }).filter({ visible: true }).first();
   await loc.click({ timeout });
 }
 
-// A tab that can be moved (idle, not pinned) and a claude account to move it to.
 const movable = (s) => s.tabs.find((x) => x.state === 'ready' && !x.pinned && (s.accounts.find((a) => a.account === x.account)?.harness || 'claude') === 'claude');
 const target = (s, t) => t && s.accounts.find((a) => a.account !== t.account && (a.harness || 'claude') === 'claude' && a.available !== false && a.logged_in !== false);
 
-// ---- (a) every screen -------------------------------------------------
 async function screens(c) {
   const { page, isDesk, step, audit } = c;
   const OV = ['#sheet', '#pop', '#tabpanel'];
@@ -245,7 +217,6 @@ async function screens(c) {
   const show = async (id) => { await page.evaluate(async (id) => (await window.__g.mod('term')).panes.show(id), id); await sleep(200); };
   const open = (expr, ...a) => page.evaluate(async ([e, a]) => { const f = new Function('mod', 'a', `return (async () => { ${e} })()`); return f(window.__g.mod.bind(window.__g), a); }, [expr, a]);
 
-  // The page as it stands (the header, the key bar or status bar, the list).
   await step('home', async () => {
     const roots = ['#top', '#keyrow', '#sbar', '#panes .pane-head'];
     await audit('home', roots);
@@ -267,7 +238,7 @@ async function screens(c) {
   await step('manage', async () => { await open(`(await mod('manage')).manageSheet()`); await sleep(500); await audit('manage', OV); });
   await step('accounts', async () => {
     await open(`(await mod('accounts')).accountsSheet()`); await sleep(700); await audit('accounts', OV);
-    // Its forms: the first "Add" / "Edit" button, if the list has one.
+
     const b = page.locator('#sheet-body button', { hasText: /^(Add|Edit|New)/ }).filter({ visible: true }).first();
     if (await b.count()) { await b.click({ timeout: 3000 }).catch(() => {}); await sleep(400); await audit('accounts form', OV); }
   });
@@ -283,7 +254,6 @@ async function screens(c) {
   await step('mic menu', async () => { await page.click('#b-ptt'); await sleep(450); await audit('mic menu', OV); });
   await step('assistant', async () => { await open(`(await mod('chat')).setChat(true)`); await sleep(500); await audit('assistant', ['#chat', '#top', '#keyrow']); });
 
-  // A tab's options: the sheet (phone) or the docked panel (desktop), and each section.
   await step('tab options', async () => {
     const id = await tabId();
     await show(id);
@@ -306,11 +276,10 @@ async function screens(c) {
       await c.closeAll(); await show(id);
       if (isDesk) { await open(`(await mod('manage')).setPanel(true)`); await sleep(400); } else { await open(`(await mod('manage')).tabActions(a[0])`, id); await sleep(400); }
     }
-    // The right-click popover on a desktop.
+
     if (isDesk) { await c.closeAll(); await open(`(await mod('manage')).tabActions(a[0])`, id); await sleep(400); await audit('tab options popover', OV); }
   });
 
-  // Confirm sheets: closing a pinned tab asks first.
   await step('confirm close', async () => {
     const pinned = (await c.S()).tabs.find((t) => t.pinned);
     if (!pinned) { c.R.ok('confirm close', 'no pinned tab in this world: skipped'); return; }
@@ -323,7 +292,6 @@ async function screens(c) {
     await clickText(c, /^No$/, '#sheet-body');
   });
 
-  // The move picker and the move-now sheet (a busy tab).
   await step('move picker and move now', async () => {
     const s = await c.S();
     const t = movable(s);
@@ -334,7 +302,7 @@ async function screens(c) {
     if (isDesk) { await open(`(await mod('manage')).setPanel(true)`); await sleep(400); } else { await open(`(await mod('manage')).tabActions(a[0])`, t.id); await sleep(400); }
     await clickText(c, /^Move( to)?$/); await sleep(400);
     await audit('move picker', OV);
-    await clickText(c, new RegExp('^' + to.label)); // queued: "Move now" / "Wait for them"
+    await clickText(c, new RegExp('^' + to.label)); 
     await page.waitForFunction(() => /busy/.test(document.querySelector('#sheet .sh-title')?.textContent || '') && document.querySelector('#sheet').classList.contains('on'), null, { timeout: 5000 });
     await sleep(350);
     await audit('move now sheet', OV);
@@ -347,7 +315,6 @@ async function screens(c) {
   });
 }
 
-// ---- (b) combinations -----------------------------------------------
 async function combos(c) {
   const { page, isDesk, step, audit, size } = c;
   const open = (expr, ...a) => page.evaluate(async ([e, a]) => { const f = new Function('mod', 'a', `return (async () => { ${e} })()`); return f(window.__g.mod.bind(window.__g), a); }, [expr, a]);
@@ -362,7 +329,7 @@ async function combos(c) {
     const g = await geometry('#talk');
     if (!talkOk(g)) c.R.fail('combo push to talk + assistant', 'Talk button missing or off screen while the assistant is open', '#talk', JSON.stringify(g));
     await audit('combo push to talk + assistant', ['#chat', '#talk', '#voice-bar', '#top', '#keyrow']);
-    // mic muted with the chat open
+
     await open(`(await mod('voice')).setMicMuted(true)`); await sleep(500);
     await audit('combo mic muted + assistant', ['#chat', '#talk', '#voice-bar', '#mic-strip', '#top']);
     await open(`(await mod('voice')).setMicMuted(false)`);
@@ -394,7 +361,6 @@ async function combos(c) {
   });
 }
 
-// ---- (c) flows -------------------------------------------------------
 async function flows(c) {
   const { page, isDesk, step, S } = c;
   const open = (expr, ...a) => page.evaluate(async ([e, a]) => { const f = new Function('mod', 'a', `return (async () => { ${e} })()`); return f(window.__g.mod.bind(window.__g), a); }, [expr, a]);
@@ -406,7 +372,6 @@ async function flows(c) {
   };
   const waitFor = async (fn, arg, ms = 5000) => { try { await page.waitForFunction(fn, arg, { timeout: ms, polling: 100 }); return true; } catch { return false; } };
 
-  // Move: the pane follows the tab to its new id.
   await step('flow move', async () => {
     const s = await S();
     const t = movable(s), to = target(s, t);
@@ -446,7 +411,6 @@ async function flows(c) {
     await c.shot('flow move now');
   });
 
-  // A prompt through the Prompt box reaches the tab.
   await step('flow send a prompt', async () => {
     const id = (await S()).tabs.find((x) => x.state === 'ready')?.id;
     await show(id);
@@ -461,7 +425,6 @@ async function flows(c) {
     await c.shot('flow send a prompt');
   });
 
-  // Approvals: approve one, deny another.
   await step('flow approve and deny', async () => {
     for (const [label, re, expectGone] of [['approve', /^Yes$/, true], ['deny', /^No$/, true]]) {
       await c.closeAll();
@@ -478,7 +441,6 @@ async function flows(c) {
     }
   });
 
-  // The pane layouts (a desktop): 1 -> 2 -> 4 -> 1, each with its panes on screen.
   await step('flow layouts', async () => {
     if (!isDesk) { const vis = await page.evaluate(() => { const b = document.querySelector('#b-split'); return !!b && getComputedStyle(b).display !== 'none'; }); if (vis) c.R.fail('flow layouts', 'the Layout button shows in the phone layout', '#b-split'); else c.R.ok('flow layouts', 'phone layout: no Layout button'); return; }
     await open(`const { panes } = await mod('term'); panes.setN(1)`); await sleep(400);
@@ -496,7 +458,6 @@ async function flows(c) {
     if (seen[2].startsWith('1')) c.R.ok('flow layouts', seen.join(' > ')); else c.R.fail('flow layouts', 'cycling does not come back to one pane', '#b-split', seen.join(' > '));
   });
 
-  // Rename and back.
   await step('flow rename', async () => {
     const t = (await S()).tabs.find((x) => x.state === 'ready' && !x.pinned);
     await options(t.id);
@@ -511,7 +472,6 @@ async function flows(c) {
     await open(`await (await mod('conn')).tool('rename_tab', { tab: a[0], name: a[1] }, 20000, { user_says: 'rename it' })`, t.id, t.name);
   });
 
-  // Archive, then restore it from the tab list's filter.
   await step('flow archive and restore', async () => {
     const t = (await S()).tabs.filter((x) => x.state === 'ready' && !x.pinned).at(-1);
     await options(t.id);
@@ -533,7 +493,6 @@ async function flows(c) {
   });
 }
 
-// ---- run + report ------------------------------------------------------
 const t0 = Date.now();
 await run().catch((e) => { problems.push({ label: 'gate', screen: 'driver', kind: 'the gate itself broke', el: '', detail: e.stack || e.message }); });
 const secs = ((Date.now() - t0) / 1000).toFixed(0);

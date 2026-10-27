@@ -1,12 +1,3 @@
-// Settings > Sync: GodTerm Sync on this machine, with its actions.
-// Off: what it is, Preview (sync_plan, a dry run), Enable sync on this
-// machine (sync_init: its question shows in a confirm dialog naming the
-// private repo and the gh account; Yes is the user's own answer) and
-// Join from another machine (sync_plan {repo} checks it, then
-// sync_clone). On: status cards, the repos and their privacy, warnings,
-// Sync now, Pause / Resume, View plan, machines and the conversations
-// owned here or elsewhere. Every row carries data-q for the search.
-// Project repos are never touched by any of this.
 import { h, on, toast, idOf, skeleton, failRow } from './util.js';
 import { tool, send } from './conn.js';
 import { closeSheet } from './sheet.js';
@@ -69,7 +60,7 @@ const btn = (label, fn, cls = '', attrs = {}) => h('button.btn.sm' + cls, { type
 const put = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
 const res = (r) => r?.result || r || {};
 const errOf0 = (r) => r?.error || r?.result?.error || (r?.ok === false && !r?.needs_confirmation ? 'It did not work' : '');
-// A GodTerm older than this page has no sync_plan etc. yet.
+
 const errOf = (r) => { const e = errOf0(r); return /^unknown tool sync_/.test(e) ? 'this needs a newer GodTerm: restart GodTerm, then try again' : e; };
 const L = (rows) => { rows = rows.flat().filter(Boolean); return rows.length ? h('div.list', {}, rows) : null; };
 const sub = (t, q = '') => h('div.st-sub', { 'data-q': ('sync ' + t + ' ' + q).toLowerCase() }, t);
@@ -88,8 +79,6 @@ const visBadge = (v) => !v ? h('span.sy-badge', {}, 'not checked')
   : v === 'CHECKING' ? h('span.sy-badge', {}, 'checking')
   : h('span.sy-badge.warn', {}, v.toLowerCase() + ': not private');
 
-// gh logins (names only), as the GitHub section reads them (`git` frame
-// cfg_view: GodTerm asks `gh auth status` in the background).
 let seq = 0;
 const waits = new Map();
 on('msg:git', (m) => { const w = waits.get(m.id); if (w) { waits.delete(m.id); w(m); } });
@@ -102,8 +91,6 @@ function ghAccounts() {
   });
 }
 
-// The question a planned tool asked, in a dialog over Settings: Yes is
-// the user's own answer (user_says), No drops the question in GodTerm.
 function confirmDialog(name, c, title, details) {
   return new Promise((resolve) => {
     if (c.token) ownQuestion(c.token);
@@ -124,7 +111,6 @@ function confirmDialog(name, c, title, details) {
 
 const kv = (pairs) => h('dl.sy-kv', {}, pairs.filter(Boolean).flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]));
 
-// The dry run, as a card.
 function planCard(v, opts = {}) {
   const pf = v.preflight || {}, p = v.plan;
   const ws = v.warnings || [];
@@ -168,7 +154,6 @@ function opCard(op, refresh) {
     op.ok && s.missing_paths?.length ? h('ul', {}, s.missing_paths.map((m) => h('li', {}, `${m} has no folder here: add it under [sync.paths] in config.toml`))) : null);
 }
 
-// Off: explain, Preview, Enable, Join.
 function offView(root, st, x, refresh) {
   const accts = st.gh || [];
   const owner = h('input', { type: 'text', value: st.owner ?? (x.owner || accts[0] || ''), placeholder: 'GitHub user or org', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Owner' });
@@ -197,8 +182,7 @@ function offView(root, st, x, refresh) {
     return res(r);
   };
   const enable = btn('Enable sync on this machine', async (b) => {
-    // The plan backs the question: made again when it is stale or for
-    // other names.
+
     let v = st.plan;
     if (!v || st.planArgs !== JSON.stringify(curArgs())) v = await preview(prev);
     if (!v?.preflight?.can_init) { if (v) toast('Enable is blocked: see the warnings', 'warn'); return; }
@@ -222,7 +206,6 @@ function offView(root, st, x, refresh) {
   const prev = btn('Preview (dry run)', preview);
   if (st.plan) put(planBox, planCard(st.plan));
 
-  // Join.
   const guess = st.repo ?? ((accts[0] || x.owner) ? `${accts[0] || x.owner}/godterm-state` : '');
   const repo = h('input', { type: 'text', value: guess, placeholder: 'OWNER/godterm-state', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'State repo to join' });
   const jacct = h('select', { 'aria-label': 'gh account for joining' },
@@ -305,7 +288,6 @@ function convRow(c, here, refresh) {
   return row(name, help, h('span.sy-btns', {}, show, act), 'conversation lease ' + (here ? 'owned here' : 'owned elsewhere ' + (c.owner || '')));
 }
 
-// take_over / release_session from here: their own question, then run.
 async function planned(name, args, refresh) {
   const r = await tool(name, args);
   const c = r.needs_confirmation ? r : r.result?.needs_confirmation ? r.result : null;
@@ -316,7 +298,6 @@ async function planned(name, args, refresh) {
   refresh();
 }
 
-// On: cards, repos, warnings, actions, machines, conversations.
 function onView(root, st, x, refresh) {
   const last = x.last || {}, ls = x.leases || {};
   const failing = last.ok === false;
@@ -383,8 +364,6 @@ function onView(root, st, x, refresh) {
   );
 }
 
-// The section's root: loads sync_status, renders, and looks again while
-// a setup runs (every 2 s) or a sync is going (every 10 s).
 export function syncSection() {
   style();
   const root = h('div.sy', {}, skeleton(2));
@@ -397,11 +376,11 @@ export function syncSection() {
     if (errOf(r)) { put(root, failRow(errOf(r), () => refresh(), 'Sync')); return; }
     const x = res(r);
     st.op = x.op;
-    // Turned on or off since the last draw: the old plan is not this one.
+
     if (st.on != null && st.on !== !!x.enabled) st.plan = null;
     st.on = !!x.enabled;
     if (!x.enabled && st.gh == null) st.gh = await ghAccounts();
-    // Keep what was typed: only re-render the form when nothing has focus in it.
+
     if (root.contains(document.activeElement) && document.activeElement.matches('input,select') && !keep) {
       st.timer = setTimeout(refresh, 2000);
       return;

@@ -1,11 +1,3 @@
-//! Archived conversations: a tab put away. Its process (and what it owns:
-//! loops, a background run holding its session) is stopped and its pane tab
-//! closed, but everything needed to resume it exactly is kept in
-//! `~/.godterm/archive.json` (owner only, written atomically): provider,
-//! account, folder, session id, name, color, pin, group, model, loops and
-//! when it was last active and archived. Only this entry is ever deleted
-//! by "Delete from archive"; the session's own files are never touched.
-
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -13,19 +5,18 @@ use crate::closed::{ClosedTab, SavedLoop};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Archived {
-    /// Short id for the assistant ("a3f9c1d2").
     pub id: String,
-    /// claude or grok.
+
     pub provider: String,
-    /// Account name (config `name`).
+
     pub account: String,
     pub cwd: String,
     #[serde(default)]
     pub session_id: Option<String>,
-    /// The tab's own name, if set.
+
     #[serde(default)]
     pub name: Option<String>,
-    /// What the tab was called in the list.
+
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
@@ -37,22 +28,21 @@ pub struct Archived {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<SavedLoop>,
-    /// The tab's Chrome profile folder (its Browser binding).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<String>,
-    /// Its more profiles beside that one.
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub browser_also: Vec<String>,
-    /// Unix seconds.
+
     pub last_activity: i64,
     pub archived_at: i64,
-    /// user or assistant.
+
     #[serde(default)]
     pub by: String,
 }
 
 impl Archived {
-    /// The record `reopen_one` resumes from.
     pub fn to_closed(&self) -> ClosedTab {
         ClosedTab {
             account: self.account.clone(),
@@ -71,7 +61,6 @@ impl Archived {
         }
     }
 
-    /// What a search looks at.
     pub fn search_fields(&self) -> Vec<String> {
         vec![
             self.label.clone(),
@@ -95,13 +84,10 @@ pub fn path() -> PathBuf {
 }
 
 impl Store {
-    /// The archive; a damaged file is moved aside (recover.rs), not
-    /// overwritten by the next save.
     pub fn load() -> Store {
         crate::recover::load_json(&path()).unwrap_or_default()
     }
 
-    /// Write atomically (a temp file, then rename), owner only.
     pub fn save(&self) -> std::io::Result<()> {
         let p = path();
         if let Some(d) = p.parent() {
@@ -112,7 +98,6 @@ impl Store {
         std::fs::rename(tmp, p)
     }
 
-    /// Add an entry; the same session archived again replaces the old one.
     pub fn add(&mut self, mut a: Archived) -> String {
         if let Some(sid) = &a.session_id {
             self.entries
@@ -135,7 +120,6 @@ impl Store {
         Some(self.entries.remove(i))
     }
 
-    /// Newest archived first.
     pub fn newest_first(&self) -> Vec<&Archived> {
         let mut v: Vec<&Archived> = self.entries.iter().collect();
         v.sort_by_key(|e| std::cmp::Reverse(e.archived_at));
@@ -143,14 +127,10 @@ impl Store {
     }
 }
 
-/// Idle for at least `hours` at `now` (both Unix seconds).
 pub fn idle_at_least(last_activity: i64, now: i64, hours: f64) -> bool {
     (now - last_activity) as f64 >= hours * 3600.0
 }
 
-/// Text typed in a tab's input box and not sent, read from its screen
-/// (Claude's `> text` / `│ > text` line near the bottom; the greyed
-/// `Try "..."` hint is not text).
 pub fn unsent_input(screen: &str) -> Option<String> {
     let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
     let k = lines.len().saturating_sub(8);
@@ -216,7 +196,7 @@ mod tests {
         let back = Store::load();
         assert_eq!(back, s);
         assert_eq!(back.find("a1").unwrap().model.as_deref(), Some("opus"));
-        // Garbage on disk reads as empty, never panics.
+
         std::fs::write(path(), "{not json").unwrap();
         assert!(Store::load().entries.is_empty());
     }

@@ -1,8 +1,3 @@
-//! The Grok login picker: one card per login (each grok account, the
-//! main ~/.grok) with its email, status, what uses it and its usage
-//! (weekly credits and each product, with bars), plus an Auto card.
-//! Talk back and recognition share the login.
-
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -13,7 +8,6 @@ use crate::app::{App, Modal};
 use crate::hits::UiAction;
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 
-/// Card actions.
 pub const SELECT: u8 = 0;
 pub const USE: u8 = 1;
 pub const LOGIN: u8 = 2;
@@ -21,7 +15,6 @@ pub const LOGOUT: u8 = 3;
 pub const REFRESH: u8 = 4;
 pub const TEST: u8 = 5;
 
-/// The products a billing reply may report, in this order.
 const PRODUCTS: &[&str] = &[
     "Voice",
     "GrokBuild",
@@ -31,7 +24,6 @@ const PRODUCTS: &[&str] = &[
 ];
 
 impl App {
-    /// The cards: "auto", then every login's id.
     pub fn grok_cards(&self) -> Vec<String> {
         let mut v = vec!["auto".to_string()];
         v.extend(
@@ -53,7 +45,6 @@ impl App {
         self.modal = Modal::GrokLogins(sel);
     }
 
-    /// Run a card's action.
     pub fn grok_login_act(&mut self, card: usize, act: u8) {
         let cards = self.grok_cards();
         let Some(id) = cards.get(card).cloned() else {
@@ -138,8 +129,6 @@ impl App {
         }
     }
 
-    /// The lines of one card: (text, style) runs per line, and its
-    /// buttons (label, action) on the first line.
     #[allow(clippy::type_complexity)]
     fn grok_card(&self, id: &str) -> (Vec<Vec<(String, Style)>>, Vec<(&'static str, u8)>) {
         use crate::voice::grok_tts;
@@ -165,7 +154,7 @@ impl App {
                     "Now: {}",
                     match (self.grok_best(), pick) {
                         (Some(b), _) => self.grok_source_line(&b),
-                        // Usage known and nothing left anywhere.
+
                         (None, _) if all.iter().any(|x| self.grok_left(&x.id).is_some()) => {
                             "none available (every login is out or refused)".into()
                         }
@@ -213,7 +202,7 @@ impl App {
             head.push(("  · most left".into(), Style::default().fg(theme::SAGE)));
         }
         lines.push(head);
-        // What uses it now.
+
         let resolved = if chosen == "auto" {
             grok_tts::auto_choice(&all, &refused).map(|x| x.id.clone())
         } else {
@@ -236,7 +225,7 @@ impl App {
             };
             lines.push(vec![(format!("Used for: {what}"), dim)]);
         }
-        // Usage: the weekly credits, then each product.
+
         match self.grok_usage(&s.id) {
             Some(u) => {
                 let bar = |left: f64| {
@@ -320,7 +309,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, sel: usize) {
     let mut hits = app.hits.borrow_mut();
     let inner = Rect::new(r.x + 2, r.y + 1, r.width - 4, r.height - 3);
     let limit = inner.x + inner.width;
-    // Cards with their heights; scroll so the selected one shows.
+
     let cards = app.grok_cards();
     let built: Vec<_> = cards.iter().map(|c| app.grok_card(c)).collect();
     let heights: Vec<u16> = built.iter().map(|(l, _)| l.len() as u16 + 1).collect();
@@ -358,7 +347,6 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, sel: usize) {
                 x = crate::hits::text(buf, x, y, limit, t, st.bg(bg));
             }
             if k == 0 {
-                // The actions, right aligned on the first line.
                 let total: u16 = buttons
                     .iter()
                     .map(|(l, _)| l.chars().count() as u16 + 3)
@@ -394,7 +382,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, sel: usize) {
         );
         y += 1;
     }
-    // The last Test, and the keys.
+
     let by = r.y + r.height - 2;
     let test = crate::voice::grok_tts::LAST_CHECK
         .lock()

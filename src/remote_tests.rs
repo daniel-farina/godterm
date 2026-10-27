@@ -1,6 +1,3 @@
-//! Remote Control for the assistant, with a stub claude brain and its
-//! control responses faked in the stream.
-
 use serde_json::json;
 
 use crate::config::testing::LOCK as ENV_LOCK;
@@ -23,7 +20,7 @@ fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf, std::path::PathB
         ],
     );
     app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
-    // Saved, so a reload from disk (a setting written) keeps the stub.
+
     app.cfg.save().unwrap();
     (app, home, rec)
 }
@@ -45,8 +42,6 @@ fn wait_for(rec: &std::path::Path, needle: &str) -> String {
     }
 }
 
-/// Enable (one yes), on with its URL, a message through it, a remote
-/// write logged as such, the switch warning and the loss, disable.
 #[test]
 fn enable_use_switch_and_disable() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -73,7 +68,7 @@ fn enable_use_switch_and_disable() {
         "enable_remote_control",
         &json!({"_client": "brain", "confirm_token": tok}),
     );
-    // The reply waits for the outcome: nothing success looking yet.
+
     assert!(r.get("_wait").is_some() && r["result"].is_null(), "{r}");
     let job = app.pending_job.take().unwrap();
     let sent = wait_for(&rec, "remote_control");
@@ -81,7 +76,7 @@ fn enable_use_switch_and_disable() {
         sent.contains("\"subtype\":\"remote_control\"") && sent.contains("\"enabled\":true"),
         "{sent}"
     );
-    // The brain answers (a faked control_response in its stream).
+
     let id = app
         .assistant
         .remote_pending
@@ -109,8 +104,7 @@ fn enable_use_switch_and_disable() {
         app.control_call("get_state", &json!({}))["result"]["remote_control"]["on"],
         json!(true)
     );
-    // A message from claude.ai: a turn of its own, shown as such; an echo
-    // of what GodTerm sent is not one.
+
     app.assistant.sent.push_back("what is running".into());
     app.on_brain(crate::assistant::BrainEvent::UserText(
         "what is running".into(),
@@ -160,7 +154,7 @@ fn enable_use_switch_and_disable() {
         cost: None,
         error: false,
     });
-    // Switching: refused until the user knows it ends Remote Control.
+
     let v = app.control_call(
         "switch_assistant",
         &json!({"_client": "brain", "model": "sonnet"}),
@@ -184,7 +178,7 @@ fn enable_use_switch_and_disable() {
         "{v}"
     );
     assert!(app.assistant.remote.is_none());
-    // Disable when on.
+
     app.assistant.remote = Some(crate::app_remote::Remote {
         name: "x".into(),
         url: None,

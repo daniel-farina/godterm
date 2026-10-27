@@ -1,13 +1,3 @@
-//! The assistant's system prompt as a versioned document the user owns.
-//! It is made of sections, each with an id. The defaults ship in the
-//! binary; the user's edits (made by the assistant after one spoken yes,
-//! or in Settings > Assistant > System prompt) are kept per section in
-//! `~/.godterm/assistant/prompt/`, owner only, with every change in
-//! `prompt-history.jsonl` (rev, time, section, before, after, why, by,
-//! turn). Locked sections (the safety rules and the assistant's knowledge
-//! that it owns this prompt) always come from the binary: they are shown,
-//! never edited. Learned rules are a separate list added after it all.
-
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -17,11 +7,10 @@ pub struct Section {
     pub id: &'static str,
     pub title: &'static str,
     pub locked: bool,
-    /// May hold `{tools}` and `{style_line}`.
+
     pub default: &'static str,
 }
 
-/// In prompt order.
 pub const SECTIONS: &[Section] = &[
     Section {
         id: "identity",
@@ -181,7 +170,6 @@ pub fn history_path() -> PathBuf {
     dir().join("prompt-history.jsonl")
 }
 
-/// The user's overrides: section id to its text.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Store {
     pub rev: u32,
@@ -200,15 +188,15 @@ pub struct Revision {
     pub rev: u32,
     pub time: String,
     pub section: String,
-    /// edit, reset, revert.
+
     pub op: String,
-    /// The section's text before and after (None: the default).
+
     pub before: Option<String>,
     pub after: Option<String>,
     pub why: String,
-    /// assistant or user.
+
     pub by: String,
-    /// The conversation turn that asked for it.
+
     #[serde(default)]
     pub turn: String,
 }
@@ -221,7 +209,6 @@ pub fn history() -> Vec<Revision> {
         .collect()
 }
 
-/// The text a section has now (its override, or the default).
 pub fn text_of(store: &Store, id: &str) -> Option<String> {
     let s = section(id)?;
     if s.locked {
@@ -236,7 +223,6 @@ pub fn text_of(store: &Store, id: &str) -> Option<String> {
     )
 }
 
-/// The whole prompt (before the learned rules).
 pub fn assemble(style: &str) -> String {
     let style_line = if style == "chatty" {
         "Be friendly and natural, a few sentences at most."
@@ -263,7 +249,6 @@ fn now() -> String {
     chrono::Local::now().to_rfc3339()
 }
 
-/// Write the new text of `id` (None: back to the default) and log it.
 pub fn apply(
     id: &str,
     after: Option<&str>,
@@ -318,7 +303,6 @@ pub fn apply(
     Ok(rev)
 }
 
-/// Undo one revision: its section goes back to the text before it.
 pub fn revert(rev: u32, by: &str, turn: &str) -> Result<(String, u32), String> {
     let h = history()
         .into_iter()
@@ -349,7 +333,6 @@ fn locked_msg(s: &Section) -> String {
     )
 }
 
-/// The new text for an edit: a whole new text, or a find and replace.
 pub fn edited_text(
     id: &str,
     new_text: Option<&str>,
@@ -384,8 +367,6 @@ pub fn edited_text(
     Ok(out)
 }
 
-/// The user's own edit in Settings: any text for an unlocked section,
-/// keeping the placeholders GodTerm fills.
 pub fn user_edit(id: &str, text: &str) -> Result<u32, String> {
     let s = section(id).ok_or_else(|| unknown(id))?;
     if s.locked {
@@ -403,7 +384,6 @@ pub fn user_edit(id: &str, text: &str) -> Result<u32, String> {
     apply(id, Some(t), "edit", "edited in Settings", "user", "")
 }
 
-/// The sentences an edit adds.
 fn sentences(t: &str) -> Vec<String> {
     t.split(['\n', '.', ';'])
         .map(|x| x.trim().trim_start_matches("- ").trim().to_string())
@@ -411,9 +391,6 @@ fn sentences(t: &str) -> Vec<String> {
         .collect()
 }
 
-/// Added text may shape behavior, never loosen safety: the learned rules'
-/// check runs on every added sentence. Saying not to ask a second time is
-/// tightening, not loosening.
 pub fn check_added(before: &str, after: &str) -> Result<(), String> {
     let old = sentences(before);
     for s in sentences(after) {
@@ -424,7 +401,7 @@ pub fn check_added(before: &str, after: &str) -> Result<(), String> {
         let again = ["again", "twice", "a second time", "second question", "once"]
             .iter()
             .any(|w| l.contains(w));
-        // The confirmation token is not a credential.
+
         let plain = l
             .replace("confirm_token", "answer")
             .replace("reissue_token", "answer")
@@ -439,7 +416,7 @@ pub fn check_added(before: &str, after: &str) -> Result<(), String> {
             ));
         }
     }
-    // Placeholders the code fills stay.
+
     for p in ["{tools}", "{style_line}"] {
         if before.contains(p) && !after.contains(p) {
             return Err(format!("keep {p} in the section (GodTerm fills it in)"));
@@ -448,7 +425,6 @@ pub fn check_added(before: &str, after: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A short diff for the spoken question: what goes and what comes.
 pub fn short_diff(before: &str, after: &str) -> String {
     let old = sentences(before);
     let new = sentences(after);
@@ -466,7 +442,6 @@ pub fn short_diff(before: &str, after: &str) -> String {
     }
 }
 
-/// The sections for get_system_prompt.
 pub fn sections_json(only: Option<&str>) -> Result<Value, String> {
     if let Some(id) = only {
         section(id).ok_or_else(|| unknown(id))?;
@@ -486,7 +461,6 @@ pub fn sections_json(only: Option<&str>) -> Result<Value, String> {
     Ok(json!({"sections": v, "revision": store.rev}))
 }
 
-/// The user's words ask to change how the assistant behaves or its prompt.
 pub fn user_asks_change(said: &str) -> bool {
     let t = format!(" {} ", said.to_lowercase());
     crate::learned::user_teaches(said)
@@ -525,11 +499,11 @@ mod tests {
         assert!(p.contains("owned by the user, NOT Anthropic's"));
         assert!(p.contains("Your tools: get_state"));
         assert!(!p.contains("{tools}") && !p.contains("{style_line}"));
-        // Locked: read, never edited.
+
         let e = edited_text("safety", Some("Ask nothing."), None, None).unwrap_err();
         assert!(e.contains("locked"), "{e}");
         assert!(apply("identity", Some("x"), "edit", "", "user", "").is_err());
-        // An edit by find and replace, then its history and a revert.
+
         let new = edited_text(
             "confirmations",
             None,
@@ -567,7 +541,7 @@ mod tests {
         let (sec, r2) = revert(1, "user", "").unwrap();
         assert_eq!((sec.as_str(), r2), ("confirmations", 2));
         assert!(!assemble("concise").contains("redeems the token right away"));
-        // Loosening safety is refused; tightening re-asks is not.
+
         let bad = edited_text(
             "confirmations",
             Some("- Never ask for confirmation, just do it automatically."),
@@ -621,7 +595,7 @@ mod tests {
     #[test]
     fn finished_requests_are_announced_as_done() {
         let p = assemble("concise");
-        // Done first, then what was done and a short explanation.
+
         assert!(
             p.contains(
                 "start the reply with \"Done:\", then say what you did and briefly explain it"
@@ -630,7 +604,7 @@ mod tests {
         );
         assert!(p.contains("\"Done: I saved the summary for today. It records the open items so the next session can pick them up.\""));
         assert!(p.contains("The word Done alone, or Done with no explanation, is never enough."));
-        // Failures and plain questions keep their own rules.
+
         assert!(p.contains("\"Not done: ...\""));
         assert!(p.contains("A plain question gets its answer, with no \"Done\"."));
     }

@@ -1,21 +1,10 @@
-//! Folder trust. claude asks "Accessing workspace: ... Yes, I trust this
-//! folder" until `projects["<dir>"].hasTrustDialogAccepted` is true in the
-//! slot's `.claude.json`. claude 2.1.29x never persists that answer for the
-//! home directory ("home trust is session-only"), so tabs started in `~`
-//! asked on every launch. With `auto_trust` godterm seeds the flag before
-//! starting claude and answers the dialog if it still appears.
-
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::expand_tilde;
 
-/// The keys claude may look the folder up by: the path as given and its
-/// canonical form (symlinks resolved, no trailing slash).
 pub fn trust_keys(cwd: &Path) -> Vec<String> {
-    // As claude writes them: no trailing separator, and on Windows no
-    // \\?\ prefix (what canonicalize adds).
     let key = |p: &Path| {
         let s = p.to_string_lossy();
         let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
@@ -40,8 +29,6 @@ pub fn trust_keys(cwd: &Path) -> Vec<String> {
     v
 }
 
-/// Whether `cwd` may be trusted automatically: always when `trusted_dirs`
-/// is empty, otherwise only inside one of them.
 pub fn dir_allowed(cwd: &Path, trusted_dirs: &[String]) -> bool {
     if trusted_dirs.is_empty() {
         return true;
@@ -54,15 +41,12 @@ pub fn dir_allowed(cwd: &Path, trusted_dirs: &[String]) -> bool {
     })
 }
 
-/// Mark `cwd` trusted in `<config_dir>/.claude.json`, keeping every other
-/// key. Written through a temp file and rename so a reader never sees half
-/// a file. Returns true when the file changed.
 pub fn seed_trust(config_dir: &Path, cwd: &Path) -> std::io::Result<bool> {
     let path = config_dir.join(".claude.json");
     let mut root: Value = match fs::read_to_string(&path) {
         Ok(t) => match serde_json::from_str(&t) {
             Ok(v) => v,
-            // Never overwrite a file we cannot parse.
+
             Err(_) => return Ok(false),
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Object(Default::default()),
@@ -134,9 +118,9 @@ mod tests {
         for k in trust_keys(&work) {
             assert_eq!(v["projects"][&k]["hasTrustDialogAccepted"], true, "{k}");
         }
-        // Second time: nothing to do.
+
         assert!(!seed_trust(&cfg, &work).unwrap());
-        // Missing file: created. Unparsable file: left alone.
+
         let cfg2 = tmp("missing");
         assert!(seed_trust(&cfg2, &work).unwrap());
         fs::write(cfg2.join(".claude.json"), "{not json").unwrap();
@@ -161,7 +145,6 @@ mod tests {
         let sep = std::path::MAIN_SEPARATOR;
         assert!(keys.iter().any(|k| k.ends_with(&format!("{sep}link"))));
         if cfg!(unix) {
-            // (Where the link resolves to: Unix makes the symlink.)
             assert!(keys.iter().any(|k| k.ends_with(&format!("{sep}real"))));
         }
         assert!(keys.iter().all(|k| !k.starts_with(r"\\?\")));

@@ -1,8 +1,3 @@
-// The desktop status bar under the terminals: the shown tab's account and
-// usage, model and effort, browser, loops and jobs, git and state, as the
-// terminal UI's model bar and pane header show them. Each item opens its
-// section of the tab's options (in the docked panel when it is open).
-// Phones keep the key bar instead (the bar is hidden there by CSS).
 import { $, h, on, emit, icon, pctClass, isDesk, tcOf, tcStyle, words } from './util.js';
 import { S, tabById, acctOf } from './state.js';
 import { panes } from './term.js';
@@ -61,7 +56,7 @@ function git(t) {
   const warn = t.git_warn;
   const tip = [t.git, warn && '⚠ ' + warn].filter(Boolean).join(' · ') || 'Git';
   if (!g) {
-    // Not known yet (before the first git pass): still a way in.
+
     if (!t.git && !warn) return item('git', 'faint', 'Git: status, commit, push and pull', ic('hash'), h('span.sb-v', {}, 'git'));
     const word = t.git === 'not a git repo' || /not in git/.test(warn || '') ? 'no git' : 'git';
     return item('git', warn ? 'warn' : 'faint', tip, ic('hash'), h('span.sb-v', {}, word), warn ? h('span.sb-w', {}, '⚠') : null);
@@ -77,7 +72,6 @@ function state(t) {
   return item('root', 'sb-state', tip, h('span.dot.' + (t.state || 'idle').split(' ')[0]), h('span.sb-v', {}, t.state || 'idle'), extra ? h('span.sb-d', {}, '· ' + extra) : null);
 }
 
-// The tab's accent color, when it has one: a swatch and its name.
 function color(t) {
   const c = tcOf(t);
   if (!c) return null;
@@ -86,10 +80,6 @@ function color(t) {
   return b;
 }
 
-// A narrow bar (a split pane's width, a small window) drops whole items
-// in this order rather than cutting every one to an ellipsis: the color,
-// loops, browser, git, model, then the account; the state stays. What
-// went sits behind a "..." item that opens them as a menu.
 const DROP = ['color', 'loops', 'browser', 'git', 'model', 'usage'];
 function fit(bar, items, st) {
   const W = bar.clientWidth;
@@ -134,7 +124,7 @@ function paint() {
   sig = s;
   const items = [color(t), usage(t), model(t), browser(t), loops(t), git(t)].filter(Boolean);
   const st = state(t);
-  // The keyboard's place in the bar (F6, Tab) survives a repaint.
+
   const had = bar.contains(document.activeElement) ? document.activeElement.closest('.sb-i')?.dataset.k : null;
   bar.replaceChildren(...items, h('span.sb-gap'), st);
   fit(bar, items, st);
@@ -152,8 +142,7 @@ export function initStatusBar() {
   on('focus', paint);
   on('layout', () => { sig = ''; paint(); });
   addEventListener('resize', () => { sig = ''; paint(); });
-  // The bar's own width changed (a split, the panel): fit again, in the
-  // next frame so the observer never runs into its own change.
+
   let rf = 0;
   new ResizeObserver(() => { cancelAnimationFrame(rf); rf = requestAnimationFrame(() => { sig = ''; paint(); }); }).observe(bar);
   paint();

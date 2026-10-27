@@ -1,7 +1,3 @@
-//! The assistant in the app: which account it runs on, the conversation
-//! panel, routing speech and typed requests to it, and speaking its
-//! replies as they stream.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::{Duration, Instant};
 
@@ -9,7 +5,6 @@ use crate::app::App;
 use crate::assistant::{Brain, BrainEvent};
 use crate::pane::Activity;
 
-/// A barge-in colors only the request that follows soon after it.
 const CUT_OFF_FRESH: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -18,7 +13,7 @@ pub enum Who {
     Reply,
     Tool,
     Note,
-    /// Text it wrote before a tool call (shown dim, not spoken).
+
     Preamble,
 }
 
@@ -26,23 +21,19 @@ pub enum Who {
 pub struct Entry {
     pub who: Who,
     pub text: String,
-    /// When it was written (unix ms): the web chat's times and day
-    /// dividers; a conversation resumed from its log keeps the log's.
+
     pub at: i64,
 }
 
-/// Now as unix milliseconds.
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
 impl Entry {
-    /// An entry written now.
     pub fn new(who: Who, text: impl Into<String>) -> Entry {
         Entry::at(who, text, now_ms())
     }
 
-    /// An entry written at `at` (unix ms).
     pub fn at(who: Who, text: impl Into<String>, at: i64) -> Entry {
         Entry {
             who,
@@ -52,8 +43,6 @@ impl Entry {
     }
 }
 
-/// The chat area as last drawn: its text, its scrollbar column (the last
-/// column of `area`), and the lines in all and in view.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChatGeo {
     pub area: ratatui::layout::Rect,
@@ -68,7 +57,7 @@ impl ChatGeo {
     pub fn contains(&self, col: u16, row: u16) -> bool {
         crate::hits::contains(self.area, col, row)
     }
-    /// The first line shown with `off` lines back from the newest.
+
     pub fn top(&self, off: usize) -> usize {
         self.total.saturating_sub(self.view).saturating_sub(off)
     }
@@ -78,210 +67,191 @@ impl ChatGeo {
 pub struct AssistantState {
     pub brain: Option<Brain>,
     pub log: Vec<Entry>,
-    /// The reply being streamed.
+
     pub current: String,
     pub busy: bool,
     pub show: bool,
-    /// Typing goes to the panel (it has the focus); false: to the grid.
+
     pub focused: bool,
     pub input: String,
-    /// The input's caret and selection (input_edit).
+
     pub caret: crate::input_edit::Caret,
-    /// Where the input was drawn last (a click places the caret).
+
     pub input_geo: std::cell::Cell<Option<crate::app_input::InputGeo>>,
-    /// The input's first row shown (it scrolls to keep the caret).
+
     pub input_top: std::cell::Cell<usize>,
-    /// A drag in the input is selecting.
+
     pub input_drag: bool,
-    /// The chat's scroll: lines back from the newest (0 follows it).
+
     pub chat_off: std::cell::Cell<usize>,
-    /// Lines the chat had when last drawn (a view scrolled back stays on
-    /// the same lines as new ones arrive).
+
     pub chat_seen: std::cell::Cell<usize>,
-    /// Where the chat and its scrollbar were drawn last.
+
     pub chat_geo: std::cell::Cell<Option<ChatGeo>>,
-    /// The scrollbar's thumb is being dragged (rows from its start).
+
     pub bar_drag: Option<u16>,
-    /// The panel's window: normal, minimized to a strip, or maximized.
+
     pub win: crate::app_panelwin::PanelWin,
-    /// Its left edge is being dragged (resizing it).
+
     pub edge_drag: bool,
-    /// The main area it sits in when drawn last (x, width).
+
     pub main_geo: std::cell::Cell<(u16, u16)>,
-    /// When its width changed (it shows the width a moment).
+
     pub width_shown: Option<Instant>,
-    /// Streamed deltas this turn (so whole text blocks are not repeated).
+
     got_delta: bool,
-    /// Spoken replies open a follow up window when speech ends.
+
     pub follow_up: bool,
     pub last_cost: Option<f64>,
     pub started: Option<Instant>,
-    /// Turns sent to the current process.
+
     pub turns_in_brain: u32,
-    /// Summary carried into the next process.
+
     pub carry: Option<String>,
-    /// When the last utterance arrived (for the latency breakdown).
+
     pub heard_at: Option<Instant>,
     pub timing: Timing,
-    /// The last finished turn's numbers, shown in the panel.
+
     pub last_timing: Option<String>,
-    /// Retry the warm start no more often than this.
+
     pub warm_tried: Option<Instant>,
-    /// "stop": say nothing more of the current reply.
+
     pub muted: bool,
-    /// The current (or last user) turn came in by voice.
+
     pub turn_spoken: bool,
-    /// When its last reply ended.
+
     pub asked_at: Option<Instant>,
-    /// The text block being streamed, and whether a tool came this turn.
+
     block: String,
     tools_this_turn: u32,
-    /// Text blocks of the answer, joined with spaces.
+
     finals: Vec<String>,
-    /// Text before any tool call, not spoken yet: the answer if the turn
-    /// ends, narration if a tool call follows.
+
     held: Vec<String>,
-    /// The saved conversation.
+
     pub conv: Option<crate::assistant_history::ConvLog>,
-    /// The History tab of the panel.
+
     pub history: Option<crate::assistant_history::HistoryUi>,
-    /// Replies trimmed off the log (so counts keep going up).
+
     pub trimmed_replies: usize,
-    /// Replies the user has seen (the conversation was on screen).
+
     pub seen_replies: std::cell::Cell<usize>,
-    /// Switch to this saved conversation when the turn ends.
+
     pub resume_after: Option<String>,
-    /// Start a new conversation when the turn ends.
+
     pub reset_after_turn: bool,
-    /// What the user said this turn (a confirmation must be a clear yes).
+
     pub last_user: String,
-    /// Turns the user cut off (barge-in): their output is dropped and no
-    /// further tool runs for them.
+
     pub stale: u32,
-    /// The next request follows an interruption (when it was, so a cut
-    /// off before a sleep does not color the morning's first request).
+
     pub cut_off: Option<Instant>,
-    /// "(Listening resumed at 20:37 after a 5 minute pause.)" for the next request.
+
     pub resume_note: Option<String>,
-    /// What was said in direct mode (app_direct), for the next request.
+
     pub direct_note: Option<String>,
-    /// How a brainstorm draft came about (app_brainstorm), for its turn.
+
     pub brainstorm_note: Option<String>,
-    /// The brain process is new: its first message carries the memory of
-    /// recent conversations.
+
     pub brain_fresh: bool,
-    /// The learned rules changed: restart the brain at the next turn.
+
     pub prompt_dirty: bool,
-    /// Tools that read tab or file contents ran in this turn.
+
     pub turn_reads: u32,
-    /// Conversations the memory holds, and when that was counted.
+
     pub memory_count: Option<(Instant, usize)>,
-    /// The brain's last sign of life this turn (an event or a tool call):
-    /// a turn silent too long is ended and the brain restarted.
+
     pub last_event: Option<Instant>,
-    /// A new turn went out while a cut off one was still finishing.
+
     queued_after_cut: bool,
-    /// The model chose to ignore this turn's utterance: say nothing.
+
     pub ignored_turn: bool,
-    /// Move to this account (None: best) when the turn ends.
+
     pub account_after: Option<Option<usize>>,
-    /// Tab ids in the memory block that now name a different tab (or no
-    /// tab), with where that tab is now: a tool call naming one is refused
-    /// once with that.
+
     pub stale_ids: std::collections::HashMap<u64, String>,
     purged: bool,
-    /// The part of the last reply not spoken (past the spoken sentence
-    /// limit), and when: "more" says it.
+
     pub unsaid: Option<(Instant, String)>,
-    /// What was spoken lately (newest last), for the panel and tests.
+
     pub spoken: Vec<String>,
-    /// This turn was started by GodTerm (a delegated answer arrived), not
-    /// by the user.
+
     pub system_turn: bool,
-    /// The browser this turn was typed in (the web app), if it was.
+
     pub web_client: Option<u64>,
-    /// Set while a browser's turn is being started.
+
     pub pending_web: Option<u64>,
-    /// A raised reply limit (after a reply hit the old one), for every
-    /// brain started from now on.
+
     pub token_cap: Option<u32>,
-    /// This turn was already retried with a higher limit.
+
     cap_retried: bool,
-    /// The current turn, to send again: (text, heard, system note).
+
     pub(crate) last_turn: Option<(String, Option<String>, Option<String>)>,
-    /// The panel shows the admin actions instead of the chat.
+
     pub show_admin: bool,
-    /// The panel shows the full timing of the last turn.
+
     pub show_details: bool,
-    /// Requests typed in the panel, oldest first (↑/↓ walk them).
+
     pub input_hist: Vec<String>,
     pub hist_pos: Option<usize>,
-    /// When the last character was typed into the input (a key burst
-    /// with an Enter in it is a paste, not a send).
+
     pub last_key_at: Option<Instant>,
-    /// Tool chips opened to show their raw arguments (log indices).
+
     pub expanded: std::collections::HashSet<usize>,
-    /// Remote Control, while on (it belongs to the current brain process).
+
     pub remote: Option<crate::app_remote::Remote>,
     pub remote_pending: Option<crate::app_remote::RemotePending>,
-    /// Messages GodTerm sent (their echoes are not Remote Control).
+
     pub sent: std::collections::VecDeque<String>,
-    /// This turn came through Remote Control.
+
     pub turn_remote: bool,
-    /// The menu's Remote Control waits for its second pick.
+
     pub remote_armed: Option<Instant>,
-    /// Turning Remote Control on (its attempts, retry and restart).
+
     pub remote_flow: Option<crate::app_remote::RemoteFlow>,
-    /// Kept on (assistant.remote_control): not before this (after a
-    /// failure, or a short pause after it dropped).
+
     pub remote_retry_at: Option<Instant>,
-    /// The user turned it off: not turned on again by itself until
-    /// GodTerm restarts (or it is turned on).
+
     pub remote_off_by_user: bool,
-    /// The last Remote Control link (it can change on each enable).
+
     pub remote_last_url: Option<String>,
-    /// The next brain starts a new session (New, reset_after_turns, ...).
+
     pub fresh_session: bool,
-    /// The current brain resumed its session (its gen) and has not
-    /// answered yet: an exit now means the resume failed.
+
     pub resumed: Option<u64>,
-    /// The crash check ran (once per launch).
+
     pub crash_checked: bool,
-    /// Start the brain now (after a crash), not on the first request.
+
     pub eager_start: bool,
-    /// What the previous work_status call saw (since: "last").
+
     pub work_seen: crate::app_workstatus::WorkSeen,
-    /// When a tab answer held by the quiet gate was last explained in
-    /// the log (app_followup).
+
     pub report_held_logged: Option<Instant>,
-    /// Questions sent to tabs whose answers are reported back.
+
     pub follow_ups: Vec<crate::app_followup::FollowUp>,
     pub follow_seq: u64,
-    /// The assistant could not start for a report: try again after this.
+
     pub report_retry: Option<Instant>,
-    /// Watching its own account's usage (warn, ask, move).
+
     pub selfswitch: crate::app_selfswitch::SelfSwitch,
-    /// Unprompted updates wait here for a quiet moment.
+
     pub quiet: crate::app_quiet::QuietGate,
-    /// What tabs did (finished, approvals, update news), for the
-    /// assistant to tell or not (app_events).
+
     pub events: crate::app_events::Inbox,
-    /// Images attached in the input (their chips are in it).
+
     pub pending_images: Vec<crate::assistant_images::Attachment>,
-    /// Images sent lately, referable by number (30 minutes).
+
     pub images: Vec<crate::assistant_images::Attachment>,
-    /// The last image number given.
+
     pub image_seq: u32,
-    /// The images of the turn being started.
+
     pub next_images: Vec<crate::assistant_images::Attachment>,
-    /// Old images were pruned this run.
+
     pub images_pruned: bool,
-    /// The clipboard images are read from (None: the system's; tests set
-    /// a fake).
+
     pub clipboard: Option<Box<dyn crate::assistant_images::Clipboard>>,
 }
 
-/// Where the time of one turn went.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Timing {
     pub heard: Option<Instant>,
@@ -293,7 +263,6 @@ pub struct Timing {
 }
 
 impl Timing {
-    /// "STT 240 ms · first token 610 ms · first audio 880 ms after you stopped".
     pub fn summary(&self, endpoint_ms: u32) -> String {
         let base = self.heard.or(self.asked);
         let ms =
@@ -326,10 +295,7 @@ impl App {
         self.cfg.assistant.mode != "off"
     }
 
-    /// The account it runs on: the configured one, or the logged in one
-    /// with the most 5 hour quota left.
     pub fn assistant_account(&self) -> Option<usize> {
-        // Only accounts of the provider's harness (none: it has its own login).
         let h = crate::providers::by_id(&self.cfg.assistant.provider).harness?;
         let claude = |a: usize| self.cfg.accounts[a].harness() == h;
         let want = self.cfg.assistant.account.trim();
@@ -355,7 +321,6 @@ impl App {
         })
     }
 
-    /// A line from GodTerm in the panel (and the saved conversation).
     pub fn assistant_note(&mut self, text: impl Into<String>) {
         self.note(text);
     }
@@ -381,13 +346,7 @@ impl App {
         }
     }
 
-    /// Start the brain on its account if it is not running (also used to
-    /// warm it up on the wake word, push to talk and speech start).
     pub fn ensure_brain(&mut self) -> Result<(), String> {
-        // A long conversation is restarted with a one line summary, so
-        // context (and answer time) stays small.
-        // Never in the middle of something (a question waiting for its
-        // yes, prompts on their way), and with the recent exchanges carried.
         let mid = self.pending_confirms.iter().any(|p| p.answerable())
             || self.deliveries.iter().any(|d| !d.done());
         if self.assistant.turns_in_brain >= self.cfg.assistant.reset_after_turns.max(2)
@@ -414,7 +373,7 @@ impl App {
             self.assistant.carry = (!carry.is_empty()).then_some(carry);
             self.assistant.brain = None;
             self.assistant.turns_in_brain = 0;
-            // A trim: the next process gets a new session, not this one.
+
             self.assistant.fresh_session = true;
         }
         let provider = crate::providers::by_id(&self.cfg.assistant.provider);
@@ -422,9 +381,6 @@ impl App {
         let want = self.assistant_account();
         let model = crate::providers::model_for(provider, &self.cfg.assistant);
         if let Some(b) = self.assistant.brain.as_mut() {
-            // With "best", a working brain stays put (the tick moves it off
-            // an account under 5%); otherwise it follows the setting. A model
-            // picked mid answer applies on the next turn.
             if b.running()
                 && b.provider == provider.id
                 && b.model == model
@@ -442,8 +398,7 @@ impl App {
                 let a = self
                     .assistant_account()
                     .ok_or("no logged in account for the assistant")?;
-                // A Claude account set to use its long-lived token runs
-                // on it (CLAUDE_CODE_OAUTH_TOKEN for this process only).
+
                 let token = (self.cfg.accounts[a].harness() == crate::harness::Harness::Claude
                     && provider.harness == Some(crate::harness::Harness::Claude))
                 .then(|| crate::acct_tokens::env_for(&self.cfg.accounts[a].name))
@@ -505,7 +460,6 @@ impl App {
         ));
         self.assistant.resumed = None;
         if resumed {
-            // It has the conversation: no memory block or summary.
             self.assistant.resumed = Some(b.gen);
             self.assistant.carry = None;
             self.assistant.brain_fresh = false;
@@ -519,17 +473,12 @@ impl App {
         Ok(())
     }
 
-    /// A compact snapshot for each turn, so "what's going on" is answered
-    /// from fresh data.
     pub fn state_preamble(&self) -> String {
-        // About 600 tokens at most: one line per account and per tab, the
-        // waiting prompt summarized; detail comes from the tools.
         const BUDGET: usize = 2400;
         let mut s = String::from("<state>\n");
         for a in 0..self.cfg.accounts.len() {
             let st = &self.accounts[a];
             let left = match st.five_hour_left() {
-                // The kept percent is from before the reset.
                 Some(_) if st.five_hour_reset_passed() => "5h reset, refreshing".to_string(),
                 Some(l) => format!("{l:.0}% 5h"),
                 None => "?".into(),
@@ -549,7 +498,7 @@ impl App {
                 ),
                 _ => week,
             };
-            // Old numbers say how old they are (a failing fetch keeps them).
+
             let stale = st
                 .usage_good_at
                 .filter(|t| chrono::Utc::now() - *t > chrono::Duration::minutes(10))
@@ -587,11 +536,9 @@ impl App {
                             60
                         )
                     ),
-                    // At its prompt, but subagents or shells may still run:
-                    // then it is busy (never idle), though it takes prompts.
+
                     Activity::Ready => match self.tab_background_work(si, ti) {
                         Some(w) => {
-                            // Named: "3 subagents (general-purpose (36 min), ...)".
                             let a = self.tab_activity(si, ti);
                             let w = match a.subagents_line() {
                                 Some(l) => {
@@ -634,7 +581,7 @@ impl App {
                 let _ = si;
                 let loops = self.loops_in(t.uid);
                 let queued = self.queued_for(t.uid);
-                // The row's label, when it adds to the state.
+
                 let state = match self.tab_label(si, ti) {
                     Some(
                         l @ (crate::tab_labels::TabLabel::Finished
@@ -644,7 +591,7 @@ impl App {
                     ) => format!("{state} [{}]", l.word()),
                     _ => state,
                 };
-                // Its model, and a switch waiting for the turn to end.
+
                 let state = match (self.tab_model_label(si, ti), self.queued_model(t.uid)) {
                     (Some(m), Some(q)) => format!("{state} {m}, {} queued", q.label),
                     (None, Some(q)) => format!("{state} {} queued", q.label),
@@ -684,10 +631,9 @@ impl App {
         if shown < total {
             s.push_str(&format!("...{} more tabs (get_state)\n", total - shown));
         }
-        // Requests to tabs and their receipts (deliveries in get_state).
+
         s.push_str(&self.deliveries_state_lines());
-        // Only a question still answerable is pending; an expired one
-        // runs nothing on a yes and is only asked again.
+
         for p in &self.pending_confirms {
             if p.answerable() {
                 s.push_str(&format!(
@@ -717,7 +663,7 @@ impl App {
         s.push_str(&self.setup_state_line());
         s.push_str(&self.remote_state_line());
         s.push_str(&self.told_state_lines());
-        // Listening is GodTerm's business: a message here means it is on.
+
         s.push_str(&match self.pause_left() {
             Some(left) => format!("listening_paused: {left} s left\n"),
             None => "listening_paused: no (listening is active)\n".to_string(),
@@ -727,10 +673,6 @@ impl App {
         s
     }
 
-    /// Where the tabs a memory names are now, by their session id or
-    /// folder (never by the remembered id: ids from before a restart may
-    /// name another tab). Ids that now mean something else are kept for a
-    /// one time refusal (see control_call).
     pub fn remembered_tabs_now(&mut self, refs: &[crate::assistant_memory::TabRef]) -> String {
         self.assistant.stale_ids.clear();
         let mut lines = vec![];
@@ -804,8 +746,6 @@ impl App {
         )
     }
 
-    /// The account the brain runs on now (its process, else the one it
-    /// would start on).
     pub fn brain_account(&self) -> Option<usize> {
         self.assistant
             .brain
@@ -814,8 +754,6 @@ impl App {
             .or_else(|| self.assistant_account())
     }
 
-    /// The modes the user can flip in the UI at any time, stated every
-    /// turn so nothing the conversation said earlier outlives them.
     pub fn modes_line(&self) -> String {
         let voice = match self.voice_mode() {
             0 => "off",
@@ -886,12 +824,10 @@ impl App {
         format!("{}\n", parts.join(" · "))
     }
 
-    /// Send a typed request to the assistant.
     pub fn ask_assistant(&mut self, text: &str) {
         self.ask_assistant_from(text, None);
     }
 
-    /// Send a request; `heard` is whisper's transcript when it was spoken.
     pub fn ask_assistant_from(&mut self, text: &str, heard: Option<&str>) {
         let text = text.trim();
         if text.is_empty() {
@@ -913,14 +849,10 @@ impl App {
         self.start_turn(text, heard, None);
     }
 
-    /// A turn GodTerm starts itself (a delegated answer arrived): `note`
-    /// shows in the panel, `msg` goes to the brain.
     pub fn ask_assistant_system(&mut self, note: &str, msg: &str) {
         self.start_turn(msg, None, Some(note));
     }
 
-    /// The browser a user turn came from: typed in it, or spoken into it
-    /// (a browser holds the voice). Its view is the one layout words mean.
     pub(crate) fn turn_web_client(&mut self, spoken: bool) -> Option<u64> {
         self.assistant
             .pending_web
@@ -942,13 +874,11 @@ impl App {
         } else {
             None
         };
-        // Spoken in, spoken out; a turn of our own (a tab finished...)
-        // follows how the user last talked to it.
+
         if system.is_none() {
             self.assistant.turn_spoken = heard.is_some();
         }
         if system.is_none() {
-            // Said something: the chat follows the newest line again.
             self.assistant.chat_off.set(0);
         }
         self.assistant.log.push(match system {
@@ -965,7 +895,7 @@ impl App {
                 .log
                 .push(Entry::new(Who::Note, format!("\u{1F4CE} {}", a.label())));
         }
-        // A turn of our own is never the user's yes.
+
         self.assistant.last_user = if system.is_some() {
             String::new()
         } else {
@@ -973,7 +903,7 @@ impl App {
         };
         self.assistant.ignored_turn = false;
         self.trim_log();
-        // New learned rules: the brain restarts with them, between turns.
+
         self.refresh_brain_for_rules();
         self.assistant.turn_reads = 0;
         if let Err(e) = self.ensure_brain() {
@@ -981,8 +911,7 @@ impl App {
             self.flash(format!("Assistant: {e}"));
             return;
         }
-        // A new process remembers recent conversations (before this one's
-        // request is written, so it is not repeated).
+
         let memory = if std::mem::take(&mut self.assistant.brain_fresh)
             && self.cfg.assistant.memory_days > 0
         {
@@ -1034,8 +963,7 @@ impl App {
             Some(h) => conv.write("user", serde_json::json!({"text": text, "via": "voice", "heard": h, "account": account, "model": model})),
             None => conv.write("user", serde_json::json!({"text": text, "via": "typed", "account": account, "model": model, "images": images.iter().map(|a| a.path.display().to_string()).collect::<Vec<_>>()})),
         }
-        // The request first and the state last: the system prompt and the
-        // conversation so far stay byte stable for prompt caching.
+
         let mut earlier = memory.unwrap_or_default();
         if let Some(c) = self.assistant.carry.take() {
             earlier.push_str(&format!("(Earlier in this conversation: {c})\n"));
@@ -1056,7 +984,7 @@ impl App {
             earlier.push_str("(The user talked over your previous answer and cut it off; nothing more of it runs. What they say now takes over: \"no, I meant...\" corrects that request.)\n");
         }
         self.assistant.queued_after_cut = self.assistant.stale > 0;
-        // Spoken requests are marked: speech recognition mishears names.
+
         let spoken = if heard.is_some() { "(spoken) " } else { "" };
         let (image_note, blocks) = self.turn_images(&images);
         let msg = format!(
@@ -1079,8 +1007,7 @@ impl App {
                 self.assistant.brain = None;
                 self.note(format!("Could not send: {e}"));
             }
-            // What GodTerm told the user is in this state: next turn's
-            // told_user starts after it.
+
             Some(Ok(_)) => self.told_turn_sent(),
             None => {}
         }
@@ -1094,7 +1021,6 @@ impl App {
         }
     }
 
-    /// "new conversation" / "forget that".
     pub fn reset_assistant(&mut self) {
         self.assistant.brain = None;
         self.assistant.fresh_session = true;
@@ -1108,7 +1034,6 @@ impl App {
         self.flash("Assistant: new conversation");
     }
 
-    /// From a tool call: switch once the current answer is done.
     pub fn set_assistant_account_after_turn(&mut self, a: Option<usize>) {
         if self.assistant.busy {
             self.assistant.account_after = Some(a);
@@ -1117,8 +1042,6 @@ impl App {
         }
     }
 
-    /// Point it at another account (by index, or None for "best"). Another
-    /// account of its provider: the conversation moves along.
     pub fn set_assistant_account(&mut self, a: Option<usize>) {
         let h = crate::providers::by_id(&self.cfg.assistant.provider).harness;
         if let Some(i) = a.filter(|&i| {
@@ -1145,20 +1068,15 @@ impl App {
         self.flash(format!("Assistant uses {label} from now on"));
     }
 
-    /// Whether this turn's answer is said out loud: not while the speaker
-    /// is muted; a typed message only with assistant.speak_typed.
     pub fn reply_spoken(&self) -> bool {
         !self.cfg.voice.speaker_muted
             && (self.assistant.turn_spoken || self.cfg.assistant.speak_typed)
     }
 
-    /// Whether replies are spoken at all.
     pub fn tts_on(&self) -> bool {
         self.voice.engine.as_ref().is_some_and(|v| v.tts) || self.cfg.voice.tts
     }
 
-    /// Speak a line of the assistant's reply (queued after what is being
-    /// said, unlike confirmations which cut in).
     pub fn speak_assistant(&mut self, text: &str) {
         if self.cfg.voice.speaker_muted {
             return;
@@ -1174,9 +1092,7 @@ impl App {
                 return;
             }
         }
-        // Tests never start a speaker: its worker loads the real voice
-        // model, and a model still loading when the test process exits
-        // crashed it (onnxruntime against exit time destructors).
+
         if self.voice.preview.is_none() && self.cfg.voice.tts && !cfg!(test) {
             let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             self.voice.preview = Some(crate::voice::tts::Speaker::start(&self.cfg.voice, flag));
@@ -1192,7 +1108,6 @@ impl App {
         args: &serde_json::Value,
         v: &serde_json::Value,
     ) {
-        // The user's own clicks in the web app, not the assistant's work.
         if self.web_caller {
             return;
         }
@@ -1208,7 +1123,7 @@ impl App {
                 .unwrap_or("failed")
                 .to_string()
         };
-        // Shown as a readable chip; the raw arguments on a click.
+
         self.assistant.log.push(Entry::new(
             Who::Tool,
             serde_json::json!({"tool": tool, "args": args, "status": status}).to_string(),
@@ -1224,10 +1139,7 @@ impl App {
         }
     }
 
-    /// Speak a piece of the answer unless "stop" was said (or the model
-    /// chose to ignore what it heard).
     fn say_part(&mut self, t: &str) {
-        // A turn from Remote Control is answered there, not out loud here.
         if !self.assistant.muted
             && !self.assistant.ignored_turn
             && !self.assistant.turn_remote
@@ -1243,10 +1155,6 @@ impl App {
         }
     }
 
-    /// The text block streamed so far has ended. It is held: a tool call
-    /// next makes it narration (shown dim, never spoken), the end of the
-    /// turn makes it the answer. Nothing before the last tool call is
-    /// spoken.
     fn end_block(&mut self, tool_next: bool) {
         let b = std::mem::take(&mut self.assistant.block).trim().to_string();
         if tool_next {
@@ -1260,21 +1168,16 @@ impl App {
         self.refresh_current();
     }
 
-    /// Speak the answer: narration dropped (shown dim), at most the
-    /// spoken sentence limit, the rest shown ("more" says it). Returns the
-    /// reply without its narration, its markdown and line breaks kept.
     fn speak_reply(&mut self, reply: &str) -> String {
         let max = self.cfg.assistant.spoken_sentences;
-        // Speech is plain sentences (a table is "a table of N rows");
-        // what is shown keeps the reply's markdown.
+
         let r = crate::md::reply(reply, max);
         if !r.narration.is_empty() {
             self.assistant
                 .log
                 .push(Entry::new(Who::Preamble, r.narration.join(" ")));
         }
-        // No closing offer: the spoken part ends where it ends. The rest
-        // stays shown, and "more" still says it.
+
         self.say_part(&r.say);
         if let Some(rest) = r.rest_say {
             self.assistant.unsaid = Some((Instant::now(), rest));
@@ -1282,8 +1185,6 @@ impl App {
         r.shown
     }
 
-    /// "more", "go on" or "the rest": say what the last
-    /// reply left unsaid, without a turn.
     fn say_more(&mut self, text: &str) -> bool {
         let Some((at, rest)) = self.assistant.unsaid.clone() else {
             return false;
@@ -1337,7 +1238,7 @@ impl App {
                     .0
                     .contains('?')
             });
-        // A yes with a question waiting answers that question instead.
+
         let yes_ok = offered_plainly && self.pending_confirms.is_empty();
         if !(more.contains(&c.as_str()) || (yes_ok && yes.contains(&c.as_str()))) {
             return false;
@@ -1362,9 +1263,6 @@ impl App {
         self.assistant.current = parts.join(" ");
     }
 
-    /// The user talked over a reply: stop its speech, cut the turn off
-    /// (claude interrupt), and take what they say next as a new request
-    /// without the wake word.
     pub fn assistant_barge_in(&mut self, speech_ms: u32, stop_ms: u32) {
         crate::log::info(&format!(
             "assistant: barge-in after {speech_ms} ms of speech; audio stopped in {stop_ms} ms"
@@ -1391,8 +1289,6 @@ impl App {
         self.assistant.cut_off = Some(Instant::now());
     }
 
-    /// Whether the next request follows a barge-in: only one soon before
-    /// it, sleep included.
     pub fn take_cut_off(&mut self) -> bool {
         self.assistant
             .cut_off
@@ -1408,7 +1304,7 @@ impl App {
             BrainEvent::Bridge(s) => return self.on_bridge_state(&s),
             _ => {}
         }
-        // A cut off turn: drop its output; its end frees the next one.
+
         if self.assistant.stale > 0 && !matches!(ev, BrainEvent::Exited(_)) {
             if let BrainEvent::Done { text, .. } = &ev {
                 self.assistant.stale -= 1;
@@ -1440,7 +1336,6 @@ impl App {
                 self.refresh_current();
             }
             BrainEvent::Text(t) => {
-                // A whole block (after its deltas, or alone).
                 if !self.assistant.got_delta {
                     self.assistant.block = t;
                 }
@@ -1455,7 +1350,7 @@ impl App {
                 if !self.assistant.block.trim().is_empty() {
                     self.end_block(true);
                 }
-                // Text held before this tool was narration.
+
                 for h in std::mem::take(&mut self.assistant.held) {
                     self.assistant.log.push(Entry::new(Who::Preamble, h));
                 }
@@ -1465,11 +1360,8 @@ impl App {
                     .first_tool
                     .get_or_insert_with(Instant::now);
             }
-            BrainEvent::ToolResult(_) => {
-                // Tool calls are logged by the control API itself.
-            }
+            BrainEvent::ToolResult(_) => {}
             BrainEvent::Done { text, cost, error } => {
-                // A resumed session that cannot be found (grok answers so).
                 if error
                     && self.assistant.resumed.is_some()
                     && text.to_lowercase().contains("no conversation found")
@@ -1481,7 +1373,7 @@ impl App {
                 if !self.assistant.block.trim().is_empty() {
                     self.end_block(false);
                 }
-                // No tool followed the held text: it is the answer.
+
                 for h in std::mem::take(&mut self.assistant.held) {
                     self.assistant.finals.push(h);
                 }
@@ -1492,11 +1384,11 @@ impl App {
                 };
                 self.assistant.finals.clear();
                 self.assistant.current.clear();
-                // A usage or rate limit: it moves itself, the turn sent again.
+
                 if error && self.self_switch_on_limit(&format!("{reply} {text}")) {
                     return;
                 }
-                // A provider's login refused (Grok's own login): back to Claude.
+
                 if error && self.cfg.assistant.provider != "claude" {
                     let low = format!("{reply} {text}").to_lowercase();
                     if [
@@ -1533,11 +1425,8 @@ impl App {
                     (reply, error)
                 };
                 if self.assistant.ignored_turn && self.assistant.system_turn {
-                    // A turn of our own (tab events) it chose to keep quiet
-                    // about: nothing said, the user's own lines untouched.
                     crate::log::info("assistant: kept quiet about a turn of our own");
                 } else if self.assistant.ignored_turn {
-                    // Not addressed to it: nothing said, nothing shown but a note.
                     if let Some(u) = self
                         .assistant
                         .log
@@ -1553,7 +1442,7 @@ impl App {
                     crate::log::info(&format!("assistant: ignored: {}", self.assistant.last_user));
                 } else if !reply.is_empty() {
                     let reply = self.speak_reply(&reply);
-                    // Voice off: a report of ours still reaches the user.
+
                     if self.assistant.system_turn && !self.tts_on() {
                         self.flash(format!(
                             "Assistant: {}",
@@ -1613,7 +1502,7 @@ impl App {
                 }
                 self.assistant.brain = None;
                 self.assistant.busy = false;
-                // A cut off turn cannot finish in a process that is gone.
+
                 self.assistant.stale = 0;
                 self.assistant.queued_after_cut = false;
                 self.assistant.muted = false;
@@ -1630,9 +1519,6 @@ impl App {
         }
     }
 
-    /// The reply hit the output token limit: start a brain with twice the
-    /// limit (up to 32000) and send the same turn again, once. False when
-    /// it was already retried or cannot go higher.
     fn retry_with_higher_cap(&mut self) -> bool {
         let cur = self
             .assistant
@@ -1662,7 +1548,7 @@ impl App {
         ));
         let n = self.assistant.log.len();
         self.start_turn(&text, heard.as_deref(), system.as_deref());
-        // The request is shown once.
+
         if self.assistant.log.len() > n {
             self.assistant.log.remove(n);
         }
@@ -1670,8 +1556,6 @@ impl App {
         true
     }
 
-    /// End a turn the brain never finished: drop the process (it starts
-    /// again on the next request), clear every cut off and busy flag.
     pub fn reset_hung_turn(&mut self, why: &str) {
         crate::log::info(&format!("assistant: {why}"));
         self.assistant.brain = None;
@@ -1693,9 +1577,6 @@ impl App {
         self.flash(format!("Assistant: {why}"));
     }
 
-    /// Deadlines for a turn: a cut off one must end within 8 s, an
-    /// ordinary one must show some life within 60 s (tools waiting on a
-    /// tab count as life).
     pub fn assistant_deadlines(&mut self) {
         let Some(at) = self.assistant.last_event else {
             return;
@@ -1716,7 +1597,6 @@ impl App {
         }
     }
 
-    /// Warm start: bring the process up without sending anything.
     pub fn prewarm_assistant(&mut self) {
         if !self.assistant_on() || !self.cfg.assistant.prewarm || cfg!(test) {
             return;
@@ -1740,7 +1620,6 @@ impl App {
         }
     }
 
-    /// Every second or so: deadlines, Remote Control, its own account.
     pub fn assistant_tick(&mut self) {
         self.assistant_deadlines();
         self.follow_ups_tick();
@@ -1776,15 +1655,12 @@ impl App {
         }
         self.prewarm_assistant();
         if self.assistant.brain.is_some() {
-            // Keep the session index warm for the sessions tool.
             self.kick_index(false);
         }
-        // Its own account: warn, ask or move (app_selfswitch).
+
         self.self_switch_tick();
     }
 
-    /// Ctrl-a .: open the panel (with the keys), give it the keys back
-    /// when it is open without them, close it when it has them.
     pub fn toggle_assistant_panel(&mut self) {
         if self.assistant.show && self.assistant.win == crate::app_panelwin::PanelWin::Min {
             self.assistant.win = crate::app_panelwin::PanelWin::Normal;
@@ -1801,18 +1677,13 @@ impl App {
         }
     }
 
-    /// The panel is open and typing goes to it (minimized, it never has
-    /// the keys).
     pub fn assistant_has_focus(&self) -> bool {
         self.assistant.show
             && self.assistant.focused
             && self.assistant.win != crate::app_panelwin::PanelWin::Min
     }
 
-    /// Keys while the panel is open: typing goes to its input, at the
-    /// caret (the editing keys are in app_input).
     pub fn on_assistant_key(&mut self, k: KeyEvent) -> bool {
-        // Ctrl-V: the clipboard's image (a terminal paste carries no image).
         if self.assistant_has_focus()
             && self.assistant.history.is_none()
             && k.modifiers.contains(KeyModifiers::CONTROL)
@@ -1830,8 +1701,7 @@ impl App {
             }
             return self.on_history_key(k);
         }
-        // Ctrl-E, -W, -U, -K and Ctrl+arrows edit; every other Ctrl key
-        // goes on as before (Ctrl-a, the prefix, never gets here).
+
         if k.modifiers.contains(KeyModifiers::CONTROL) {
             return self.input_ctrl_key(k);
         }
@@ -1839,20 +1709,17 @@ impl App {
             return true;
         }
         match k.code {
-            // Esc in another view: back to the conversation. In it, Esc
-            // gives the keys back to the grid; the panel stays open.
             KeyCode::Esc if self.panel_view() != crate::panel_views::PanelView::Conversation => {
                 self.back_to_conversation()
             }
-            // Esc while brainstorming leaves the mode; the draft stays.
+
             KeyCode::Esc if self.brainstorm_on() => self.leave_brainstorm(),
-            // Esc with nothing typed ends direct mode first.
+
             KeyCode::Esc if self.direct.on.is_some() && self.assistant.input.is_empty() => {
                 self.end_direct("Esc in the panel", true)
             }
             KeyCode::Esc => self.assistant.focused = false,
-            // Shift or Alt+Enter, or an Enter inside a burst of keys (a
-            // paste the terminal typed out): a new line, not a send.
+
             KeyCode::Enter
                 if k.modifiers
                     .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
@@ -1877,8 +1744,6 @@ impl App {
         true
     }
 
-    /// Up (older) or Down (newer) in the typed requests, from the input's
-    /// first or last row.
     pub(crate) fn input_history(&mut self, down: bool) {
         let n = self.assistant.input_hist.len();
         if !down {
@@ -1908,12 +1773,9 @@ impl App {
         }
     }
 
-    /// A paste into the panel's input: line ends kept (as \n), other
-    /// control characters dropped, at most PASTE_MAX characters.
     pub fn assistant_paste(&mut self, text: &str) {
         const PASTE_MAX: usize = 16_000;
-        // Cmd-V of an image gives the terminal an empty paste: read the
-        // clipboard. A dragged or pasted image file path attaches the file.
+
         if text.trim().is_empty()
             && (self.paste_clipboard_image(!text.is_empty()) || text.is_empty())
         {
@@ -1930,7 +1792,7 @@ impl App {
             .chars()
             .filter(|c| *c == '\n' || !c.is_control())
             .collect();
-        // At the caret, over the selection.
+
         let mut ed = self.assistant.ed();
         ed.delete_selection();
         let have = ed.text.chars().count();
@@ -1950,11 +1812,7 @@ impl App {
         }
     }
 
-    /// Enter or Send in the panel: the typed request goes out and joins
-    /// the input history.
     pub fn send_assistant_input(&mut self) {
-        // Brainstorming: the draft goes out as one message (to the
-        // assistant or the direct tab).
         if self.brainstorm_on() {
             return self.finish_brainstorm(false, false);
         }
@@ -1973,11 +1831,10 @@ impl App {
         self.assistant.show_admin = false;
         self.assistant.next_images = self.take_input_images(&t);
         self.ask_assistant(&t);
-        // Not taken (the request was answered without a turn).
+
         self.assistant.next_images.clear();
     }
 
-    /// After a spoken reply ends, listen for the follow up (wake mode).
     pub fn assistant_follow_up(&mut self, speaking: bool) {
         if self.assistant.follow_up && !speaking && !self.assistant.busy {
             self.assistant.follow_up = false;

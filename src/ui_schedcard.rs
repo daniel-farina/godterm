@@ -1,8 +1,3 @@
-//! The detail card of a Loops & schedules row (app_sched::SchedCard):
-//! a calm popup with the full prompt, what kind of thing it is, who runs
-//! it, when, and labeled buttons. Opened from the assistant panel's
-//! section and from the Loops view.
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -15,10 +10,8 @@ use crate::hits::{text, UiAction};
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 use crate::ui_assistant::cells;
 
-/// Label column of the facts.
 const LABEL_W: u16 = 10;
 
-/// Word wrap `s` to `w` cells (long words are cut).
 pub fn wrap_words(s: &str, w: u16) -> Vec<String> {
     let w = w.max(4);
     let mut out = vec![];
@@ -30,7 +23,6 @@ pub fn wrap_words(s: &str, w: u16) -> Vec<String> {
                 let lw = cells(&line);
                 let ww = cells(&word);
                 if lw == 0 && ww > w {
-                    // A word longer than the line: cut it.
                     let mut head = String::new();
                     for ch in word.chars() {
                         if cells(&head) + cells(&ch.to_string()) > w {
@@ -62,7 +54,6 @@ pub fn wrap_words(s: &str, w: u16) -> Vec<String> {
     out
 }
 
-/// The button colors: (text when resting, the hover fill).
 fn tone_colors(t: BtnTone) -> (Color, Color) {
     match t {
         BtnTone::Primary => (theme::SAGE, theme::SAGE),
@@ -71,8 +62,6 @@ fn tone_colors(t: BtnTone) -> (Color, Color) {
     }
 }
 
-/// Lay the card out at `inner`; draw it when `buf` is given. Returns the
-/// rows it takes.
 fn layout(
     mut buf: Option<&mut Buffer>,
     app: &App,
@@ -91,7 +80,7 @@ fn layout(
             _ => cx + cells(s),
         }
     };
-    // Badges: small colored labels.
+
     let mut cx = x;
     for (b, col) in &c.badges {
         let s = format!(" {b} ");
@@ -101,7 +90,7 @@ fn layout(
         cx = put(&mut buf, y, cx, &s, Style::default().fg(*col).bg(SEL_BG)) + 1;
     }
     y += 1;
-    // The name.
+
     for l in wrap_words(&c.name, w) {
         put(
             &mut buf,
@@ -116,7 +105,7 @@ fn layout(
         y += 1;
     }
     y += 1;
-    // What it sends, in full.
+
     put(
         &mut buf,
         y,
@@ -135,7 +124,7 @@ fn layout(
         y += 1;
     }
     y += 1;
-    // The facts.
+
     for (label, t, col) in &c.facts {
         put(&mut buf, y, x, label, Style::default().fg(DIM).bg(BAR_BG));
         for (k, l) in wrap_words(t, w.saturating_sub(LABEL_W))
@@ -156,7 +145,7 @@ fn layout(
         y += 1;
     }
     y += 1;
-    // The buttons, wrapping to another line when they do not fit.
+
     let mut bx = x;
     for b in &c.buttons {
         let bw = cells(&b.label) + 2;
@@ -206,7 +195,7 @@ fn layout(
             y += 1;
         }
     }
-    // The keys.
+
     let keys: Vec<String> = c
         .buttons
         .iter()
@@ -227,7 +216,6 @@ fn layout(
     y - inner.y
 }
 
-/// Draw the card for row `key` over `area`.
 pub fn draw(f: &mut Frame, area: Rect, app: &App, key: &str) {
     let Some(c) = app.sched_card(key) else {
         crate::ui_chrome::draw_message(
@@ -241,8 +229,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, key: &str) {
         );
         return;
     };
-    // Over the assistant panel when it shows and is wide enough (the
-    // section it came from), else the middle of the screen.
+
     let panel = app
         .hits
         .borrow()
@@ -275,7 +262,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, key: &str) {
         .style(Style::default().bg(BAR_BG))
         .render(r, buf);
     let mut hits = app.hits.borrow_mut();
-    // Inside the card: a click there keeps it open.
+
     hits.add(r, UiAction::SchedCardInside, "");
     let inner = Rect::new(
         r.x + 1,
@@ -284,7 +271,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, key: &str) {
         r.height.saturating_sub(2),
     );
     layout(Some(buf), app, &c, inner, &mut hits);
-    // The x in the corner.
+
     let right = r.x + r.width - 1;
     crate::hits::button(
         buf,

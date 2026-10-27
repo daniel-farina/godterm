@@ -1,48 +1,13 @@
-//! Headphone tap (voice.headphone_tap): the play/pause button on
-//! headphones (an AirPods or Bluetooth headset tap or double tap, the
-//! wired EarPods center button) or the keyboard's play/pause media key
-//! turns GodTerm's mic on or off.
-//!
-//! While the setting is on, GodTerm claims the system's Now Playing slot
-//! and its remote commands, so the press comes here and not to Music or
-//! Spotify. Turning it off (or quitting) gives them back: the Now Playing
-//! info is cleared and the command handlers are removed, so the next press
-//! goes to the other apps again.
-//!
-//! What a press does is decided here, the same on every platform:
-//!
-//! - play, toggle play/pause, next and previous track: a toggle.
-//! - pause and stop: they only turn the mic off, never on. Headphones
-//!   taken off or unplugged send a pause with no tap; that must not open
-//!   the mic.
-//! - one physical press can arrive twice (the remote command and the media
-//!   key event): presses within 550 ms of the last one count once.
-//! - for 1.5 s after GodTerm reclaims Now Playing (which bounces its state)
-//!   presses are dropped: MediaRemote can echo a ghost press.
-//!
-//! The tap is about the mic only: it never stops or cuts off what is being
-//! said (see App::headphone_tap).
-//!
-//! Platforms: macOS (media_keys_mac, MediaRemote through
-//! MPRemoteCommandCenter, ported from GrokTerm). Linux (MPRIS over D-Bus)
-//! and Windows (SystemMediaTransportControls) are future work; there the
-//! setting does nothing yet.
-//!
-//! Every press and claim is logged to ~/.godterm/media-keys.log.
-
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 
 use crate::app::AppEvent;
 
-/// Presses closer together than this are one press.
 pub const DEBOUNCE_MS: u64 = 550;
-/// Presses this soon after a hard reclaim are ghosts.
+
 pub const RECLAIM_QUIET_MS: u64 = 1_500;
 
-/// A remote command or media key as it arrived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// Built only by the macOS backend (and tests) for now.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub enum Cmd {
     TogglePlayPause,
@@ -53,12 +18,10 @@ pub enum Cmd {
     Previous,
 }
 
-/// What a press may do to the mic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// On when off, off when on.
     Toggle,
-    /// Off when on; nothing when already off (unplug and route ghosts).
+
     StopOnly,
 }
 
@@ -71,15 +34,12 @@ impl Cmd {
     }
 }
 
-/// One press: the command and where it came from ("remote:play",
-/// "HID:PlayOrPause", "CGEventTap:PLAY").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Press {
     pub cmd: Cmd,
     pub source: &'static str,
 }
 
-/// The press turns the mic on or off, or is dropped (and why).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     On,
@@ -87,15 +47,12 @@ pub enum Verdict {
     Ignored(String),
 }
 
-/// Debounce, the quiet window after a reclaim, and pause/stop as off only.
 #[derive(Debug, Default)]
 pub struct Gate {
     last_ms: Option<u64>,
 }
 
 impl Gate {
-    /// `listening`: the mic is on now. `reclaimed_ms`: when Now Playing was
-    /// last reclaimed (0 never). Times in ms on any one clock.
     pub fn decide(&mut self, p: Press, now_ms: u64, listening: bool, reclaimed_ms: u64) -> Verdict {
         if reclaimed_ms > 0 && now_ms.saturating_sub(reclaimed_ms) < RECLAIM_QUIET_MS {
             return Verdict::Ignored(format!(
@@ -125,15 +82,11 @@ impl Gate {
     }
 }
 
-/// The platform side: owns the Now Playing claim while it lives.
 pub trait Backend {
-    /// On the main thread, often (every loop of the UI): run what the
-    /// system queued for the main thread (the remote command handlers),
-    /// keep Now Playing published, rebind and reclaim as needed.
     fn pump(&mut self, listening: bool, speaking: bool);
-    /// Give Now Playing and the remote commands back. Also on drop.
+
     fn release(&mut self);
-    /// When Now Playing was last reclaimed (ms since the epoch, 0 never).
+
     fn reclaimed_ms(&self) -> u64 {
         0
     }
@@ -141,12 +94,11 @@ pub trait Backend {
 
 type Factory = Box<dyn Fn(Sender<AppEvent>) -> Option<Box<dyn Backend>>>;
 
-/// Owned by the app: the claim while voice.headphone_tap is on.
 pub struct MediaKeys {
     backend: Option<Box<dyn Backend>>,
     pub gate: Gate,
     factory: Factory,
-    /// The setting is on (even where no backend exists yet).
+
     on: bool,
 }
 
@@ -162,7 +114,6 @@ impl Default for MediaKeys {
 }
 
 impl MediaKeys {
-    /// Tests: a fake backend in place of the system one.
     #[cfg(test)]
     pub fn with_factory(
         f: impl Fn(Sender<AppEvent>) -> Option<Box<dyn Backend>> + 'static,
@@ -175,18 +126,14 @@ impl MediaKeys {
         }
     }
 
-    /// The setting as last applied.
     pub fn on(&self) -> bool {
         self.on
     }
 
-    /// Something claims the remote commands right now.
     pub fn claimed(&self) -> bool {
         self.backend.is_some()
     }
 
-    /// Apply the setting: claim, or give everything back. True when it
-    /// changed.
     pub fn set(&mut self, on: bool, tx: &Sender<AppEvent>) -> bool {
         if on == self.on {
             return false;
@@ -215,7 +162,6 @@ impl MediaKeys {
         }
     }
 
-    /// Decide a press against the mic state.
     pub fn decide(&mut self, p: Press, listening: bool) -> Verdict {
         let reclaimed = self.backend.as_ref().map(|b| b.reclaimed_ms()).unwrap_or(0);
         let v = self.gate.decide(p, now_ms(), listening, reclaimed);
@@ -242,7 +188,6 @@ impl Drop for MediaKeys {
 }
 
 fn platform_backend(tx: Sender<AppEvent>) -> Option<Box<dyn Backend>> {
-    // Unit tests never claim the real Now Playing.
     if cfg!(test) {
         let _ = tx;
         return None;
@@ -258,9 +203,6 @@ fn platform_backend(tx: Sender<AppEvent>) -> Option<Box<dyn Backend>> {
     }
 }
 
-/// The audio route as CoreAudio reports it (macOS): the default output and
-/// input devices, their rates, whether they are Bluetooth, and whether
-/// anything records from the input right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct Route {
@@ -275,9 +217,6 @@ pub struct Route {
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl Route {
-    /// A Bluetooth headset in call mode (HFP): its mic is recording, or
-    /// its output runs at a call rate (8 to 24 kHz). No play/pause comes
-    /// from it then.
     pub fn call_mode(&self) -> bool {
         (self.in_bt && self.in_running)
             || (self.out_bt && self.out_rate > 0 && self.out_rate <= 24_000)
@@ -302,10 +241,6 @@ impl Route {
     }
 }
 
-/// Follows the route: what changed (for the log), and when a headset
-/// comes back from call mode to media mode, so Now Playing is reclaimed
-/// then (MediaRemote often goes deaf across the switch, which takes 1 to
-/// 3 s after the mic closes).
 #[derive(Debug, Default)]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct RouteWatch {
@@ -314,7 +249,6 @@ pub struct RouteWatch {
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl RouteWatch {
-    /// A new reading: (a log line when it changed, reclaim now).
     pub fn feed(&mut self, r: Route) -> (Option<String>, bool) {
         let prev = self.last.replace(r);
         if prev == Some(r) {
@@ -325,17 +259,6 @@ impl RouteWatch {
     }
 }
 
-/// `godterm tap-test [--with-mic] [secs]`: claim Now Playing for a while
-/// and print every press and what it would do to the mic (one JSON line
-/// each), then give it back. For checking headphones without the full app.
-///
-/// `--with-mic` also opens the default input the way the voice engine does
-/// (the godterm-speech helper, open mic style) and closes and reopens it
-/// as the presses say, so a Bluetooth headset goes into call mode as in
-/// real use. Every path is printed as it fires: the remote commands (here
-/// and inside the recording helper), the headset mute gesture
-/// (AVAudioApplication, in the helper), IOHID consumer and telephony
-/// usages, and route changes.
 pub fn tap_test(secs: u64, with_mic: bool) -> anyhow::Result<()> {
     let (tx, rx) = std::sync::mpsc::channel();
     let Some(mut b) = platform_backend(tx) else {
@@ -421,8 +344,6 @@ pub fn tap_test(secs: u64, with_mic: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// tap-test's open mic: frames read (and dropped) on a thread, the level
-/// shown now and then. Dropped: the stream closes.
 struct TestMic {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ended: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -475,7 +396,6 @@ impl TestMic {
                     std::sync::atomic::Ordering::Relaxed,
                 );
             }
-            // Dropping the capture ends the helper: the input closes.
         });
         Some(TestMic {
             stop,
@@ -516,10 +436,8 @@ pub fn now_ms() -> u64 {
 
 static LOG_LOCK: Mutex<()> = Mutex::new(());
 
-/// tap-test: every log line is printed too (every path, as it fires).
 static ECHO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// One line to ~/.godterm/media-keys.log (and the main log).
 pub fn log(msg: &str) {
     if ECHO.load(std::sync::atomic::Ordering::Relaxed) {
         println!("{}", serde_json::json!({"log": msg}));
@@ -527,7 +445,7 @@ pub fn log(msg: &str) {
     crate::log::info(&format!("media-keys: {msg}"));
     let _g = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = crate::config::app_home().join("media-keys.log");
-    // Keep it small: start over past 1 MB.
+
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1 << 20) {
         let _ = std::fs::remove_file(&path);
     }
@@ -582,7 +500,7 @@ mod tests {
     #[test]
     fn pause_only_turns_off() {
         let mut g = Gate::default();
-        // Headphones unplugged with the mic off: no ghost start.
+
         assert!(matches!(
             g.decide(press(Cmd::Pause), 10_000, false, 0),
             Verdict::Ignored(_)
@@ -601,7 +519,7 @@ mod tests {
             g.decide(press(Cmd::TogglePlayPause), 10_000, false, 0),
             Verdict::On
         );
-        // The same press as a media key event, 40 ms later.
+
         assert!(matches!(
             g.decide(press(Cmd::TogglePlayPause), 10_040, true, 0),
             Verdict::Ignored(_)
@@ -636,11 +554,10 @@ mod tests {
             "first reading"
         );
         assert_eq!(w.feed(media), (None, false), "no change, nothing");
-        // The mic opens on the headset: call mode, no reclaim yet.
+
         let (said, reclaim) = w.feed(call);
         assert!(said.unwrap().contains("call mode") && !reclaim);
-        // The mic closed: the input stops first, the output rate a moment
-        // later (still call mode), then media mode: reclaim then, once.
+
         let closing = Route {
             in_running: false,
             ..call
@@ -649,7 +566,7 @@ mod tests {
         assert!(!w.feed(closing).1);
         assert!(w.feed(media).1, "back in media mode: reclaim");
         assert_eq!(w.feed(media), (None, false));
-        // The built in mic recording is not call mode.
+
         let builtin = Route {
             in_dev: 90,
             in_bt: false,

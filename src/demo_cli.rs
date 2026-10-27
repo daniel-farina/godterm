@@ -1,11 +1,3 @@
-//! The demo agent's Codex, Cursor, Antigravity and OpenCode screens,
-//! drawn after the real captures in tests/fixtures/screens (codex
-//! 0.153.4, cursor-agent 2026.10.19, agy 1.4.4, opencode 2.0.32): the
-//! banner, the conversation, the working line, the composer and the
-//! approval prompts with the keys each CLI really takes, so GodTerm's
-//! own detection (prompt_cli) reads them as it reads the real CLIs.
-//! OpenCode's approval prompt was never captured, so its demo never asks.
-
 use super::*;
 use crossterm::event::KeyCode;
 
@@ -13,16 +5,14 @@ const SLATE: &str = "\x1b[38;2;150;165;190m";
 const SAND: &str = "\x1b[38;2;200;172;128m";
 const SAGE: &str = "\x1b[38;2;140;172;128m";
 const ROSE: &str = "\x1b[38;2;196;136;136m";
-/// Cursor's composer box: half blocks in its fill color around a filled row.
+
 const BOX_FG: &str = "\x1b[38;2;46;47;50m";
 const BOX_BG: &str = "\x1b[48;2;46;47;50m";
 
-/// Cut plain text to `w` columns.
 fn cut(s: &str, w: usize) -> String {
     fit(s, w)
 }
 
-/// `left` and `right` on one row `w` wide (right aligned when it fits).
 fn spread(left: &str, right: &str, w: usize) -> (String, String, usize) {
     let l = cut(left, w);
     let room = w.saturating_sub(width(&l));
@@ -33,7 +23,6 @@ fn spread(left: &str, right: &str, w: usize) -> (String, String, usize) {
     (l, right.to_string(), gap)
 }
 
-/// The model each CLI names (the scenario's when it sets one).
 pub(super) fn model(f: Flavor, sc: &Scenario) -> String {
     if !sc.model.is_empty() {
         return sc.model.clone();
@@ -60,8 +49,6 @@ pub(super) fn version_line(f: Flavor) -> &'static str {
     }
 }
 
-/// What the CLI prints when it quits (GodTerm learns the session id from
-/// it, see `prompt_cli::exit_session_id`).
 pub(super) fn farewell(f: Flavor, sid: &str) -> String {
     match f {
         Flavor::Claude => format!("Resume this session with:\n  claude --resume {sid}"),
@@ -75,7 +62,6 @@ pub(super) fn farewell(f: Flavor, sid: &str) -> String {
     }
 }
 
-/// Whether the CLI asks before an edit / a command in its default mode.
 pub(super) fn asks_for_edits(f: Flavor) -> bool {
     matches!(
         f,
@@ -91,7 +77,6 @@ fn first_word(cmd: &str) -> &str {
     cmd.split_whitespace().next().unwrap_or("these")
 }
 
-/// The command approval each CLI shows (wording from the captures).
 pub(super) fn command_ask(f: Flavor, cmd: &str, desc: &str) -> Ask {
     let first = first_word(cmd);
     let (question, options, body): (&str, Vec<String>, Vec<String>) = match f {
@@ -139,7 +124,6 @@ pub(super) fn command_ask(f: Flavor, cmd: &str, desc: &str) -> Ask {
     }
 }
 
-/// An edit (or a new file) approval: Codex and Antigravity ask.
 pub(super) fn edit_ask(f: Flavor, path: &str, diff: Vec<(char, u32, String)>, create: bool) -> Ask {
     match f {
         Flavor::Codex => Ask {
@@ -179,8 +163,6 @@ pub(super) fn edit_ask(f: Flavor, path: &str, diff: Vec<(char, u32, String)>, cr
     }
 }
 
-/// The option a key picks, from the key its label names: "(y)", "(tab)",
-/// "(shift+tab)", "(esc or n)" (Esc itself picks the last one elsewhere).
 pub(super) fn hotkey_index(a: &Ask, code: KeyCode) -> Option<usize> {
     a.options.iter().position(|o| {
         let Some(open) = o.rfind(" (") else {
@@ -201,9 +183,6 @@ pub(super) fn hotkey_index(a: &Ask, code: KeyCode) -> Option<usize> {
     })
 }
 
-// ---------------------------------------------------------------------
-// Drawing
-
 fn spin(since: Instant, frames: &[&'static str], ms: u128) -> &'static str {
     frames[(since.elapsed().as_millis() / ms) as usize % frames.len()]
 }
@@ -211,8 +190,6 @@ fn spin(since: Instant, frames: &[&'static str], ms: u128) -> &'static str {
 const BRAILLE: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 const BRAILLE2: [&str; 6] = ["⠘⠣", "⠰⠆", "⠤⠇", "⠆⠋", "⠃⠙", "⠉⠜"];
 
-/// The top of the screen: the banner (sized to the width), OpenCode's
-/// session header.
 pub(super) fn head(s: &Screen, w: usize) -> Vec<String> {
     match s.flavor {
         Flavor::Claude | Flavor::Grok => s.banner.clone(),
@@ -222,7 +199,7 @@ pub(super) fn head(s: &Screen, w: usize) -> Vec<String> {
             let row = |text: &str, styled: String| {
                 let t = cut(text, inner - 1);
                 let pad = inner.saturating_sub(1 + width(&t));
-                // `styled` is `text` with colors; cut ones fall back to plain.
+
                 let body = if width(text) < inner { styled } else { t };
                 format!("{GRAY}│{RESET} {body}{}{GRAY}│{RESET}", " ".repeat(pad))
             };
@@ -314,8 +291,6 @@ pub(super) fn head(s: &Screen, w: usize) -> Vec<String> {
     }
 }
 
-/// A result as these CLIs word it: "+3 -1" for an edit, "84 lines" for
-/// a new file (Claude's own wording stays in the transcript).
 fn tidy(t: &str) -> String {
     let num = |s: &str| s.split_whitespace().next().unwrap_or("0").to_string();
     if let Some(rest) = t.strip_prefix("Updated ") {
@@ -333,7 +308,6 @@ fn tidy(t: &str) -> String {
     t.to_string()
 }
 
-/// One conversation line as the CLI draws it (an empty Vec: not shown).
 pub(super) fn render_line(f: Flavor, l: &Line, w: usize) -> Vec<String> {
     let base = |name: &str| -> String {
         Path::new(name)
@@ -461,7 +435,7 @@ pub(super) fn render_line(f: Flavor, l: &Line, w: usize) -> Vec<String> {
             Line::Todo(done, t) => dim("    ", &format!("{} {t}", if *done { "✓" } else { "○" })),
             Line::Dim(t) => dim("", t),
         },
-        // OpenCode
+
         _ => match l {
             Line::Blank => vec![String::new()],
             Line::User(t) => {
@@ -514,8 +488,6 @@ fn input_or(s: &Screen, placeholder: &str, room: usize) -> String {
     }
 }
 
-/// Everything under the conversation: the working line, the composer, the
-/// footer, or the approval prompt.
 pub(super) fn footer(s: &Screen, w: usize) -> Vec<String> {
     let mut out = vec![];
     let working = match &s.mode {
@@ -649,7 +621,7 @@ pub(super) fn footer(s: &Screen, w: usize) -> Vec<String> {
                 format!("{} ", cut(&s.input, room.saturating_sub(1)))
             };
             let gap = w.saturating_sub(4 + width(&plain) + width(right) + 1);
-            // (Colors reset inside `left`: the fill is set again after it.)
+
             let left = left.replace(RESET, &format!("{RESET}{BOX_BG}"));
             out.push(format!(
                 " {BOX_BG} → {left}{BOX_BG}{}{GRAY}{right}{RESET}",
@@ -745,7 +717,6 @@ pub(super) fn footer(s: &Screen, w: usize) -> Vec<String> {
             out.push(bottom(&left));
         }
         _ => {
-            // OpenCode
             let bar = format!("  {SAND}┃{RESET}");
             out.push(String::new());
             out.push(bar.clone());
@@ -813,7 +784,6 @@ mod tests {
         s
     }
 
-    /// The frame as GodTerm's terminal reads it: plain lines.
     fn plain(s: &Screen, cols: u16, rows: u16) -> String {
         strip(&s.frame(cols, rows)).replace("\r\n", "\n")
     }
@@ -849,7 +819,7 @@ mod tests {
                     Some(Activity::Working),
                     "{f:?} working {cols}"
                 );
-                // No line is wider than the terminal (it would wrap).
+
                 for l in plain(&s, cols, 40).lines() {
                     assert!(width(l) <= cols as usize, "{f:?} {cols}: {l:?}");
                 }
@@ -885,7 +855,6 @@ mod tests {
         }
     }
 
-    /// The keys GodTerm sends for each choice pick that option in the demo.
     #[test]
     fn the_keys_godterm_sends_pick_the_same_option() {
         for f in [Flavor::Codex, Flavor::Cursor, Flavor::Antigravity] {
@@ -912,7 +881,7 @@ mod tests {
                 assert_eq!(got, Some(want), "{f:?} {c:?} keys {keys:?}");
             }
         }
-        // Codex edits ask too, Cursor and OpenCode do not.
+
         assert!(asks_for_edits(Flavor::Codex) && !asks_for_edits(Flavor::Cursor));
         let mut s = screen(Flavor::Codex);
         s.mode = Mode::Asking(edit_ask(

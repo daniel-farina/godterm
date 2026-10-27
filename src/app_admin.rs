@@ -1,11 +1,3 @@
-//! The assistant as an admin: what every account has (MCP servers,
-//! plugins, skills), installing and removing MCP servers and plugins on
-//! one or several accounts, signing in to remote MCP servers, any app
-//! setting, and adding or signing in to accounts with spoken step by step
-//! guidance. Every write is planned and needs the user's yes (risky
-//! settings a second one), runs only from the user's own request, and is
-//! logged. Credentials are never read.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -18,7 +10,6 @@ use crate::app::App;
 use crate::app_assistant::{Entry, Who};
 use crate::harness::Harness;
 
-/// The tools that change something (each planned, each needs a yes).
 pub const WRITE_TOOLS: &[&str] = &[
     "install_mcp",
     "remove_mcp",
@@ -41,16 +32,9 @@ pub enum AdminEvent {
     Progress(String),
     OpenUrl(String),
     Listed(usize, Vec<Server>),
-    Done {
-        ok: bool,
-        text: String,
-    },
-    /// A setup install finished (voice: voice pieces were installed).
-    SetupDone {
-        ok: bool,
-        text: String,
-        voice: bool,
-    },
+    Done { ok: bool, text: String },
+
+    SetupDone { ok: bool, text: String, voice: bool },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,13 +53,11 @@ pub struct LoginFlow {
     pub stage: LoginStage,
     pub url_opened: bool,
     pub started: Instant,
-    /// Keys pressed for onboarding screens, and when.
+
     pressed: Vec<(String, Instant)>,
-    /// A URL on screen and since when (it is opened once it stops
-    /// growing: a long one arrives in pieces).
+
     url_seen: Option<(String, Instant)>,
-    /// Code prompts and errors already on screen when the code was last
-    /// pasted: only newer ones count.
+
     pub seen: (usize, usize),
 }
 
@@ -87,7 +69,6 @@ fn is_error_line(l: &str) -> bool {
         || l.contains("authorization failed")
 }
 
-/// (code prompts, error lines) on a screen.
 fn login_marks(screen: &str) -> (usize, usize) {
     let low = screen.to_lowercase();
     (
@@ -100,19 +81,18 @@ fn login_marks(screen: &str) -> (usize, usize) {
 pub struct AdminState {
     tx: Option<Sender<AdminEvent>>,
     rx: Option<Receiver<AdminEvent>>,
-    /// `mcp list` results per account (status of each server).
+
     pub live: HashMap<usize, (Instant, Vec<Server>)>,
-    /// Recent admin actions, newest last.
+
     pub history: Vec<String>,
     pub logins: Vec<LoginFlow>,
-    /// Progress lines said (for the panel and tests).
+
     pub said: Vec<String>,
     pub jobs: usize,
-    /// Settings > Accounts' capability lines, read at most every 5 s.
+
     caps_ui: std::cell::RefCell<Option<(Instant, Vec<String>)>>,
 }
 
-/// Settings whose change is risky: a second, explicit yes names the risk.
 fn setting_risk(key: &str, value: &str) -> Option<&'static str> {
     let off = matches!(value, "false" | "off" | "no" | "0");
     match key {
@@ -152,8 +132,6 @@ impl App {
         self.admin.tx.clone().expect("set above")
     }
 
-    /// A short spoken progress line from an admin flow (not model filler):
-    /// shown in the panel, spoken unless muted, held while paused.
     pub fn announce_progress(&mut self, text: &str) {
         crate::log::info(&format!("admin: progress: {text}"));
         self.admin.said.push(text.to_string());
@@ -161,11 +139,10 @@ impl App {
         self.assistant
             .log
             .push(Entry::new(Who::Note, format!("▸ {text}")));
-        // Spoken at the next quiet moment (held while paused).
+
         self.say_update(crate::app_quiet::Voice::Progress, text);
     }
 
-    /// Log an admin action (the panel, the log, ~/.godterm/assistant/admin.jsonl).
     pub fn admin_record(&mut self, text: &str) {
         let via = if self.assistant.turn_remote {
             " (via Remote Control)"
@@ -205,8 +182,6 @@ impl App {
         }
     }
 
-    /// Admin changes come from the user: a turn they started, and when
-    /// this turn read tab or file contents, they named the subject.
     fn admin_source_ok(&self, subject: &str) -> Result<(), String> {
         let said = self.assistant.last_user.to_lowercase();
         if said.trim().is_empty() {
@@ -235,7 +210,6 @@ impl App {
         (h, bin, acfg.config_dir())
     }
 
-    /// Accounts named by `v`: one, a list, or "all".
     pub(crate) fn admin_accounts(&self, v: Option<&Value>) -> Result<Vec<usize>, String> {
         match v {
             None | Some(Value::Null) => {
@@ -270,7 +244,6 @@ impl App {
         }
     }
 
-    /// Capabilities of one account: files, plus the last live status.
     pub fn caps_of(&self, a: usize) -> admin::Caps {
         let (h, _, dir) = self.program_for(a);
         let mut c = admin::caps(h, &dir);
@@ -285,7 +258,6 @@ impl App {
         c
     }
 
-    /// One line per account for the state block.
     pub fn caps_lines(&self) -> String {
         let mut s = String::new();
         for a in 0..self.cfg.accounts.len() {
@@ -303,7 +275,6 @@ impl App {
         *self.admin.caps_ui.borrow_mut() = None;
     }
 
-    /// One line per account for Settings > Accounts.
     pub fn caps_summary_lines(&self) -> Vec<String> {
         if let Some((t, v)) = self.admin.caps_ui.borrow().as_ref() {
             if t.elapsed() < Duration::from_secs(5) {
@@ -323,7 +294,6 @@ impl App {
         v
     }
 
-    /// `mcp list` for an account in the background (statuses).
     pub fn refresh_mcp_status(&mut self, a: usize) {
         let tx = self.admin_tx();
         let (h, bin, dir) = self.program_for(a);
@@ -349,10 +319,8 @@ impl App {
         });
     }
 
-    /// The admin tools; None for any other tool.
     pub fn admin_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         if WRITE_TOOLS.contains(&tool) {
-            // The first call plans (checked here); a confirm call runs the plan.
             let confirming =
                 args.get("confirm_token").is_some() || args.get("reissue_token").is_some();
             if !confirming {
@@ -444,8 +412,6 @@ impl App {
         })))
     }
 
-    // ---------- settings ----------
-
     pub(crate) fn find_setting(
         &self,
         key: &str,
@@ -465,7 +431,7 @@ impl App {
                 }
             }
         }
-        // Keys sharing the most words with what was asked.
+
         let words: Vec<String> = key
             .to_lowercase()
             .split(|c: char| !c.is_alphanumeric())
@@ -560,7 +526,6 @@ impl App {
         ))
     }
 
-    /// The validated value of `text` for a setting, as config.toml holds it.
     pub(crate) fn setting_item(
         &self,
         s: &crate::settings::Setting,
@@ -605,9 +570,6 @@ impl App {
         Ok(v)
     }
 
-    // ---------- plans ----------
-
-    /// (plan, question, needs a yes) for an admin tool; None for others.
     pub fn admin_plan_for(
         &mut self,
         tool: &str,
@@ -822,7 +784,7 @@ impl App {
                     .ok_or("the new value")?;
                 let st = self.find_setting(&key, account)?;
                 if st.kind == crate::settings::Kind::Secret {
-                    // Only a value the user said themselves; never echoed.
+
                     if !self.assistant.last_user.contains(value.trim()) || value.trim().len() < 8 {
                         return Err("refused: a secret is set only from the user's own words (dictated) or the masked Settings field".into());
                     }
@@ -942,7 +904,6 @@ impl App {
         }
     }
 
-    /// Run a confirmed admin plan; None for other tools.
     pub fn admin_run_plan(&mut self, tool: &str, plan: &Value) -> Option<Result<Value, String>> {
         if !WRITE_TOOLS.contains(&tool) {
             return None;
@@ -1027,7 +988,7 @@ impl App {
             self.admin_record(&format!("saved {} (secret, not shown)", st.label));
             return Ok(ok(json!({"say": format!("Saved the {}.", st.label)})));
         }
-        // A risky change: one more yes that names the risk.
+
         if let (Some(risk), false) = (
             plan["risk"].as_str(),
             plan["risk_ok"].as_bool() == Some(true),
@@ -1063,8 +1024,6 @@ impl App {
         ))
     }
 
-    /// Installs, removals, plugin changes and sign ins: run in the
-    /// background account by account, with spoken progress.
     fn run_admin_job(&mut self, tool: &str, plan: &Value) -> Result<Value, String> {
         let tx = self.admin_tx();
         let label = plan["label"].as_str().unwrap_or("").to_string();
@@ -1145,7 +1104,7 @@ impl App {
                     done.push(acct.clone());
                     continue;
                 }
-                // Verify with list.
+
                 let list = |tx: &Sender<AdminEvent>| {
                     let (_, out) = admin::run(
                         &bin,
@@ -1241,8 +1200,6 @@ impl App {
         ))
     }
 
-    /// A login command run in the background (the assistant's own Grok
-    /// login): progress spoken, the result said.
     pub fn start_cmd_login(&mut self, bin: String, args: Vec<String>, home: PathBuf, label: &str) {
         let tx = self.admin_tx();
         let label = label.to_string();
@@ -1263,8 +1220,6 @@ impl App {
             let _ = tx.send(AdminEvent::Done { ok, text });
         });
     }
-
-    // ---------- account login, hand held ----------
 
     fn start_login_flow(&mut self, a: usize) {
         if !self.cfg.accounts[a].harness().integrated() {
@@ -1289,9 +1244,6 @@ impl App {
         crate::log::info(&format!("admin: watching the login of account {}", a + 1));
     }
 
-    /// "paste it": the login code from the clipboard into the login pane.
-    /// Only in a login waiting for a code, only on the user's words; the
-    /// code is never logged, shown or spoken.
     fn login_paste_code(&mut self, args: &Value) -> Result<Value, String> {
         let said = self.assistant.last_user.to_lowercase();
         if !said.contains("paste") {
@@ -1327,7 +1279,7 @@ impl App {
                 .contents(),
         );
         self.admin.logins[i].seen = marks;
-        // Enter once the login screen shows the code (never on a timer).
+
         self.paste_then_enter(s, t, &code);
         self.admin.logins[i].stage = LoginStage::Browser;
         crate::log::info("admin: pasted the login code (not logged)");
@@ -1335,9 +1287,7 @@ impl App {
         Ok(ok(json!({"say": "Pasted it."})))
     }
 
-    /// Every tick: drain job events, watch logins.
     pub fn admin_tick(&mut self) {
-        // A pasted login code's Enter, once its screen shows it.
         self.pending_enters_tick();
         let mut evs = vec![];
         if let Some(rx) = &self.admin.rx {
@@ -1421,7 +1371,7 @@ impl App {
             {
                 f.stage = LoginStage::Done;
                 say.push(format!("Account configured: {label} is signed in."));
-                // Onboarding goes on: Enter for "Press Enter to continue".
+
                 if low.contains("press enter") {
                     self.panes[s].tabs[t].write(b"\r");
                 }
@@ -1443,7 +1393,7 @@ impl App {
                 ));
                 continue;
             }
-            // Onboarding screens before the login: the defaults.
+
             for (needle, key) in [
                 ("choose the text style", "theme"),
                 ("select login method", "method"),
@@ -1498,7 +1448,6 @@ impl App {
         }
     }
 
-    /// The admin lines for the assistant's state block.
     pub fn admin_state_lines(&self) -> String {
         let mut s = self.caps_lines();
         for f in &self.admin.logins {
@@ -1528,9 +1477,6 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-/// `claude mcp login NAME`: claude opens the browser itself; GodTerm opens
-/// the URL only when claude prints it and says it could not open one.
-/// Waits up to 5 minutes for the user to finish.
 fn mcp_login(
     bin: &str,
     name: &str,
@@ -1549,9 +1495,6 @@ fn mcp_login(
     watch_login(c, tx)
 }
 
-/// Run a login command and wait for it (up to 5 minutes): its sign in
-/// page is left to it to open, and opened here only when it says it could
-/// not open a browser.
 fn watch_login(mut c: std::process::Command, tx: &Sender<AdminEvent>) -> Result<(), String> {
     use std::io::BufRead;
     c.stdin(std::process::Stdio::null())

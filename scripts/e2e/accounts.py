@@ -19,11 +19,9 @@ import sandbox
 from lib import StepFailed, mcp_call, panics_in
 
 PROMPT = "reply with the single word ok"
-# E2E_NO_PROMPT=1: launch, ready, close, quit; no model usage.
 NO_PROMPT = os.environ.get("E2E_NO_PROMPT") == "1"
 S = "acct"
 
-# The CLI's own ready screen (its prompt box), by harness.
 READY = {
     "claude": r"\? for shortcuts|❯\s",
     "grok": r"Type a message|│ ❯",
@@ -33,7 +31,6 @@ READY = {
     "opencode": r"Ask anything|ctrl\+p commands",
 }
 
-# Where each CLI keeps sessions (to list what a run left behind).
 STORES = {
     "claude": lambda s: [os.path.join(s["config_dir"], "projects")],
     "grok": lambda s: [s["config_dir"]],
@@ -43,9 +40,6 @@ STORES = {
     "opencode": lambda s: [os.path.expanduser("~/.local/share/opencode")],
 }
 
-# Receipts that show the prompt reached the agent: Claude's come from its
-# transcript; Grok's are "delivered or not" (unconfirmed: typed in and
-# taken, no transcript to check), see docs/CLI_HARNESSES.md.
 TAKEN = {"claude": {"received", "started", "done"},
          "grok": {"unconfirmed", "received", "started", "done"}}
 
@@ -99,7 +93,6 @@ def new_files(dirs, since, needle):
                     continue
                 if st.st_mtime < since:
                     continue
-                # Claude's project folder names: every non alphanumeric is "-".
                 hit = needle in p or re.sub(r"[^A-Za-z0-9]", "-", needle) in p
                 if not hit and st.st_size < 4_000_000:
                     try:
@@ -126,7 +119,6 @@ def sandbox_denials(since, root):
             "node", "bun", "sh", "zsh", "bash", "git", "rg", "security"}
     out = set()
     for l in r.stdout.splitlines():
-        # "Sandbox: claude(123) deny(1) file-write-create /path"
         m = re.search(r"Sandbox: (\S+?)\(\d+\) deny\(\d+\) (file-write\S*) (/.*)$", l)
         if m and m.group(1) in ours and not m.group(3).startswith(root):
             out.add(f"{m.group(1)}: {m.group(2)} {m.group(3).strip()}")
@@ -135,7 +127,6 @@ def sandbox_denials(since, root):
 
 def run(rep, tm, bin_path, keys, roots, out):
     cand = sandbox.candidates()
-    # Default: every Claude account, the demo8 Grok login, and the others.
     default = [k for k, s in cand.items() if s["harness"] == "claude"]
     default += [k for k in ("demo8",) if k in cand]
     default += [k for k in ("codex", "cursor", "agy", "opencode") if k in cand]
@@ -215,8 +206,6 @@ def one(rep, tm, bin_path, key, slot, roots, summary):
                 if not st["states"] or st["states"][-1] != t["state"]:
                     st["states"].append(t["state"])
                 if t["state"] == "ready":
-                    # Stable: still ready a few seconds later, with the CLI's
-                    # own prompt on screen (a start up menu can follow).
                     time.sleep(3)
                     _, t2 = tab_state()
                     if not t2 or t2["state"] != "ready" or not re.search(READY[h], tm.screen(S)):
@@ -248,7 +237,6 @@ def one(rep, tm, bin_path, key, slot, roots, summary):
             return f"send_prompt: {json.dumps(res)[:160]}"
         tm.text(S, PROMPT)
         tm.wait(S, PROMPT, 10)
-        # Codex reads text and Enter in one write as a paste: Enter apart.
         time.sleep(0.5)
         tm.keys(S, "Enter")
         st["prompted"] = True
@@ -258,7 +246,6 @@ def one(rep, tm, bin_path, key, slot, roots, summary):
     def reply():
         end = time.time() + 150
         saw_working = False
-        # "⏺ ok", "ok.", or Grok's "ok      9:12 PM".
         rx = re.compile(r"(?mi)^[\s│|⏺●•>*·⎿]*\**ok\**\.?(\s+\d{1,2}:\d{2}\s*[AP]M)?\s*[│|]*\s*$")
         while time.time() < end:
             s, t = tab_state()
@@ -277,8 +264,6 @@ def one(rep, tm, bin_path, key, slot, roots, summary):
                 st["reply_secs"] = round(time.time() - (end - 150), 1)
                 if not via_control:
                     break
-                # GodTerm learns a fresh tab's session id from its transcript
-                # every 10 s; the receipt follows that.
                 end = min(end, time.time() + 30)
             if st["reply"] and any(r in TAKEN.get(h, ()) for r in st["receipts"]):
                 break
@@ -304,7 +289,6 @@ def one(rep, tm, bin_path, key, slot, roots, summary):
 
     def states_ok():
         if "working" not in st["states"] and not via_control:
-            # A fast reply can finish between two looks; the screen showed it.
             return ("skip", f"never saw 'working' between polls: {st['states']}")
         if st["states"][-1] != "ready":
             raise StepFailed(f"ends in {st['states'][-1]}")
@@ -347,8 +331,6 @@ def one(rep, tm, bin_path, key, slot, roots, summary):
         if tried:
             rep.note(f"{key}: the sandbox refused writes to settings files: {tried}")
         if changed:
-            # Writes there are denied in the sandbox: the owner's own
-            # sessions (outside) wrote them during the run.
             return ("skip", f"changed during the run by a process outside the sandbox: {changed}")
         return f"{len(before)} settings files unchanged" + (f"; {len(tried)} write(s) refused" if tried else "")
 

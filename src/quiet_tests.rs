@@ -1,11 +1,3 @@
-//! Tab answers that come back: a question taken into a busy tab's running
-//! turn, the reply after the send, several questions one turn answers,
-//! the wait limit (still working, or idle with nothing found), and
-//! send_prompt's will_report. The quiet gate: updates held while the user
-//! talks, just spoke, the assistant speaks, then merged at the quiet
-//! moment; the gate re-arms; urgent ones wait only for the sentence.
-//! A stub claude and temp transcripts; nothing real is touched.
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -32,7 +24,6 @@ fn test_app(tag: &str) -> (App, PathBuf) {
     (app, home)
 }
 
-/// A brain stub that records what it is sent.
 fn with_brain(app: &mut App, home: &Path) -> PathBuf {
     let rec = home.join("brain-in.txt");
     let stub = crate::test_stub::claude(
@@ -46,7 +37,6 @@ fn with_brain(app: &mut App, home: &Path) -> PathBuf {
     rec
 }
 
-/// A tab named "claudego" with a transcript path.
 fn tab(app: &mut App, home: &Path, sid: &str) -> (u64, PathBuf) {
     let proj = home.join("newtabs").join("claudego");
     std::fs::create_dir_all(&proj).unwrap();
@@ -81,10 +71,6 @@ fn write(path: &Path, lines: &[Value]) {
     std::fs::write(path, body.join("\n") + "\n").unwrap();
 }
 
-/// A long turn that started before the questions; each question is taken
-/// into it the way claude stores a message sent mid turn (the queue entry
-/// removed as absorbed_mid_turn, then a queued_command attachment), and
-/// with `reply` the turn ends with that text.
 fn busy_turn(path: &Path, questions: &[&str], reply: Option<&str>) {
     let mut l = vec![
         json!({"type": "user", "message": {"role": "user", "content": "Build the voice restore feature."}, "timestamp": stamp(-600)}),
@@ -104,8 +90,6 @@ fn busy_turn(path: &Path, questions: &[&str], reply: Option<&str>) {
     write(path, &l);
 }
 
-/// A question sent while the tab was busy lands inside its running turn;
-/// it is found there and reported when the turn ends.
 #[test]
 fn a_question_queued_into_a_busy_turn_is_reported() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -118,7 +102,7 @@ fn a_question_queued_into_a_busy_turn_is_reported() {
     busy_turn(&path, &[q], None);
     app.follow_ups_tick();
     assert!(app.assistant.follow_ups[0].seen_working);
-    // Ready between tools, the turn not over: no answer yet.
+
     set_activity(&mut app, uid, Activity::Ready);
     app.follow_ups_tick();
     assert_eq!(app.assistant.follow_ups[0].state, FuState::Waiting);
@@ -141,9 +125,6 @@ fn a_question_queued_into_a_busy_turn_is_reported() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// No trace of the question text, but the tab worked after the send and
-/// is ready: the reply written after the send is the answer. One written
-/// before it is not.
 #[test]
 fn the_reply_after_the_send_is_the_answer() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -172,7 +153,7 @@ fn the_reply_after_the_send_is_the_answer() {
         FuState::Answered { text, .. } => assert!(text.contains("812 tests")),
         s => panic!("{s:?}"),
     }
-    // Without seeing it work, the reply is not taken on time alone.
+
     let found = crate::app_followup::find_answer(
         &crate::sessions::follow_turns(&path, 40),
         "Is the build green?",
@@ -183,8 +164,6 @@ fn the_reply_after_the_send_is_the_answer() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Several questions to one busy tab, all taken into the same turn: one
-/// report tells them together.
 #[test]
 fn several_questions_one_turn_one_report() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -227,8 +206,6 @@ fn several_questions_one_turn_one_report() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// At the wait limit a tab still working keeps being waited for, and the
-/// user hears so once; a ready tab with nothing found is said plainly.
 #[test]
 fn the_wait_limit_never_drops_silently() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -251,7 +228,7 @@ fn the_wait_limit_never_drops_silently() {
         })
         .collect();
     assert_eq!(told.len(), 1, "{:?}", app.assistant.quiet.said);
-    // Past the hard cap: stopped, and said.
+
     app.assistant.follow_ups[0].sent =
         Instant::now() - crate::app_followup::HARD_CAP - Duration::from_secs(1);
     app.follow_ups_tick();
@@ -263,7 +240,7 @@ fn the_wait_limit_never_drops_silently() {
         .last()
         .unwrap()
         .contains("stopped waiting"));
-    // Idle at the limit with nothing found.
+
     write(
         &path,
         &[
@@ -288,8 +265,6 @@ fn the_wait_limit_never_drops_silently() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// send_prompt says whether the answer will be reported; a question sent
-/// without expect_reply is still followed.
 #[test]
 fn send_prompt_says_will_report() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -312,7 +287,7 @@ fn send_prompt_says_will_report() {
     );
     assert_eq!(v["will_report"], json!(false), "{v}");
     assert!(v["report_say"].as_str().unwrap().contains("can ask later"));
-    // No flag, but a question: followed.
+
     let n = app.assistant.follow_ups.len();
     let v = app.control_call(
         "send_prompt",
@@ -321,7 +296,7 @@ fn send_prompt_says_will_report() {
     assert_eq!(v["will_report"], json!(true), "{v}");
     assert_eq!(app.assistant.follow_ups.len(), n + 1);
     assert_eq!(app.assistant.follow_ups[n].question, "Is the build green?");
-    // The tool description and the system prompt say when to promise.
+
     let p: String = crate::sysprompt::SECTIONS
         .iter()
         .map(|x| x.default)
@@ -330,9 +305,6 @@ fn send_prompt_says_will_report() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Held while the user talks (a partial, push to talk held), within N
-/// seconds of what they said or typed, and while talk back plays; then
-/// merged into one line at the quiet moment.
 #[test]
 fn updates_wait_for_a_quiet_moment_and_merge() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -382,7 +354,7 @@ fn updates_wait_for_a_quiet_moment_and_merge() {
         "merged, once"
     );
     assert!(app.assistant.quiet.queue.is_empty());
-    // The gate re-arms when the user speaks again.
+
     app.quiet_user_spoke();
     app.say_update(Voice::Announce, "t3 needs approval");
     assert_eq!(app.assistant.quiet.said.len(), 1);
@@ -395,8 +367,6 @@ fn updates_wait_for_a_quiet_moment_and_merge() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// A tab's answer waits too, and the updates that waited are told in the
-/// same turn.
 #[test]
 fn answers_wait_for_quiet_and_carry_held_updates() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -433,9 +403,6 @@ fn answers_wait_for_quiet_and_carry_held_updates() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// An answer the gate holds (talk back that never ends, here) is told
-/// anyway after REPORT_FORCE, and the log says why it waited; a fresh
-/// one still waits.
 #[test]
 fn a_held_answer_is_told_after_the_deadline() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -463,7 +430,7 @@ fn a_held_answer_is_told_after_the_deadline() {
         app.assistant.report_held_logged.is_some(),
         "the hold is logged"
     );
-    // Two minutes later talk back still "plays": told anyway.
+
     if let FuState::Answered { at, .. } = &mut app.assistant.follow_ups[0].state {
         *at -= chrono::Duration::seconds(crate::app_followup::REPORT_FORCE.as_secs() as i64 + 30);
     }
@@ -481,8 +448,6 @@ fn a_held_answer_is_told_after_the_deadline() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// An urgent update (moving now because the limit is hit) skips the quiet
-/// wait but never cuts into the user's sentence.
 #[test]
 fn urgent_updates_wait_only_for_the_sentence() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -510,7 +475,6 @@ fn urgent_updates_wait_only_for_the_sentence() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// A new tab's session transcript, named like `tab` does.
 fn new_tab_transcript(app: &mut App, uid: u64, sid: &str) -> PathBuf {
     let (s, t) = app.find_tab(uid).unwrap();
     let a = app.panes[s].account.unwrap();
@@ -528,8 +492,6 @@ fn uid_of(v: &Value) -> u64 {
     v["tab"].as_str().unwrap()[1..].parse().unwrap()
 }
 
-/// A question asked through open_tab comes back: will_report is true,
-/// the wait starts with the tab's first turn, and its reply is the answer.
 #[test]
 fn an_open_tab_question_is_reported() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -546,11 +508,11 @@ fn an_open_tab_question_is_reported() {
     let f = app.assistant.follow_ups.last().unwrap();
     assert_eq!((f.uid, f.question.as_str()), (uid, q));
     assert!(f.await_start);
-    // Still coming up: the wait has not started.
+
     set_activity(&mut app, uid, Activity::Starting);
     app.follow_ups_tick();
     assert!(app.assistant.follow_ups.last().unwrap().await_start);
-    // The prompt is in and the turn runs.
+
     for d in app.deliveries.iter_mut().filter(|d| d.uid == uid) {
         d.stage = crate::control::Stage::Delivered;
     }
@@ -579,8 +541,6 @@ fn an_open_tab_question_is_reported() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// A plain task through open_tab is not reported back, unless
-/// expect_reply says it is a question for the user.
 #[test]
 fn an_open_tab_task_is_not_reported_unless_asked() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -600,7 +560,7 @@ fn an_open_tab_task_is_not_reported_unless_asked() {
     assert_eq!(v["will_report"], json!(true), "{v}");
     assert_eq!(app.assistant.follow_ups.len(), 1);
     assert_eq!(app.assistant.follow_ups[0].uid, uid_of(&v));
-    // No prompt: nothing to report, and nothing is said about it.
+
     let v = app.control_call(
         "open_tab",
         &json!({"_client": "brain", "account": 1, "name": "empty"}),

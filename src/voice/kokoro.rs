@@ -1,34 +1,3 @@
-//! Kokoro v1.0 text to speech in Rust: espeak-ng phonemes, Kokoro token
-//! ids, ONNX inference through `ort`.
-//!
-//! This is a port of kokoro-onnx 0.6.1 (github.com/thewh1teagle/kokoro-onnx,
-//! `kokoro_onnx/__init__.py`, `tokenizer.py`, `trim.py`) and of the parts of
-//! phonemizer 3.4.0 it relies on (`phonemizer/punctuation.py` and
-//! `backend/espeak/espeak.py`, with `preserve_punctuation=True,
-//! with_stress=True`, language en-us):
-//!
-//! 1. text is stripped (`Tokenizer.normalize_text`);
-//! 2. punctuation runs (with the spaces around them) are cut out, the
-//!    pieces between them are phonemized one by one by espeak-ng in IPA,
-//!    and the punctuation is put back verbatim (`Punctuation.preserve` /
-//!    `restore`); `,` and `.` between digits are not punctuation;
-//! 3. espeak's line breaks become spaces (`_postprocess_line`);
-//! 4. characters outside the vocabulary are dropped, the result is
-//!    stripped and runs of whitespace collapse to one space
-//!    (`Tokenizer.phonemize`, `Kokoro._prepare`);
-//! 5. phonemes map to token ids through the model vocabulary
-//!    (`kokoro_vocab.json` is `kokoro_onnx/config.json["vocab"]`), at most
-//!    510 of them, padded with 0 at both ends (`Kokoro._infer`);
-//! 6. the style vector is row `len(tokens) - 1` of the voice
-//!    (`Kokoro._style_for`);
-//! 7. leading and trailing silence is trimmed like librosa's
-//!    `effects.trim(top_db=60, frame_length=2048, hop_length=512)`.
-//!
-//! Differences on purpose: espeak's language switch flags like "(fr)" are
-//! removed (phonemizer keeps them and Kokoro then reads the letters), and
-//! decimals become "3 point 5" before phonemizing (the espeak library
-//! phonemizer uses reads "3.5" as "three. five").
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -40,7 +9,6 @@ pub const SAMPLE_RATE: u32 = 24_000;
 pub const MAX_PHONEMES: usize = 510;
 const STYLE_DIM: usize = 256;
 
-/// Marks phonemizer preserves (`_DEFAULT_MARKS`).
 const MARKS: &str = ";:,.!?¡¿—…\"«»“”(){}[]";
 
 pub fn vocab() -> HashMap<char, i64> {
@@ -55,8 +23,6 @@ pub fn vocab() -> HashMap<char, i64> {
         .collect()
 }
 
-/// Word to spoken form replacements, applied before phonemizing. Whole
-/// words, case-insensitive.
 pub fn apply_fixes(text: &str, fixes: &[(String, String)]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut word = String::new();
@@ -82,7 +48,6 @@ pub fn apply_fixes(text: &str, fixes: &[(String, String)]) -> String {
     out
 }
 
-/// "3.5" -> "3 point 5" (see the module notes).
 pub fn spell_decimals(text: &str) -> String {
     let c: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len() + 8);
@@ -97,15 +62,12 @@ pub fn spell_decimals(text: &str) -> String {
     out
 }
 
-/// A piece of text: words to phonemize, or punctuation to keep as is.
 #[derive(Debug, PartialEq)]
 pub enum Piece {
     Words(String),
     Marks(String),
 }
 
-/// Split like phonemizer's `(\s*(?:mark)+\s*)+` where `,` and `.` count
-/// only when not between two digits.
 pub fn split_marks(text: &str) -> Vec<Piece> {
     let c: Vec<char> = text.chars().collect();
     let is_mark = |i: usize| -> bool {
@@ -125,15 +87,13 @@ pub fn split_marks(text: &str) -> Vec<Piece> {
     let mut i = 0;
     while i < c.len() {
         if is_mark(i) {
-            // The run takes the spaces before it from the words.
             let trimmed = words.trim_end_matches(char::is_whitespace).len();
             let mut run: String = words[trimmed..].to_string();
             words.truncate(trimmed);
             if !words.is_empty() {
                 out.push(Piece::Words(std::mem::take(&mut words)));
             }
-            // Marks, and spaces as long as another mark follows them; then
-            // the trailing spaces.
+
             loop {
                 while i < c.len() && is_mark(i) {
                     run.push(c[i]);
@@ -162,11 +122,9 @@ pub fn split_marks(text: &str) -> Vec<Piece> {
     out
 }
 
-/// espeak-ng output for one piece, cleaned like phonemizer's
-/// `_postprocess_line` (lines merged, flags removed).
 pub fn clean_espeak(raw: &str) -> String {
     let line = raw.trim().replace('\n', " ").replace("  ", " ");
-    // Language switch flags: "(en)", "(fr)".
+
     let mut out = String::with_capacity(line.len());
     let mut skip = false;
     let chars: Vec<char> = line.chars().collect();
@@ -194,7 +152,6 @@ pub fn clean_espeak(raw: &str) -> String {
     out.trim().to_string()
 }
 
-/// Phonemizer, reached through the espeak-ng binary.
 pub struct Espeak {
     pub bin: String,
     pub voice: String,
@@ -221,7 +178,6 @@ impl Espeak {
         Ok(clean_espeak(&String::from_utf8_lossy(&out.stdout)))
     }
 
-    /// Text to Kokoro phonemes (steps 1 to 4 of the module notes).
     pub fn phonemize(&self, text: &str, vocab: &HashMap<char, i64>) -> Result<String> {
         let mut out = String::new();
         for p in split_marks(text.trim()) {
@@ -244,7 +200,6 @@ pub fn tokenize(phonemes: &str, vocab: &HashMap<char, i64>) -> Vec<i64> {
         .collect()
 }
 
-/// Voice style tables from voices-v1.0.bin (an uncompressed npz).
 pub struct Voices {
     map: HashMap<String, (usize, Vec<f32>)>,
 }
@@ -273,7 +228,7 @@ impl Voices {
             let extra = u16at(i + 30);
             let comment = u16at(i + 32);
             let local = u32at(i + 42);
-            // A damaged (or partly downloaded) file: the name runs past the end.
+
             let Some(name) = data.get(i + 46..i + 46 + n) else {
                 bail!("truncated zip directory");
             };
@@ -307,7 +262,6 @@ impl Voices {
         v
     }
 
-    /// Style for `n` tokens: row n - 1 (kokoro-onnx `_style_for`).
     pub fn style(&self, voice: &str, n: usize) -> Option<&[f32]> {
         let (rows, v) = self.map.get(voice)?;
         let row = n.clamp(1, *rows) - 1;
@@ -315,8 +269,6 @@ impl Voices {
     }
 }
 
-/// A little-endian f32 .npy whose last dimension is 256. Returns the row
-/// count and the values.
 pub fn parse_npy(b: &[u8]) -> Result<(usize, Vec<f32>)> {
     if b.len() < 10 || &b[..6] != b"\x93NUMPY" {
         bail!("not an npy file");
@@ -346,15 +298,13 @@ pub fn parse_npy(b: &[u8]) -> Result<(usize, Vec<f32>)> {
     Ok((values.len() / STYLE_DIM, values))
 }
 
-/// librosa `effects.trim(y, top_db=60, frame_length=2048, hop_length=512)`.
 pub fn trim(y: &[f32]) -> &[f32] {
     const FRAME: usize = 2048;
     const HOP: usize = 512;
     if y.is_empty() {
         return y;
     }
-    // rms(center=True, pad_mode="constant"): frames over y padded by
-    // FRAME/2 zeros on both sides.
+
     let frames = 1 + y.len() / HOP;
     let pad = FRAME / 2;
     let mut rms = Vec::with_capacity(frames);
@@ -368,7 +318,7 @@ pub fn trim(y: &[f32]) -> &[f32] {
         rms.push((sum / FRAME as f64).sqrt());
     }
     let max = rms.iter().cloned().fold(0.0f64, f64::max);
-    // amplitude_to_db(rms, ref=max): 20 log10(max(amin, rms) / max(amin, ref)).
+
     let amin = 1e-5f64;
     let db = |r: f64| 20.0 * (r.max(amin) / max.max(amin)).log10();
     let loud: Vec<usize> = (0..frames).filter(|&t| db(rms[t]) > -60.0).collect();
@@ -382,14 +332,12 @@ pub fn trim(y: &[f32]) -> &[f32] {
     }
 }
 
-/// Which ONNX Runtime execution provider to try.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Provider {
     Cpu,
     CoreMl,
 }
 
-/// A loaded Kokoro model, voices and phonemizer.
 pub struct Kokoro {
     session: ort::session::Session,
     pub voices: Voices,
@@ -400,7 +348,6 @@ pub struct Kokoro {
     pub load_ms: u128,
 }
 
-/// Timings of one synthesis.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Timing {
     pub phonemize_ms: u128,
@@ -409,7 +356,6 @@ pub struct Timing {
 }
 
 impl Timing {
-    /// Real-time factor: compute time over audio time (lower is faster).
     pub fn rtf(&self) -> f32 {
         if self.audio_s <= 0.0 {
             return 0.0;
@@ -418,8 +364,6 @@ impl Timing {
     }
 }
 
-/// Threads for inference: half the cores, at most 8 (the rest stay free
-/// for whisper and the panes).
 pub fn auto_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| (n.get() / 2).clamp(1, 8))
@@ -449,10 +393,7 @@ impl Kokoro {
             .map_err(|e| anyhow!("{e}"))?
             .with_intra_threads(threads)
             .map_err(|e| anyhow!("{e}"))?;
-        // Input lengths vary sentence to sentence, so the memory pattern
-        // and the CPU arena would only hold on to the largest buffers. (The
-        // weights, about 800 MB resident, dominate either way; the TTS
-        // thread unloads the model when idle.)
+
         {
             use ort::memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType};
             b = b
@@ -501,7 +442,6 @@ impl Kokoro {
         self.espeak.phonemize(&spell_decimals(text), &self.vocab)
     }
 
-    /// One sentence to 24 kHz mono samples.
     pub fn synth(&mut self, text: &str, voice: &str, speed: f32) -> Result<(Vec<f32>, Timing)> {
         let t = Instant::now();
         let ph = self.phonemes(text)?;
@@ -548,7 +488,6 @@ impl Kokoro {
     }
 }
 
-/// 24 kHz mono f32 to a 16-bit WAV.
 pub fn wav(samples: &[f32]) -> Vec<u8> {
     let pcm: Vec<i16> = samples
         .iter()
@@ -603,7 +542,7 @@ mod tests {
                 Words("ok".into()),
             ]
         );
-        // Decimal separators between digits are not punctuation.
+
         assert_eq!(
             split_marks("1,200 or 3.5."),
             vec![Words("1,200 or 3.5".into()), Marks(".".into())]
@@ -662,7 +601,7 @@ mod tests {
         }
         let (rows, v) = parse_npy(&npy).unwrap();
         assert_eq!((rows, v.len(), v[300]), (2, 512, 300.0));
-        // A stored zip with one entry.
+
         let name = b"af_test.npy";
         let mut z = b"PK\x03\x04".to_vec();
         z.extend([0u8; 22]);
@@ -672,16 +611,16 @@ mod tests {
         z.extend(&npy);
         let mut cd = b"PK\x01\x02".to_vec();
         cd.extend([0u8; 16]);
-        cd.extend((npy.len() as u32).to_le_bytes()); // compressed size at 20
+        cd.extend((npy.len() as u32).to_le_bytes());
         cd.extend((npy.len() as u32).to_le_bytes());
         cd.extend((name.len() as u16).to_le_bytes());
         cd.extend([0u8; 12]);
-        cd.extend(0u32.to_le_bytes()); // local header offset at 42
+        cd.extend(0u32.to_le_bytes());
         cd.extend(name);
         z.extend(cd);
         let voices = Voices::parse(&z).unwrap();
         assert_eq!(voices.names(), vec!["af_test"]);
-        // n tokens use row n - 1, clamped to the table.
+
         assert_eq!(voices.style("af_test", 1).unwrap()[0], 0.0);
         assert_eq!(voices.style("af_test", 2).unwrap()[0], 256.0);
         assert_eq!(voices.style("af_test", 999).unwrap()[0], 256.0);

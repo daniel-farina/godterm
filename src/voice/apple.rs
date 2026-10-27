@@ -1,7 +1,3 @@
-//! Apple's on-device recognition through the `godterm-speech` helper
-//! (SpeechAnalyzer + SpeechTranscriber), kept running in `--serve` mode:
-//! one WAV path in, one JSON result out.
-
 use anyhow::{bail, Context, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -14,11 +10,10 @@ pub struct AppleSpeech {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     tmp: PathBuf,
-    /// Contextual strings (account labels, tab names, command words).
+
     pub context: Vec<String>,
 }
 
-/// A transcript with the alternatives Apple offers.
 #[derive(Debug, Clone, Default)]
 pub struct Heard {
     pub decoded: Decoded,
@@ -109,8 +104,6 @@ impl Drop for AppleSpeech {
     }
 }
 
-/// n-best: when the best transcript is not an instant command but one of
-/// the alternatives is exactly one, prefer it (short utterances only).
 pub fn prefer_instant(
     best: &str,
     alternatives: &[String],

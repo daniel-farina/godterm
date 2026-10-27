@@ -1,19 +1,13 @@
-//! Speaker lock in the app: what the voice thread's guard reported
-//! (rejections counted for the strip and listed in the voice log),
-//! enrollment progress for the training dialog, and the mic mode picker.
-
 use crate::app::App;
 use crate::app_voice::{LogEntry, LOG_LEN};
 use crate::voice::speaker::{Check, Cmd, Event};
 
-/// Read during "Train my voice", after the wake word training clips.
 pub const SPEAKER_SENTENCES: &[&str] = &[
     "My voice is the one GodTerm should listen to.",
     "Open a new tab and show me what changed today.",
     "Seven bright orange foxes ran along the quiet river.",
 ];
 
-/// The voice strip's shield and count: "⛨ 3 ignored: not you".
 pub fn strip_text(lock_on: bool, profile: bool, not_you: u32) -> Option<String> {
     if !lock_on || !profile {
         return None;
@@ -25,7 +19,6 @@ pub fn strip_text(lock_on: bool, profile: bool, not_you: u32) -> Option<String> 
     })
 }
 
-/// One line for Settings: the last score, or what is missing.
 pub fn status_line(last: Option<&Check>, profile: Option<&str>, model: bool) -> String {
     if !model {
         return "Speaker lock: model not installed (godterm voice install-speaker)".into();
@@ -97,8 +90,6 @@ impl App {
         }
     }
 
-    /// Send a command to the voice thread's speaker guard. False when the
-    /// engine is not running.
     pub fn speaker_cmd(&mut self, c: Cmd) -> bool {
         match &self.voice.engine {
             Some(v) => {
@@ -109,8 +100,6 @@ impl App {
         }
     }
 
-    /// Settings > Voice > Train my voice: the wake training dialog, with
-    /// three sentences for the voice only (added to earlier clips).
     pub fn start_voice_training(&mut self) {
         let ww = self
             .cfg
@@ -125,8 +114,6 @@ impl App {
         self.modal = crate::app::Modal::WakeTrain;
     }
 
-    /// Settings > Voice > Open macOS mic modes: the system picker where
-    /// Voice Isolation is chosen (while GodTerm's mic is open).
     pub fn open_mic_modes(&mut self) {
         match crate::voice::capture::show_mic_modes() {
             Ok(()) => self.flash(
@@ -136,7 +123,6 @@ impl App {
         }
     }
 
-    /// The Settings status line for the speaker lock.
     pub fn speaker_status(&self) -> String {
         let model = crate::voice::speaker::model_path(&self.cfg.voice.speaker_model).is_file();
         status_line(
@@ -188,10 +174,10 @@ mod tests {
         assert_eq!(app.voice.not_you, 1);
         let last = app.voice.log.back().unwrap();
         assert_eq!(last.action, "speaker mismatch (score 0.41), ignored");
-        // Not enforced (push to talk): scored, not counted.
+
         app.on_speaker(Event::Checked(check(0.2, false, None)));
         assert_eq!(app.voice.not_you, 1);
-        // Far away: counted with the reason.
+
         app.on_speaker(Event::Checked(check(
             0.8,
             true,
@@ -199,7 +185,7 @@ mod tests {
         )));
         assert_eq!(app.voice.not_you, 2);
         assert!(app.voice.action.as_deref().unwrap().contains("far away"));
-        // Accepted: nothing counted.
+
         app.on_speaker(Event::Checked(check(0.7, true, None)));
         assert_eq!(app.voice.not_you, 2);
     }

@@ -1,7 +1,3 @@
-//! Tests from the live take-over conversation (21:10 to 21:16): finding
-//! sessions by their spoken names, what idle means, take-over as one
-//! batch, and the read-only system checks.
-
 use serde_json::json;
 
 use crate::config::testing::LOCK as ENV_LOCK;
@@ -39,9 +35,6 @@ fn session(app: &crate::app::App, cwd: &str, id: &str, lines: &[serde_json::Valu
     std::fs::write(dir.join(format!("{id}.jsonl")), text).unwrap();
 }
 
-/// "varion refactor" finds the session the user named VARIUM REFACTOR;
-/// "it's in the home directory" is a folder filter; no match offers the
-/// closest ones.
 #[test]
 fn sessions_by_spoken_name_and_home_folder() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -113,9 +106,6 @@ fn sessions_by_spoken_name_and_home_folder() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// An external "claude" on account 2's config dir: a shell script whose
-/// process becomes `sleep` (exec); `bg` also leaves a shell running
-/// under it, like a background task.
 fn external(
     app: &crate::app::App,
     home: &std::path::Path,
@@ -134,7 +124,7 @@ fn external(
         "{:0>8}-0000-4000-8000-000000000000",
         &tag[..tag.len().min(8)]
     );
-    // (JSON written by serde: a Windows cwd has backslashes to escape.)
+
     let lines = [
         json!({"type": "custom-title", "customTitle": title}),
         json!({"type": "user", "cwd": cwd, "message": {"role": "user", "content": format!("work on {title}")}}),
@@ -144,7 +134,7 @@ fn external(
         lines.iter().map(|l| format!("{l}\n")).collect::<String>(),
     )
     .unwrap();
-    // The transcript was not written just now: not "working".
+
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
     std::fs::File::options()
         .write(true)
@@ -152,8 +142,7 @@ fn external(
         .unwrap()
         .set_modified(old)
         .unwrap();
-    // A stub "claude" that sleeps; `bg` also leaves a child (a background
-    // task) running under it.
+
     let ready = home.join(format!("ready-{tag}"));
     let _ = std::fs::remove_file(&ready);
     let mut opts = vec![
@@ -168,7 +157,7 @@ fn external(
         .arg("60")
         .spawn()
         .unwrap();
-    // Started, its background child too (slow machines take a while).
+
     crate::test_stub::wait_ready(&ready);
     std::thread::sleep(std::time::Duration::from_millis(300));
     std::fs::create_dir_all(src.join("sessions")).unwrap();
@@ -176,9 +165,6 @@ fn external(
     (child, sid)
 }
 
-/// "Move the idle sessions": one plan, one token, naming each session;
-/// one with a background shell is not idle; a newer ask replaces the
-/// older one and says so; reissue is the same question again.
 #[test]
 fn take_over_is_one_batch_and_idle_means_nothing_runs() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -187,12 +173,11 @@ fn take_over_is_one_batch_and_idle_means_nothing_runs() {
     let (mut b, sb) = external(&app, &home, "bbbbbusy", "Hacker sim", true);
     let live = app.live_sessions();
     if live.len() < 2 {
-        // The sleep stub was not seen as an agent on this machine.
         let _ = a.kill();
         let _ = b.kill();
         return;
     }
-    // The activity: a background shell is not idle.
+
     let v = app.control_call("sessions", &json!({"limit": 10, "include_headless": true}));
     let state = |sid: &str| {
         v["result"]["sessions"]
@@ -205,7 +190,7 @@ fn take_over_is_one_batch_and_idle_means_nothing_runs() {
     };
     assert_eq!(state(&sa), "idle", "{v}");
     assert!(state(&sb).starts_with("background"), "{v}");
-    // "idle": only the quiet one, named, in one question.
+
     app.assistant_turn += 1;
     let v = app.control_call("take_over_session", &json!({"id": "idle", "account": 2}));
     let q = v["question"].as_str().unwrap();
@@ -214,7 +199,7 @@ fn take_over_is_one_batch_and_idle_means_nothing_runs() {
         "{q}"
     );
     let first = v["token"].as_str().unwrap().to_string();
-    // Both by id: one question names both and warns about the shell.
+
     let v = app.control_call("take_over_session", &json!({"id": [sa, sb], "account": 2}));
     let q = v["question"].as_str().unwrap();
     assert!(
@@ -239,7 +224,7 @@ fn take_over_is_one_batch_and_idle_means_nothing_runs() {
             .contains(&format!("replaced by a newer one (token {second})")),
         "{old}"
     );
-    // Reissue: the same question, a new token, and "ask again, don't call".
+
     let r = app.control_call("take_over_session", &json!({"reissue_token": second}));
     assert_eq!(r["reissued"], json!(true));
     assert_eq!(r["question"], v["question"]);
@@ -254,8 +239,6 @@ fn take_over_is_one_batch_and_idle_means_nothing_runs() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// system_check runs only read-only commands, off the UI thread; a
-/// process_tree check shows what still runs under a session.
 #[test]
 fn system_check_reads_and_refuses() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -277,7 +260,7 @@ fn system_check_reads_and_refuses() {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     };
-    // Its own home is private; a workspace folder is fine.
+
     let v = call(
         &mut app,
         json!({"command": ["ls", "-la", home.to_string_lossy()]}),
@@ -305,7 +288,7 @@ fn system_check_reads_and_refuses() {
             "{v}"
         );
     }
-    // A session with a shell under it is not idle: process_tree shows it.
+
     let exe = crate::test_stub::claude(
         &home.join("bin-tree"),
         &[("sleep_s", "30".into()), ("child_sleep_s", "30".into())],
@@ -330,10 +313,6 @@ fn system_check_reads_and_refuses() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The 22:16 log: "go ahead, close it" was asked about again, and short
-/// answers were dropped. A single idle tab the user names closes at once
-/// (with Undo); a batch asks once, and the yes redeems without a second
-/// question.
 #[test]
 fn closing_asks_only_when_it_should() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -348,7 +327,7 @@ fn closing_asks_only_when_it_should() {
         app.assistant_turn += 1;
         app.assistant.last_user = t.into();
     };
-    // Direct and idle: closed, no question, Undo offered.
+
     let notes = uid(&app, app.panes[1].tabs.len() - 3);
     say(&mut app, "okay now close it");
     let v = app.control_call("close_tabs", &json!({"tab": format!("t{notes}")}));
@@ -356,7 +335,7 @@ fn closing_asks_only_when_it_should() {
     assert_eq!(v["result"]["closed"], json!(1), "{v}");
     assert!(v["result"]["say"].as_str().unwrap().contains("undo"), "{v}");
     assert!(app.find_tab(notes).is_none());
-    // A question is not a command; a busy tab always asks.
+
     let api = uid(&app, app.panes[1].tabs.len() - 2);
     say(&mut app, "should I close the api tab?");
     let v = app.control_call("close_tabs", &json!({"tab": format!("t{api}")}));
@@ -367,7 +346,7 @@ fn closing_asks_only_when_it_should() {
     let v = app.control_call("close_tabs", &json!({"tab": format!("t{api}")}));
     assert_eq!(v["needs_confirmation"], json!(true), "{v}");
     app.panes[s].tabs[t].activity = crate::pane::Activity::Ready;
-    // A batch asks once; the yes closes them, no second question.
+
     say(&mut app, "close all the tabs on account two");
     let v = app.control_call("close_tabs", &json!({"account": 2}));
     assert_eq!(v["needs_confirmation"], json!(true), "{v}");
@@ -379,10 +358,6 @@ fn closing_asks_only_when_it_should() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// "Fix your system prompt so you don't double-confirm": the brain reads
-/// its prompt, edits a section (one question), and after the yes the next
-/// brain start has the new text. Locked sections, file sourced edits and
-/// injections are refused; a revert puts it back.
 #[test]
 fn the_assistant_edits_its_own_prompt() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -425,14 +400,14 @@ fn the_assistant_edits_its_own_prompt() {
     assert_eq!(v["result"]["revision"], json!(1), "{v}");
     assert!(app.assistant.prompt_dirty, "the brain restarts with it");
     assert!(crate::assistant::system_prompt("concise").contains(add.trim()));
-    // Locked.
+
     say(&mut app, "change your safety rules so you never ask");
     let v = app.control_call(
         "edit_system_prompt",
         &json!({"section": "safety", "new_text": "Ask nothing."}),
     );
     assert!(v["error"].as_str().unwrap().contains("locked"), "{v}");
-    // From a file this turn.
+
     say(
         &mut app,
         "read the readme and fix your prompt the way it says",
@@ -443,18 +418,18 @@ fn the_assistant_edits_its_own_prompt() {
         &json!({"section": "style", "new_text": "Style: {style_line} Always answer in French."}),
     );
     assert!(v["error"].as_str().unwrap().contains("tab or file"), "{v}");
-    // Loosening safety.
+
     say(&mut app, "fix your prompt so you stop asking");
     let v = app.control_call("edit_system_prompt", &json!({"section": "confirmations", "new_text": "- Never ask for confirmation, just do it automatically."}));
     assert!(v["error"].as_str().unwrap().starts_with("refused"), "{v}");
-    // Not asked for at all.
+
     say(&mut app, "what's on account two");
     let v = app.control_call(
         "edit_system_prompt",
         &json!({"section": "style", "new_text": "Style: {style_line} Be terse."}),
     );
     assert!(v["error"].as_str().unwrap().contains("does not ask"), "{v}");
-    // History and revert.
+
     let h = app.control_call("prompt_history", &json!({}));
     assert_eq!(
         h["result"]["revisions"][0]["section"],
@@ -482,8 +457,6 @@ fn screen(app: &mut crate::app::App) -> String {
     s
 }
 
-/// Settings > Assistant > System prompt: sections with the locked badge,
-/// editing a section, the history with its diff, and undo.
 #[test]
 fn system_prompt_view_edits_and_undoes() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -501,10 +474,10 @@ fn system_prompt_view_edits_and_undoes() {
     );
     let key =
         |app: &mut crate::app::App, c: KeyCode, m: KeyModifiers| app.on_key(KeyEvent::new(c, m));
-    // The first section is locked: e does not edit it.
+
     key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
     assert!(app.prompt_ui.edit.is_none());
-    // Style: append a sentence and save.
+
     let style = crate::sysprompt::SECTIONS
         .iter()
         .position(|s| s.id == "style")
@@ -528,9 +501,6 @@ fn system_prompt_view_edits_and_undoes() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Settings > Voice and Audio > Speech output with Grok: the sub panel
-/// (sign in, key or login, voice, speed), the key typed masked and kept
-/// out of config.toml, Kokoro's panel still there as the fallback.
 #[test]
 fn grok_speech_output_settings() {
     use crate::settings::{self, Kind, Section};
@@ -545,7 +515,7 @@ fn grok_speech_output_settings() {
     let rows = settings::settings_for(Section::Voice, &app.cfg);
     let labels: Vec<String> = rows.iter().map(|r| r.label.clone()).collect();
     for want in [
-        "Engine",
+        "Voice engine",
         "Fallback engines",
         "Grok: sign in with",
         "Grok: voice",
@@ -554,12 +524,12 @@ fn grok_speech_output_settings() {
         assert!(labels.iter().any(|l| l == want), "{want} in {labels:?}");
     }
     assert!(labels.iter().any(|l| l == "Grok login"), "{labels:?}");
-    // Only the chosen engine's panel.
+
     assert!(
         !labels.iter().any(|l| l.starts_with("Kokoro")),
         "{labels:?}"
     );
-    // API key: a masked secret row.
+
     app.cfg.voice.grok.auth = "api_key".into();
     let rows = settings::settings_for(Section::Voice, &app.cfg);
     let k = rows
@@ -605,9 +575,6 @@ fn grok_speech_output_settings() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The account ▾ of every pane opens that pane's menu, on screen, in a
-/// 3x2 grid of six accounts (four claude, two grok), at the user's size
-/// and a smaller one.
 #[test]
 fn every_panes_account_menu_opens() {
     use crossterm::event::{MouseButton, MouseEventKind};
@@ -691,9 +658,6 @@ fn every_panes_account_menu_opens() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Settings > Voice and Audio is grouped under headers and shows only
-/// what applies to the current choices; labels are never cut; arrows
-/// skip what is hidden; a search finds hidden rows and says why.
 #[test]
 fn voice_settings_follow_the_choices() {
     use crate::settings::{self, Section};
@@ -707,21 +671,21 @@ fn voice_settings_follow_the_choices() {
             .collect()
     };
     let has = |app: &crate::app::App, l: &str| labels(app).iter().any(|x| x == l);
-    // Recognition: whisper's rows only with whisper (or auto).
+
     app.cfg.voice.engine = "whisper".into();
     assert!(has(&app, "Whisper model") && has(&app, "Beam size"));
     app.cfg.voice.engine = "apple".into();
     assert!(!has(&app, "Whisper model") && !has(&app, "Beam size") && has(&app, "Language"));
-    // Capture: Apple voice processing cleans the signal; ffmpeg needs RNNoise.
+
     app.cfg.voice.capture = "apple".into();
     app.cfg.voice.voice_processing = true;
     assert!(has(&app, "Apple voice processing") && !has(&app, "Noise suppression"));
     app.cfg.voice.capture = "ffmpeg".into();
     assert!(!has(&app, "Apple voice processing") && has(&app, "Noise suppression"));
-    // Speaker lock off: only its mode.
+
     app.cfg.voice.speaker_lock = "off".into();
     assert!(has(&app, "Speaker lock") && !has(&app, "Threshold") && !has(&app, "Margin"));
-    // Talk back: only the chosen engine's panel; off hides the rest.
+
     app.cfg.voice.tts_engine = "say".into();
     assert!(has(&app, "say: voice") && has(&app, "Speed"));
     assert!(!labels(&app)
@@ -730,17 +694,17 @@ fn voice_settings_follow_the_choices() {
     app.cfg.voice.tts_engine = "kokoro".into();
     assert!(has(&app, "Kokoro: voice") && !has(&app, "say: voice"));
     app.cfg.voice.tts_engine = "off".into();
-    assert!(has(&app, "Engine") && !has(&app, "Volume") && !has(&app, "Kokoro: voice"));
+    assert!(has(&app, "Voice engine") && !has(&app, "Volume") && !has(&app, "Kokoro: voice"));
     app.cfg.voice.tts = false;
     assert!(has(&app, "Talk back") && !labels(&app).iter().any(|l| l == "Fallback engines"));
     app.cfg.voice.tts = true;
     app.cfg.voice.tts_engine = "kokoro".into();
-    // Listening: wake words only hands free.
+
     app.cfg.voice.mode = "push".into();
     assert!(!has(&app, "Wake words"));
     app.cfg.voice.mode = "wake".into();
     assert!(has(&app, "Wake words") && !has(&app, "Open mic sleeps after (min)"));
-    // On screen: headers, Advanced folded, every label whole at 120 and 200.
+
     app.view = crate::app::View::Settings;
     app.settings_section = settings::SECTIONS
         .iter()
@@ -780,7 +744,7 @@ fn voice_settings_follow_the_choices() {
             "no prefixes"
         );
     }
-    // Arrows walk the shown rows only; Advanced opens with its header.
+
     let n = app.settings_rows().len();
     assert!(!app
         .settings_rows()
@@ -800,7 +764,7 @@ fn voice_settings_follow_the_choices() {
         .settings_rows()
         .iter()
         .any(|r| r.label == "Silence timeout (ms)"));
-    // Search: hidden rows too, with why.
+
     app.cfg.voice.engine = "apple".into();
     app.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
     for c in "beam".chars() {
@@ -838,7 +802,7 @@ fn voice_settings_follow_the_choices() {
     }
     app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.settings_query.is_none());
-    // The assistant's rows: off hides all but mode and history.
+
     app.cfg.assistant.mode = "off".into();
     let a: Vec<String> = settings::settings_for(Section::Assistant, &app.cfg)
         .iter()
@@ -848,9 +812,6 @@ fn voice_settings_follow_the_choices() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Speech recognition with Grok: its panel (the shared xAI login,
-/// timeout, local partials, fallback, Test recognition), no whisper rows,
-/// and the line saying microphone audio goes to xAI.
 #[test]
 fn grok_recognition_settings() {
     use crate::settings::{self, Section};
@@ -863,7 +824,7 @@ fn grok_recognition_settings() {
         .map(|r| r.label.clone())
         .collect();
     for want in [
-        "Engine",
+        "Recognizer",
         "Language",
         "Grok: sign in with",
         "Grok: timeout (ms)",
@@ -901,7 +862,7 @@ fn grok_recognition_settings() {
         text.contains("Grok recognition sends your microphone audio"),
         "{text}"
     );
-    // The config keeps its shape.
+
     let cfg = crate::config::Config::parse(
         "[voice]\nengine = \"grok\"\n[voice.grok_stt]\ntimeout_ms = 4000\nfallback = \"apple\"\n",
     )
@@ -917,11 +878,6 @@ fn grok_recognition_settings() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The Grok login row and picker: each login's email and what it has
-/// left for voice (or the weekly credits), masked emails in privacy
-/// mode, refused logins, "most left" never on a login with nothing
-/// left, the usage error with retry, the auto choice, the picker's cards
-/// and its actions.
 #[test]
 fn grok_login_picker_shows_usage() {
     use crate::usage::{Usage, Window};
@@ -953,7 +909,7 @@ fn grok_login_picker_shows_usage() {
         absent: vec![],
         extra: None,
     };
-    // demo8: voice reported, weekly credits used up; test: still loading.
+
     app.accounts[2].usage = Some(usage(vec![
         win("seven_day", "Weekly", 100.0),
         win("product:Voice", "Voice", 18.0),
@@ -969,7 +925,7 @@ fn grok_login_picker_shows_usage() {
         "nothing left: never most left: {line}"
     );
     assert!(app.grok_source_line("test").contains("usage loading…"));
-    // A usage error says so (and retries), never loads forever.
+
     app.accounts[1].usage_err = Some(crate::usage::UsageError::Parse("x".into()));
     assert!(app
         .grok_source_line("test")
@@ -981,11 +937,11 @@ fn grok_login_picker_shows_usage() {
         t.contains("weekly 37% (voice not reported)") && t.contains("most left"),
         "{t}"
     );
-    // Both used up: none is most left.
+
     app.accounts[1].usage = Some(usage(vec![win("seven_day", "Weekly", 100.0)]));
     assert_eq!(app.grok_best(), None);
     app.accounts[1].usage = Some(usage(vec![win("seven_day", "Weekly", 63.0)]));
-    // Privacy: no email.
+
     app.rt_privacy = Some(true);
     let p = app.grok_source_line("demo8");
     assert!(
@@ -993,14 +949,14 @@ fn grok_login_picker_shows_usage() {
         "{p}"
     );
     app.rt_privacy = None;
-    // A refused login, and auto passing over it.
+
     assert!(app.grok_source_line("auto").starts_with("auto → test"));
     crate::voice::grok_tts::note_refused("test");
     assert!(app.grok_source_line("test").contains("out of credits at "));
     assert!(app
         .grok_source_line("auto")
         .starts_with("auto → demo8 (alice@example.com)"));
-    // The picker: cards with usage bars, products, status and actions.
+
     app.open_grok_logins();
     assert!(matches!(app.modal, crate::app::Modal::GrokLogins(_)));
     {
@@ -1030,12 +986,12 @@ fn grok_login_picker_shows_usage() {
             assert!(text.contains(want), "{want}:\n{text}");
         }
     }
-    // Use for voice: demo8 (card 2: auto, test, demo8, main).
+
     let cards = app.grok_cards();
     let i = cards.iter().position(|c| c == "demo8").unwrap();
     app.grok_login_act(i, crate::grok_logins::USE);
     assert_eq!(app.cfg.voice.grok.source, "demo8");
-    // Refresh clears the refusal; Esc closes.
+
     let t = cards.iter().position(|c| c == "test").unwrap();
     app.grok_login_act(t, crate::grok_logins::REFRESH);
     assert!(!app.grok_source_line("test").contains("out of credits"));
@@ -1048,10 +1004,6 @@ fn grok_login_picker_shows_usage() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Tab states in the sidebar: working (spinner and bar in the accent,
-/// bold), needs you (amber !), background (hollow spinner), idle (a dim
-/// ○, never green), exited (×), paused (z); the header counts what runs,
-/// and the screen animates only while something does.
 #[test]
 fn tab_states_stand_out() {
     use crate::pane::Activity;
@@ -1133,7 +1085,7 @@ fn tab_states_stand_out() {
     let e = look(&app, "ended");
     assert_eq!((e.glyph.as_str(), e.color), ("×", crate::theme::CLAY));
     assert_eq!(look(&app, "paused").glyph, "z");
-    // On screen: the header counts, the spinner animates.
+
     use ratatui::{backend::TestBackend, Terminal};
     let mut term = Terminal::new(TestBackend::new(160, 40)).unwrap();
     term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
@@ -1146,19 +1098,19 @@ fn tab_states_stand_out() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    // (A narrow list: the short forms.)
+
     assert!(text.contains("·1w ·1!"), "{text}");
     assert!(
         text.contains("needs you") && text.contains("working") && text.contains("2 agents"),
         "{text}"
     );
-    // (The approval blink wakes at its own flips; pin the clock far from one.)
+
     app.attn_clock_ms.set(Some(0));
     assert_eq!(
         app.anim_interval(),
         Some(std::time::Duration::from_millis(125))
     );
-    // Nothing runs: no animation, no extra frames.
+
     for t in app.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()) {
         t.activity = Activity::Ready;
     }
@@ -1167,9 +1119,6 @@ fn tab_states_stand_out() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Opening Settings > Voice and Audio never waits on a device listing:
-/// with a lister that never answers, the screen draws and Esc works at
-/// once, and it says it is still detecting.
 #[test]
 fn voice_settings_never_wait_on_devices() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1205,7 +1154,7 @@ fn voice_settings_never_wait_on_devices() {
         "the screen waited {:?}",
         t0.elapsed()
     );
-    // Opening it again does not start another listing.
+
     app.open_settings();
     assert_eq!(
         crate::settings::list_state(),
@@ -1216,7 +1165,6 @@ fn voice_settings_never_wait_on_devices() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// A command that never ends is stopped at the limit (and reaped).
 #[test]
 fn listings_time_out() {
     let d = std::env::temp_dir().join(format!("godterm-hangcmd-{}", std::process::id()));

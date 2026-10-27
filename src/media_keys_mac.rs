@@ -1,45 +1,3 @@
-//! macOS side of the headphone tap: ported from GrokTerm's media_keys.rs
-//! (the one that works with Sony WH-1000XM5 double taps, AirPods and wired
-//! EarPods).
-//!
-//! How a headphone press gets here: a Bluetooth tap is AVRCP play/pause,
-//! a wired remote and the keyboard media key are HID; macOS hands either to
-//! the Now Playing app through MediaRemote (MPRemoteCommandCenter). So:
-//!
-//! 1. Claim Now Playing: handlers on play, pause, toggle, stop, next and
-//!    previous, and Now Playing info with a ticking elapsed time, always
-//!    "playing" (a paused claim loses the slot to Music). No audio is
-//!    played: the claim is metadata only, so Kokoro or Grok talk back and
-//!    the mic are untouched.
-//! 2. MediaRemote can go deaf after a mic or talk back cycle: republish
-//!    every 1 s while listening (2 s otherwise), rebind the handlers every
-//!    8 s while listening (20 s otherwise, and when talk back ends), and
-//!    when the mic goes off, a hard reclaim (paused, then playing again,
-//!    with fresh handlers). Presses for 1.5 s after it are ghosts (Gate).
-//! 3. Backups that see the press without MediaRemote: an IOHID consumer
-//!    page listener (needs Input Monitoring) and a CGEventTap on the
-//!    play key (Accessibility or Input Monitoring). They only start when
-//!    the terminal app already has that permission, so turning the setting
-//!    on never brings up a permission prompt; they look again every 12 s.
-//!
-//! Main thread only: MediaPlayer is used from App's thread (the UI loop
-//! runs on the process's main thread), and the remote command handlers run
-//! on the main dispatch queue, so pump() runs the main run loop for an
-//! instant each time round the UI loop. A press waits at most one UI loop
-//! (capped at 100 ms while the setting is on).
-//!
-//! Unlike GrokTerm, no NSApplication is made and nothing is activated: a
-//! terminal program must not steal focus from its terminal, and the claim
-//! works without it (checked on macOS 27).
-//!
-//! Bluetooth note (GrokTerm's findings): when the headset's own mic is the
-//! input, macOS switches it to the call profile (HFP) and most headsets
-//! then stop sending play/pause until capture ends. So a tap off closes the
-//! stream itself, the stop while it is open is the headset mute gesture
-//! (taken in the recording helper, see voice::capture), telephony HID
-//! usages are watched too, and the route is read twice a second: when the
-//! headset is back in media mode, Now Playing is reclaimed.
-
 use std::os::raw::c_void;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -71,17 +29,16 @@ extern "C" {
 
 pub struct MacBackend {
     tx: Sender<AppEvent>,
-    /// Handler tokens from addTargetWithHandler.
+
     tokens: Vec<Retained<AnyObject>>,
     listening: bool,
     speaking: bool,
-    /// Elapsed time in Now Playing counts from here.
+
     session_ms: u64,
     published_ms: u64,
     rebound_ms: u64,
     reclaimed_ms: u64,
-    /// The audio route, read twice a second: a headset back from call
-    /// mode gets a hard reclaim.
+
     route: RouteWatch,
     route_ms: u64,
     stop: Arc<AtomicBool>,
@@ -90,7 +47,6 @@ pub struct MacBackend {
     _main: MainThreadMarker,
 }
 
-/// Claim Now Playing (main thread only; None elsewhere).
 pub fn start(tx: Sender<AppEvent>) -> Option<MacBackend> {
     let Some(mtm) = MainThreadMarker::new() else {
         log("not on the main thread: Now Playing is not claimed");
@@ -137,7 +93,6 @@ pub fn start(tx: Sender<AppEvent>) -> Option<MacBackend> {
 }
 
 impl MacBackend {
-    /// (Re)register the remote command handlers.
     fn bind(&mut self) {
         let center = unsafe { MPRemoteCommandCenter::sharedCommandCenter() };
         self.tokens.clear();
@@ -151,15 +106,13 @@ impl MacBackend {
                 (center.playCommand(), Cmd::Play, "remote:play"),
                 (center.pauseCommand(), Cmd::Pause, "remote:pause"),
                 (center.stopCommand(), Cmd::Stop, "remote:stop"),
-                // Some headsets send a tap as next or previous track.
                 (center.nextTrackCommand(), Cmd::Next, "remote:next"),
                 (center.previousTrackCommand(), Cmd::Previous, "remote:prev"),
             ]
         };
         for (c, cmd, source) in cmds {
             let tx = self.tx.clone();
-            // Only a message from here: publishing from inside the handler
-            // breaks later deliveries (GrokTerm).
+
             let h = RcBlock::new(move |_e: NonNull<MPRemoteCommandEvent>| {
                 let _ = tx.send(AppEvent::MediaKey(Press { cmd, source }));
                 MPRemoteCommandHandlerStatus::Success
@@ -180,7 +133,7 @@ impl MacBackend {
             "GodTerm voice: mic off (tap to listen)"
         };
         let elapsed = now_ms().saturating_sub(self.session_ms) as f64 / 1000.0;
-        // A long duration so it looks like media going on.
+
         let duration = 3600.0;
         unsafe {
             let d = NSMutableDictionary::<NSString, AnyObject>::new();
@@ -212,8 +165,6 @@ impl MacBackend {
         self.published_ms = now_ms();
     }
 
-    /// After the mic goes off MediaRemote often stops delivering: bounce
-    /// the playback state and bind fresh handlers.
     fn hard_reclaim(&mut self) {
         log("hard reclaim: paused, new handlers, playing");
         unsafe {
@@ -233,7 +184,7 @@ impl crate::media_keys::Backend for MacBackend {
         if self.released {
             return;
         }
-        // The handlers run here (the main dispatch queue).
+
         unsafe {
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.0, 0);
         }
@@ -311,8 +262,6 @@ impl Drop for MacBackend {
     }
 }
 
-// ─── the audio route (CoreAudio, read only) ────────────────────────────────
-
 mod ca {
     use std::os::raw::c_void;
 
@@ -324,14 +273,14 @@ mod ca {
     }
 
     pub const SYSTEM: u32 = 1;
-    pub const DEFAULT_OUTPUT: u32 = 0x644f_7574; // 'dOut'
-    pub const DEFAULT_INPUT: u32 = 0x6449_6e20; // 'dIn '
-    pub const GLOBAL: u32 = 0x676c_6f62; // 'glob'
-    pub const NOMINAL_RATE: u32 = 0x6e73_7274; // 'nsrt'
-    pub const TRANSPORT: u32 = 0x7472_616e; // 'tran'
-    pub const RUNNING_SOMEWHERE: u32 = 0x676f_6e65; // 'gone'
-    pub const BLUETOOTH: u32 = 0x626c_7565; // 'blue'
-    pub const BLUETOOTH_LE: u32 = 0x626c_6561; // 'blea'
+    pub const DEFAULT_OUTPUT: u32 = 0x644f_7574;
+    pub const DEFAULT_INPUT: u32 = 0x6449_6e20;
+    pub const GLOBAL: u32 = 0x676c_6f62;
+    pub const NOMINAL_RATE: u32 = 0x6e73_7274;
+    pub const TRANSPORT: u32 = 0x7472_616e;
+    pub const RUNNING_SOMEWHERE: u32 = 0x676f_6e65;
+    pub const BLUETOOTH: u32 = 0x626c_7565;
+    pub const BLUETOOTH_LE: u32 = 0x626c_6561;
 
     #[link(name = "CoreAudio", kind = "framework")]
     extern "C" {
@@ -367,7 +316,6 @@ mod ca {
     }
 }
 
-/// The default output and input as CoreAudio has them now.
 pub fn route_now() -> Option<Route> {
     let out: u32 = ca::get(ca::SYSTEM, ca::DEFAULT_OUTPUT)?;
     let input: u32 = ca::get(ca::SYSTEM, ca::DEFAULT_INPUT).unwrap_or(0);
@@ -388,8 +336,6 @@ pub fn route_now() -> Option<Route> {
     })
 }
 
-// ─── permissions (read only: never prompt) ─────────────────────────────────
-
 #[link(name = "IOKit", kind = "framework")]
 extern "C" {
     fn IOHIDCheckAccess(request: u32) -> u32;
@@ -403,7 +349,6 @@ extern "C" {
     fn AXIsProcessTrusted() -> bool;
 }
 
-/// Input Monitoring granted (kIOHIDRequestTypeListenEvent, granted = 0).
 fn input_monitoring() -> bool {
     unsafe { IOHIDCheckAccess(1) == 0 }
 }
@@ -412,7 +357,6 @@ fn tap_allowed() -> bool {
     unsafe { AXIsProcessTrusted() || CGPreflightListenEventAccess() }
 }
 
-/// Sleep up to 12 s, false when told to stop.
 fn wait_retry(stop: &AtomicBool) -> bool {
     for _ in 0..48 {
         if stop.load(Ordering::Relaxed) {
@@ -427,8 +371,6 @@ fn send(tx: &Sender<AppEvent>, cmd: Cmd, source: &'static str) {
     let _ = tx.send(AppEvent::MediaKey(Press { cmd, source }));
 }
 
-// ─── IOHID consumer page ───────────────────────────────────────────────────
-
 mod hid {
     use std::os::raw::c_void;
 
@@ -437,7 +379,7 @@ mod hid {
     pub const USAGE_PLAY: u32 = 0xB0;
     pub const USAGE_PAUSE: u32 = 0xB1;
     pub const USAGE_PLAY_OR_PAUSE: u32 = 0xCD;
-    /// Telephony: what a headset in call mode may send for its button.
+
     pub const PAGE_TELEPHONY: u32 = 0x0B;
     pub const USAGE_HOOK_SWITCH: u32 = 0x20;
     pub const USAGE_FLASH: u32 = 0x21;
@@ -504,9 +446,6 @@ fn run_hid(tx: &Sender<AppEvent>, stop: &AtomicBool) -> Result<(), String> {
         let v = IOHIDValueGetIntegerValue(value);
         let page = IOHIDElementGetUsagePage(el);
         if page == PAGE_TELEPHONY {
-            // Every telephony usage is logged (a real headset test shows
-            // which fires in call mode); the button ones turn the mic off
-            // only, like pause.
             let usage = IOHIDElementGetUsage(el);
             log(&format!("HID telephony usage 0x{usage:02X} value {v}"));
             let source = match usage {
@@ -521,7 +460,7 @@ fn run_hid(tx: &Sender<AppEvent>, stop: &AtomicBool) -> Result<(), String> {
             return;
         }
         if v == 0 || page != PAGE_CONSUMER {
-            return; // a release, or not a media key
+            return;
         }
         let (cmd, source) = match IOHIDElementGetUsage(el) {
             USAGE_PLAY_OR_PAUSE => (Cmd::TogglePlayPause, "HID:PlayOrPause"),
@@ -536,7 +475,7 @@ fn run_hid(tx: &Sender<AppEvent>, stop: &AtomicBool) -> Result<(), String> {
         if m.is_null() {
             return Err("IOHIDManagerCreate failed".into());
         }
-        // Every device: consumer only matching misses some Bluetooth paths.
+
         IOHIDManagerSetDeviceMatching(m, std::ptr::null());
         let ctx = Box::into_raw(Box::new(Ctx { tx: tx.clone() }));
         IOHIDManagerRegisterInputValueCallback(m, Some(cb), ctx as *mut c_void);
@@ -557,8 +496,6 @@ fn run_hid(tx: &Sender<AppEvent>, stop: &AtomicBool) -> Result<(), String> {
     }
     Ok(())
 }
-
-// ─── CGEventTap on the play key ────────────────────────────────────────────
 
 mod tap {
     use std::os::raw::c_void;
@@ -597,9 +534,6 @@ mod tap {
         pub static kCFRunLoopCommonModes: *const c_void;
     }
 
-    /// The mask bit for a real event type (0..63). The tap disabled codes
-    /// are near u32::MAX and must never be shifted in (GrokTerm crashed on
-    /// that overflow).
     pub fn mask_bit(t: u32) -> u64 {
         if t >= 64 {
             0
@@ -649,7 +583,7 @@ fn run_tap(tx: &Sender<AppEvent>, stop: &AtomicBool) -> Result<(), String> {
         if etype != SYSTEM_DEFINED {
             return event;
         }
-        // data1 (field 55): key code in the high half, 0x0A down, 0x0B up.
+
         let data1 = CGEventGetIntegerValueField(event, 55);
         let code = (data1 & 0xFFFF_0000) >> 16;
         let flags = (data1 & 0x0000_FF00) >> 8;
@@ -657,8 +591,7 @@ fn run_tap(tx: &Sender<AppEvent>, stop: &AtomicBool) -> Result<(), String> {
             if flags == 0x0A {
                 send(&ctx.tx, Cmd::TogglePlayPause, "CGEventTap:PLAY");
             }
-            // Swallowed (down and up) where the tap may: Music must not
-            // start too.
+
             return std::ptr::null_mut();
         }
         event

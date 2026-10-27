@@ -58,8 +58,6 @@ def preflight(owner, account, name="godterm-state"):
     if account not in gh:
         pf.update(can_init=False, can_clone=False, warnings=["gh has no github.com login for %s: run gh auth login --hostname github.com (GodTerm never switches gh accounts)" % account])
         return pf
-    # In the mock, "<owner>/godterm-state" exists only for the work
-    # account, and "public-state" is a public one.
     exists = name == "public-state" or (name == "godterm-state" and owner == "dev-work")
     pf["exists"] = exists
     if exists:

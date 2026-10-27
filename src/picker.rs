@@ -1,6 +1,3 @@
-//! The New Tab dialog: where the tab starts (a new dated folder under a base
-//! path, a recent folder, any typed path) or which session it resumes.
-
 use std::path::{Path, PathBuf};
 
 use crate::config::{expand_tilde, home_dir};
@@ -26,14 +23,13 @@ pub struct PickItem {
     pub action: PickAction,
 }
 
-/// A recently used folder, as stored in state.json.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecentDir {
     pub path: String,
-    /// Account name it was used with.
+
     #[serde(default)]
     pub account: String,
-    /// Unix seconds.
+
     #[serde(default)]
     pub last_used: i64,
 }
@@ -45,14 +41,12 @@ pub struct RecentRow {
     pub sessions: usize,
 }
 
-/// What the dialog is editing.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
-    /// Typing the new folder's name.
     Name,
-    /// Editing the base path; Enter saves it as the default.
+
     Base(String),
-    /// Typing any existing path (Tab completes).
+
     OpenExisting(String),
 }
 
@@ -70,12 +64,12 @@ pub struct Picker {
     pub base: PathBuf,
     pub name: String,
     pub mode: Mode,
-    /// Selected list row; None means the name field.
+
     pub sel: Option<usize>,
     pub create_folder: bool,
     pub git_init: bool,
     pub all_accounts: bool,
-    /// The name is still the generated default: typing replaces it.
+
     pub pristine: bool,
     pub recents: Vec<RecentRow>,
     resumes: Vec<PickItem>,
@@ -89,8 +83,6 @@ pub fn tilde(p: &str) -> String {
     }
 }
 
-/// The default folder name: `pattern` (strftime) formatted for `now`, with
-/// the lowest `-N` suffix (from 1) that does not exist under `base`.
 pub fn dated_name(pattern: &str, base: &Path, now: chrono::DateTime<chrono::Local>) -> String {
     let stem = now
         .format(if pattern.trim().is_empty() {
@@ -112,7 +104,6 @@ pub fn dated_name(pattern: &str, base: &Path, now: chrono::DateTime<chrono::Loca
     stem
 }
 
-/// Check a folder name typed by the user.
 pub fn validate_name(name: &str) -> Result<(), String> {
     let n = name.trim();
     if n.is_empty() {
@@ -130,12 +121,10 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether a folder can be created in `dir` (it exists and is writable).
 pub fn writable(dir: &Path) -> bool {
     crate::platform::writable(dir)
 }
 
-/// Complete a typed path to the longest common prefix of matching folders.
 pub fn complete_dir(input: &str) -> String {
     let expanded = expand_tilde(input);
     let s = expanded.to_string_lossy().into_owned();
@@ -166,7 +155,7 @@ pub fn complete_dir(input: &str) -> String {
     if names.len() == 1 {
         out.push('/');
     }
-    // Keep the ~ the user typed.
+
     if input.starts_with('~') {
         tilde(&out)
     } else {
@@ -174,9 +163,6 @@ pub fn complete_dir(input: &str) -> String {
     }
 }
 
-/// Recent folders for the dialog, newest first: recorded recents (of this
-/// account unless `all`), then session folders not listed yet, at most
-/// `limit`, each with how many sessions ran there.
 pub fn recent_rows(
     recents: &[RecentDir],
     account: &str,
@@ -223,7 +209,6 @@ pub fn recent_rows(
     rows
 }
 
-/// Insert or refresh a recent folder, keeping at most `limit` per account.
 pub fn remember(recents: &mut Vec<RecentDir>, path: &Path, account: &str, now: i64, limit: usize) {
     let p = path.to_string_lossy().into_owned();
     recents.retain(|r| !(r.path == p && r.account == account));
@@ -275,7 +260,6 @@ impl Picker {
         p
     }
 
-    /// Refresh the Resume section once sessions finished loading.
     pub fn set_sessions(&mut self, sessions: &[SessionInfo]) {
         self.resumes = sessions
             .iter()
@@ -292,7 +276,6 @@ impl Picker {
             .collect();
     }
 
-    /// Recent folders then sessions to resume.
     pub fn items(&self) -> Vec<PickItem> {
         let now = chrono::Utc::now().timestamp();
         let mut v: Vec<PickItem> = self
@@ -317,12 +300,10 @@ impl Picker {
         v
     }
 
-    /// The folder Create & open would use.
     pub fn target(&self) -> PathBuf {
         self.base.join(self.name.trim())
     }
 
-    /// What Create & open would do with the folder.
     pub fn status(&self) -> Status {
         if let Err(e) = validate_name(&self.name) {
             return Status::Invalid(e);
@@ -337,7 +318,7 @@ impl Picker {
         if !self.create_folder {
             return Status::Invalid("does not exist; tick Create folder".into());
         }
-        // The nearest existing ancestor must be writable.
+
         let mut anc = t.parent().map(Path::to_path_buf);
         while let Some(a) = anc.clone() {
             if a.is_dir() {
@@ -355,7 +336,6 @@ impl Picker {
         Status::Invalid("base folder does not exist".into())
     }
 
-    /// The text being edited right now.
     pub fn input_mut(&mut self) -> &mut String {
         match &mut self.mode {
             Mode::Name => &mut self.name,
@@ -367,7 +347,7 @@ impl Picker {
         if self.sel.is_some() && self.mode == Mode::Name {
             self.sel = None;
         }
-        // The first key replaces the generated name, like selected text.
+
         if self.mode == Mode::Name && self.pristine {
             self.name.clear();
         }
@@ -388,7 +368,7 @@ impl Picker {
             self.sel = None;
             return;
         }
-        // -1 is the name field.
+
         let cur = self.sel.map(|s| s as isize).unwrap_or(-1);
         let next = (cur + d).clamp(-1, n - 1);
         self.sel = (next >= 0).then_some(next as usize);

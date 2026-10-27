@@ -1,11 +1,3 @@
-//! A crash (no final save) while one tab works, one sits idle and one
-//! waits for approval: after the restart the working tab and the one
-//! that was waiting on an approval (mid turn) get the continue prompt,
-//! exactly once each, and only after they are ready at their prompt; the
-//! idle one gets nothing. The stub claude acts out each state from a `mode` file in its
-//! folder; a resumed one loads for a while, then shows its prompt, and
-//! records what is submitted.
-
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::pane::Activity;
 use std::time::{Duration, Instant};
@@ -117,7 +109,7 @@ fn after_a_crash_only_the_working_tab_continues_once() {
         std::fs::create_dir_all(&w).unwrap();
         std::fs::write(w.join("mode"), m).unwrap();
     }
-    // Lazy: only the shown tab would start; the working one starts anyway.
+
     let cfg = crate::config::Config {
         claude_bin: Some(sh.to_string_lossy().into_owned()),
         restore: "lazy".into(),
@@ -126,7 +118,6 @@ fn after_a_crash_only_the_working_tab_continues_once() {
     };
     cfg.save().unwrap();
 
-    // First run: three tabs in three states.
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = crate::app::App::new(cfg.clone(), tx);
     app.accounts[0].login.source = Some(CredSource::Keychain);
@@ -153,7 +144,7 @@ fn after_a_crash_only_the_working_tab_continues_once() {
         app.state_dirty,
         "a change in who works marks the state for saving"
     );
-    // The throttled save in tick, then a crash: no shutdown, no final save.
+
     app.save_state();
     let st = crate::state::AppState::load().unwrap();
     let marked: Vec<bool> = st.slots[0].tabs.iter().map(|t| t.was_working).collect();
@@ -164,7 +155,6 @@ fn after_a_crash_only_the_working_tab_continues_once() {
     drop(app);
     crate::pane::wait_for_reapers(Duration::from_millis(800));
 
-    // Second run.
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = crate::app::App::new(cfg, tx);
     app.accounts[0].login.source = Some(CredSource::Keychain);
@@ -194,7 +184,7 @@ fn after_a_crash_only_the_working_tab_continues_once() {
         }
     }
     assert!(saw_loading, "the working tab was started eagerly");
-    // A while longer: still exactly once, and the others got nothing.
+
     let t1 = Instant::now();
     while t1.elapsed() < Duration::from_secs(4) {
         step(&mut app);

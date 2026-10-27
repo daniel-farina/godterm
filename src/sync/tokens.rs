@@ -1,21 +1,3 @@
-//! Long-lived tokens in the state repo (opt in, docs/SYNC.md 2.6).
-//!
-//! Off unless this machine turned "Sync tokens to my other machines" on
-//! (acct_tokens::Prefs::sync_all) and marked the token. Then
-//! `tokens/<account>.json` holds `{account, token, created, last4, sha,
-//! at_ms, machine}`, written ONLY when the state repo reads as private
-//! right before the push (`gh repo view --json visibility` == PRIVATE,
-//! kept 5 minutes). Not verifiable or not private: no token file is
-//! written, any already in the working copy is taken out of this commit,
-//! the rest of the sync goes on, and the report carries a warning.
-//!
-//! The newest of (this machine's token, its tombstone, the repo's entry)
-//! wins, per account. A newer token from another machine goes into this
-//! machine's keychain (never to disk) and is marked "from <machine>". A
-//! tombstone (a synced token deleted somewhere) deletes the same token
-//! here. Agent CLI logins are never part of this: only GodTerm's own
-//! tokens, and only these files.
-
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -26,14 +8,10 @@ use super::state_repo::Report;
 use super::Ctx;
 use crate::acct_tokens::{self, Prefs, Store};
 
-/// How long a private answer from GitHub is trusted.
 const VIS_FOR: Duration = Duration::from_secs(300);
 
 static VIS: Mutex<Option<(String, Instant, Option<bool>)>> = Mutex::new(None);
 
-/// Whether the state repo is private: Some(true) only when its host says
-/// so. A folder remote (tests, local mirrors) reads a `visibility` file
-/// in the bare repo (PRIVATE, PUBLIC); no file: unknown.
 pub fn repo_private(ctx: &Ctx) -> Option<bool> {
     let (owner, name) = (&ctx.sync().owner, &ctx.sync().state_repo);
     match ctx.remote() {
@@ -64,8 +42,6 @@ fn read(p: &Path) -> Option<Value> {
     serde_json::from_slice(&std::fs::read(p).ok()?).ok()
 }
 
-/// One sync's token step, before the commit. `private` is asked only
-/// when a token would be written.
 pub fn sync_tokens(
     ctx: &Ctx,
     wc: &Path,
@@ -91,8 +67,6 @@ pub fn sync_tokens(
     let me = ctx.machine.name().to_string();
     let me_id = ctx.machine.id.clone();
     if !prefs.sync_all {
-        // Off here: nothing goes up or comes down. A token this machine
-        // wrote earlier stays until a delete or this is turned on again.
         return;
     }
     let names: BTreeSet<String> = ctx
@@ -128,7 +102,6 @@ pub fn sync_tokens(
         if let Some(v) = rem.filter(|_| r_at == newest) {
             let sha = v["sha"].as_str().unwrap_or("");
             if v["deleted"] == true {
-                // Deleted somewhere: the same token goes here too.
                 if prefs.sha.get(&acct).map(String::as_str) == Some(sha)
                     && store.get(&acct).is_some()
                     && store.delete(&acct).is_ok()
@@ -176,7 +149,7 @@ pub fn sync_tokens(
             }
             continue;
         }
-        // This machine's token is the newest.
+
         let Some(tok) = local else { continue };
         if is_private() != Some(true) {
             blocked = true;
@@ -190,7 +163,7 @@ pub fn sync_tokens(
             let _ = super::write_file(&file, &serde_json::to_vec_pretty(&v).unwrap_or_default());
         }
     }
-    // Never a token in a commit to a repo not known to be private.
+
     let any_token = std::fs::read_dir(&dir)
         .into_iter()
         .flatten()
@@ -252,8 +225,6 @@ mod tests {
         s
     }
 
-    /// Two machines through one working copy, a test keychain service of
-    /// each (both removed at the end).
     #[test]
     #[cfg(target_os = "macos")]
     fn private_gates_tokens_restore_and_tombstones() {
@@ -280,14 +251,14 @@ mod tests {
         let mut pa = Prefs::load(&a.app_home);
         pa.saved("work", tok, 500, None);
         pa.sync.push("work".into());
-        // Off by default: nothing goes up.
+
         pa.save(&a.app_home).unwrap();
         let mut r = Report::default();
         sync_tokens(&a, &wc, &mut r, &sa, &|| Some(true));
         assert!(files(&wc).is_empty(), "off unless turned on");
         pa.sync_all = true;
         pa.save(&a.app_home).unwrap();
-        // Public or unknown: excluded, with a warning, nothing else lost.
+
         for vis in [Some(false), None] {
             let mut r = Report::default();
             sync_tokens(&a, &wc, &mut r, &sa, &|| vis);
@@ -298,18 +269,18 @@ mod tests {
                 .unwrap()
                 .contains("not verified private"));
         }
-        // Private: included.
+
         let mut r = Report::default();
         sync_tokens(&a, &wc, &mut r, &sa, &|| Some(true));
         assert!(files(&wc).contains(tok), "included when private");
         assert!(r.token_warning.is_none());
-        // A token in the copy while the repo turned public is taken out.
+
         let mut r = Report::default();
         sync_tokens(&a, &wc, &mut r, &sa, &|| Some(false));
         assert!(!files(&wc).contains("sk-ant"));
         let mut r = Report::default();
         sync_tokens(&a, &wc, &mut r, &sa, &|| Some(true));
-        // Machine B, sync on: restored into its keychain, marked.
+
         let mut pb = Prefs::load(&b.app_home);
         pb.sync_all = true;
         pb.save(&b.app_home).unwrap();
@@ -321,7 +292,7 @@ mod tests {
         assert!(!std::fs::read_to_string(Prefs::path(&b.app_home))
             .unwrap()
             .contains("sk-ant"));
-        // Deleted on B: a tombstone, and A deletes it too.
+
         sb.delete("work").unwrap();
         let mut pb = Prefs::load(&b.app_home);
         pb.deleted("work", 2_000);

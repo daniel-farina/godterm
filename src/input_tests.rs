@@ -1,10 +1,3 @@
-//! The assistant input as a text field, through the App's own key and
-//! mouse handling: the caret keys (as Terminal.app and iTerm send them),
-//! edits and pastes at the caret, selection, history from the first and
-//! last rows, image chips kept whole, a click placing the caret, and the
-//! panel drawing the caret and selection where they are. A fake
-//! clipboard only.
-
 use std::path::PathBuf;
 
 use crossterm::event::{
@@ -30,7 +23,7 @@ fn test_app(tag: &str) -> (App, PathBuf) {
     }
     app.assistant.show = true;
     app.assistant.focused = true;
-    // Typed keys, not a paste burst.
+
     app.key_burst = Some(false);
     (app, home)
 }
@@ -76,7 +69,7 @@ fn caret_keys_and_edits_at_the_caret() {
     typed(&mut app, "big ");
     assert_eq!(app.assistant.input, "hello big world");
     assert_eq!(caret(&mut app), 10);
-    // Option+Left as iTerm sends it (Alt+Left) and as Terminal.app does (ESC b).
+
     press(&mut app, KeyCode::Left, KeyModifiers::ALT);
     assert_eq!(caret(&mut app), 6);
     press(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
@@ -93,7 +86,7 @@ fn caret_keys_and_edits_at_the_caret() {
     ctrl(&mut app, 'e');
     assert_eq!(caret(&mut app), 15);
     assert_eq!(app.assistant.input, "hello big world", "Ctrl-E only moved");
-    // Ctrl-W and Option+Backspace delete a word back.
+
     ctrl(&mut app, 'w');
     assert_eq!(app.assistant.input, "hello big ");
     press(&mut app, KeyCode::Backspace, KeyModifiers::ALT);
@@ -104,19 +97,19 @@ fn caret_keys_and_edits_at_the_caret() {
     assert_eq!(app.assistant.input, "hello thereyou");
     key(&mut app, KeyCode::Delete);
     assert_eq!(app.assistant.input, "hello thereou");
-    // Ctrl-K to the end, Ctrl-U to the start.
+
     ctrl(&mut app, 'k');
     assert_eq!(app.assistant.input, "hello there");
     key(&mut app, KeyCode::Left);
     ctrl(&mut app, 'u');
     assert_eq!(app.assistant.input, "e");
     assert_eq!(caret(&mut app), 0);
-    // Ctrl-a is still the prefix: nothing typed, nothing moved.
+
     ctrl(&mut app, 'a');
     assert!(app.prefix);
     app.prefix = false;
     assert_eq!(app.assistant.input, "e");
-    // Other Ctrl keys are not taken by the input.
+
     assert!(!app.on_assistant_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -132,7 +125,7 @@ fn selection_is_replaced_and_esc_drops_it() {
     assert_eq!(sel(&mut app), Some((8, 11)));
     typed(&mut app, "blue");
     assert_eq!(app.assistant.input, "make it blue");
-    // Shift+Option+Left selects a word; a paste replaces it.
+
     press(
         &mut app,
         KeyCode::Left,
@@ -141,7 +134,7 @@ fn selection_is_replaced_and_esc_drops_it() {
     assert_eq!(sel(&mut app), Some((8, 12)));
     paste(&mut app, "green");
     assert_eq!(app.assistant.input, "make it green");
-    // Shift+Home, then Esc: the selection goes, the keys stay.
+
     press(&mut app, KeyCode::Home, KeyModifiers::SHIFT);
     assert_eq!(sel(&mut app), Some((0, 13)));
     key(&mut app, KeyCode::Esc);
@@ -154,7 +147,7 @@ fn selection_is_replaced_and_esc_drops_it() {
         "a second Esc gives the keys back"
     );
     app.assistant.focused = true;
-    // Backspace on a selection deletes just it (Esc left the caret at 0).
+
     key(&mut app, KeyCode::End);
     press(&mut app, KeyCode::Left, KeyModifiers::SHIFT);
     key(&mut app, KeyCode::Backspace);
@@ -173,7 +166,7 @@ fn paste_goes_in_at_the_caret() {
     assert_eq!(caret(&mut app), 4);
     typed(&mut app, "!");
     assert_eq!(app.assistant.input, "aX\nY!b");
-    // Shift+Enter: a line break at the caret.
+
     press(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
     assert_eq!(app.assistant.input, "aX\nY!\nb");
     let _ = std::fs::remove_dir_all(&home);
@@ -184,7 +177,7 @@ fn up_and_down_walk_rows_then_the_history() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("updown");
     app.assistant.input_hist = vec!["older".into(), "newest".into()];
-    // Empty: Up recalls the newest, then the older one.
+
     key(&mut app, KeyCode::Up);
     assert_eq!(app.assistant.input, "newest");
     assert_eq!(caret(&mut app), 6);
@@ -194,7 +187,7 @@ fn up_and_down_walk_rows_then_the_history() {
     assert_eq!(app.assistant.input, "newest");
     key(&mut app, KeyCode::Down);
     assert_eq!(app.assistant.input, "");
-    // Rows of 10 cells: "abcdefghij" "klmno" / "second".
+
     app.assistant.input_geo.set(Some(InputGeo {
         x0: 0,
         right: 12,
@@ -224,7 +217,7 @@ fn up_and_down_walk_rows_then_the_history() {
     key(&mut app, KeyCode::Up);
     key(&mut app, KeyCode::Up);
     assert_eq!(caret(&mut app), 0);
-    // On the first row Up is the history again.
+
     key(&mut app, KeyCode::Up);
     assert_eq!(app.assistant.input, "newest");
     let _ = std::fs::remove_dir_all(&home);
@@ -263,16 +256,16 @@ fn image_chips_go_in_at_the_caret_and_stay_whole() {
     assert_eq!(caret(&mut app), 19, "after the chip and its space");
     let file = app.assistant.pending_images[0].path.clone();
     assert!(file.is_file());
-    // Left steps over the space, then over the whole chip.
+
     key(&mut app, KeyCode::Left);
     assert_eq!(caret(&mut app), 18);
     key(&mut app, KeyCode::Left);
     assert_eq!(caret(&mut app), 2);
-    // Delete just before it: the chip (and its space) goes, with the file.
+
     key(&mut app, KeyCode::Delete);
     assert_eq!(app.assistant.input, "a b");
     assert!(app.assistant.pending_images.is_empty() && !file.exists());
-    // Pasted again and sent: the image goes with the turn.
+
     paste(&mut app, "");
     assert_eq!(app.assistant.input, "a [image 2: 64x32] b");
     key(&mut app, KeyCode::Right);
@@ -306,9 +299,6 @@ fn mouse(app: &mut App, kind: MouseEventKind, x: u16, y: u16) {
     });
 }
 
-/// The panel draws the caret where it is (through the wrap, wide
-/// characters two cells), scrolls to keep it in view, highlights the
-/// selection calmly, and a click or drag in the input sets them.
 #[test]
 fn the_panel_draws_the_caret_and_a_click_places_it() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -317,15 +307,14 @@ fn the_panel_draws_the_caret_and_a_click_places_it() {
     draw(&mut app, &mut t);
     let g = app.assistant.input_geo.get().expect("the input is drawn");
     let w = g.w;
-    // A first row of exactly `w` cells (one wide character among them),
-    // then "end".
+
     let first = format!("漢{}", "a".repeat(w - 2));
     paste(&mut app, &format!("{first}end"));
     draw(&mut app, &mut t);
     let g = app.assistant.input_geo.get().unwrap();
     assert_eq!(g.h, 3, "three rows at least");
     assert_eq!(app.want_cursor.get(), Some((g.tx + 3, g.y + 1)));
-    // Home: the start of the line (the first row), after the lead.
+
     key(&mut app, KeyCode::Home);
     draw(&mut app, &mut t);
     assert_eq!(app.want_cursor.get(), Some((g.tx, g.y)));
@@ -334,11 +323,11 @@ fn the_panel_draws_the_caret_and_a_click_places_it() {
     assert_eq!(b[(g.tx, g.y)].symbol(), "漢");
     assert_eq!(b[(g.tx + 2, g.y)].symbol(), "a");
     assert_eq!(b[(g.tx, g.y + 1)].symbol(), "e");
-    // After the wide character: two cells in.
+
     key(&mut app, KeyCode::Right);
     draw(&mut app, &mut t);
     assert_eq!(app.want_cursor.get(), Some((g.tx + 2, g.y)));
-    // A click on the second row's "n".
+
     mouse(
         &mut app,
         MouseEventKind::Down(MouseButton::Left),
@@ -354,7 +343,7 @@ fn the_panel_draws_the_caret_and_a_click_places_it() {
     );
     draw(&mut app, &mut t);
     assert_eq!(app.want_cursor.get(), Some((g.tx + 1, g.y + 1)));
-    // A drag from the "a" after the wide character to that "n" selects.
+
     mouse(
         &mut app,
         MouseEventKind::Down(MouseButton::Left),
@@ -387,7 +376,7 @@ fn the_panel_draws_the_caret_and_a_click_places_it() {
     );
     typed(&mut app, "-");
     assert_eq!(app.assistant.input, "漢-nd");
-    // Many lines: the box shows eight and follows the caret up.
+
     app.assistant.set_input(
         (1..=10)
             .map(|i| format!("line {i}"))

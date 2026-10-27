@@ -1,6 +1,3 @@
-// The mirrored get_state: `hello` gives it whole, `state` frames patch it
-// (top level keys replace; a `tabs_changed` list patches tabs by id and
-// `tabs_removed` drops ids). Listeners get one coalesced update per frame.
 import { on, emit } from './util.js';
 
 export const S = { tabs: [], accounts: [], jobs: { jobs: [] }, loops: [], pending_confirmations: [], modes: '', build: '', version: '' };

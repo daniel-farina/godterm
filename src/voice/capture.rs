@@ -1,12 +1,3 @@
-//! Which mic capture to use, and the Apple one.
-//!
-//! On macOS the `godterm-speech` helper can capture through AVAudioEngine
-//! with voice processing on: Apple's echo cancellation, noise suppression
-//! and automatic gain, the same processing FaceTime uses, and it honors
-//! the Voice Isolation mic mode picked in Control Center. It streams the
-//! same 16 kHz mono s16le as ffmpeg, so the rest of the pipeline does not
-//! change. ffmpeg stays the fallback (and the only capture on Linux).
-
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
@@ -21,18 +12,15 @@ pub enum Backend {
     Apple,
 }
 
-/// What the running capture reported (for the strip, Settings and doctor).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MicInfo {
-    /// "apple" or "ffmpeg".
     pub backend: String,
-    /// Voice processing is on.
+
     pub vp: bool,
-    /// The system mic mode in effect ("standard", "voice_isolation",
-    /// "wide_spectrum"), when known.
+
     pub mode: Option<String>,
     pub preferred: Option<String>,
-    /// Why Apple capture was not used, when it was wanted.
+
     pub fallback: Option<String>,
 }
 
@@ -46,9 +34,6 @@ fn set_info(i: MicInfo) {
     *MIC.lock().unwrap_or_else(|e| e.into_inner()) = Some(i);
 }
 
-/// The helper's `--mic-check` answer, once per run: (mode, preferred).
-/// Never blocks: the check runs in the background (with a timeout) and
-/// this is None until it is back. The screen asks this every frame.
 pub fn helper_mic() -> Option<(String, String)> {
     match MIC_CHECK.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         Check::Done(v) => return v,
@@ -59,8 +44,6 @@ pub fn helper_mic() -> Option<(String, String)> {
     None
 }
 
-/// The same, waiting up to `limit` for it (the voice thread, before it
-/// opens the mic; never the UI thread).
 pub fn helper_mic_wait(limit: std::time::Duration) -> Option<(String, String)> {
     let t0 = std::time::Instant::now();
     loop {
@@ -123,18 +106,10 @@ pub fn parse_check(text: &str) -> Option<(String, String)> {
     ))
 }
 
-/// The capture `voice.capture` asks for: files always go through ffmpeg;
-/// "auto" picks Apple on macOS when the helper supports it and the
-/// default input is used (a chosen device stays with ffmpeg, which can
-/// address it by name), except a Bluetooth headset mic: Apple capture on
-/// one (WH-1000XM5, 2026-10-10) failed voice processing (-10875), then
-/// delivered no audio while the headset flipped between call and media
-/// mode; ffmpeg records it, and the headphone tap starts and stops it.
 pub fn backend(cfg: &VoiceCfg, src: &Source, helper_ok: bool) -> Backend {
     backend_for(cfg, src, helper_ok, false)
 }
 
-/// `backend`, knowing whether the default input is a Bluetooth headset.
 pub fn backend_for(cfg: &VoiceCfg, src: &Source, helper_ok: bool, bt_default: bool) -> Backend {
     let Source::Mic(dev) = src else {
         return Backend::Ffmpeg;
@@ -150,8 +125,6 @@ pub fn backend_for(cfg: &VoiceCfg, src: &Source, helper_ok: bool, bt_default: bo
     }
 }
 
-/// Denoise (RNNoise) for this capture: "auto" means on unless Apple voice
-/// processing already cleans the signal.
 pub fn denoise_on(cfg: &VoiceCfg, vp: bool) -> bool {
     match cfg.denoise.as_str() {
         "on" | "true" => true,
@@ -160,8 +133,6 @@ pub fn denoise_on(cfg: &VoiceCfg, vp: bool) -> bool {
     }
 }
 
-/// Open the mic (or file) with the configured capture, falling back to
-/// ffmpeg when Apple capture fails and the setting is "auto".
 pub fn open(cfg: &VoiceCfg, src: &Source) -> std::io::Result<Capture> {
     if let Source::Web(mic) = src {
         return Ok(Capture::web(mic));
@@ -202,7 +173,6 @@ pub fn open(cfg: &VoiceCfg, src: &Source) -> std::io::Result<Capture> {
     Ok(c)
 }
 
-/// One status line from the helper's stderr.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HelperLine {
     Started {
@@ -212,17 +182,15 @@ pub enum HelperLine {
     },
     Mode(String),
     Error(String),
-    /// The headset mute gesture (AVAudioApplication): true is a mute.
+
     InputMute(bool),
-    /// A remote command the helper claimed (tap-test --with-mic only).
+
     Remote(String),
-    /// Diagnostics: a route change, which paths registered, a retry
-    /// without voice processing (the whole line).
+
     Diag(String),
     Other(String),
 }
 
-/// What the helper reported for GodTerm to act on or show.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HelperEvent {
     InputMute(bool),
@@ -241,7 +209,6 @@ fn push_event(e: HelperEvent) {
     }
 }
 
-/// The helper's events since the last call (the engine loop and tap-test).
 pub fn take_events() -> Vec<HelperEvent> {
     EVENTS
         .lock()
@@ -250,9 +217,6 @@ pub fn take_events() -> Vec<HelperEvent> {
         .collect()
 }
 
-/// A helper event that counts as a headphone press: the mute gesture is a
-/// tap that only turns the mic off (pause); the helper's own remote
-/// commands as they are.
 pub fn helper_press(e: &HelperEvent) -> Option<crate::media_keys::Press> {
     use crate::media_keys::{Cmd, Press};
     let (cmd, source) = match e {
@@ -271,9 +235,6 @@ pub fn helper_press(e: &HelperEvent) -> Option<crate::media_keys::Press> {
     Some(Press { cmd, source })
 }
 
-/// Read the helper's status lines: the first start (or error) goes to
-/// `tx`, the last error text to `err`, and events to the queue (and the
-/// media keys log, so a real headset test shows which path fired).
 pub fn read_status(
     from: impl std::io::Read,
     tx: mpsc::Sender<Result<bool, String>>,
@@ -357,7 +318,6 @@ pub fn parse_line(l: &str) -> HelperLine {
     }
 }
 
-/// Start `godterm-speech --mic`; waits for its first status line.
 fn start_apple(vp: bool) -> std::io::Result<Capture> {
     if cfg!(test) || crate::config::env_var("NO_MIC").is_some() {
         return Err(std::io::Error::new(
@@ -368,9 +328,6 @@ fn start_apple(vp: bool) -> std::io::Result<Capture> {
     start_helper(&super::apple_helper_path(), vp, false)
 }
 
-/// `godterm tap-test --with-mic`: the helper capture as the voice engine
-/// opens it, with `remote` also claiming the remote commands inside the
-/// recording process (to see whether any arrive in call mode).
 pub fn open_helper_mic(vp: bool, remote: bool) -> std::io::Result<Capture> {
     if crate::config::env_var("NO_MIC").is_some() {
         return Err(std::io::Error::new(
@@ -410,8 +367,7 @@ fn start_helper(bin: &std::path::Path, vp: bool, remote: bool) -> std::io::Resul
         super::untrack(child.id());
         Err(Error::other(why))
     };
-    // A first mic permission prompt can hold the start up: then assume it
-    // is coming and let the stream decide.
+
     let on = match rx.recv_timeout(Duration::from_secs(4)) {
         Ok(Ok(vp)) => vp,
         Ok(Err(e)) => return fail(&mut child, e),
@@ -428,7 +384,6 @@ fn start_helper(bin: &std::path::Path, vp: bool, remote: bool) -> std::io::Resul
     })
 }
 
-/// Open the system mic mode picker (Voice Isolation, Wide Spectrum).
 pub fn show_mic_modes() -> anyhow::Result<()> {
     if !cfg!(target_os = "macos") {
         anyhow::bail!("mic modes are a macOS feature");
@@ -450,7 +405,6 @@ pub fn show_mic_modes() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One line for doctor and Settings: capture, processing, mic mode.
 pub fn describe(cfg: &VoiceCfg) -> String {
     if let Some(i) = mic_info() {
         let mode = i.mode.as_deref().unwrap_or("unknown");
@@ -498,8 +452,7 @@ mod tests {
             Backend::Ffmpeg,
             "a chosen device stays with ffmpeg"
         );
-        // A Bluetooth headset as the default mic: ffmpeg on auto (Apple
-        // capture gave no audio on one), Apple only when asked for.
+
         assert_eq!(
             backend_for(&c, &mic, true, true),
             Backend::Ffmpeg,
@@ -568,7 +521,7 @@ mod tests {
         );
         let route = r#"{"event":"route","restarts":1,"what":"engine configuration changed"}"#;
         assert_eq!(parse_line(route), HelperLine::Diag(route.into()));
-        // The mute gesture only turns the mic off, like pause.
+
         let p = helper_press(&HelperEvent::InputMute(true)).unwrap();
         assert_eq!((p.cmd, p.source), (Cmd::Pause, "helper:inputMute"));
         assert!(helper_press(&HelperEvent::InputMute(false)).is_none());
@@ -577,8 +530,6 @@ mod tests {
         assert!(helper_press(&HelperEvent::Diag("x".into())).is_none());
     }
 
-    /// A fake helper: voice processing fails (-10875) and it starts
-    /// without; then the headset mute gesture comes, as a press.
     #[cfg(unix)]
     #[test]
     fn a_fake_helper_starts_without_vp_and_reports_the_mute_gesture() {
@@ -599,7 +550,7 @@ sleep 2
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut cap = start_helper(&bin, true, false).expect("started without voice processing");
-        // Not one for other tests' engine shutdowns to kill.
+
         super::super::untrack(cap.child.as_ref().map_or(0, |c| c.id()));
         assert!(!cap.vp, "the helper said it runs without voice processing");
         let mut frame = vec![];
@@ -618,7 +569,7 @@ sleep 2
             .any(|e| matches!(e, HelperEvent::Diag(d) if d.contains("-10875"))));
         let press = got.iter().find_map(helper_press).unwrap();
         assert_eq!(press.source, "helper:inputMute");
-        drop(cap); // the fake helper is killed: the stream closes
+        drop(cap);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -634,8 +585,6 @@ sleep 2
         assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
-    /// The real helper (when built): it refuses the mic under
-    /// GODTERM_NO_MIC, and its file mode frames audio like ffmpeg.
     #[test]
     fn helper_refuses_without_mic_and_frames_files() {
         let bin = super::super::apple_helper_path();
@@ -644,7 +593,7 @@ sleep 2
             .output()
             .is_ok_and(|o| parse_check(&String::from_utf8_lossy(&o.stdout)).is_some());
         if !ok {
-            return; // no helper with mic support here
+            return;
         }
         let out = Command::new(&bin)
             .arg("--mic")
@@ -657,7 +606,7 @@ sleep 2
         let dir = std::env::temp_dir().join(format!("gt-cap-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("t.wav");
-        // One second of a 440 Hz tone at 48 kHz.
+
         let pcm: Vec<i16> = (0..48_000)
             .map(|i| ((i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 8000.0) as i16)
             .collect();
@@ -676,7 +625,7 @@ sleep 2
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        // 16 kHz s16le: about 32000 bytes for the second, even length.
+
         let n = out.stdout.len();
         assert!((31_000..=33_000).contains(&n) && n.is_multiple_of(2), "{n}");
     }

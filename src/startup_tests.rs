@@ -1,6 +1,3 @@
-//! How GodTerm starts (app_startup): the assistant panel is open in every
-//! panel mode, and the mic is off unless it was on when GodTerm last quit.
-
 use crate::app::App;
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::confirm_click_tests::{draw, term, test_app};
@@ -39,7 +36,7 @@ fn the_panel_is_open_at_start_whatever_it_was_and_the_mode() {
             "{mode} draws it"
         );
     }
-    // The assistant switched off: nothing to open.
+
     app.cfg.assistant.mode = "off".into();
     app.assistant.show = false;
     app.open_panel_at_start();
@@ -51,31 +48,31 @@ fn the_panel_is_open_at_start_whatever_it_was_and_the_mode() {
 fn the_mic_starts_off_unless_it_was_on_at_the_last_quit() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = setup("start-mic");
-    // Nothing saved, even with voice.enabled: off.
+
     app.cfg.voice.enabled = true;
     assert_eq!(app.startup_voice(false), None);
-    // Saved off: off.
+
     app.rt_voice = Some("off".into());
     assert_eq!(app.startup_voice(false), None);
-    // Saved on: back in that mode.
+
     for m in ["open", "wake", "push"] {
         app.rt_voice = Some(m.into());
         assert_eq!(app.startup_voice(false).as_deref(), Some(m));
     }
-    // --voice asks for it: the saved mode, else voice.mode.
+
     app.rt_voice = None;
     app.cfg.voice.mode = "wake".into();
     assert_eq!(app.startup_voice(true).as_deref(), Some("wake"));
     app.rt_voice = Some("nonsense".into());
     assert_eq!(app.startup_voice(false), None);
-    // End to end through the state file: quit with an open mic, restart.
+
     app.voice_at_quit = Some("open".into());
     app.save_state();
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut next = App::new(crate::config::Config::default(), tx);
     next.restore(crate::state::AppState::load().unwrap());
     assert_eq!(next.startup_voice(false).as_deref(), Some("open"));
-    // Quit with the mic off: the next start has it off.
+
     app.voice_at_quit = Some("off".into());
     app.save_state();
     let (tx, _rx) = std::sync::mpsc::channel();

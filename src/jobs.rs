@@ -1,36 +1,19 @@
-//! GodTerm-managed jobs: scheduled prompts that GodTerm itself keeps.
-//!
-//! Claude's own loops (CronCreate) live in one session's memory and die
-//! with it (recurring ones also expire after 7 days); durable ones in
-//! `<project>/.claude/scheduled_tasks.json` fire only while a claude
-//! session runs in that project. A job here is kept in
-//! `~/.godterm/jobs.json` (owner only, written atomically) and fired by
-//! GodTerm's own clock: it delivers the prompt to its target tab, waking
-//! the tab first when it was closed or archived. This file is the pure
-//! part: the record, the store and the schedule (what is due at an
-//! injected `now`, what a missed run does); app_jobs.rs runs it.
-
 use chrono::{DateTime, Datelike, Local, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// A run later than this after its time counts as missed (a restart, a
-/// sleep): the catch-up policy decides. Ticks are far finer.
 pub const GRACE_S: i64 = 120;
-/// A job with an end date is warned about this long before it.
+
 pub const WARN_BEFORE_S: i64 = 24 * 3600;
-/// The shortest interval.
+
 pub const MIN_EVERY: u32 = 1;
 
-/// What happens to a run that was due while GodTerm was not running (or
-/// the Mac slept).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CatchUp {
-    /// Run it once now, however many were missed.
     #[default]
     Once,
-    /// Forget them; wait for the next regular time.
+
     Skip,
 }
 
@@ -50,41 +33,35 @@ impl CatchUp {
     }
 }
 
-/// Where a job's prompt goes. A tab is found by its id while it is open,
-/// else by its session (open elsewhere, archived, recently closed), else
-/// the session is resumed in its folder on its account.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Target {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uid: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// claude or grok.
+
     #[serde(default)]
     pub provider: String,
-    /// Account name (config `name`).
+
     #[serde(default)]
     pub account: String,
     #[serde(default)]
     pub cwd: String,
-    /// What the tab was called.
+
     #[serde(default)]
     pub label: String,
 }
 
-/// How the last run went.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunResult {
-    /// sent, received, started, done, failed, skipped or missed.
     pub state: String,
     #[serde(default)]
     pub detail: String,
-    /// Unix seconds.
+
     pub at: i64,
 }
 
 impl RunResult {
-    /// Nothing more will change.
     pub fn is_final(&self) -> bool {
         matches!(
             self.state.as_str(),
@@ -98,21 +75,20 @@ impl RunResult {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Job {
-    /// Short id for the assistant ("a3f9c1d2").
     pub id: String,
     pub name: String,
     pub prompt: String,
-    /// Five field cron expression (local time).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron: Option<String>,
-    /// Every N minutes.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every_min: Option<u32>,
-    /// One run at this Unix time.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<i64>,
     pub target: Target,
-    /// user or assistant.
+
     #[serde(default)]
     pub created_by: String,
     pub enabled: bool,
@@ -125,28 +101,25 @@ pub struct Job {
     pub last_result: Option<RunResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_run: Option<i64>,
-    /// No runs after this (Unix seconds); warned about a day before.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_at: Option<i64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub warned_end: bool,
     #[serde(default)]
     pub runs: u32,
-    /// Why it stopped by itself: "ended" (its end date passed) or
-    /// "completed" (a one time job ran).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished: Option<String>,
-    /// Adopted from a session loop: its id there.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adopted_from: Option<String>,
-    /// The machine it runs on, for a job with no session (GodTerm Sync;
-    /// a job with a session runs where its lease is).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
 }
 
 impl Job {
-    /// "every 15 minutes", "daily at 09:00", "once at Oct 14 15:00".
     pub fn cadence(&self) -> String {
         if let Some(n) = self.every_min {
             return every_words(n);
@@ -160,12 +133,10 @@ impl Job {
         "no schedule".into()
     }
 
-    /// Armed: will run again by itself.
     pub fn active(&self) -> bool {
         self.enabled && self.finished.is_none()
     }
 
-    /// The schedule is valid (exactly one kind).
     pub fn has_schedule(&self) -> bool {
         usize::from(self.cron.is_some())
             + usize::from(self.every_min.is_some())
@@ -174,7 +145,6 @@ impl Job {
     }
 }
 
-/// "Oct 14 15:00" in local time.
 pub fn local_words(t: i64) -> String {
     Local
         .timestamp_opt(t, 0)
@@ -183,7 +153,6 @@ pub fn local_words(t: i64) -> String {
         .unwrap_or_default()
 }
 
-/// 15 -> "every 15 minutes", 120 -> "every 2 hours".
 pub fn every_words(n: u32) -> String {
     if n == 1 {
         "every minute".into()
@@ -204,8 +173,6 @@ pub fn every_words(n: u32) -> String {
     }
 }
 
-/// An interval in words ("every 5 minutes", "2 hours", "30m", "1d") in
-/// minutes. This is how Grok's tasks and the user's phrases give it.
 pub fn parse_every(s: &str) -> Option<u32> {
     let t = s.trim().to_lowercase();
     let t = t.trim_start_matches("every").trim();
@@ -236,8 +203,6 @@ fn is_cron_field(f: &str) -> bool {
             .all(|c| c.is_ascii_digit() || matches!(c, '*' | ',' | '/' | '-'))
 }
 
-/// Check a five field cron expression: shape and that it fires within a
-/// year.
 pub fn validate_cron(expr: &str) -> Result<(), String> {
     let f: Vec<&str> = expr.split_whitespace().collect();
     if f.len() != 5 || !f.iter().all(|x| is_cron_field(x)) {
@@ -251,9 +216,6 @@ pub fn validate_cron(expr: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The next time a cron expression fires after `after`, up to 400 days
-/// ahead (loops.rs looks 8 days: enough for a session loop, not for a
-/// monthly job).
 pub fn next_cron(expr: &str, after: DateTime<Local>) -> Option<DateTime<Local>> {
     if let Some(t) = crate::loops::next_fire(expr, after) {
         return Some(t);
@@ -296,9 +258,6 @@ pub fn next_cron(expr: &str, after: DateTime<Local>) -> Option<DateTime<Local>> 
     None
 }
 
-/// The next scheduled time strictly after `now` (Unix seconds). An
-/// interval keeps its rhythm from `anchor` (the time it was due), so a
-/// late tick does not drift it.
 pub fn next_after(j: &Job, now: i64, anchor: Option<i64>) -> Option<i64> {
     if let Some(n) = j.every_min {
         let step = i64::from(n.max(MIN_EVERY)) * 60;
@@ -316,24 +275,19 @@ pub fn next_after(j: &Job, now: i64, anchor: Option<i64>) -> Option<i64> {
     j.at.filter(|t| *t > now)
 }
 
-/// What the clock asks the app to do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// Run it now. `missed_by`: seconds late when it was missed and the
-    /// policy says run once.
     Fire { id: String, missed_by: Option<i64> },
-    /// A missed run forgotten by the skip policy.
+
     Skipped { id: String, missed_by: i64 },
-    /// Its end date passed: it stopped.
+
     Ended { id: String },
-    /// Its end date is near (said once).
+
     EndSoon { id: String, at: i64 },
-    /// A one time job ran.
+
     Completed { id: String },
 }
 
-/// Advance every job to `now`: what is due, what was missed, what ended.
-/// Pure: the caller delivers the events.
 pub fn due(jobs: &mut [Job], now: i64) -> Vec<Event> {
     let mut ev = vec![];
     for j in jobs.iter_mut() {
@@ -403,7 +357,6 @@ pub fn due(jobs: &mut [Job], now: i64) -> Vec<Event> {
     ev
 }
 
-/// 90 -> "1 minute", 7300 -> "2 hours".
 pub fn span_words(s: i64) -> String {
     let s = s.max(0);
     let (n, u) = if s < 120 {
@@ -429,13 +382,10 @@ pub fn path() -> PathBuf {
 }
 
 impl Store {
-    /// The saved jobs; a damaged file is moved aside (recover.rs), not
-    /// overwritten by the next save.
     pub fn load() -> Store {
         crate::recover::load_json(&path()).unwrap_or_default()
     }
 
-    /// Write atomically (a temp file, then rename), owner only.
     pub fn save(&self) -> std::io::Result<()> {
         let p = path();
         if let Some(d) = p.parent() {
@@ -463,7 +413,6 @@ impl Store {
         self.jobs.iter_mut().find(|j| j.id == id)
     }
 
-    /// A job by id, a unique id prefix, or its name.
     pub fn resolve(&self, key: &str) -> Result<&Job, String> {
         let k = key.trim();
         if let Some(j) = self.find(k) {
@@ -504,7 +453,6 @@ impl Store {
     }
 }
 
-/// A new job's moment of creation.
 pub fn now_ts() -> i64 {
     Utc::now().timestamp()
 }
@@ -578,7 +526,7 @@ mod tests {
         let back = Store::load();
         assert_eq!(back, s);
         assert_eq!(back.find("j2").unwrap().catch_up, CatchUp::Skip);
-        // Garbage reads as empty, never panics.
+
         std::fs::write(path(), "{nope").unwrap();
         assert!(Store::load().jobs.is_empty());
         let _ = std::fs::remove_dir_all(home);
@@ -594,7 +542,7 @@ mod tests {
         assert_eq!(s.resolve(&a).unwrap().id, a);
         assert_eq!(s.resolve("weekly").unwrap().id, b);
         assert!(s.resolve("zzz").is_err());
-        // Two names that match need an id.
+
         s.find_mut(&a).unwrap().name = "weekly digest".into();
         assert!(s.resolve("weekly").unwrap_err().contains("matches 2"));
     }
@@ -622,11 +570,11 @@ mod tests {
         assert!(validate_cron("tomorrow").is_err());
         assert!(validate_cron("0 9 * *").is_err());
         assert!(validate_cron("0 9 31 2 *").is_err(), "Feb 31 never fires");
-        // A monthly job is beyond loops.rs' 8 days.
+
         let now = Local.with_ymd_and_hms(2026, 10, 14, 12, 0, 0).unwrap();
         let t = next_cron("30 8 1 * *", now).unwrap();
         assert_eq!((t.month(), t.day(), t.hour(), t.minute()), (11, 1, 8, 30));
-        // A yearly one.
+
         let t = next_cron("0 0 25 12 *", now).unwrap();
         assert_eq!((t.year(), t.month(), t.day()), (2026, 12, 25));
     }
@@ -635,9 +583,9 @@ mod tests {
     fn an_interval_keeps_its_rhythm_from_when_it_was_due() {
         let mut j = job("a");
         j.every_min = Some(10);
-        // Due at 1000, handled 45 s late: next is 1600, not 1645.
+
         assert_eq!(next_after(&j, 1045, Some(1000)), Some(1600));
-        // Several periods behind: the next regular time after now.
+
         assert_eq!(next_after(&j, 1000 + 3 * 600 + 5, Some(1000)), Some(3400));
         assert_eq!(next_after(&j, 50, None), Some(650));
     }
@@ -656,13 +604,12 @@ mod tests {
             }]
         );
         assert_eq!(jobs[0].next_run, Some(2900));
-        // Not again until then.
+
         assert!(due(&mut jobs, 2100).is_empty());
     }
 
     #[test]
     fn a_missed_run_follows_the_catch_up_policy() {
-        // Once: many periods missed, one run, then the regular rhythm.
         let mut jobs = vec![job("a"), job("b")];
         jobs[0].next_run = Some(2000);
         jobs[1].next_run = Some(2000);
@@ -688,7 +635,7 @@ mod tests {
         let r = jobs[1].last_result.as_ref().unwrap();
         assert_eq!(r.state, "skipped");
         assert!(r.detail.contains("missed by"), "{}", r.detail);
-        // Within the grace it is simply on time.
+
         let mut j = vec![job("c")];
         j[0].next_run = Some(3000);
         j[0].catch_up = CatchUp::Skip;
@@ -731,9 +678,9 @@ mod tests {
         let mut jobs = vec![job("e")];
         jobs[0].next_run = Some(1_000_000 + 900);
         jobs[0].end_at = Some(1_000_000 + 3 * 86_400);
-        // Far from the end: nothing.
+
         assert!(due(&mut jobs, 1_000_000).is_empty());
-        // Inside the last day: the warning, once, and it still runs.
+
         let t = 1_000_000 + 2 * 86_400 + 3600;
         jobs[0].next_run = Some(t);
         let ev = due(&mut jobs, t + 1);
@@ -744,7 +691,7 @@ mod tests {
         assert!(ev.iter().any(|e| matches!(e, Event::Fire { .. })));
         let ev = due(&mut jobs, t + 2000);
         assert!(!ev.iter().any(|e| matches!(e, Event::EndSoon { .. })));
-        // Past it: ended, not silently dropped.
+
         let ev = due(&mut jobs, 1_000_000 + 3 * 86_400 + 1);
         assert_eq!(ev, vec![Event::Ended { id: "e".into() }]);
         assert_eq!(jobs[0].finished.as_deref(), Some("ended"));

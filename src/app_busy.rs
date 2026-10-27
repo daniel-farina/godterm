@@ -1,26 +1,3 @@
-//! What send_prompt does with a tab that is busy.
-//!
-//! Before this a prompt for a working tab was "queued": it sat behind the
-//! tab's current turn and the assistant could say nothing more useful.
-//! Now `mode` picks (auto is the default):
-//! - side: Claude Code's side-question channel, `/btw <question>`. It is
-//!   answered at once from the conversation so far, without interrupting
-//!   the tab's work (it has no tools). The answer is read from the tab's
-//!   screen and reported back.
-//! - background: a fork of the tab's session started with `claude --bg
-//!   --resume <id> --fork-session --session-id <new> <task>` on the same
-//!   account and in the same folder. It works in parallel; its result is
-//!   read from the fork's transcript and reported back. The tab's own
-//!   session id never becomes the fork's (state::detect_session skips it).
-//! - queue: the old behaviour, typed in and run after the current turn.
-//! - auto: an idle tab gets the prompt as before. A busy Claude tab gets
-//!   a question that needs no tools as side, anything else as background.
-//!   Grok tabs have neither channel and queue (the result says so).
-//!
-//! Anything that cannot be done falls back to queue with a note: the
-//! side channel not showing up on the tab, a background launch failing.
-//! The delivery keeps its id and shows the mode used (get_state, receipts).
-
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -34,17 +11,15 @@ use crate::harness::Harness;
 use crate::pane::Activity;
 use crate::receipts::Receipt;
 
-/// How a prompt went (or goes) into a tab.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Mode {
-    /// An idle tab: typed in.
     #[default]
     Direct,
-    /// Typed in behind the tab's current work.
+
     Queue,
-    /// `/btw`: answered at once without interrupting.
+
     Side,
-    /// A forked background session.
+
     Background,
 }
 
@@ -58,14 +33,11 @@ impl Mode {
         }
     }
 
-    /// Runs outside the tab's own prompt flow (followed here, not by the
-    /// tab's transcript).
     pub fn external(self) -> bool {
         matches!(self, Mode::Side | Mode::Background)
     }
 }
 
-/// The `mode` argument of send_prompt.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModeArg {
     Auto,
@@ -88,21 +60,17 @@ impl ModeArg {
     }
 }
 
-/// What a tab can take right now.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Busy {
-    /// At its prompt.
     Ready,
-    /// In a turn.
+
     Working,
-    /// Waiting for an approval (typing would answer it).
+
     Permission,
-    /// Starting, paused or not running: only a queue works.
+
     NotUp,
 }
 
-/// Words that ask for a look at files, commands or the web: a side
-/// question has no tools, so these go to a background session.
 const NEEDS_TOOLS: &[&str] = &[
     "check",
     "run ",
@@ -148,8 +116,6 @@ const NEEDS_TOOLS: &[&str] = &[
     "repo",
 ];
 
-/// Whether `text` is a question (so a side question fits): the caller said
-/// so (`expect_reply`), or it reads as one.
 pub fn is_question(text: &str, expect_reply: Option<bool>) -> bool {
     if let Some(e) = expect_reply {
         return e;
@@ -170,8 +136,6 @@ pub fn is_question(text: &str, expect_reply: Option<bool>) -> bool {
     .contains(&first)
 }
 
-/// Whether answering `text` would need tools (files, commands) or is too
-/// long for a quick side question.
 pub fn needs_tools(text: &str) -> bool {
     let t = format!(" {} ", text.trim().to_lowercase());
     text.chars().count() > 500
@@ -179,7 +143,6 @@ pub fn needs_tools(text: &str) -> bool {
         || NEEDS_TOOLS.iter().any(|k| t.contains(k))
 }
 
-/// The mode for one tab, and why when it is not what was asked for.
 #[allow(clippy::too_many_arguments)]
 pub fn choose(
     arg: ModeArg,
@@ -247,12 +210,10 @@ pub fn choose(
     }
 }
 
-/// Flatten a question to one line for `/btw`.
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The start of the question as the screen shows it.
 fn head_of(q: &str) -> String {
     one_line(q).chars().take(24).collect()
 }
@@ -273,21 +234,15 @@ fn border_only(l: &str) -> bool {
     !t.is_empty() && t.chars().all(|c| "│┃|╭╮╰╯─━ ".contains(c)) && t.contains(['─', '━'])
 }
 
-/// What a tab's screen shows of a side question.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Scan {
-    /// The panel is not up (yet).
     NotShown,
-    /// The tab's claude does not know `/btw`.
+
     Unavailable(String),
-    /// The panel is up. `answer` is empty while it is still thinking;
-    /// `footer`: its dismiss line is showing.
+
     Showing { answer: String, footer: bool },
 }
 
-/// Read a side question's panel from a screen: the line that echoes
-/// `/btw <question>` (not the input box), the answer after it, up to the
-/// dismiss line or the input box border.
 pub fn scan_side(screen: &str, question: &str) -> Scan {
     let head = head_of(question);
     let lines: Vec<&str> = screen.lines().collect();
@@ -355,7 +310,6 @@ pub fn scan_side(screen: &str, question: &str) -> Scan {
     }
 }
 
-/// The word in a background job's state that means it still runs.
 fn job_active(state: &str) -> bool {
     let s = state.to_lowercase();
     ["work", "run", "start", "busy", "active", "block", "wait"]
@@ -363,7 +317,6 @@ fn job_active(state: &str) -> bool {
         .any(|k| s.contains(k))
 }
 
-/// The id `claude --bg` printed: a word of 8 or more hex digits.
 pub fn parse_bg_id(out: &str) -> Option<String> {
     out.split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
         .find(|w| {
@@ -375,7 +328,6 @@ pub fn parse_bg_id(out: &str) -> Option<String> {
         .map(|w| w.chars().take(8).collect())
 }
 
-/// Run `claude --bg ...` and return what it printed (bounded in time).
 fn run_bg(
     bin: &str,
     config_env: (&str, &std::path::Path),
@@ -432,14 +384,12 @@ fn run_bg(
     }
 }
 
-/// Where a side question is.
 #[derive(Debug, Clone, PartialEq)]
 enum SideAt {
-    /// Typed, Enter to follow (pending_enters).
     Typed,
-    /// Entered at this time; the panel not seen yet.
+
     Entered(Instant),
-    /// The panel is up since this time.
+
     Panel(Instant),
 }
 
@@ -452,9 +402,8 @@ enum Kind {
         dismissed: bool,
     },
     Bg {
-        /// The launch, until it returns.
         rx: Option<Receiver<Result<String, String>>>,
-        /// The fork's session id and job id.
+
         session: String,
         short: String,
         config_dir: PathBuf,
@@ -466,7 +415,6 @@ enum Kind {
     },
 }
 
-/// How a run ended (or not yet).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     Going,
@@ -474,7 +422,6 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// One side question or background session out for a delivery.
 pub struct Run {
     pub delivery: u64,
     pub uid: u64,
@@ -492,7 +439,6 @@ impl Run {
         }
     }
 
-    /// The background job id.
     pub fn short(&self) -> Option<&str> {
         match &self.kind {
             Kind::Bg { short, .. } => Some(short),
@@ -500,7 +446,6 @@ impl Run {
         }
     }
 
-    /// The launch or the Enter has not happened yet.
     pub fn starting(&self) -> bool {
         match &self.kind {
             Kind::Bg { rx, .. } => rx.is_some(),
@@ -509,11 +454,10 @@ impl Run {
     }
 }
 
-/// What App keeps for these.
 #[derive(Default)]
 pub struct State {
     pub runs: Vec<Run>,
-    /// Session ids of forks started here (never a tab's own session).
+
     pub fork_ids: Vec<String>,
 }
 
@@ -556,8 +500,6 @@ impl App {
             .is_none_or(|a| a.harness() == Harness::Claude)
     }
 
-    /// send_prompt for one tab: the mode, then the delivery. Returns its
-    /// id. `text` carries any image lines; `plain` is the text without.
     pub fn send_in_mode(
         &mut self,
         uid: u64,
@@ -593,7 +535,6 @@ impl App {
             Mode::Direct | Mode::Queue => {
                 let id = self.deliver_request(uid, text);
                 if let Some(d) = self.deliveries.iter_mut().find(|d| d.id == id) {
-                    // A tab that is busy by the time it is typed in is a queue.
                     d.rc.mode = if mode == Mode::Direct && !d.rc.busy {
                         Mode::Direct
                     } else {
@@ -611,7 +552,6 @@ impl App {
         id
     }
 
-    /// A delivery that is followed here, not through the tab's transcript.
     fn external_delivery(&mut self, uid: u64, text: &str, mode: Mode, busy: bool) -> u64 {
         self.delivery_seq += 1;
         let id = self.delivery_seq;
@@ -654,7 +594,6 @@ impl App {
         id
     }
 
-    /// Fork the tab's session into a background run with `task`.
     fn start_background(&mut self, uid: u64, s: usize, t: usize, task: &str, busy: bool) -> u64 {
         let id = self.external_delivery(uid, task, Mode::Background, busy);
         let Some(acct) = self.panes[s].account else {
@@ -723,8 +662,6 @@ impl App {
         id
     }
 
-    /// The side channel or a background launch failed: the same delivery
-    /// is queued instead, with the reason.
     fn fall_back(&mut self, id: u64, why: String) {
         crate::log::info(&format!("send_prompt: #{id} falls back to queue: {why}"));
         self.busy.runs.retain(|r| r.delivery != id);
@@ -745,7 +682,6 @@ impl App {
         self.deliveries_tick();
     }
 
-    /// Whether a delivery's reply should still wait (its launch or Enter).
     pub fn external_starting(&self, id: u64) -> bool {
         self.busy
             .runs
@@ -753,7 +689,6 @@ impl App {
             .any(|r| r.delivery == id && r.starting() && r.outcome == Outcome::Going)
     }
 
-    /// The receipt a side question or background session has earned.
     pub fn external_receipt(&self, d: &Delivery) -> Option<Receipt> {
         let r = self.busy.runs.iter().find(|r| r.delivery == d.id)?;
         Some(match (&r.outcome, &r.kind) {
@@ -775,7 +710,6 @@ impl App {
         })
     }
 
-    /// Details of a delivery's run for the tool results and get_state.
     pub fn run_json(&self, id: u64) -> Option<Value> {
         let r = self.busy.runs.iter().find(|r| r.delivery == id)?;
         Some(match &r.kind {
@@ -794,7 +728,6 @@ impl App {
         })
     }
 
-    /// Background sessions started from a tab that still run (tab_json).
     pub fn tab_background_runs(&self, uid: u64) -> Vec<Value> {
         self.busy
             .runs
@@ -819,7 +752,6 @@ impl App {
             .collect()
     }
 
-    /// Follow every side question and background session one step.
     pub fn busy_tick(&mut self) {
         if self.busy.runs.is_empty() {
             return;
@@ -870,7 +802,6 @@ impl App {
                                     "the side channel did not show up on that tab".into(),
                                 ));
                             } else if matches!(at, SideAt::Panel(_)) && !last.is_empty() {
-                                // The panel closed after an answer was read.
                                 continue;
                             } else if matches!(at, SideAt::Panel(_))
                                 && r.started.elapsed() > SIDE_GIVE_UP
@@ -893,9 +824,6 @@ impl App {
                                     || stable >= SIDE_STABLE);
                             if done {
                                 if footer && !*dismissed {
-                                    // Only while the dismiss line is on
-                                    // screen: Escape then closes the panel
-                                    // and not the tab's work.
                                     *dismissed = true;
                                     self.panes[s].tabs[t].write(b"\x1b");
                                 }
@@ -925,7 +853,6 @@ impl App {
                         match chan.try_recv() {
                             Ok(Ok(out)) => {
                                 if let Some(id) = parse_bg_id(&out) {
-                                    // Only a job that exists is believed.
                                     if id != *short {
                                         if let Some(j) = crate::session_ids::bg_job(config_dir, &id)
                                         {
@@ -1007,7 +934,7 @@ impl App {
                 }
             }
         }
-        // Finished runs: tell the follow-up its answer is in.
+
         for r in &runs {
             if let (Some(_), Outcome::Answered(text)) = (r.ended, &r.outcome) {
                 let label = match r.mode() {
@@ -1045,7 +972,6 @@ impl App {
         }
     }
 
-    /// Take a `/btw` that stayed in the input box out again (Ctrl-U).
     fn clear_btw_input(&mut self, s: usize, t: usize, question: &str) {
         let screen = self.tab_screen(s, t);
         let head = head_of(question);

@@ -1,10 +1,3 @@
-//! Talk back engines behind one interface: Kokoro (local neural, in
-//! process), Chatterbox and Ming (local, a helper process: local_tts.rs),
-//! macOS `say` (local) and Grok (xAI cloud). Each makes PCM that GodTerm plays
-//! itself, so the echo reference, volume and barge-in work the same for
-//! all. `tts_engine` is tried first, then `tts_fallback` in order, when an
-//! engine fails or times out.
-
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,8 +8,6 @@ use super::grok_tts::{self, TtsError};
 use super::kokoro::Kokoro;
 use crate::config::{GrokTtsCfg, VoiceCfg};
 
-/// One engine: speaks text as PCM chunks (samples, sample rate) handed to
-/// `sink`, which returns false to stop (barge-in, a newer reply).
 pub trait TtsEngine {
     fn name(&self) -> String;
     fn speak_stream(
@@ -24,13 +15,11 @@ pub trait TtsEngine {
         text: &str,
         sink: &mut dyn FnMut(&[f32], u32) -> bool,
     ) -> Result<(), String>;
-    #[allow(dead_code)] // the Settings picker reads the lists directly
+    #[allow(dead_code)]
     fn voices(&self) -> Vec<String>;
     fn cancel(&self);
 }
 
-/// The engines to try, in order: the chosen one, then the fallbacks
-/// (Kokoro only when it is installed). Off (or talk back off) is none.
 pub fn chain(cfg: &VoiceCfg) -> Vec<&'static str> {
     if !cfg.tts || cfg.tts_engine == "off" {
         return vec![];
@@ -51,8 +40,7 @@ pub fn chain(cfg: &VoiceCfg) -> Vec<&'static str> {
         if n == "kokoro" && super::tts::kokoro_problem(cfg).is_some() {
             continue;
         }
-        // A local helper engine that is not installed (or not on Apple
-        // Silicon) is passed over; Kokoro, then say, speak instead.
+
         if matches!(n, "chatterbox" | "ming") && super::local_tts::problem(n, cfg).is_some() {
             continue;
         }
@@ -66,8 +54,6 @@ pub fn chain(cfg: &VoiceCfg) -> Vec<&'static str> {
     v
 }
 
-/// Speak `text` with the first engine that works; the names of those that
-/// failed and why.
 pub fn speak_with_fallback(
     engines: &mut [&mut dyn TtsEngine],
     text: &str,
@@ -83,7 +69,6 @@ pub fn speak_with_fallback(
     (None, failed)
 }
 
-/// Kokoro, borrowed for one sentence.
 pub struct KokoroEngine<'a> {
     pub k: &'a mut Kokoro,
     pub voice: String,
@@ -109,14 +94,12 @@ impl TtsEngine for KokoroEngine<'_> {
     }
 
     fn voices(&self) -> Vec<String> {
-        // (Settings lists them from the voices file.)
         vec![]
     }
 
     fn cancel(&self) {}
 }
 
-/// macOS `say`, rendered to 16 bit PCM and played like the others.
 pub struct SayEngine {
     pub voice: Option<String>,
     pub speed: f32,
@@ -125,7 +108,6 @@ pub struct SayEngine {
 
 pub const SAY_RATE: u32 = 22_050;
 
-/// The samples of a 16 bit mono WAV (any chunk layout).
 pub fn wav_samples(b: &[u8]) -> Option<(Vec<f32>, u32)> {
     if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WAVE" {
         return None;
@@ -138,8 +120,7 @@ pub fn wav_samples(b: &[u8]) -> Option<(Vec<f32>, u32)> {
         let body = b.get(i + 8..(i + 8 + len).min(b.len()))?;
         if id == b"fmt " && body.len() >= 8 {
             rate = u32::from_le_bytes(body[4..8].try_into().ok()?);
-            // Not a rate a speech engine writes: a damaged header (zero
-            // divides, a huge one asks the resampler for gigabytes).
+
             if !(1_000..=384_000).contains(&rate) {
                 return None;
             }
@@ -208,23 +189,21 @@ impl TtsEngine for SayEngine {
     fn cancel(&self) {}
 }
 
-/// Grok (xAI): streams 24 kHz PCM while it is made.
 pub struct GrokEngine {
     pub cfg: GrokTtsCfg,
     pub base: String,
     cred: Option<grok_tts::Cred>,
-    /// A lasting failure (no login, 401, 403): skipped until then.
+
     down: Option<(Instant, String)>,
     cancel: Arc<AtomicBool>,
-    /// For the HUD: where the credential came from.
+
     pub from: String,
-    /// Time to first audio of the last sentence.
+
     pub last_first_audio_ms: Option<u64>,
-    /// Logins xAI refused (source auto passes over them).
+
     refused: Vec<String>,
 }
 
-/// A lasting failure keeps Grok out this long before it is tried again.
 pub const GROK_RETRY: Duration = Duration::from_secs(300);
 
 impl GrokEngine {
@@ -241,7 +220,6 @@ impl GrokEngine {
         }
     }
 
-    /// Why it is not speaking now, if it is skipped.
     pub fn down_reason(&self) -> Option<&str> {
         self.down
             .as_ref()
@@ -292,13 +270,11 @@ impl TtsEngine for GrokEngine {
                 self.last_first_audio_ms = Some(st.first_audio_ms);
                 Ok(())
             }
-            // Cut off on purpose: not a failure.
+
             Err(TtsError::Cancelled) => Ok(()),
             Err(e) => {
                 let id = self.cred.as_ref().map(|c| c.id.clone()).unwrap_or_default();
                 if e.lasting() && !id.is_empty() && matches!(e, TtsError::Auth | TtsError::Denied) {
-                    // That login was refused: the next one (auto) from the
-                    // next sentence; this one falls back.
                     grok_tts::note_refused(&id);
                     self.refused.push(id);
                     self.cred = None;
@@ -365,7 +341,7 @@ mod tests {
             kokoro_model: "/nonexistent/kokoro.onnx".into(),
             ..Default::default()
         };
-        // Kokoro is not installed here: grok, then say.
+
         assert_eq!(chain(&c), vec!["grok", "say"]);
         c.tts_engine = "say".into();
         c.tts_fallback = vec![];
@@ -375,7 +351,7 @@ mod tests {
         c.tts_engine = "grok".into();
         c.tts = false;
         assert!(chain(&c).is_empty());
-        // A failing first engine falls back, and says why.
+
         let mut a = Fake {
             name: "grok eve",
             fail: Some("no audio in time"),
@@ -397,7 +373,7 @@ mod tests {
             vec![("grok eve".to_string(), "no audio in time".to_string())]
         );
         assert_eq!((a.calls, b.calls, got), (1, 1, 2));
-        // All fail: nothing spoken.
+
         let mut x = Fake {
             name: "x",
             fail: Some("down"),
@@ -418,7 +394,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         crate::config::testing::set_home(&d);
         let mut g = GrokEngine::new(GrokTtsCfg::default());
-        // No grok account logged in: a lasting reason, never a network call.
+
         let e = g.speak_stream("Hi.", &mut |_, _| true).unwrap_err();
         assert!(e.contains("logged in"), "{e}");
         assert!(g.down_reason().is_some());

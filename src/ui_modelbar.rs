@@ -1,7 +1,3 @@
-//! Drawing the model bar (app_tabmodel): `model  1 Haiku  2 Sonnet  3 Opus
-//! · medium`, the current model on a calm slate fill, a queued switch
-//! named at the right.
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -10,9 +6,6 @@ use crate::app::App;
 use crate::hits::{contains, text, UiAction};
 use crate::theme;
 
-/// Take the model bar's row off the bottom of pane `i`'s terminal area
-/// (`interior_h`: the pane's rows inside its border). (terminal, bar row;
-/// zero sized when there is no bar).
 pub fn split(app: &App, i: usize, interior_h: u16, term: Rect) -> (Rect, Rect) {
     if term.height < 4 || !app.model_bar_on(i, interior_h) {
         return (term, Rect::new(term.x, term.y + term.height, term.width, 0));
@@ -23,7 +16,6 @@ pub fn split(app: &App, i: usize, interior_h: u16, term: Rect) -> (Rect, Rect) {
     )
 }
 
-/// What fits in a row `w` wide: (the "model" prefix, the number hints).
 fn layout(labels: &[String], w: u16) -> (bool, bool) {
     let need = |prefix: bool, digits: bool| -> u16 {
         let p = if prefix { 7 } else { 1 };
@@ -41,12 +33,6 @@ fn layout(labels: &[String], w: u16) -> (bool, bool) {
     }
 }
 
-/// The Browser button (tab_browser) ending before `end`: its text shows
-/// the state (none, needs the extension, needs turning on, ready). Its
-/// longer forms leave the models their number hints (`left`); when none
-/// fits, a compact " web " form takes the room the hints would use
-/// (`tight`). Returns the new right edge; nothing is drawn when even that
-/// does not fit.
 #[allow(clippy::too_many_arguments)]
 fn browser_button(
     buf: &mut Buffer,
@@ -121,21 +107,19 @@ pub fn draw(buf: &mut Buffer, app: &App, i: usize, r: Rect) {
             c.set_style(Style::default().bg(bg));
         }
     }
-    // The loops drawer's button keeps the right end: "⟳ loops (N)",
-    // dim at 0.
+
     let models_w: u16 = models
         .iter()
         .map(|m| m.label.chars().count() as u16 + 5)
         .sum::<u16>()
         + 1;
-    // The models without their number hints (what a narrow row shows).
+
     let tight_w: u16 = models
         .iter()
         .map(|m| m.label.chars().count() as u16 + 3)
         .sum::<u16>()
         + 1;
-    // Room the compact Browser button keeps, so it never drops out
-    // while the loops button is still drawn.
+
     let web_w = crate::tab_browser::compact_label(app.tab_browser_state(tab.uid))
         .chars()
         .count() as u16
@@ -185,15 +169,13 @@ pub fn draw(buf: &mut Buffer, app: &App, i: usize, r: Rect) {
     } else {
         end
     };
-    // The Browser button sits left of it.
-    // (Not while a model switch is named on the bar: that text needs the room.)
+
     let end = if queued.is_none() {
         browser_button(buf, app, i, y, r.x + models_w, r.x + tight_w, end, bg)
     } else {
         end
     };
     if models.is_empty() {
-        // No model picker to drive: say where the model is chosen.
         let who = app
             .pane_harness(i)
             .map(|h| h.label())

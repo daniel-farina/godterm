@@ -1,11 +1,3 @@
-//! Grok (xAI cloud) speech recognition: each finished utterance (after the
-//! endpointer, the speaker lock and noise suppression, so background
-//! voices never leave the machine) goes to `POST https://api.x.ai/v1/stt`
-//! as a 16 kHz WAV in a multipart form, with the vocabulary as keyterms.
-//! The reply is the text with word timings. The login is the one Grok
-//! talk back uses (`[voice.grok]`: a grok login or the Keychain key).
-//! Partials stay local (whisper or Apple) when they are on.
-
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -14,16 +6,14 @@ use super::grok_tts::{self, TtsError};
 use crate::config::GrokTtsCfg;
 
 pub const MODEL: &str = "grok-voice-transcribe-2.0";
-/// The most keyterms the API takes, and their longest.
+
 const MAX_TERMS: usize = 100;
 const MAX_TERM: usize = 50;
 
-/// The form fields for one utterance (before the file).
 pub fn fields(language: &str, vocab: &[String]) -> Vec<(&'static str, String)> {
     let mut f = vec![("model", MODEL.to_string()), ("format", "true".into())];
     let lang = language.trim();
     if !lang.is_empty() && lang != "auto" {
-        // whisper style "en" or a locale "en-US": the API takes the code.
         f.push((
             "language",
             lang.split(['-', '_']).next().unwrap_or(lang).to_lowercase(),
@@ -43,7 +33,6 @@ pub fn fields(language: &str, vocab: &[String]) -> Vec<(&'static str, String)> {
     f
 }
 
-/// A multipart/form-data body: (content type, body).
 pub fn multipart(fields: &[(&str, String)], wav: &[u8], boundary: &str) -> (String, Vec<u8>) {
     let mut b: Vec<u8> = vec![];
     for (k, v) in fields {
@@ -63,7 +52,6 @@ pub fn multipart(fields: &[(&str, String)], wav: &[u8], boundary: &str) -> (Stri
     (format!("multipart/form-data; boundary={boundary}"), b)
 }
 
-/// The text of a reply (words joined when there is no text).
 pub fn parse(v: &Value) -> Option<String> {
     if let Some(t) = v.get("text").and_then(Value::as_str) {
         return Some(t.trim().to_string());
@@ -77,7 +65,6 @@ pub fn parse(v: &Value) -> Option<String> {
     Some(words.join(" "))
 }
 
-/// One request: the WAV, at most `timeout` for the reply.
 pub fn transcribe(
     base: &str,
     wav: &[u8],
@@ -113,8 +100,6 @@ pub fn transcribe(
     parse(&v).ok_or_else(|| TtsError::Network("no text in the reply".into()))
 }
 
-/// The recognizer: the shared Grok login, and a pause after a lasting
-/// failure (no login, 401, 403) so every utterance does not retry it.
 pub struct GrokStt {
     pub auth: GrokTtsCfg,
     pub base: String,
@@ -122,9 +107,9 @@ pub struct GrokStt {
     pub timeout: Duration,
     cred: Option<grok_tts::Cred>,
     down: Option<(Instant, String)>,
-    /// Logins xAI refused (auto passes over them).
+
     refused: Vec<String>,
-    /// Where the login came from (for the HUD), never the token.
+
     pub from: String,
 }
 
@@ -142,7 +127,6 @@ impl GrokStt {
         }
     }
 
-    /// Why it is skipped now, after a lasting failure.
     pub fn down_reason(&self) -> Option<&str> {
         self.down
             .as_ref()
@@ -150,14 +134,12 @@ impl GrokStt {
             .map(|(_, w)| w.as_str())
     }
 
-    /// The utterance's text, or why not (the caller falls back to local
-    /// recognition).
     pub fn transcribe(&mut self, samples: &[i16], vocab: &[String]) -> Result<String, String> {
         if let Some(w) = self.down_reason() {
             return Err(w.to_string());
         }
         let wav = super::audio::wav_bytes(samples);
-        // A refused login (auto): the next one, at most a few times.
+
         for _ in 0..4 {
             if self.cred.is_none() {
                 match grok_tts::credential_except(
@@ -213,11 +195,8 @@ impl GrokStt {
     }
 }
 
-/// The last Settings > Test recognition result.
 pub static LAST_CHECK: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Settings > Test recognition: record 3 s from the microphone, send it
-/// to Grok, and say what came back and how long it took.
 pub fn test_recognition(cfg: crate::config::VoiceCfg) {
     *LAST_CHECK.lock().unwrap_or_else(|e| e.into_inner()) =
         Some("recording 3 s, say something...".into());
@@ -255,8 +234,6 @@ pub fn test_recognition(cfg: crate::config::VoiceCfg) {
     });
 }
 
-/// The vocabulary string the recognizers share ("hey god, t12, fotmesh")
-/// as keyterms.
 pub fn terms(vocab: &str) -> Vec<String> {
     vocab
         .split(',')
@@ -359,7 +336,7 @@ mod tests {
                 "{code}"
             );
         }
-        // No login at all: a lasting reason, and it stays out a while.
+
         let _g = crate::config::testing::LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());

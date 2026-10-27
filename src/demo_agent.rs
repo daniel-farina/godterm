@@ -1,21 +1,3 @@
-//! The demo agent: a stand in `claude`, `grok`, `codex`, `cursor-agent`,
-//! `agy` and `opencode` for `godterm --demo`.
-//!
-//! `godterm --demo` links the godterm binary under those names in
-//! `<demo home>/bin` (next to a marker file); started under one of them
-//! it runs this instead of GodTerm. It looks like that CLI in a terminal
-//! (Claude Code, Grok Build, Codex, Cursor, Antigravity, OpenCode; the
-//! last four drawn after the real captures in tests/fixtures/screens, see
-//! `cli.rs`): a banner, the conversation, a spinner, tool calls with
-//! results and diffs, permission prompts with the keys the real CLI
-//! takes, the input box. What it does comes from a scenario file per
-//! project (`<demo home>/scenarios/<folder name>.json`, see `Scenario`),
-//! and it writes the matching transcript (with token usage), so the
-//! sessions list, token counters, loops and the Live map have real data.
-//!
-//! Started with `-p` (the assistant's brain) it is a scripted brain
-//! instead: canned answers that call the real control API tools.
-
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -40,7 +22,6 @@ pub enum Flavor {
 }
 
 impl Flavor {
-    /// The program names the demo links (`<demo home>/bin/<name>`).
     pub const BINS: &'static [(&'static str, Flavor)] = &[
         ("claude", Flavor::Claude),
         ("grok", Flavor::Grok),
@@ -52,7 +33,6 @@ impl Flavor {
 
     pub fn of_program(name: &str) -> Option<Flavor> {
         match name {
-            // Cursor's CLI is also installed as `agent`.
             "agent" => Some(Flavor::Cursor),
             n => Self::BINS.iter().find(|(b, _)| *b == n).map(|x| x.1),
         }
@@ -82,7 +62,6 @@ impl Flavor {
         }
     }
 
-    /// The program name it is linked as.
     pub fn bin(self) -> &'static str {
         Self::BINS
             .iter()
@@ -91,15 +70,11 @@ impl Flavor {
             .unwrap_or("claude")
     }
 
-    /// GodTerm reads this CLI's transcripts (Claude, Grok): the demo
-    /// writes them. The others get none (GodTerm reads none of theirs).
     fn writes_transcript(self) -> bool {
         matches!(self, Flavor::Claude | Flavor::Grok)
     }
 }
 
-/// This process is the demo agent: started as one of `Flavor::BINS`
-/// from a folder with the demo marker.
 pub fn invoked_as() -> Option<Flavor> {
     let a0 = std::env::args().next()?;
     let flavor = Flavor::of_program(&crate::procs::program_name(&a0))?;
@@ -110,7 +85,6 @@ pub fn invoked_as() -> Option<Flavor> {
         .then_some(flavor)
 }
 
-/// The demo home: the agent lives in `<home>/bin`.
 fn demo_home() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -118,38 +92,32 @@ fn demo_home() -> PathBuf {
         .unwrap_or_else(crate::demo::home)
 }
 
-// ---------------------------------------------------------------------
-// Scenarios
-
-/// What one session does. JSON, one file per project folder name.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Scenario {
-    /// The session's AI title (sessions list).
     pub title: String,
-    /// Banner model line ("Opus 5.5", "grok-4.7-build-fast").
+
     pub model: String,
-    /// Banner plan ("Claude Max").
+
     pub plan: String,
-    /// Start the next task on its own (else wait for a prompt).
+
     pub autorun: bool,
-    /// Seconds before the first task.
+
     pub start_delay: f32,
-    /// After the last task, start again from the first one.
+
     pub repeat: bool,
-    /// Seconds idle between tasks (min, max).
+
     pub idle: [f32; 2],
-    /// Time multiplier (2.0 is twice as fast).
+
     pub speed: f32,
-    /// Stop running tasks on its own after this many in one run (0: no
-    /// limit); a resumed session goes on with the next one.
+
     pub pause_after: usize,
-    /// Turns already in the transcript when the demo starts.
+
     pub history: Vec<Task>,
     pub tasks: Vec<Task>,
-    /// For prompts typed (or sent) into the tab, in order.
+
     pub replies: Vec<Task>,
-    /// A loop (CronCreate) set up by the first task, firing every `every` s.
+
     pub cron: Option<Cron>,
 }
 
@@ -182,7 +150,7 @@ pub enum Step {
         #[serde(default)]
         matches: u32,
     },
-    /// `diff` lines: "+42 new code", "-41 old code", " 40 context".
+
     Edit {
         path: String,
         #[serde(default)]
@@ -205,7 +173,7 @@ pub enum Step {
         out: Vec<String>,
         #[serde(default)]
         approve: bool,
-        /// How long it runs (the output streams over this time).
+
         #[serde(default)]
         secs: f32,
     },
@@ -223,9 +191,9 @@ pub struct Cron {
     pub cron: String,
     pub human: String,
     pub prompt: String,
-    /// Seconds between fires in the demo.
+
     pub every: f32,
-    /// What a fire does.
+
     pub fire: Task,
 }
 
@@ -235,7 +203,7 @@ pub fn load_scenario(home: &Path, cwd: &Path) -> Scenario {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let dir = home.join("scenarios");
-    // "pricing-page-2" (a second folder of that name) plays pricing-page.
+
     let base = match name.rsplit_once('-') {
         Some((b, n)) if n.chars().all(|c| c.is_ascii_digit()) => b.to_string(),
         _ => name.clone(),
@@ -275,22 +243,18 @@ pub fn load_scenario(home: &Path, cwd: &Path) -> Scenario {
     }
 }
 
-// ---------------------------------------------------------------------
-// Transcript
-
-/// The session's transcript, written like the real agent writes it.
 pub struct Transcript {
     flavor: Flavor,
-    /// claude: the jsonl; grok: the session folder.
+
     path: PathBuf,
     pub sid: String,
     cwd: PathBuf,
     last: Option<String>,
     seq: u64,
-    /// grok's running totals.
+
     totals: [u64; 4],
     messages: u64,
-    /// Prompts asked (grok keeps it in summary.json for the replay).
+
     prompts: u64,
     title: String,
 }
@@ -301,7 +265,6 @@ fn now_ts() -> String {
         .to_string()
 }
 
-/// grok's folder name for a cwd: the path percent encoded.
 pub fn grok_dir_name(cwd: &Path) -> String {
     cwd.to_string_lossy()
         .bytes()
@@ -318,7 +281,7 @@ pub fn grok_dir_name(cwd: &Path) -> String {
 pub fn transcript_path(flavor: Flavor, config: &Path, cwd: &Path, sid: &str) -> PathBuf {
     match flavor {
         Flavor::Grok => config.join("sessions").join(grok_dir_name(cwd)).join(sid),
-        // (Only Claude's is written; the others never are.)
+
         _ => config
             .join("projects")
             .join(crate::state::encode_project_dir(cwd))
@@ -432,7 +395,6 @@ impl Transcript {
         self.grok_flush();
     }
 
-    /// One assistant message with `content` blocks and usage.
     pub fn assistant(&mut self, content: Value, usage: [u64; 4]) {
         self.messages += 1;
         let id = format!("msg_demo{:016x}", rand_u64());
@@ -477,7 +439,6 @@ impl Transcript {
     }
 }
 
-/// Past turns of a transcript, for the screen on resume: (prompts, lines).
 fn replay(flavor: Flavor, path: &Path) -> (usize, Vec<Line>) {
     let mut lines = vec![];
     let mut prompts = 0;
@@ -485,7 +446,6 @@ fn replay(flavor: Flavor, path: &Path) -> (usize, Vec<Line>) {
         return (prompts, lines);
     }
     if flavor == Flavor::Grok {
-        // grok's demo transcript keeps only totals: show the title.
         if let Ok(s) = std::fs::read_to_string(path.join("summary.json")) {
             if let Ok(v) = serde_json::from_str::<Value>(&s) {
                 let n = v["num_chat_messages"].as_u64().unwrap_or(0);
@@ -501,7 +461,7 @@ fn replay(flavor: Flavor, path: &Path) -> (usize, Vec<Line>) {
     let Ok(f) = std::fs::File::open(path) else {
         return (0, lines);
     };
-    // tool_use id -> (tool, argument), to word its result like the agent.
+
     let mut pending: std::collections::HashMap<String, (String, String)> = Default::default();
     for l in std::io::BufReader::new(f).lines().map_while(Result::ok) {
         let Ok(v) = serde_json::from_str::<Value>(&l) else {
@@ -593,13 +553,9 @@ fn rand_u64() -> u64 {
     u64::from_le_bytes(b)
 }
 
-/// A float in [a, b).
 fn rand_in(a: f32, b: f32) -> f32 {
     a + (rand_u64() % 10_000) as f32 / 10_000.0 * (b - a).max(0.0)
 }
-
-// ---------------------------------------------------------------------
-// Screen
 
 #[derive(Debug, Clone)]
 enum Line {
@@ -608,7 +564,7 @@ enum Line {
     Text(String),
     Tool(String, String),
     Result(String),
-    /// Continuation of a result (indented, dim).
+
     More(String),
     Diff(char, u32, String),
     Todo(bool, String),
@@ -617,7 +573,6 @@ enum Line {
 
 #[derive(Debug, Clone)]
 struct Ask {
-    /// "Bash command", "Edit file"...
     title: String,
     body: Vec<String>,
     diff: Vec<(char, u32, String)>,
@@ -639,11 +594,11 @@ enum Mode {
 
 struct Screen {
     flavor: Flavor,
-    /// The folder as shown ("~/code/<name>").
+
     shown: String,
-    /// The model the footer names (the scenario's, else the CLI's own).
+
     model: String,
-    /// The session's title (OpenCode's header).
+
     title: String,
     banner: Vec<String>,
     lines: Vec<Line>,
@@ -666,13 +621,11 @@ const BG_USER: &str = "\x1b[48;2;55;55;55m";
 const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
-/// Cut to `w` columns (display width).
 fn fit(s: &str, w: usize) -> String {
     use unicode_width::UnicodeWidthChar;
     let mut out = String::new();
     let mut used = 0;
     for c in s.chars() {
-        // A tab would move the cursor: it is spaces here.
         let c = if c == '\t' { ' ' } else { c };
         let cw = c.width().unwrap_or(0);
         if used + cw > w {
@@ -688,7 +641,6 @@ fn width(s: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(s)
 }
 
-/// Word wrap to `w` columns.
 fn wrap(s: &str, w: usize) -> Vec<String> {
     let w = w.max(8);
     let mut out = vec![];
@@ -715,7 +667,6 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
 
 impl Screen {
     fn new(flavor: Flavor, sc: &Scenario, cwd: &Path) -> Screen {
-        // Shown as a plain ~/code folder (the demo's live in its home).
         let shown = format!(
             "~/code/{}",
             cwd.file_name()
@@ -741,7 +692,7 @@ impl Screen {
                 format!("{ORANGE}  ▘▘ ▝▝{RESET}    {GRAY}{shown}{RESET}"),
             ],
             Flavor::Grok => vec![format!("{GROK}{BOLD} Grok Build{RESET}")],
-            // Drawn per frame, to the width (cli::head).
+
             _ => vec![],
         };
         Screen {
@@ -970,7 +921,6 @@ impl Screen {
         out
     }
 
-    /// The whole screen for `cols` x `rows`.
     fn frame(&self, cols: u16, rows: u16) -> String {
         let w = (cols as usize).max(20);
         let h = (rows as usize).max(5);
@@ -994,8 +944,7 @@ impl Screen {
         let room = h.saturating_sub(foot.len());
         let start = body.len().saturating_sub(room);
         let mut rows_out: Vec<String> = body[start..].to_vec();
-        // The footer sits right under the conversation (as in a real
-        // terminal), or at the bottom once the screen is full.
+
         rows_out.extend(foot);
         rows_out.truncate(h);
         let mut s = String::from("\x1b[?25l\x1b[H");
@@ -1012,7 +961,6 @@ impl Screen {
     }
 }
 
-/// Without escape sequences (for widths).
 fn strip(s: &str) -> String {
     let mut out = String::new();
     let mut esc = false;
@@ -1031,9 +979,6 @@ fn strip(s: &str) -> String {
     }
     out
 }
-
-// ---------------------------------------------------------------------
-// The interactive agent
 
 enum Ui {
     Push(Line),
@@ -1056,7 +1001,6 @@ struct Ctx {
     flavor: Flavor,
 }
 
-/// The task was interrupted (Esc).
 struct Interrupted;
 
 impl Ctx {
@@ -1089,8 +1033,6 @@ impl Ctx {
         let _ = self.ui.send(Ui::Tokens(t));
     }
 
-    /// Show a permission prompt and wait for the answer (0: yes, 1:
-    /// always, 2: no).
     fn ask(&self, a: Ask, verb: &str) -> Result<usize, Interrupted> {
         let _ = self.ui.send(Ui::Mode(Mode::Asking(a)));
         let _ = self.ui.send(Ui::Status("idle"));
@@ -1120,7 +1062,6 @@ fn usage_for(text_len: usize) -> [u64; 4] {
     [inp, out, cr, cw]
 }
 
-/// Run one task: the prompt was already shown and written.
 fn run_task(
     ctx: &Ctx,
     tr: &Arc<Mutex<Transcript>>,
@@ -1387,7 +1328,6 @@ fn run_task(
         }
     }
     if let Some(c) = cron {
-        // The first task sets the loop up.
         ctx.sleep(0.8)?;
         let job = format!("{:08x}", rand_u64() as u32);
         ctx.push(Line::Tool("CronCreate".into(), c.cron.clone()));
@@ -1424,7 +1364,6 @@ fn run_task(
     Ok(())
 }
 
-/// The loop's job id once set up.
 static JOB: Mutex<Option<String>> = Mutex::new(None);
 
 fn grok_ask(title: &str, desc: &str) -> Ask {
@@ -1443,7 +1382,6 @@ fn grok_ask(title: &str, desc: &str) -> Ask {
     }
 }
 
-/// Ask; true when the answer was no (the task stops there).
 fn ask_denied(ctx: &Ctx, a: Ask, verb: &str) -> Result<bool, Interrupted> {
     let n = a.options.len();
     let ans = ctx.ask(a, verb)?;
@@ -1494,11 +1432,7 @@ fn write_session(path: &Option<PathBuf>, sid: &str, cwd: &Path, status: &str) {
     }
 }
 
-/// The agent's entry point.
 pub fn run(flavor: Flavor) -> Result<()> {
-    // Everything below stays inside the demo home (tabs and the brain get
-    // none of GodTerm's variables, so they are set again from where the
-    // agent lives).
     let home = demo_home();
     std::env::set_var(crate::demo::ENV, "1");
     if std::env::var_os("GODTERM_HOME").is_none() {
@@ -1522,22 +1456,19 @@ pub fn run(flavor: Flavor) -> Result<()> {
         println!("Already logged in (demo).");
         return Ok(());
     }
-    // The CLI's own home variable (none for Cursor, Antigravity and
-    // OpenCode: they keep a stand in under the demo home, never written).
+
     let env_name = flavor.harness().home_env();
     let config = (!env_name.is_empty())
         .then(|| std::env::var_os(env_name))
         .flatten()
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join("main").join(flavor.bin()));
-    // Never write into the user's real dirs, whatever the environment
-    // says: only into the demo home.
+
     let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     if crate::config::is_real_user_dir(&config) || !canon(&config).starts_with(canon(&home)) {
         anyhow::bail!("demo agent: refusing {}", config.display());
     }
-    // Logins and tokens, shown as the real CLIs show them (fake URLs and
-    // a fake token; nothing leaves the demo home).
+
     let first = args.first().map(String::as_str);
     match (flavor, first, args.get(1).map(String::as_str)) {
         (Flavor::Claude, Some("setup-token"), _) => return demo_setup_token(),
@@ -1578,8 +1509,7 @@ pub fn run(flavor: Flavor) -> Result<()> {
         .filter(|s| !s.starts_with('-'))
         .unwrap_or_else(crate::session_ops::new_uuid);
     let tpath = transcript_path(flavor, &config, &cwd, &sid);
-    // A fresh session (one started by hand, like the external one) gets
-    // the scenario's past turns first, so it has history to carry along.
+
     if !tpath.exists() && !sc.history.is_empty() {
         let mut t = Transcript::open(flavor, &config, &cwd, &sid, &sc.title);
         t.title_line();
@@ -1602,7 +1532,6 @@ pub fn run(flavor: Flavor) -> Result<()> {
     let mut screen = Screen::new(flavor, &sc, &cwd);
     screen.lines = past;
     if !flavor.writes_transcript() {
-        // No transcript to replay: the session's earlier turns on screen.
         for h in &sc.history {
             screen.lines.push(Line::User(h.prompt.clone()));
             screen.lines.push(Line::Blank);
@@ -1650,7 +1579,6 @@ pub fn run(flavor: Flavor) -> Result<()> {
         crossterm::terminal::disable_raw_mode().ok();
     };
     loop {
-        // Signals: a second SIGINT (or a SIGTERM) ends it, like claude.
         let mut quit = sigterm.load(Ordering::SeqCst);
         if sigint.swap(false, Ordering::SeqCst) {
             if ctrl_c.is_some_and(|t| t.elapsed() < Duration::from_secs(3)) {
@@ -1687,13 +1615,13 @@ pub fn run(flavor: Flavor) -> Result<()> {
         if screen.lines.len() > 600 {
             screen.lines.drain(..200);
         }
-        // Keys.
+
         while crossterm::event::poll(Duration::from_millis(0)).unwrap_or(false) {
             use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
             match crossterm::event::read() {
                 Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => {
                     let asking = matches!(screen.mode, Mode::Asking(_));
-                    // The letter (or tab) an option names: "(y)", "(tab)".
+
                     let hot = match &screen.mode {
                         Mode::Asking(a) if !k.modifiers.contains(KeyModifiers::CONTROL) => {
                             cli::hotkey_index(a, k.code)
@@ -1787,13 +1715,8 @@ pub fn run(flavor: Flavor) -> Result<()> {
     Ok(())
 }
 
-/// A new line in the demo agent's prompt, as drawn.
 const NEWLINE: char = '⏎';
 
-/// A key typed into the prompt (nothing asked): the prompt to send when
-/// it is submitted. A new line goes in as every real CLI takes it: ESC CR
-/// (Alt+Enter, what GodTerm sends for Shift+Enter) and Ctrl+J, shown as ⏎.
-/// Ctrl+U clears the prompt; other control keys type nothing.
 fn compose_key(input: &mut String, k: &crossterm::event::KeyEvent) -> Option<String> {
     use crossterm::event::{KeyCode, KeyModifiers};
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -1815,7 +1738,6 @@ fn compose_key(input: &mut String, k: &crossterm::event::KeyEvent) -> Option<Str
     None
 }
 
-/// The task runner thread.
 fn script(ctx: Ctx, sc: Scenario, tr: Arc<Mutex<Transcript>>, mut next: usize) {
     let run_one = |task: &Task, scheduled: Option<&str>, cron: Option<&Cron>| {
         ctx.push(Line::User(task.prompt.clone()));
@@ -1836,7 +1758,6 @@ fn script(ctx: Ctx, sc: Scenario, tr: Arc<Mutex<Transcript>>, mut next: usize) {
     let mut ran = 0usize;
     let mut idle_until = Instant::now() + Duration::from_secs_f32(sc.start_delay / sc.speed);
     loop {
-        // A prompt typed or sent into the tab comes first.
         let prompt = {
             let rx = ctx.input.lock().unwrap_or_else(|e| e.into_inner());
             match rx.recv_timeout(Duration::from_millis(100)) {
@@ -1852,7 +1773,7 @@ fn script(ctx: Ctx, sc: Scenario, tr: Arc<Mutex<Transcript>>, mut next: usize) {
             idle_until = Instant::now() + Duration::from_secs_f32(rand_in(sc.idle[0], sc.idle[1]));
             continue;
         }
-        // The loop fires when idle.
+
         if let Some(c) = &sc.cron {
             let job = JOB.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(job) = job {
@@ -1895,9 +1816,6 @@ fn script(ctx: Ctx, sc: Scenario, tr: Arc<Mutex<Transcript>>, mut next: usize) {
     }
 }
 
-// ---------------------------------------------------------------------
-// The scripted brain (`claude -p --input-format stream-json ...`)
-
 fn emit(v: Value) {
     let mut o = std::io::stdout().lock();
     let _ = writeln!(o, "{v}");
@@ -1905,7 +1823,6 @@ fn emit(v: Value) {
 }
 
 fn brain(args: &[String]) -> Result<()> {
-    // The godterm tools: the token and home from the mcp config.
     if let Some(p) = args
         .iter()
         .position(|a| a == "--mcp-config")
@@ -1969,8 +1886,6 @@ fn brain(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// A layout request typed in the web app: it changes that browser's
-/// panes (web_layout), one tab per account ("each claude account").
 fn web_turn(asked: &str) -> Option<String> {
     let q = asked.to_lowercase();
     let layout = [
@@ -2026,8 +1941,6 @@ fn web_turn(asked: &str) -> Option<String> {
     )
 }
 
-/// A turn of GodTerm's own about tab events, as a real assistant takes it:
-/// an approval is worth one sentence, finished turns nothing (`ignore`).
 fn event_turn(text: &str) -> String {
     let asks: Vec<(String, String)> = text
         .lines()
@@ -2056,7 +1969,6 @@ fn event_turn(text: &str) -> String {
     }
 }
 
-/// Call a control tool the way claude would: tool_use, then its result.
 fn call_tool(name: &str, input: Value) -> Value {
     let id = format!("toolu_brain{:010x}", rand_u64() & 0xff_ffff_ffff);
     emit(
@@ -2089,7 +2001,6 @@ fn stream_text(t: &str) {
     );
 }
 
-/// Words to the account they name ("research", "account three").
 fn account_named(state: &Value, text: &str) -> Option<(u64, String)> {
     let t = text.to_lowercase();
     state["result"]["accounts"]
@@ -2117,7 +2028,6 @@ fn accounts_of(state: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// The (label, left %) of the Claude account with the most 5 hour left.
 fn best_account(state: &Value) -> Option<(String, f64)> {
     accounts_of(state)
         .iter()
@@ -2135,10 +2045,8 @@ fn spoken_pct(p: f64) -> String {
     format!("{p:.0} percent")
 }
 
-/// A question the demo brain asked (tool, confirm token): a yes runs it.
 static PENDING: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
 
-/// Call a tool that may ask first: its question, kept for the yes.
 fn ask_first(name: &str, input: Value) -> String {
     let out = call_tool(name, input);
     let r = if out["result"].is_object() {
@@ -2162,8 +2070,6 @@ fn ask_first(name: &str, input: Value) -> String {
         .unwrap_or_else(|| "Done.".into())
 }
 
-/// The voice onboarding's requests: how things work, logins (asked
-/// first), a project in account 1, a layout or a view.
 fn onboarding_turn(q: &str) -> Option<String> {
     let has = |w: &[&str]| w.iter().any(|x| q.contains(x));
     let yes = matches!(
@@ -2247,7 +2153,6 @@ fn onboarding_turn(q: &str) -> Option<String> {
     None
 }
 
-/// The canned answer to one request (calling the real tools on the way).
 pub fn brain_turn(asked: &str) -> String {
     let q = asked.to_lowercase();
     if let Some(r) = onboarding_turn(&q) {
@@ -2265,9 +2170,7 @@ pub fn brain_turn(asked: &str) -> String {
             None => "I can't read the usage right now.".into(),
         };
     }
-    // A status question: work_status first, never memory; the digest in
-    // its order (needs you, working, finished), the top items by voice,
-    // "what else" continuing the same list.
+
     if has(&["what else", "and the rest", "say more", "go on"]) {
         let st = call_tool("work_status", json!({"since": "last"}));
         let st = st.get("result").cloned().unwrap_or(st);
@@ -2379,11 +2282,8 @@ pub fn brain_turn(asked: &str) -> String {
     "Done.".into()
 }
 
-/// How many digest sentences the last status answer said.
 static SAID: AtomicU64 = AtomicU64::new(0);
 
-/// The spoken form of a status digest: the sentences, the idle count,
-/// and "say more for the rest" when there is more.
 fn spoken_digest(st: &Value, lines: Vec<String>, rest: usize, skipped: usize) -> String {
     let idle = st["idle"].as_array().map(Vec::len).unwrap_or(0);
     let mut out = if lines.is_empty() {
@@ -2448,8 +2348,6 @@ fn number_word(n: usize) -> String {
     W.get(n).map(|s| s.to_string()).unwrap_or(n.to_string())
 }
 
-/// A demo sign in page's code: any line of 6+ letters and digits passes,
-/// "bad" anything else is refused as the real CLI refuses a wrong code.
 fn demo_code_ok(l: &str) -> bool {
     let l = l.replace("\x1b[200~", "").replace("\x1b[201~", "");
     let l = l.trim();
@@ -2463,8 +2361,6 @@ fn demo_auth_url(scope: &str) -> String {
     )
 }
 
-/// `claude` in a demo account that is logged out: the login screen, then
-/// the session once a code is pasted.
 fn demo_claude_login(config: &Path) -> Result<()> {
     print!("\x1b[2J\x1b[H Claude Code (demo) needs a login.\r\n\r\n Browser didn't open? Use the url below to sign in (c to copy)\r\n\r\n{}\r\n\r\n Paste code here if prompted > ", demo_auth_url("user%3Ainference+user%3Aprofile"));
     std::io::stdout().flush()?;
@@ -2488,8 +2384,6 @@ fn demo_claude_login(config: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `claude setup-token` in the demo: the sign in, a code, then a fake
-/// token printed (wrapped, colored) the way the real CLI prints one.
 fn demo_setup_token() -> Result<()> {
     print!(" This will guide you through long-lived (1-year) auth token setup for your Claude account. Claude\r\n subscription required.\r\n\r\n Browser didn't open? Use the url below to sign in (c to copy)\r\n\r\n{}\r\n\r\n Paste code here if prompted > ", demo_auth_url("user%3Ainference"));
     std::io::stdout().flush()?;
@@ -2519,8 +2413,6 @@ fn demo_setup_token() -> Result<()> {
     Ok(())
 }
 
-/// `grok login` in the demo: the device code page, approved by itself
-/// after a few seconds.
 fn demo_grok_login(config: &Path) -> Result<()> {
     print!("To sign in, open this URL in your browser:\r\n\r\n  https://accounts.x.ai/oauth2/device?user_code=DEMO-1234\r\n\r\nConfirm this code in your browser:\r\n\r\n  DEMO-1234\r\n\r\nWaiting for authorization...\r\n");
     std::io::stdout().flush()?;
@@ -2549,7 +2441,7 @@ mod tests {
                 None
             );
         }
-        // ESC CR (Alt+Enter) and Ctrl+J: a new line, not a submit.
+
         assert_eq!(
             super::compose_key(&mut input, &key(KeyCode::Enter, KeyModifiers::ALT)),
             None
@@ -2561,10 +2453,10 @@ mod tests {
         );
         super::compose_key(&mut input, &key(KeyCode::Char('x'), n));
         assert_eq!(input, "one⏎t⏎x");
-        // Other control keys type nothing; Ctrl+U clears.
+
         super::compose_key(&mut input, &key(KeyCode::Char('a'), KeyModifiers::CONTROL));
         assert_eq!(input, "one⏎t⏎x");
-        // Enter sends it with real new lines.
+
         assert_eq!(
             super::compose_key(&mut input, &key(KeyCode::Enter, n)).as_deref(),
             Some("one\nt\nx")
@@ -2590,8 +2482,6 @@ mod tests {
         );
     }
 
-    /// The status flow: the digest in order, the top three by voice with
-    /// "say more", then "what else" continuing the same list.
     #[test]
     fn a_status_answer_is_a_digest_with_a_rest() {
         let st = json!({
@@ -2668,7 +2558,7 @@ mod tests {
             ],
             sel: 0,
         });
-        // The frame is drawn with cursor moves; as a screen it is lines.
+
         let plain = strip(&s.frame(80, 30)).replace("\r\n", "\n");
         assert_eq!(
             crate::pane::detect_activity(&plain),
@@ -2676,7 +2566,7 @@ mod tests {
         );
         let p = crate::prompt::parse_prompt(&plain).expect("a prompt");
         assert_eq!(p.options.len(), 3);
-        // grok's screens too.
+
         let mut g = Screen::new(Flavor::Grok, &sc, &cwd);
         g.mode = Mode::Working {
             verb: "Thinking".into(),

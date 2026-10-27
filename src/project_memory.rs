@@ -1,21 +1,13 @@
-//! What the assistant saved about a project, subproject or session (a
-//! short description, the names the user calls it, key subprojects,
-//! tags), so a later `find` is instant instead of another deep search.
-//! Kept in GodTerm's home as projects.json. An entry goes stale after
-//! `STALE_DAYS`, or when the folder it describes changed a lot since.
-
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Days after which a saved description is worth checking again.
 pub const STALE_DAYS: i64 = 14;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Memo {
-    /// "project" (a root or subproject folder) or "session".
     pub kind: String,
-    /// The folder's absolute path, or the session id.
+
     pub key: String,
     #[serde(default)]
     pub description: String,
@@ -25,11 +17,10 @@ pub struct Memo {
     pub subprojects: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
-    /// The day a deep search last looked at it (YYYY-MM-DD).
+
     #[serde(default)]
     pub last_deep_search: Option<String>,
-    /// The project index's fingerprint of the folder when saved: the
-    /// newest mtime it read and how many folders it mapped.
+
     #[serde(default)]
     pub index_mtime: Option<u128>,
     #[serde(default)]
@@ -44,8 +35,7 @@ pub struct Store {
     pub version: u32,
     #[serde(default)]
     pub items: Vec<Memo>,
-    /// Every folder a deep search looked in, with the day: kept even
-    /// when nothing was saved about it yet.
+
     #[serde(default)]
     pub deep_searched: BTreeMap<String, String>,
 }
@@ -75,15 +65,11 @@ pub fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
-/// The key a folder is saved under: its real path (symlinks resolved),
-/// and on Windows without the \\?\ prefix canonicalize adds and with one
-/// separator, so every spelling of a folder lands on the same entry.
 pub fn folder_key(p: &Path) -> String {
     let c = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
     plain(&c.to_string_lossy(), cfg!(windows))
 }
 
-/// `p` as saved and shown: on Windows no verbatim prefix, backslashes.
 fn plain(p: &str, windows: bool) -> String {
     if !windows {
         return p.to_string();
@@ -95,14 +81,11 @@ fn plain(p: &str, windows: bool) -> String {
     s.replace('/', "\\")
 }
 
-/// Whether a saved key names `folder` (one separator, no verbatim
-/// prefix, case-insensitive on Windows).
 fn same_folder(key: &str, folder: &str) -> bool {
     crate::guard::same(Path::new(key), Path::new(folder))
 }
 
 impl Memo {
-    /// This entry is (kind, key): a project by its folder however spelled.
     fn is(&self, kind: &str, key: &str) -> bool {
         self.kind == kind
             && if kind == "project" {
@@ -118,7 +101,6 @@ impl Store {
         self.items.iter().find(|m| m.is(kind, key))
     }
 
-    /// The day a deep search last looked in `folder`, if one did.
     pub fn deep_searched_on(&self, folder: &str) -> Option<&String> {
         self.deep_searched
             .iter()
@@ -126,7 +108,6 @@ impl Store {
             .map(|(_, d)| d)
     }
 
-    /// The entry for (kind, key), made when missing.
     pub fn entry(&mut self, kind: &str, key: &str) -> &mut Memo {
         let i = match self.items.iter().position(|m| m.is(kind, key)) {
             Some(i) => i,
@@ -145,8 +126,6 @@ impl Store {
         &mut self.items[i]
     }
 
-    /// A deep search looked in `root` today: noted for it and for every
-    /// saved project inside it.
     pub fn note_deep_search(&mut self, root: &Path) {
         let key = folder_key(root);
         let day = today();
@@ -162,8 +141,6 @@ impl Store {
     }
 }
 
-/// The index's fingerprint of `folder`: the newest mtime its map read and
-/// how many folders of the map lie inside it.
 pub fn fingerprint(ix: &crate::project_index::Index, folder: &Path) -> Option<(u128, usize)> {
     let m = ix
         .roots
@@ -189,7 +166,6 @@ pub fn fingerprint(ix: &crate::project_index::Index, folder: &Path) -> Option<(u
     Some((t, n))
 }
 
-/// Why a saved entry should be checked again, if it should.
 pub fn stale(
     m: &Memo,
     ix: &crate::project_index::Index,
@@ -219,8 +195,6 @@ pub fn stale(
     None
 }
 
-/// How well a saved entry answers the query (aliases and the
-/// description first): (score, what matched).
 pub fn score(m: &Memo, query: &str) -> Option<(f64, &'static str)> {
     use crate::project_index::{query_tokens, score_fields, Field};
     let q = query_tokens(query);
@@ -271,7 +245,6 @@ pub fn score(m: &Memo, query: &str) -> Option<(f64, &'static str)> {
     (cov >= 0.5 && sc >= 0.5).then_some((sc, on))
 }
 
-/// The JSON a hit or a session row carries for a saved entry.
 pub fn json(m: &Memo, stale: Option<&str>) -> serde_json::Value {
     let mut v = serde_json::json!({
         "description": m.description,

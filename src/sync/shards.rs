@@ -1,10 +1,3 @@
-//! Monthly conversation repos (`<prefix>-YYYY-MM`, then `-2` past
-//! `shard_gb`). Each is a bare partial clone (`--filter=blob:none`) under
-//! `sync/`: chunks are added with plumbing on a temporary index (no
-//! checkout, no old blobs fetched), and a chunk is read on demand, which
-//! fetches just that blob. A push that someone else beat is rebuilt on
-//! the new tip and pushed again, never forced.
-
 use anyhow::{bail, Result};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -12,8 +5,6 @@ use std::path::PathBuf;
 use super::git::{self, Pushed};
 use super::Ctx;
 
-/// The repo name for chunks written in `month` ("2026-10"), given the
-/// bytes each repo holds.
 pub fn pick(ctx: &Ctx, month: &str, used: &BTreeMap<String, u64>) -> String {
     let base = format!("{}-{month}", ctx.sync().convos_prefix);
     let max = ctx.sync().shard_gb.max(1) << 30;
@@ -38,8 +29,6 @@ pub fn local_dir(ctx: &Ctx, repo: &str) -> PathBuf {
     ctx.sync_dir().join(format!("{repo}.git"))
 }
 
-/// The local bare partial clone of a conversation repo, cloned (and on
-/// the remote created, when allowed) the first time.
 pub fn open(ctx: &Ctx, repo: &str, may_create: bool) -> Result<PathBuf> {
     let d = local_dir(ctx, repo);
     if git::is_sync_repo(&d) {
@@ -66,13 +55,10 @@ pub fn open(ctx: &Ctx, repo: &str, may_create: bool) -> Result<PathBuf> {
     Ok(d)
 }
 
-/// Whether new shards may be made without asking: always for a local
-/// stand-in, on GitHub only after `sync init`'s yes.
 pub fn may_create(ctx: &Ctx) -> bool {
     !ctx.remote().is_github() || ctx.sync().auto_create_shards
 }
 
-/// Add files (path, bytes) to a conversation repo and push.
 pub fn add(ctx: &Ctx, repo: &str, files: &[(String, Vec<u8>)]) -> Result<()> {
     if files.is_empty() {
         return Ok(());
@@ -127,7 +113,6 @@ pub fn add(ctx: &Ctx, repo: &str, files: &[(String, Vec<u8>)]) -> Result<()> {
     bail!("{repo}: other machines kept pushing first; will try again")
 }
 
-/// One chunk's bytes (fetched on demand).
 pub fn read(ctx: &Ctx, c: &super::chunks::Chunk) -> Result<Vec<u8>> {
     let d = open(ctx, &c.repo, false)?;
     let cred = ctx.remote().cred();

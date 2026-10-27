@@ -1,9 +1,3 @@
-//! The full record of tabs: every open, close, move, rename, restart,
-//! crash and take-over, appended to `~/.godterm/tab-history.jsonl` (owner
-//! only), kept for `assistant.history_days`. The closed stack (20 tabs,
-//! Undo) is for quick reopening; this is the history the assistant and
-//! View ▾ > Tab history search.
-
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -12,34 +6,33 @@ use crate::app::App;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Record {
-    /// Short id for reopen_tab.
     pub id: String,
-    /// RFC 3339, local time.
+
     pub at: String,
-    /// open, restart, close, crash, move, rename, takeover, reopen.
+
     pub event: String,
     pub account: String,
     #[serde(default)]
     pub harness: String,
-    /// "t12".
+
     pub tab: String,
     pub name: String,
     pub cwd: String,
     #[serde(default)]
     pub session_id: Option<String>,
-    /// Who closed it: user, assistant, crash, exit.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
-    /// Its state at the time (ready, working, ...).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
-    /// "to Account 2", "was api", ...
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// Its group in the account's list then.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
-    /// Loops it had when it closed (reopen sets them up again).
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<crate::closed::SavedLoop>,
 }
@@ -67,7 +60,6 @@ pub fn append(r: &Record) {
     }
 }
 
-/// Every record, oldest first.
 pub fn read_all() -> Vec<Record> {
     let Ok(f) = std::fs::File::open(path()) else {
         return vec![];
@@ -79,7 +71,6 @@ pub fn read_all() -> Vec<Record> {
         .collect()
 }
 
-/// Drop records older than `days` (0 keeps all). Returns how many went.
 pub fn purge(days: u32) -> usize {
     if days == 0 {
         return 0;
@@ -108,7 +99,6 @@ pub fn purge(days: u32) -> usize {
     gone
 }
 
-/// What tab_history and the view filter on.
 #[derive(Debug, Clone, Default)]
 pub struct Filter {
     pub since: Option<std::time::SystemTime>,
@@ -119,8 +109,6 @@ pub struct Filter {
     pub limit: usize,
 }
 
-/// Records matching `f`, newest first. Text matches the name, folder,
-/// session id or tab id, tolerant of misheard names.
 pub fn query(all: &[Record], f: &Filter) -> Vec<Record> {
     let q = f
         .text
@@ -175,7 +163,6 @@ pub fn query(all: &[Record], f: &Filter) -> Vec<Record> {
 }
 
 impl App {
-    /// Record an event for tab `t` of pane `s`.
     pub fn tab_event(
         &mut self,
         s: usize,
@@ -223,12 +210,9 @@ impl App {
         append(&r);
     }
 
-    /// Resume the session of a history record (by record id or session
-    /// id) in a tab, on its account or the best one of the same agent.
     pub fn reopen_record(&mut self, key: &str) -> Result<String, String> {
         let all = read_all();
-        // A tab id ("t12"): old records (from before ids were kept across
-        // restarts) reuse ids, so it resolves by the sessions it held.
+
         let as_tab = key
             .strip_prefix('t')
             .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
@@ -282,7 +266,7 @@ impl App {
                 r.name, r.cwd
             ));
         }
-        // Already open: go there.
+
         if let Some((s, t)) = self.all_open_tabs().into_iter().find(|&(s, t)| {
             self.panes[s].tabs[t].session_id == r.session_id && self.panes[s].tabs[t].is_running()
         }) {
@@ -309,8 +293,6 @@ impl App {
         Ok(msg)
     }
 
-    /// One search over sessions, the tab history and past chats, ranked:
-    /// [{type, score, id, label, folder, when, session}].
     pub fn find_everywhere(
         &mut self,
         query: &str,
@@ -326,7 +308,7 @@ impl App {
             .filter(|w| w.len() > 2)
             .map(str::to_string)
             .collect();
-        // How well a name / folder / text answers the query, 0 to 1.
+
         let score = |name: &str, folder: &str, text: &str| -> f64 {
             let n = crate::fuzzy::similarity(&q, name);
             let f = crate::fuzzy::similarity(
@@ -346,8 +328,7 @@ impl App {
                     / words.len() as f64
                     * 0.8
             };
-            // The last part said ("vod mesh" of "code slash vod mesh")
-            // against the name, the folder's own name and words in the text.
+
             let last = q.rsplit('/').next().unwrap_or(&q);
             let base = folder.rsplit('/').next().unwrap_or("");
             let mut part =
@@ -369,9 +350,9 @@ impl App {
             })
         };
         let qt = crate::project_index::query_tokens(&q);
-        // Coding sessions.
+
         self.kick_index(false);
-        // Saved descriptions and what is inside each project.
+
         hits.extend(self.project_hits(&q, limit.max(8)));
         {
             let ix = self.session_index.lock().unwrap_or_else(|e| e.into_inner());
@@ -390,8 +371,7 @@ impl App {
                     r.info.last_prompt.as_deref().unwrap_or("")
                 );
                 let sc = score(&title, &r.info.cwd, &text);
-                // What it worked on: the files its tool calls named, a
-                // step below its title and prompts.
+
                 let touched = crate::project_index::touched_score(&qt, &r.info.cwd, &r.info.files);
                 let (sc, why) = match touched {
                     Some((t, f)) if t > sc => (t, format!("touched {f}")),
@@ -416,11 +396,9 @@ impl App {
                 }
             }
         }
-        // Tabs from the history (latest record per session or tab).
+
         let mut seen = std::collections::HashSet::new();
         for r in read_all().iter().rev() {
-            // Tab ids from before they were kept across restarts repeat,
-            // so a record without a session is its tab in its folder.
             let k = r
                 .session_id
                 .clone()
@@ -439,7 +417,7 @@ impl App {
                 hits.push((sc * 0.98, json!({"type": "tab", "id": r.id, "label": r.name, "why": "tab name or folder", "folder": crate::config::tilde(std::path::Path::new(&r.cwd)), "when": ts(at), "last_event": r.event, "session": r.session_id, "then": "reopen_tab"})));
             }
         }
-        // Your own chats.
+
         for c in crate::assistant_history::list().into_iter().take(200) {
             let sc = score(&c.first, "", &c.text);
             if sc >= 0.6 {
@@ -456,7 +434,6 @@ impl App {
             .collect()
     }
 
-    /// The first tab that `f` accepts.
     #[cfg(test)]
     pub fn all_tabs_where(&self, f: impl Fn(&crate::pane::Pane) -> bool) -> Option<(usize, usize)> {
         self.all_open_tabs()

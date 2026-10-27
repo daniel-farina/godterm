@@ -1,8 +1,3 @@
-//! The new version chip and the Updates window, against a fake release
-//! feed on 127.0.0.1 (no real network): the chip, its still form with
-//! reduced motion, every version's notes newest first, Download then
-//! Restart (which asks), Homebrew's command, Later, a narrow terminal.
-
 use crate::app_update::Phase;
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::hits::UiAction;
@@ -22,8 +17,6 @@ fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     (app, home)
 }
 
-/// The feed: the latest (9.9.9, the usual fake release) and the list with
-/// 9.9.8 between, plus one older than this build.
 fn feed(base: &str, empty_998: bool) -> Vec<(String, Vec<u8>)> {
     let mut r = fake::routes(base, "v9.9.9", true, fake::SUMS);
     let latest: serde_json::Value =
@@ -46,7 +39,6 @@ fn feed(base: &str, empty_998: bool) -> Vec<(String, Vec<u8>)> {
     r
 }
 
-/// A check against the feed, as the background checker runs it.
 fn check(app: &mut crate::app::App, method: update::Method, force: bool, empty_998: bool) {
     let srv = fake::mock_routes(|b| feed(b, empty_998), false);
     let src = fake::test_source(&srv.base);
@@ -94,7 +86,7 @@ fn a_newer_release_shows_the_chip_and_opens_the_window() {
     let top = s.lines().next().unwrap();
     assert!(top.contains("↑ v9.9.9"), "{top}");
     assert!(app.state_preamble().contains("update_available: v9.9.9"));
-    // A click opens the Updates window.
+
     let r = app.last_hits.find(&UiAction::OpenUpdates).unwrap().rect;
     app.on_mouse_event(crossterm::event::MouseEvent {
         kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
@@ -103,7 +95,7 @@ fn a_newer_release_shows_the_chip_and_opens_the_window() {
         modifiers: crossterm::event::KeyModifiers::NONE,
     });
     assert_eq!(app.modal, crate::app::Modal::Updates(0));
-    // And Ctrl-a D.
+
     app.modal = crate::app::Modal::None;
     app.on_command(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('D'),
@@ -120,7 +112,7 @@ fn the_chip_shimmers_calmly_or_stands_still() {
     let (mut app, home) = test_app("motion");
     let m = standalone(&home);
     check(&mut app, m, false, false);
-    // Moving: the band sweeps (one cycle per 2 s, redrawn 10 times a second).
+
     app.cfg.splash_motion = "on".into();
     assert!(crate::ui_updates::motion(&app));
     assert_eq!(
@@ -128,7 +120,7 @@ fn the_chip_shimmers_calmly_or_stands_still() {
         Some(std::time::Duration::from_millis(100))
     );
     assert_ne!(chip_bg(3, 12, Some(0.2)), chip_bg(3, 12, Some(0.8)));
-    // Warm and muted: every tone stays between sand, sage and a pale sand.
+
     for i in 0..12 {
         for ph in [0.0, 0.25, 0.5, 0.75] {
             let (r, g, b) = chip_bg(i, 12, Some(ph));
@@ -138,7 +130,7 @@ fn the_chip_shimmers_calmly_or_stands_still() {
             );
         }
     }
-    // Reduced motion: a still gradient, no redraws for it.
+
     app.cfg.splash_motion = "off".into();
     assert!(!crate::ui_updates::motion(&app));
     assert_eq!(crate::ui_updates::phase(&app), None);
@@ -184,11 +176,11 @@ fn the_window_lists_every_newer_version_newest_first() {
     assert!(!text.iter().any(|t| t.contains("**") || t.contains("](")));
     let labels: Vec<&str> = buttons.iter().map(|(l, _, _)| l.as_str()).collect();
     assert_eq!(labels, vec!["Download", "Release page", "Later"]);
-    // Drawn and scrollable.
+
     app.open_updates();
     let (s, _) = screen(&mut app, 120);
     assert!(s.contains("v9.9.8") && s.contains("Download"), "{s}");
-    // An empty body: that version's CHANGELOG.md section.
+
     let (mut app2, home2) = test_app("notes2");
     let m = standalone(&home2);
     check(&mut app2, m, false, true);
@@ -207,7 +199,7 @@ fn download_then_restart_which_asks_first() {
     let m = standalone(&home);
     check(&mut app, m.clone(), false, false);
     assert_eq!(app.update.snapshot().phase, Phase::Available);
-    // "Download": the checker downloads through the usual checks.
+
     check(&mut app, m, true, false);
     assert_eq!(app.update.ready().as_deref(), Some("9.9.9"));
     assert_eq!(app.update_badge().as_deref(), Some("↑ Update ready"));
@@ -216,7 +208,7 @@ fn download_then_restart_which_asks_first() {
         .iter()
         .any(|(t, _)| t.contains("Downloaded and verified")));
     assert_eq!(buttons[0].1, UiAction::UpdatesRestart);
-    // Restart asks first and says what survives.
+
     app.open_updates();
     screen(&mut app, 140);
     let r = app.last_hits.find(&UiAction::UpdatesRestart).unwrap().rect;
@@ -231,14 +223,14 @@ fn download_then_restart_which_asks_first() {
     let (s, _) = screen(&mut app, 140);
     assert!(s.contains("Restart into v9.9.9 now?"), "{s}");
     assert!(s.contains("resumes it") && s.contains("interrupted"), "{s}");
-    // No: back to the window, nothing restarted.
+
     app.on_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Esc,
         crossterm::event::KeyModifiers::NONE,
     ));
     assert_eq!(app.modal, crate::app::Modal::Updates(0));
     assert!(!app.quit);
-    // The assistant: one yes.
+
     let v = app.control_call("restart_to_update", &serde_json::json!({}));
     assert!(
         v["needs_confirmation"]
@@ -247,8 +239,7 @@ fn download_then_restart_which_asks_first() {
             .contains("Restart into version 9.9.9"),
         "{v}"
     );
-    // Its confirm in the same turn that asked, or before any question,
-    // or without a yes: refused, nothing scheduled.
+
     let v = app.control_call("restart_to_update", &serde_json::json!({"confirm": true}));
     assert!(v["error"].as_str().unwrap().contains("same turn"), "{v}");
     assert!(!app.update.after_turn);
@@ -269,7 +260,7 @@ fn download_then_restart_which_asks_first() {
     assert_eq!(v["ok"], serde_json::json!(true), "{v}");
     assert!(app.update.after_turn, "restarts after this answer");
     app.update.after_turn = false;
-    // That yes is used up: a second confirm needs a new question.
+
     app.assistant_turn += 1;
     let v = app.control_call("restart_to_update", &serde_json::json!({"confirm": true}));
     assert!(

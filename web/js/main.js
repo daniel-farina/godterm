@@ -1,5 +1,3 @@
-// GodTerm Web: wires the modules together. The debug log first, so it
-// sees what the others log while they start.
 import './debuglog.js';
 import { $, h, on, emit, toast, paintIcons, isTouch, isDesk, DESK, store, uidOf, debounce, tcPaint } from './util.js';
 import { connect, conn, send, tool } from './conn.js';
@@ -9,17 +7,11 @@ import { initTabs, setTabActions, tabOrder, renderTabs } from './tabs.js';
 import { initKeybar } from './keybar.js';
 import { initChat, setChat, chatOpen, approvalsSheet } from './chat.js';
 import { initInstall } from './install.js';
-// Loaded after the first screen (none of these is needed for the first
-// terminal frame): the keyboard's F6 / ? after the first paint, push
-// notifications after hello, and voice (the largest module, with the
-// mic) at hello when a mode is on (push to talk, open mic or the wake
-// word start by themselves as before), else on the first tap on a mic
-// button or 3 s after hello, whichever comes first. Each catches up
-// with a connection that opened before it.
+
 const once = (fn) => { let p = null; return () => (p ||= Promise.resolve(fn())); };
 const initKeys = () => { const go = once(() => import('./keys.js').then((m) => m.initKeys())); requestAnimationFrame(() => setTimeout(go, 0)); setTimeout(go, 1500); };
 const initPush = () => { const go = once(() => import('./push.js')); on('hello', go); setTimeout(go, 2500); };
-// The status bar is a desktop's: loaded there, or once a window grows into one.
+
 const initStatusBar = () => { const go = once(() => import('./statusbar.js').then((m) => m.initStatusBar())); if (isDesk()) go(); else matchMedia(DESK).addEventListener('change', (e) => e.matches && go()); };
 const initVoice = () => {
   const go = once(() => import('./voice.js').then((m) => m.initVoice()));
@@ -30,18 +22,20 @@ const initVoice = () => {
   for (const id of ['#b-ptt', '#b-ptt2', '#b-openmic', '#b-voice']) {
     const b = $(id);
     if (!b) continue;
-    // A tap before voice is here: load it, then the tap again for its handler.
+
     b.addEventListener('pointerdown', go, { once: true, passive: true });
     const tap = (e) => { if (b.dataset.live) return; e.stopImmediatePropagation(); go().then(() => { b.dataset.live = 1; b.click(); }); };
     b.addEventListener('click', tap, { capture: true, once: true });
   }
   setTimeout(go, 8000);
 };
-// Management and sessions load on first use, keeping the first page small.
+
 const manage = () => import('./manage.js');
 const tabActions = (id, at) => manage().then((m) => m.tabActions(id, at));
 const newTabSheet = () => manage().then((m) => m.newTabSheet());
 const manageSheet = () => manage().then((m) => m.manageSheet());
+const loopsAllSheet = () => manage().then((m) => m.loopsAllSheet());
+const jobsAllSheet = () => manage().then((m) => m.jobsAllSheet());
 const sessionsSheet = () => import('./sessions.js').then((m) => m.sessionsSheet());
 const settingsSheet = (at) => import('./settings.js').then((m) => m.settingsSheet(at));
 import { closeSheet, sheetOpen, sheetKind } from './sheet.js';
@@ -51,15 +45,8 @@ paintIcons();
 if (isTouch()) document.body.classList.add('touch');
 if (location.search.includes('t=')) history.replaceState(null, '', location.pathname);
 
-// The visible viewport (the on-screen keyboard shrinks it). The page
-// itself never scrolls: iOS scrolls it to show a focused field (by 200 to
-// 350 px when the keyboard opens in the installed app), which moved the
-// header off screen. It is put back at once, and the app is sized to the
-// visible part, so the key bar sits on the keyboard.
 const vv = window.visualViewport;
-// The keyboard is up when a text field has the focus and the viewport
-// is well short of its tallest in this orientation (Android resizes the
-// whole page, iOS only the visual viewport, so neither alone tells).
+
 const tallest = {};
 const typing = () => { const a = document.activeElement; return !!a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && !/^(checkbox|radio|button|file|range)$/.test(a.type)) || a.isContentEditable); };
 const se = () => document.scrollingElement || document.documentElement;
@@ -70,8 +57,7 @@ let lastVp = '';
 function viewport() {
   unscroll();
   const hgt = Math.round(vv ? vv.height : innerHeight);
-  // What iOS still pans after the scroll is undone (the visual viewport
-  // inside the layout one): the app follows it.
+
   const top = Math.max(0, Math.round(vv ? vv.offsetTop : 0));
   const k = (innerWidth > hgt + 150 ? 'l' : 'p') + innerWidth;
   tallest[k] = typing() ? Math.max(tallest[k] || 0, hgt) : hgt;
@@ -84,8 +70,7 @@ function viewport() {
   const kb = isTouch() && typing() && (hgt < tallest[k] - 120 || (!!vv && vv.height < innerHeight - 100));
   if (kb !== document.body.classList.contains('kb')) { document.body.classList.toggle('kb', kb); emit('layout'); }
 }
-// While the keyboard slides (about 300 ms) the viewport is followed every
-// frame, so the key bar rides on it instead of jumping after it.
+
 let follow = 0, followUntil = 0;
 function track(ms = 700) {
   followUntil = Math.max(followUntil, performance.now() + ms);
@@ -102,8 +87,6 @@ addEventListener('scroll', unscroll, { passive: true });
 document.body.addEventListener('scroll', unscroll, { passive: true });
 viewport();
 
-// What sits under the header (the update banner, toasts) pushes the
-// phone's chat and drawer down by its height; the terminals refit.
 let pushh = -1;
 const pushObs = new ResizeObserver(() => {
   const n = (isDesk() ? ['#under', '#toasts'] : ['#under']).reduce((a, s) => a + ($(s).offsetHeight || 0), 0);
@@ -114,16 +97,13 @@ const pushObs = new ResizeObserver(() => {
 });
 pushObs.observe($('#toasts'));
 pushObs.observe($('#under'));
-// Phones: the floating messages sit above the chat's composer and its
-// attachments, whatever their height (a long draft, two thumbnails).
+
 const chatObs = new ResizeObserver(() => root.style.setProperty('--chath', ($('#composer').offsetHeight + $('#att').offsetHeight) + 'px'));
 chatObs.observe($('#composer'));
 chatObs.observe($('#att'));
 
-// Drawer (phone) or collapsible side list (desktop).
 const side = $('#side'), scrim = $('#scrim');
-// A squeezed desktop (the terminal would drop under 520 px with the list
-// beside it) keeps the list as an overlay, opened and shut like the drawer.
+
 const squeezedSide = () => isDesk() && $('#app').classList.contains('sq-side');
 function drawer(open) {
   if (isDesk()) {
@@ -136,11 +116,9 @@ function drawer(open) {
 }
 $('#b-menu').onclick = () => drawer(isDesk() && !squeezedSide() ? $('#app').classList.contains('noside') : !side.classList.contains('open'));
 if (isDesk() && store.get('noside', false)) $('#app').classList.add('noside');
-// The scrim closes the sheet first, then the drawer.
+
 scrim.onclick = () => { if (sheetOpen()) closeSheet(); else drawer(false); };
 
-// Swipes: from the left edge opens the drawer, leftwards on it closes it.
-// The drawer follows the finger and settles open or shut.
 {
   let g = null;
   const W = () => side.getBoundingClientRect().width;
@@ -149,7 +127,7 @@ scrim.onclick = () => { if (sheetOpen()) closeSheet(); else drawer(false); };
     const t = e.touches[0], open = side.classList.contains('open');
     if (!open && t.clientX > 22 + (parseFloat(getComputedStyle(root).getPropertyValue('--sal')) || 0)) return;
     if (open && !side.contains(e.target) && e.target !== scrim) return;
-    // The status chips scroll sideways under the finger: not a close.
+
     if (open && e.target.closest('#chips')) return;
     g = { x: t.clientX, y: t.clientY, open, on: false };
     if (!open) e.stopPropagation();
@@ -183,9 +161,7 @@ scrim.onclick = () => { if (sheetOpen()) closeSheet(); else drawer(false); };
   $('#app').addEventListener('touchend', end, { capture: true });
   $('#app').addEventListener('touchcancel', end, { capture: true });
 }
-// The side list's width on a desktop: drag its right edge (the
-// terminals refit once, when the drag ends), double click for the
-// default 280 px. Kept per browser; 200 px to half the window.
+
 {
   const app = $('#app');
   const clamp = (w) => Math.round(Math.max(200, Math.min(innerWidth * 0.5, w)));
@@ -218,11 +194,46 @@ scrim.onclick = () => { if (sheetOpen()) closeSheet(); else drawer(false); };
     apply(side.getBoundingClientRect().width + (e.key === 'ArrowLeft' ? -16 : 16));
     nudge();
   });
-  // A narrower window keeps the list within half of it.
+
   addEventListener('resize', debounce(() => apply(store.get('sidew', null)), 100));
 }
-// The docked tab panel's width (a desktop): drag its left edge, double
-// click for the default 420 px. Kept per browser; 300 px to half the window.
+
+{
+  const app = $('#app');
+  const chat = $('#chat');
+  const clamp = (w) => Math.round(Math.max(280, Math.min(innerWidth * 0.6, w)));
+  const apply = (w) => { if (w) app.style.setProperty('--chatw', clamp(w) + 'px'); else app.style.removeProperty('--chatw'); };
+  const save = () => { store.set('chatw', parseFloat(app.style.getPropertyValue('--chatw')) || null); emit('layout'); };
+  apply(store.get('chatw', null));
+  const grip = h('div.side-grip', { role: 'separator', tabindex: 0, 'aria-orientation': 'vertical', 'aria-label': 'Resize the assistant', title: 'Drag to resize, double click to reset' });
+  chat.append(grip);
+  let d = null;
+  grip.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || !isDesk()) return;
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    d = { x: e.clientX, w: chat.getBoundingClientRect().width };
+    root.classList.add('side-drag');
+  });
+  grip.addEventListener('pointermove', (e) => { if (d) apply(d.w - (e.clientX - d.x)); });
+  const end = () => {
+    if (!d) return;
+    d = null;
+    root.classList.remove('side-drag');
+    save();
+  };
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) grip.addEventListener(ev, end);
+  grip.addEventListener('dblclick', () => { apply(null); save(); });
+  const nudge = debounce(save, 300);
+  grip.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    apply(chat.getBoundingClientRect().width + (e.key === 'ArrowLeft' ? 16 : -16));
+    nudge();
+  });
+  addEventListener('resize', debounce(() => apply(store.get('chatw', null)), 100));
+}
+
 {
   const app = $('#app');
   const panel = $('#tabpanel');
@@ -258,19 +269,13 @@ scrim.onclick = () => { if (sheetOpen()) closeSheet(); else drawer(false); };
   });
   addEventListener('resize', debounce(() => apply(store.get('tpw', null)), 100));
 }
-// A narrow desktop window (an iPad upright, a 1000 px window with the tab
-// panel or the chat open): the terminal keeps about 520 px. In order: the
-// panel and the chat narrow to 300 px (--tpfit, --chfit); if that is not
-// enough the side list folds into an overlay (sq-side); with both open
-// and still no room the one opened last stays, and the one left floats
-// over the terminal (sq-panel, sq-chat) when even 300 px are too wide.
-// The widths the user set stay.
+
 const MIN_MAIN = 520, MIN_PANEL = 300;
 let squeeze = () => {};
 {
   const app = $('#app');
   let last = '', wasPanel = false, wasChat = false;
-  // A width: the one dragged (inline), else the stylesheet's default for this window.
+
   const px = (v, d) => parseFloat(app.style.getPropertyValue(v)) || parseFloat(getComputedStyle(app).getPropertyValue(v)) || d;
   squeeze = () => {
     const panel = !$('#tabpanel').hidden, chat = chatOpen();
@@ -283,7 +288,7 @@ let squeeze = () => {};
       const W = innerWidth;
       const sideW = app.classList.contains('noside') ? 0 : px('--sidew', 280);
       const tp0 = panel ? px('--tpw', 420) : 0, ch0 = chat ? px('--chatw', 380) : 0;
-      // The panel and the chat down to 300 px against the room beside the side list.
+
       const shrink = (avail) => {
         let tp = tp0, ch = ch0, over = tp + ch - (avail - MIN_MAIN);
         if (over > 0 && tp) { const d = Math.min(over, Math.max(0, tp - MIN_PANEL)); tp -= d; over -= d; }
@@ -291,7 +296,7 @@ let squeeze = () => {};
         return { tp, ch, over };
       };
       let r = shrink(W - sideW);
-      // Still short: the side list folds, and the two get its room back.
+
       cls['sq-side'] = sideW > 0 && r.over > 0;
       if (cls['sq-side']) r = shrink(W);
       let { tp, ch, over } = r;
@@ -312,11 +317,10 @@ let squeeze = () => {};
   on('layout', squeeze);
   addEventListener('resize', debounce(squeeze, 120));
 }
-// A swipe left or right on the header goes to the next or previous tab
-// (the drawer's order); a pill under the header says which one.
+
 {
   let g = null, tipT = 0;
-  // (Row 1 only: row 2 scrolls sideways.)
+
   const top = $('#top .tr1');
   const tip = h('div', { id: 'swtip', 'aria-live': 'polite', hidden: true });
   document.body.append(tip);
@@ -351,7 +355,6 @@ on('picked', () => {
   if (!isDesk() || squeezedSide()) { side.classList.remove('open'); scrim.classList.toggle('on', sheetOpen()); if (!isDesk() && chatOpen()) setChat(false); }
 });
 
-// Header: the focused tab and the connection.
 function title() {
   const p = panes.focused();
   const t = p && tabById(p.id);
@@ -364,8 +367,7 @@ function title() {
 }
 on('state', title);
 on('focus', title);
-// On a desktop the tab's options are a docked panel at the right: the
-// Tab button (and the title) toggle it.
+
 const togglePanel = () => manage().then((m) => m.setPanel(!m.panelIsOn()));
 $('#title').onclick = () => { const p = panes.focused(); if (!p?.id) return; if (isDesk()) togglePanel(); else tabActions(p.id); };
 let downTimer = 0, authSaid = false;
@@ -379,7 +381,6 @@ on('conn', (s) => {
   else if (s === 'down' && !authSaid) downTimer = setTimeout(() => !conn.open && toast('GodTerm is not reachable: retrying', 'warn'), 2500);
 });
 
-// Buttons.
 $('#b-split').onclick = () => {
   const n = panes.want === 1 ? 2 : panes.want === 2 ? 4 : 1;
   panes.setN(n);
@@ -389,12 +390,21 @@ $('#b-sessions').onclick = sessionsSheet;
 $('#b-sess2').onclick = () => { drawer(false); sessionsSheet(); };
 $('#b-new').onclick = () => { drawer(false); newTabSheet(); };
 $('#b-more').onclick = manageSheet;
+$('#b-loops').onclick = loopsAllSheet;
+$('#b-jobs').onclick = jobsAllSheet;
+
+on('state', () => {
+  for (const [id, n] of [['b-loops', (S.loops || []).length], ['b-jobs', (S.jobs?.jobs || []).length]]) {
+    const b = document.getElementById(id), c = b.querySelector('.cnt');
+    if (c.textContent !== String(n)) { c.textContent = n; b.classList.toggle('has', n > 0); }
+  }
+});
 $('#b-newtab').onclick = newTabSheet;
 $('#b-gear').onclick = () => settingsSheet();
 $('#b-tabmenu').onclick = () => { if (isDesk()) return togglePanel(); const p = panes.focused(); if (!p?.id) return toast('Pick a tab first', 'warn'); tabActions(p.id, null); };
-// The status bar's items open their section of the tab's options.
+
 on('tabsection', (key, r) => { const p = panes.focused(); if (p?.id) manage().then((m) => m.tabSection(p.id, key, r)); });
-// Find: the tab list's filter (the drawer on a phone).
+
 $('#b-find').onclick = () => {
   if (isDesk() && !squeezedSide()) { if ($('#app').classList.contains('noside')) drawer(true); } else if (!side.classList.contains('open')) drawer(true);
   setTimeout(() => { $('#q').focus(); $('#q').select(); }, isDesk() ? 0 : 200);
@@ -402,7 +412,6 @@ $('#b-find').onclick = () => {
 on('unread', () => $('#b-chat').classList.add('dot-new'));
 on('layout', () => requestAnimationFrame(() => panes.visible().forEach((p) => p.layout())));
 
-// Long press on a tab row opens its options (iOS has no contextmenu).
 let lp = 0, lpFired = false;
 $('#list').addEventListener('touchstart', (e) => {
   const row = e.target.closest('.row');
@@ -410,25 +419,19 @@ $('#list').addEventListener('touchstart', (e) => {
   if (!row) return;
   lp = setTimeout(() => { lpFired = true; navigator.vibrate?.(20); tabActions(row.dataset.id); }, 520);
 }, { passive: true });
-// (Cleared on the window, in the capture phase: the drawer's swipe
-// handler stops the event before it reaches the list, and a swipe that
-// starts on a row must not open that row's options.)
+
 for (const ev of ['touchmove', 'touchend', 'touchcancel']) addEventListener(ev, () => clearTimeout(lp), { capture: true, passive: true });
 $('#list').addEventListener('click', (e) => { if (lpFired) { e.stopPropagation(); e.preventDefault(); lpFired = false; } }, true);
 on('tabmenu', (id, at) => tabActions(id, at));
-// Open on Mac: the GodTerm app's own window to the front (the web app
-// stays as it is).
+
 $('#b-mac')?.addEventListener('click', async () => {
   const r = await tool('open_desktop', {});
   if (r.ok === false || r.error) toast(r.error || 'Could not open GodTerm on the Mac', 'warn');
   else toast(r.result?.say || 'GodTerm is at the front on the Mac', 'ok');
 });
 
-// Update available: a newer web build, or GodTerm's own update news.
-// The build this page was served as (its own ?v=), else the first hello's.
 let myBuild = new URL(import.meta.url).searchParams.get('v'), swReg = null;
-// A newer web build: a button in the top bar (no row of its own). App
-// update news keeps the banner, since it has more to say.
+
 function banner(text, act) {
   if (!act) {
     const b = $('#b-upd');
@@ -470,8 +473,6 @@ function appUpdate(u) {
 on('msg:update', appUpdate);
 on('hello', (m) => appUpdate(m.update));
 
-// What this browser shows, for the assistant: a turn typed here gets it
-// as context, and its web_* tools change it with `ui` frames.
 let lastView = '';
 const sendView = debounce(() => {
   if (!conn.open) return;
@@ -516,13 +517,12 @@ on('msg:ui', (m) => {
   sendView();
 });
 
-// Boot. The socket first: its handshake (a round trip or two) overlaps
-// the modules' setup below, which all runs before its first event.
 connect();
 initTabs();
 setTabActions(tabActions);
 panes.init();
 initKeybar();
+import('./drop.js').then((m) => m.initDrop());
 initChat();
 initVoice();
 initPush();

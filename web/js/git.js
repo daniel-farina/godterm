@@ -1,12 +1,3 @@
-// A tab's Git sheet: the same data and plans as the terminal UI's Git
-// section, through `git` frames ({op: view | prepare | run}). Nothing
-// changes until the user presses a button here and confirms the plan the
-// server checked (secrets, sizes, names); a secret finding also needs
-// "push anyway" typed. The assistant has no way to send these frames.
-// On top, "Ask this tab's agent": one tap sends this tab's own agent a
-// git task (commit and sync, review...) through send_prompt, with the
-// repo, branch, binding and the safety rules spelled out; the direct git
-// buttons sit below in a collapsed "Manual git actions" section.
 import { h, on, toast, isDesk, store, icon, stateWords, skeleton, failRow } from './util.js';
 import { send, tool } from './conn.js';
 import { tabById } from './state.js';
@@ -133,17 +124,12 @@ function style() {
 `));
 }
 
-// replaceChildren with the empty parts left out (it would print "null").
 const put = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
 
 const short = (s, n = 60) => (s && s.length > n ? '…' + s.slice(-(n - 1)) : s || '');
 
-// Where the sheet shows: "wide" (a large dialog on a desktop), "panel"
-// (the docked tab panel, one compact column) or "phone" (the bottom sheet).
 const modeOf = (body) => body.mode || 'phone';
 
-// The sheet for tab `t` (from state). `place` ({mount(body), back()}):
-// shown somewhere else instead (the docked tab panel).
 export async function gitSheet(t, place) {
   style();
   const mode = place ? 'panel' : isDesk() ? 'wide' : 'phone';
@@ -166,7 +152,6 @@ function srcWord(r) {
   return { remote: 'from its remote', saved: 'saved binding', rule: 'rule ' + (r.rule || ''), none: 'undefined' }[r.source] || '';
 }
 
-// The account question is one the picker answers (not "which owner").
 const needsAccount = (r) => !!(r && !r.refused && r.owner && !r.account && r.ask);
 
 function header(v, body) {
@@ -175,8 +160,7 @@ function header(v, body) {
   const src = srcWord(r);
   const ask = r.ask && !needsAccount(r) && v.is_repo ? h('div.gbad', {}, r.ask) : null;
   const prop = v.proposal ? h('div.mnote', {}, `The assistant proposes ${v.proposal.owner}/${v.proposal.repo} as ${v.proposal.account}: Define to use it.`) : null;
-  // Not a repo: said once, with what to do (the init button is below),
-  // not as a chip, a line, a warning and a red sentence.
+
   const none = v.is_repo ? null : h('div.gnone', {}, 'This folder is not a git repo yet.', h('small', {}, 'Make it one below; then define which GitHub repo it belongs to, so it is backed up.'));
   const warnings = (v.warnings || []).filter((w) => v.is_repo || !/not in git|not a git repo/i.test(w));
   if (modeOf(body) === 'phone') {
@@ -211,10 +195,6 @@ function header(v, body) {
 
 const MAIN_ACTS = new Set(['init', 'commit', 'push', 'pull', 'sync', 'fetch', 'branches']);
 
-// The direct git buttons, in a collapsed "Manual git actions" section
-// (open or closed is remembered per browser). Everything here runs git
-// itself, without the agent; each still shows its checked plan first.
-// A folder that is not a repo yet opens it (init and define live here).
 function manualEl(v, body, go) {
   const kids = actionsEl(v, body, go).filter(Boolean);
   if (!kids.length) return null;
@@ -267,7 +247,7 @@ function changesEl(v, body) {
   const staged = files.filter((f) => f.staged).map((f) => row(f.path, nums(f)));
   const unstaged = files.filter((f) => !f.staged).map((f) => row(f.path, nums(f)));
   const untr = untracked.slice(0, 40).map((p) => row(p, h('span.gn', {}, 'new')));
-  // A long untracked list starts collapsed (it is often build output).
+
   const longU = untracked.length > UNTRACKED_OPEN;
   const untrEl = !untracked.length ? null : !longU ? group('Untracked', untr.slice(0, 12), untracked.length)
     : h('details.ggrp.guntr', {}, h('summary', {}, h('div.gl', {}, `Untracked (${untracked.length})`)),
@@ -300,8 +280,6 @@ function footer(t, body) {
     h('button.btn' + sm, { title: 'Read git again', onclick: () => gitSheet(t, body.place) }, 'Refresh'));
 }
 
-// A sub screen (commit, define, branches, a plan): narrower in the wide
-// dialog, as it is elsewhere.
 function sub(body, ...kids) {
   if (modeOf(body) !== 'wide') return put(body, ...kids);
   const box = h('div.gsub');
@@ -330,8 +308,6 @@ function render(t, body, v, note) {
     footer(t, body));
 }
 
-// ---- ask this tab's own agent ----
-// The git facts the panel knows, so the agent starts from them.
 function gitContext(v) {
   const r = v.resolved || {};
   const ch = v.changes || {};
@@ -367,7 +343,6 @@ const GIT_RULES = [
 const COMMIT_WORK = 'Commit all meaningful changes with clear commit messages (separate commits for unrelated changes). Leave out secrets and junk; for untracked files, include only the ones that clearly belong in the repo and ask about the rest.';
 const SYNC_WORK = 'pull from the remote (rebase my unpushed commits onto it, or merge if a rebase is not safe), then push';
 
-// What each quick action asks. `need`: why it is off for this view.
 const AGENT_ACTS = [
   { id: 'commit_sync', label: 'Commit and sync', main: true, hint: 'Commit all changes, pull, then push',
     need: (v) => (!v.is_repo ? 'not a git repo' : null),
@@ -394,8 +369,6 @@ export function gitPrompt(v, task) {
   return `[Git panel] ${task}\n\n${gitContext(v)}\n\n${GIT_RULES}`;
 }
 
-// The receipt in words: send_prompt answers with the delivery's mode,
-// status and state (queued, sent, received, started, done...).
 function receiptText(r) {
   const res = r.result || r;
   const d = res.prompt || (res.deliveries || [])[0] || {};
@@ -411,7 +384,7 @@ function receiptText(r) {
 
 function agentEl(t, body, v) {
   if (v.refused) return null;
-  // Nothing the agent could do here (not a repo): no box of six disabled buttons.
+
   if (AGENT_ACTS.every((a) => a.need(v))) return null;
   const live = () => tabById(t.id) || t;
   const st = h('div.gaist');
@@ -428,10 +401,9 @@ function agentEl(t, body, v) {
     btns.forEach((b) => (b.disabled = true));
     const busy = busyNote();
     say((busy ? busy + ' ' : '') + `Sending "${label}" to the agent...`, busy ? 'warn' : '');
-    // queue: this tab's own session does it (never a forked background
-    // session working on the same tree); the user reads the answer there.
+
     let r = await tool('send_prompt', { tab: t.id, text: gitPrompt(v, task), mode: 'queue', expect_reply: false }, 30000);
-    // One tab needs no yes today; if GodTerm ever asks, the tap was it.
+
     const conf = r.needs_confirmation ? r : r.result?.needs_confirmation ? r.result : null;
     if (conf?.token) r = await tool('send_prompt', { confirm_token: conf.token }, 30000, { user_says: 'yes' });
     sending = false;
@@ -468,7 +440,7 @@ function agentEl(t, body, v) {
   if (busy) say(busy, 'warn');
   return h('div.gai', {},
     h('div.gait', { title: GIT_RULES }, "Ask this tab's agent", h('small', {}, 'It works in its own session: never force pushes, never rewrites published history, stops and asks on conflicts.')),
-    // Wide: one row; narrow (panel, phone): the main one on top.
+
     modeOf(body) === 'wide' ? h('div.gairow', {}, main, rest) : [h('div.gairow', {}, main), h('div.gairow.sec', {}, rest)],
     h('div.gaiask', {}, q, go),
     st);
@@ -547,12 +519,6 @@ async function prepare(t, body, v, frame) {
     h('div.acts', {}, can ? yes : null, h('button.btn', { onclick: () => render(t, body, v) }, can ? 'Cancel' : 'Back')));
 }
 
-// ---- which gh account pushes for an owner ----
-// The question "Which gh account pushes for <owner>?" as buttons: the gh
-// accounts logged in here (GodTerm asks `gh auth status`), each one
-// saving owner -> account in [git.owners] through the same check and
-// save as Settings > GitHub (cfg_check, then cfg_save with its id; the
-// click is the yes), and "Add account..." for a gh login of a new one.
 const LOGIN_CMD = 'gh auth login --hostname github.com --git-protocol https --web';
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -575,7 +541,7 @@ function accountPicker(t, body, v) {
     h('div.q', {}, 'Which gh account pushes for ', h('b', {}, owner), '?',
       h('small', {}, 'It is not in [git.owners] yet. Pick one to save it there (config.toml), or add a gh login.')),
     opts, st, login);
-  // Until gh answers: the names GodTerm already knows.
+
   let accts = (v.accounts || []).map((name) => ({ name, logged_in: true }));
   let fresh = '';
   let busy = false;
@@ -663,7 +629,7 @@ function accountPicker(t, body, v) {
     }
     if (l?.state === 'done') {
       fresh = l.account || '';
-      await wait(2500); // GodTerm asks gh for the list again
+      await wait(2500); 
       await loadAccounts();
       if (fresh && !accts.some((a) => a.name === fresh)) accts.push({ name: fresh, logged_in: true });
       paint();
@@ -682,7 +648,6 @@ function accountPicker(t, body, v) {
     paintLogin(r.login || { state: 'cancelled' });
   }
 
-  // gh's list, and a login already under way (the screen was reopened).
   queueMicrotask(async () => {
     await loadAccounts();
     const r = await ask({ op: 'cfg_gh_login_poll' }, 20000);

@@ -1,23 +1,3 @@
-//! Brainstorm mode: talk as long as you like and nothing is sent. Every
-//! utterance is appended to a draft in the assistant's composer (to the
-//! assistant, or in direct mode to the tab), shown live with a chip
-//! "● brainstorm, 2m 14s, 312 words". "Send it", "done" or "that's it"
-//! sends the whole draft as one message, lightly cleaned; "cancel
-//! brainstorm" discards it (with Undo); "read it back" says the last
-//! sentences. Enter in the composer sends, Esc leaves the mode and keeps
-//! the draft. Nothing is replied to meanwhile, so barge-in and spoken
-//! updates stay quiet, and the open mic does not go to sleep.
-//!
-//! The phrases are a short local list, like direct mode's exit phrases.
-//! A finish phrase counts only as the whole utterance or at its very end
-//! after a sentence break ("... the cache. Send it."), so "I'm done with
-//! the API part" is dictation. A weaker one at the end ("... and that's
-//! it.") asks "Send it?" first.
-//!
-//! Outside the mode, speech that sounds unfinished (a trailing "and",
-//! "so", "um", a comma, a long run-on, "wait, I'm not done") or several
-//! quick fragments in a row get a rare tip to use it.
-
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -28,89 +8,83 @@ use crate::app_assistant::{Entry, Who};
 use crate::app_direct::core_words;
 use crate::voice::grammar::normalize;
 
-/// The card shown on first use (and from the ⓘ).
 pub const EXPLAIN: &str = "Brainstorm mode: talk as long as you like; nothing is sent. Say 'done', 'send it' or 'that's it' to send everything, 'cancel brainstorm' to discard, 'read it back' to hear the draft. Or edit it in the box and press Enter.";
-/// Its spoken one line version.
+
 pub const EXPLAIN_SPOKEN: &str =
     "Brainstorm mode. Talk as long as you like; nothing is sent until you say send it.";
-/// The tip when speech sounds unfinished.
+
 pub const SUGGEST: &str =
     "Sounds like you have more to say. Say 'brainstorm mode' to talk without sending.";
 
-/// A pause this long between utterances starts a new paragraph.
 const PARAGRAPH_GAP: Duration = Duration::from_secs(8);
-/// "Send it?" stays answerable this long.
+
 const CONFIRM_TTL: Duration = Duration::from_secs(90);
-/// A discarded draft can be brought back this long.
+
 const UNDO_TTL: Duration = Duration::from_secs(300);
-/// The tip at most this often.
+
 const SUGGEST_EVERY: Duration = Duration::from_secs(300);
-/// Fragments this close together count as "in a row".
+
 const FRAGMENT_GAP: Duration = Duration::from_secs(12);
-/// A fragment is at most this many words.
+
 const FRAGMENT_WORDS: usize = 12;
-/// This many quick fragments in a row get the tip.
+
 const FRAGMENTS: usize = 3;
-/// A single utterance this long (words) is a run-on worth the tip.
+
 const RUN_ON_WORDS: usize = 90;
-/// After the silence timeout, a yes sends the kept draft this long.
+
 const OFFER_TTL: Duration = Duration::from_secs(180);
 
-/// Where the draft goes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
     Assistant,
-    /// A tab in direct mode (its uid and spoken name).
+
     Tab(u64, String),
 }
 
 pub struct Session {
     pub since: Instant,
     pub target: Target,
-    /// The last utterance appended (or the start).
+
     pub last_at: Instant,
-    /// Utterances appended.
+
     pub parts: usize,
-    /// "Send it?" was asked.
+
     pub confirm: Option<Instant>,
 }
 
 #[derive(Default)]
 pub struct BrainstormState {
     pub on: Option<Session>,
-    /// The explanation card shows in the panel.
+
     pub card: bool,
-    /// The last discarded draft, for Undo.
+
     pub undo: Option<(String, Target, Instant)>,
-    /// The silence timeout ended it: a yes sends the kept draft.
+
     pub offer: Option<(Target, Instant)>,
-    /// When the tip was last given.
+
     pub suggested: Option<Instant>,
-    /// Recent utterances outside the mode (fragments in a row).
+
     pub recent: VecDeque<Instant>,
-    /// What it said out loud, newest last (the panel and tests).
+
     pub said: Vec<String>,
-    /// What was sent, newest last: (to the assistant or a tab id, text).
+
     pub sent: Vec<(String, String)>,
 }
 
-/// What an utterance means while brainstorming.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Said {
     Send,
-    /// Send with a request to structure it first.
+
     Organize,
     Cancel,
     ReadBack,
-    /// "brainstorm mode" again.
+
     Start,
-    /// A sure finish at the end of longer speech: the words before it are
-    /// appended, then it is sent.
+
     SendAfter(String),
-    /// A finish that may be part of what was said: appended, then
-    /// "Send it?".
+
     Doubt,
-    /// Words for the draft.
+
     Dictation,
 }
 
@@ -217,15 +191,14 @@ const START: &[&str] = &[
     "let me brain dump",
     "i want to brainstorm",
 ];
-/// Openers that may lead straight into the dictation ("Brainstorm mode.
-/// So the first thing...").
+
 const START_PREFIX: &[&str] = &[
     "brainstorm mode",
     "brain dump mode",
     "braindump mode",
     "start brainstorm mode",
 ];
-/// Sure finishes at the end of longer speech, after a sentence break.
+
 const END_SURE: &[&str] = &[
     "end brainstorm",
     "end brainstorm mode",
@@ -233,10 +206,9 @@ const END_SURE: &[&str] = &[
     "end brain dump",
     "send the brainstorm",
 ];
-/// Finishes at the end that need a sentence break, and a yes when it is
-/// only a comma.
+
 const END_SEND: &[&str] = &["send it", "go ahead and send it", "send it all"];
-/// Finishes at the end that could be part of what was said: asked.
+
 const END_WEAK: &[&str] = &[
     "that's it",
     "thats it",
@@ -273,7 +245,7 @@ const NOT_DONE: &[&str] = &[
     "hold on i'm not done",
     "hang on i'm not done",
 ];
-/// "Don't suggest that again" right after a tip.
+
 const DISMISS: &[&str] = &[
     "don't suggest that again",
     "dont suggest that again",
@@ -283,7 +255,7 @@ const DISMISS: &[&str] = &[
     "stop suggesting it",
     "don't suggest that",
 ];
-/// The same naming it (any time).
+
 const DISMISS_NAMED: &[&str] = &[
     "don't suggest brainstorm mode",
     "dont suggest brainstorm mode",
@@ -298,12 +270,10 @@ fn words_of(s: &str) -> Vec<String> {
     s.split(' ').map(str::to_string).collect()
 }
 
-/// normalize, with typographic apostrophes as plain ones.
 fn norm(raw: &str) -> String {
     normalize(&raw.replace(['\u{2019}', '\u{2018}'], "'"))
 }
 
-/// The utterance's words, fillers at either end dropped, as one string.
 fn core(raw: &str) -> String {
     core_words(&norm(raw)).join(" ")
 }
@@ -313,8 +283,6 @@ fn whole(raw: &str, list: &[&str]) -> bool {
     !s.is_empty() && list.contains(&s.as_str())
 }
 
-/// `raw` without its last words: as many whitespace tokens as it takes to
-/// cover `n` normalized words.
 fn drop_last_words(raw: &str, n: usize) -> String {
     let toks: Vec<&str> = raw.split_whitespace().collect();
     let mut k = 0;
@@ -326,7 +294,6 @@ fn drop_last_words(raw: &str, n: usize) -> String {
     toks[..toks.len() - k].join(" ")
 }
 
-/// `raw` without its first words (as many tokens as cover `n`).
 fn drop_first_words(raw: &str, n: usize) -> String {
     let toks: Vec<&str> = raw.split_whitespace().collect();
     let mut k = 0;
@@ -338,14 +305,11 @@ fn drop_first_words(raw: &str, n: usize) -> String {
     toks[k..].join(" ")
 }
 
-/// How many normalized words at the end core_words dropped (fillers like
-/// "please" after the phrase).
 fn tail_dropped(raw: &str) -> usize {
     let n = norm(raw);
     let all = n.split_whitespace().count();
     let core = core_words(&n);
-    // core_words drops at both ends: count the tail by matching from the
-    // front of what is left.
+
     let words: Vec<&str> = n.split_whitespace().collect();
     let lead = (0..=all.saturating_sub(core.len()))
         .find(|&i| {
@@ -357,7 +321,6 @@ fn tail_dropped(raw: &str) -> usize {
     all - lead - core.len()
 }
 
-/// Whether `head` ends at a sentence break (or only a comma).
 fn break_after(head: &str) -> Option<bool> {
     let h = head.trim_end();
     if h.ends_with(['.', '!', '?', ':', ';']) {
@@ -369,7 +332,6 @@ fn break_after(head: &str) -> Option<bool> {
     }
 }
 
-/// What an utterance means while brainstorming (see the module doc).
 pub fn classify(raw: &str) -> Said {
     if whole(raw, SEND) {
         return Said::Send;
@@ -422,7 +384,6 @@ pub fn classify(raw: &str) -> Said {
     Said::Dictation
 }
 
-/// "brainstorm mode" (Some with what followed it, maybe empty), or None.
 pub fn start_phrase(raw: &str) -> Option<String> {
     if whole(raw, START) {
         return Some(String::new());
@@ -442,15 +403,11 @@ pub fn start_phrase(raw: &str) -> Option<String> {
     None
 }
 
-/// Speech that sounds unfinished: a trailing connective, filler or comma,
-/// or a long run-on.
 pub fn sounds_unfinished(raw: &str) -> bool {
     crate::voice::grammar::ends_unfinished(raw)
         || normalize(raw).split_whitespace().count() >= RUN_ON_WORDS
 }
 
-/// The draft as it is sent: fragments joined, lone fillers dropped,
-/// spaces collapsed, paragraphs kept at the long pauses.
 pub fn clean(draft: &str) -> String {
     const FILLERS: &[&str] = &["um", "uh", "umm", "uhm", "erm", "er", "hmm", "mm"];
     let mut paras = vec![];
@@ -463,7 +420,6 @@ pub fn clean(draft: &str) -> String {
                 .collect::<String>()
                 .to_lowercase();
             if FILLERS.contains(&bare.as_str()) {
-                // "um," or "uh." keeps nothing; a period ends the word before.
                 if tok.ends_with(['.', '?', '!']) {
                     if let Some(last) = out.last_mut() {
                         let t = last.trim_end_matches(',').to_string();
@@ -476,9 +432,7 @@ pub fn clean(draft: &str) -> String {
             }
             out.push(tok.to_string());
         }
-        // A fragment cut at a pause ("the cache and. Then the queue") is
-        // joined: the period after a connective goes, the next word is
-        // lower case again.
+
         for i in 0..out.len().saturating_sub(1) {
             let t = out[i].clone();
             let word = t.trim_end_matches('.').to_lowercase();
@@ -509,7 +463,6 @@ pub fn clean(draft: &str) -> String {
     paras.join("\n\n")
 }
 
-/// "2m 14s", "45s".
 pub fn clock(d: Duration) -> String {
     let s = d.as_secs();
     if s < 60 {
@@ -519,14 +472,12 @@ pub fn clock(d: Duration) -> String {
     }
 }
 
-/// Words in a draft.
 pub fn word_count(s: &str) -> usize {
     s.split_whitespace()
         .filter(|w| w.chars().any(char::is_alphanumeric))
         .count()
 }
 
-/// The last couple of sentences, for "read it back".
 pub fn last_sentences(s: &str, n: usize) -> String {
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut ends: Vec<usize> = flat
@@ -536,8 +487,7 @@ pub fn last_sentences(s: &str, n: usize) -> String {
         })
         .map(|(i, _)| i + 1)
         .collect();
-    // The cut is after the n-th sentence end from the back (the last
-    // one closes the draft).
+
     if flat.ends_with(['.', '!', '?']) {
         ends.push(flat.len());
     }
@@ -561,7 +511,6 @@ impl App {
         self.brainstorm.on.is_some()
     }
 
-    /// "● brainstorm, 2m 14s, 312 words" for the composer.
     pub fn brainstorm_chip(&self) -> Option<String> {
         let s = self.brainstorm.on.as_ref()?;
         let to = match &s.target {
@@ -575,7 +524,6 @@ impl App {
         ))
     }
 
-    /// Say a brainstorm line (recorded for the panel and tests).
     fn bs_say(&mut self, text: &str) {
         self.brainstorm.said.push(text.to_string());
         let n = self.brainstorm.said.len();
@@ -585,7 +533,6 @@ impl App {
         self.speak(text);
     }
 
-    /// Ctrl-a B, the quick bar, the menus: on, or off keeping the draft.
     pub fn toggle_brainstorm(&mut self) {
         if self.brainstorm_on() {
             self.leave_brainstorm();
@@ -595,9 +542,6 @@ impl App {
         }
     }
 
-    /// Start it: the draft goes to the direct tab when direct mode is on,
-    /// else to the assistant. The first time, the card explains it. With
-    /// `speak`, its one line is said. Returns that line.
     pub fn start_brainstorm(&mut self, speak: bool) -> String {
         if self.brainstorm_on() {
             return "Already in brainstorm mode. Say send it when you're done.".into();
@@ -632,8 +576,7 @@ impl App {
                 self.config_mtime = crate::app::config_mtime();
             }
         }
-        // Nothing is said over the user meanwhile; open mic transcribes
-        // everything (no wake word screening in the engine).
+
         if let Some(v) = &self.voice.engine {
             v.stop_speaking();
             v.set_brainstorm(true);
@@ -651,19 +594,17 @@ impl App {
         line
     }
 
-    /// The mode ends (sent, discarded or left).
     fn end_session(&mut self) -> Option<Session> {
         let s = self.brainstorm.on.take()?;
         self.brainstorm.card = false;
         if let Some(v) = &self.voice.engine {
             v.set_brainstorm(false);
         }
-        // The open mic's sleep timer starts over.
+
         self.voice.last_heard = Instant::now();
         Some(s)
     }
 
-    /// Esc, or Ctrl-a B again: out of the mode, the draft kept in the box.
     pub fn leave_brainstorm(&mut self) {
         if self.end_session().is_none() {
             return;
@@ -677,8 +618,6 @@ impl App {
         });
     }
 
-    /// Append an utterance to the draft: a new paragraph after a long
-    /// pause, else a space.
     pub fn brainstorm_append(&mut self, text: &str) {
         let text = text.trim();
         if text.is_empty() {
@@ -708,18 +647,13 @@ impl App {
         self.voice.action = Some(format!("brainstorm: {n} words drafted"));
     }
 
-    /// An utterance while brainstorming (after mute and pause): nothing
-    /// is sent except on a finish phrase.
     pub fn brainstorm_heard(&mut self, text: &str, norm: &str, woke: Option<String>) {
-        // The wake word alone: nothing to answer; with words, the words.
         let said = match woke {
             Some(rest) if rest.trim().is_empty() => {
                 self.voice.action = Some("brainstorm: listening".into());
                 return;
             }
             Some(_) => {
-                // Keep the user's own punctuation for the draft: drop the
-                // wake word's tokens from the raw text.
                 let n = norm.split_whitespace().count()
                     - self
                         .strip_wake(norm)
@@ -737,12 +671,12 @@ impl App {
             self.voice.action = Some("(noise, ignored)".into());
             return;
         }
-        // The mic mute still works.
+
         if core(&said) == "mute" || core(&said) == "mute the mic" {
             self.set_muted(true);
             return;
         }
-        // "Send it?" was asked.
+
         let asked = self
             .brainstorm
             .on
@@ -781,8 +715,6 @@ impl App {
         }
     }
 
-    /// Send the whole draft as one message (to the assistant or the tab);
-    /// `organize` asks for it structured into notes and tasks first.
     pub fn finish_brainstorm(&mut self, organize: bool, by_voice: bool) {
         let Some(s) = self.brainstorm.on.as_ref() else {
             return;
@@ -870,7 +802,6 @@ impl App {
         }
     }
 
-    /// "cancel brainstorm": the draft is cleared (Undo brings it back).
     pub fn cancel_brainstorm(&mut self) {
         let Some(s) = self.end_session() else {
             return;
@@ -889,7 +820,6 @@ impl App {
         self.bs_say("Discarded. Say undo to bring it back.");
     }
 
-    /// Whether a discarded draft can still come back.
     pub fn brainstorm_undo_ready(&self) -> bool {
         self.brainstorm
             .undo
@@ -897,7 +827,6 @@ impl App {
             .is_some_and(|u| u.2.elapsed() < UNDO_TTL)
     }
 
-    /// Undo: the discarded draft back in the box, brainstorming again.
     pub fn undo_brainstorm(&mut self) -> bool {
         if !self.brainstorm_undo_ready() || self.brainstorm_on() {
             return false;
@@ -927,7 +856,6 @@ impl App {
         true
     }
 
-    /// "read it back": how long it is and its last sentences.
     pub fn brainstorm_read_back(&mut self) {
         let d = self.assistant.input.clone();
         let n = word_count(&d);
@@ -947,8 +875,6 @@ impl App {
         self.bs_say(&line);
     }
 
-    /// Every tick: a long silence ends the mode (the draft is kept and a
-    /// yes sends it).
     pub fn brainstorm_tick(&mut self) {
         if let Some((_, t)) = &self.brainstorm.offer {
             if t.elapsed() >= OFFER_TTL {
@@ -979,13 +905,10 @@ impl App {
         ));
     }
 
-    /// Outside the mode, before an utterance is routed: "brainstorm mode",
-    /// undo, an answer to the timeout's "Send it?", "I'm not done" and
-    /// "don't suggest that again". True when it was handled here.
     pub fn brainstorm_intercept(&mut self, text: &str, command: &str) -> bool {
         if let Some(rest) = start_phrase(command) {
             self.start_brainstorm(true);
-            // "Brainstorm mode. So the first thing..." keeps the rest.
+
             let rest = if rest.is_empty() {
                 start_phrase(text).unwrap_or_default()
             } else {
@@ -1032,7 +955,7 @@ impl App {
             self.bs_say("Okay, I won't suggest it again.");
             return true;
         }
-        // "Wait, I'm not done": not a request; the tip (when allowed).
+
         if whole(command, NOT_DONE) && self.cfg.voice.brainstorm_suggest {
             if let Some(v) = &self.voice.engine {
                 v.stop_speaking();
@@ -1047,7 +970,6 @@ impl App {
         false
     }
 
-    /// voice.brainstorm_suggest, kept in config.toml.
     pub fn set_brainstorm_suggest(&mut self, on: bool) {
         self.cfg.voice.brainstorm_suggest = on;
         if !cfg!(test) {
@@ -1079,12 +1001,7 @@ impl App {
         self.bs_say(SUGGEST);
     }
 
-    /// An utterance on its way (to the assistant or a tab): when it
-    /// sounds unfinished, or comes as one of several quick fragments,
-    /// the rare tip. True when the tip was given.
     pub fn brainstorm_suggest_check(&mut self, text: &str) -> bool {
-        // Fragments in a row: short utterances, each soon after the one
-        // before (a long one, or a pause, starts the count over).
         let now = Instant::now();
         let short = normalize(text).split_whitespace().count() <= FRAGMENT_WORDS;
         let soon = self
@@ -1109,7 +1026,6 @@ impl App {
         false
     }
 
-    /// The panel's ⓘ: the card shown (or hidden again).
     pub fn toggle_brainstorm_card(&mut self) {
         self.brainstorm.card = !self.brainstorm.card;
         if self.brainstorm.card {
@@ -1118,8 +1034,6 @@ impl App {
         }
     }
 
-    /// The brainstorm tool: on starts it (its one line returned to say),
-    /// off leaves it with the draft kept.
     pub fn brainstorm_tool(&mut self, args: &Value) -> Result<Value, String> {
         let on = args.get("on").and_then(Value::as_bool).unwrap_or(true);
         if on {
@@ -1138,7 +1052,6 @@ impl App {
         }}))
     }
 
-    /// For the state block.
     pub fn brainstorm_state_words(&self) -> Option<String> {
         self.brainstorm.on.as_ref().map(|s| {
             let to = match &s.target {
@@ -1186,7 +1099,7 @@ mod tests {
             classify("the cache needs a TTL. End brainstorm."),
             Said::SendAfter("the cache needs a TTL.".into())
         );
-        // Could be part of what was said: asked.
+
         assert_eq!(classify("And the cache, that's it."), Said::Doubt);
         assert_eq!(classify("The queue is slow. I'm done."), Said::Doubt);
         assert_eq!(classify("the queue, send it"), Said::Doubt);

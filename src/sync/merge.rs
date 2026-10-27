@@ -1,21 +1,8 @@
-//! Keyed merge (docs/SYNC.md 2.6): entries keyed by id, each with
-//! `updated` (unix ms) and `deleted` tombstones kept 90 days. Union;
-//! newest `updated` wins.
-//!
-//! The stores themselves (archive.json, jobs.json, ...) are not changed:
-//! what was last synced sits in a base file (`sync/base/<name>.json`, the
-//! hash and stamp of every key). Loading stamps entries: one unchanged
-//! since the base keeps its stamp, a changed or new one gets now (and
-//! always more than the stamp it was based on, so an edit beats the
-//! version it edited even when this clock is behind), one gone since the
-//! base becomes a tombstone.
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Tombstones are dropped after this long.
 pub const TOMBSTONE_MS: i64 = 90 * 24 * 3600 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -23,15 +10,13 @@ pub struct Entry {
     pub updated: i64,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleted: bool,
-    /// Null when deleted.
+
     #[serde(default)]
     pub value: Value,
 }
 
-/// A store as synced: key -> entry.
 pub type Doc = BTreeMap<String, Entry>;
 
-/// What was last synced for one key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BaseEnt {
     pub h: String,
@@ -42,13 +27,11 @@ pub struct BaseEnt {
 
 pub type Base = BTreeMap<String, BaseEnt>;
 
-/// The hash of a value (serde_json sorts object keys).
 pub fn hash(v: &Value) -> String {
     let h = super::sha_hex(v.to_string().as_bytes());
     h[..16].to_string()
 }
 
-/// The local store with stamps: `local` is what the home holds now.
 pub fn stamp(local: &BTreeMap<String, Value>, base: &Base, now: i64) -> Doc {
     let mut d = Doc::new();
     for (k, v) in local {
@@ -84,16 +67,13 @@ pub fn stamp(local: &BTreeMap<String, Value>, base: &Base, now: i64) -> Doc {
     d
 }
 
-/// Which side a key came from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Pick {
     Same,
     Local,
     Remote,
-    /// Both changed since the base: the newer one is in the result.
-    Conflict {
-        local_won: bool,
-    },
+
+    Conflict { local_won: bool },
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -103,7 +83,6 @@ pub struct Merged {
 }
 
 impl Merged {
-    /// Keys whose result differs from what the home holds (to write back).
     pub fn to_home(&self) -> Vec<&String> {
         self.picks
             .iter()
@@ -112,7 +91,6 @@ impl Merged {
             .collect()
     }
 
-    /// Values for the home, live entries only.
     pub fn live(&self) -> BTreeMap<String, Value> {
         self.doc
             .iter()
@@ -153,7 +131,6 @@ fn newer(a: &Entry, b: &Entry) -> bool {
     (a.updated, hash(&a.value)) > (b.updated, hash(&b.value))
 }
 
-/// Merge the stamped local doc with the remote one.
 pub fn merge(local: &Doc, remote: &Doc, base: &Base, now: i64) -> Merged {
     let mut m = Merged::default();
     let keys: std::collections::BTreeSet<&String> = local.keys().chain(remote.keys()).collect();
@@ -211,7 +188,6 @@ pub fn load_doc(p: &Path) -> Doc {
         .unwrap_or_default()
 }
 
-/// A synced store file in the state repo.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DocFile {
     #[serde(default)]
@@ -230,15 +206,12 @@ pub fn doc_bytes(d: &Doc) -> Vec<u8> {
     v
 }
 
-/// One JSON store in GodTerm's home: where its list is, how its entries
-/// are keyed.
 #[derive(Debug, Clone, Copy)]
 pub struct Store {
-    /// The name in the state repo (`archive` -> archive.json).
     pub name: &'static str,
-    /// The file under GodTerm's home.
+
     pub file: &'static str,
-    /// The field holding the list.
+
     pub list: &'static str,
     pub key: fn(&Value) -> Option<String>,
 }
@@ -289,8 +262,6 @@ pub const STORES: &[Store] = &[
     },
 ];
 
-/// The keyed entries of a store's file contents (paths made portable by
-/// `fix`).
 pub fn entries_of(
     s: &Store,
     whole: &Value,
@@ -304,7 +275,7 @@ pub fn entries_of(
             out.insert(k, e);
         }
     }
-    // projects.json's deep_searched map rides along as entries.
+
     if s.name == "projects" {
         if let Some(o) = whole["deep_searched"].as_object() {
             for (k, v) in o {
@@ -319,8 +290,6 @@ pub fn entries_of(
     out
 }
 
-/// A store's file contents with its entries replaced by `live` (other
-/// fields of the file kept, paths made local by `fix`).
 pub fn with_entries(
     s: &Store,
     whole: &Value,
@@ -345,7 +314,7 @@ pub fn with_entries(
         }
         list.push(v);
     }
-    // Keep the home's order for entries it had; new ones by key order.
+
     let order: Vec<String> = whole[s.list]
         .as_array()
         .into_iter()
@@ -379,8 +348,6 @@ pub fn with_entries(
     out
 }
 
-/// Two machines added a rule with the same number: the later created one
-/// gets the next free number (the same choice on every machine).
 fn renumber_rules(list: &mut [Value]) {
     let mut idx: Vec<usize> = (0..list.len()).collect();
     idx.sort_by_key(|&i| list[i]["created"].as_str().unwrap_or("").to_string());
@@ -413,7 +380,7 @@ mod tests {
     fn keyed_merge_with_tombstones_and_skew() {
         let day = 24 * 3600 * 1000;
         let t0 = 1_800_000_000_000;
-        // Both machines synced {a, b, c} at t0.
+
         let synced = vals(&[
             ("a", json!({"n": 1})),
             ("b", json!({"n": 2})),
@@ -426,7 +393,7 @@ mod tests {
             t0,
         )
         .base();
-        // Machine A (clock right) edits a, deletes b, adds d at t0 + 10 s.
+
         let a_local = vals(&[
             ("a", json!({"n": 10})),
             ("c", json!({"n": 3})),
@@ -435,38 +402,37 @@ mod tests {
         let a = stamp(&a_local, &base0, t0 + 10_000);
         assert!(a["b"].deleted && a["b"].updated == t0 + 10_000);
         assert_eq!(a["c"].updated, t0);
-        // Machine B's clock is an hour behind: it edits c and a.
+
         let b_local = vals(&[
             ("a", json!({"n": 20})),
             ("b", json!({"n": 2})),
             ("c", json!({"n": 30})),
         ]);
         let b = stamp(&b_local, &base0, t0 - 3_600_000);
-        // An edit always beats the version it was based on, even when this
-        // clock is behind.
+
         assert_eq!(b["c"].updated, t0 + 1);
-        // A pushes first; B merges A's doc.
+
         let m = merge(&b, &a, &base0, t0);
         let live = m.live();
         assert_eq!(live["c"], json!({"n": 30}), "only B changed c");
         assert!(!live.contains_key("b"), "A deleted b, B did not touch it");
         assert_eq!(live["d"], json!({"n": 4}));
-        // Both edited a: the newer stamp (A's, t0 + 10 s) wins.
+
         assert_eq!(live["a"], json!({"n": 10}));
         assert_eq!(m.picks["a"], Pick::Conflict { local_won: false });
         assert_eq!(m.picks["c"], Pick::Local);
-        // A then merges B's result: converges.
+
         let m2 = merge(&a, &m.doc, &base0, t0 + 20_000);
         assert_eq!(m2.live(), live);
-        // A resurrect after delete: newer wins.
+
         let base1 = m.base();
         let again = stamp(&vals(&[("b", json!({"n": 5}))]), &base1, t0 + 30_000);
         assert!(!again["b"].deleted && again["b"].updated > m.doc["b"].updated);
-        // Tombstones go after 90 days.
+
         let late = merge(&m.doc, &Doc::new(), &base1, t0 + 91 * day);
         assert!(!late.doc.contains_key("b"));
         assert!(late.doc.contains_key("a"));
-        // Same values on both sides: Same, nothing written back.
+
         let s = merge(&a, &a, &base0, t0);
         assert!(s.to_home().is_empty());
     }
@@ -480,7 +446,7 @@ mod tests {
         ], "next_id": 3, "rev": 4});
         let nofix = |_: &str, _: &mut Value| {};
         let mut e = entries_of(s, &whole, &nofix);
-        // Another machine's rule 2, made later.
+
         e.insert(
             "2026-03-01T00:00:00Z".into(),
             json!({"id": 2, "text": "theirs", "created": "2026-03-01T00:00:00Z"}),

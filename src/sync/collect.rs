@@ -1,17 +1,9 @@
-//! What the sync reads from this machine: an ALLOWLIST (docs/SYNC.md
-//! 2.2). Only the files named here are ever read; everything else in
-//! GodTerm's home and the account folders (logins, `.claude.json`, shell
-//! snapshots, session-env, tokens, logs, caches) is never looked at. Every
-//! project path is canonicalized (symlinks too) and refused inside the
-//! vault or another never folder.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 
 use super::{Account, Ctx};
 
-/// Files under GodTerm's home that are read, and what they become.
 pub const HOME_FILES: &[(&str, &str)] = &[
     ("config.toml", "config/portable.toml"),
     ("archive.json", "archive.json"),
@@ -22,9 +14,6 @@ pub const HOME_FILES: &[(&str, &str)] = &[
     ("git-bindings.json", "git/bindings.json"),
 ];
 
-/// Files under GodTerm's home that are never synced, whatever is added
-/// above: secrets and what names them (the web token, the account
-/// token list; the tokens themselves live only in the keychain).
 pub const NEVER_FILES: &[&str] = &[
     "web-token",
     crate::acct_tokens::USE_FILE,
@@ -33,14 +22,11 @@ pub const NEVER_FILES: &[&str] = &[
     "web-push-subs.json",
 ];
 
-/// Files and folders of a Claude account dir that are read.
 pub const CLAUDE_FILES: &[&str] = &["settings.json", "CLAUDE.md"];
 pub const CLAUDE_DIRS: &[&str] = &["skills", "commands", "agents"];
 
-/// Biggest file copied as is (skills, memory, assistant conversations).
 const MAX_FILE: u64 = 20 << 20;
 
-/// One file of a file set: `area/key` in the state repo, `path` here.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileItem {
     pub area: String,
@@ -48,25 +34,21 @@ pub struct FileItem {
     pub path: PathBuf,
 }
 
-/// One conversation to sync.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionRef {
-    /// "claude" or "grok".
     pub provider: &'static str,
     pub account: String,
     pub id: String,
-    /// Claude: the `<id>.jsonl`; Grok: the session folder.
+
     pub path: PathBuf,
     pub cwd: Option<PathBuf>,
     pub mtime_ms: i64,
     pub bytes: u64,
-    /// In a tab, a closed tab, the archive or a job.
+
     pub hot: bool,
 }
 
 impl SessionRef {
-    /// The files of the session, as (name, path): Claude has one, Grok
-    /// its folder's files.
     pub fn files(&self) -> Vec<(String, PathBuf)> {
         if self.provider == "claude" {
             return vec![(format!("{}.jsonl", self.id), self.path.clone())];
@@ -79,21 +61,18 @@ impl SessionRef {
 
 #[derive(Debug, Clone, Default)]
 pub struct Collected {
-    /// Present home files of HOME_FILES, by their name there.
     pub home_files: BTreeMap<String, PathBuf>,
     pub files: Vec<FileItem>,
-    /// (account, history.jsonl).
+
     pub histories: Vec<(String, PathBuf)>,
-    /// Memory folders: area -> portable cwd.
+
     pub memory_index: BTreeMap<String, String>,
     pub sessions: Vec<SessionRef>,
-    /// What was left out, and why.
+
     pub skipped: Vec<(String, String)>,
 }
 
 impl Collected {
-    /// Every local file this collection would read (the never-list test
-    /// walks these).
     #[cfg(test)]
     pub fn sources(&self) -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = self.home_files.values().cloned().collect();
@@ -106,8 +85,6 @@ impl Collected {
         v
     }
 
-    /// The state repo paths it becomes (chunks and generated files
-    /// aside).
     #[cfg(test)]
     pub fn repo_paths(&self) -> Vec<String> {
         let mut v: BTreeSet<String> = BTreeSet::new();
@@ -129,8 +106,6 @@ impl Collected {
     }
 }
 
-/// Regular files under `dir` (no symlinks, no dot folders, no secret
-/// names), as (path relative to `root`, path).
 fn walk_files(root: &Path, dir: &Path, depth: u32, out: &mut Vec<(String, PathBuf)>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
@@ -169,7 +144,6 @@ fn mtime_ms(md: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
-/// The first `cwd` a Claude transcript names (its first 256 KB).
 pub fn claude_cwd(p: &Path) -> Option<PathBuf> {
     let f = std::fs::File::open(p).ok()?;
     let r = std::io::BufReader::new(f.take(256 << 10));
@@ -186,7 +160,6 @@ pub fn claude_cwd(p: &Path) -> Option<PathBuf> {
     None
 }
 
-/// grok's session folder name back to the cwd (percent decoding).
 pub fn grok_cwd(enc: &str) -> PathBuf {
     let b = enc.as_bytes();
     let mut out = vec![];
@@ -205,7 +178,6 @@ pub fn grok_cwd(enc: &str) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(&out).into_owned())
 }
 
-/// Whether some bytes of a file name the vault.
 pub fn mentions_vault(p: &Path, from: u64) -> bool {
     use std::io::Seek;
     let Ok(mut f) = std::fs::File::open(p) else {
@@ -232,8 +204,6 @@ pub fn mentions_vault(p: &Path, from: u64) -> bool {
     }
 }
 
-/// (account, session id) pairs in the hot set: open and closed tabs, the
-/// archive, jobs.
 pub fn hot_set(app_home: &Path) -> BTreeSet<(String, String)> {
     let mut v = BTreeSet::new();
     let read = |f: &str| -> serde_json::Value {
@@ -274,7 +244,6 @@ pub fn hot_set(app_home: &Path) -> BTreeSet<(String, String)> {
     v
 }
 
-/// Sessions of one account (no content read beyond the cwd).
 pub fn account_sessions(
     ctx: &Ctx,
     a: &Account,
@@ -414,7 +383,6 @@ pub fn account_sessions(
     (out, skipped)
 }
 
-/// The whole allowlisted collection of this machine.
 pub fn collect(ctx: &Ctx) -> Collected {
     let mut c = Collected::default();
     for (f, _) in HOME_FILES {
@@ -426,7 +394,7 @@ pub fn collect(ctx: &Ctx) -> Collected {
             c.home_files.insert(f.to_string(), p);
         }
     }
-    // The assistant's saved conversations.
+
     let mut conv = vec![];
     walk_files(
         &ctx.app_home.join("assistant/conversations"),
@@ -472,7 +440,7 @@ pub fn collect(ctx: &Ctx) -> Collected {
             if std::fs::symlink_metadata(&h).is_ok_and(|m| m.is_file()) {
                 c.histories.push((a.name.clone(), h));
             }
-            // Claude's own memory per project folder.
+
             if let Ok(rd) = std::fs::read_dir(a.dir.join("projects")) {
                 let mut dirs: Vec<_> = rd.flatten().collect();
                 dirs.sort_by_key(|e| e.file_name());
@@ -520,7 +488,6 @@ pub fn collect(ctx: &Ctx) -> Collected {
     c
 }
 
-/// Lines of a history.jsonl (bytes), for the line union merge.
 pub fn read_lines(p: &Path) -> Vec<Vec<u8>> {
     let Ok(f) = std::fs::File::open(p) else {
         return vec![];

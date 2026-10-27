@@ -1,7 +1,3 @@
-//! Hands free voice control. A background engine thread owns the mic
-//! (ffmpeg), the endpointer and whisper; it sends transcripts to the app,
-//! which parses and runs them. Nothing here blocks the UI thread.
-
 pub mod apple;
 pub mod audio;
 pub mod barge;
@@ -38,8 +34,6 @@ use crate::config::{expand_tilde, VoiceCfg};
 use audio::{Capture, Endpointer, Source, VadCfg, VadEvent};
 use stt::Whisper;
 
-/// pids of helper processes (whisper-server, ffmpeg) so shutdown can stop
-/// them even while the voice thread is busy.
 static HELPERS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
 pub fn track(pid: u32) {
@@ -53,15 +47,12 @@ pub fn untrack(pid: u32) {
         .retain(|p| *p != pid);
 }
 
-/// Terminate every tracked helper. Safe to call more than once.
 pub fn kill_helpers() {
     let pids: Vec<u32> = std::mem::take(&mut *HELPERS.lock().unwrap_or_else(|e| e.into_inner()));
     for &pid in &pids {
         crate::platform::kill(pid as i32, crate::platform::SIGTERM);
     }
-    // An ffmpeg capture can ignore SIGTERM (one outlived GodTerm on
-    // 2026-10-10 and kept the mic): what is still there after a moment
-    // is killed, so no recorder outlives the app.
+
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
     let mut left: Vec<u32> = pids;
     while !left.is_empty() && std::time::Instant::now() < deadline {
@@ -79,26 +70,24 @@ pub fn kill_helpers() {
 #[derive(Debug, Clone, PartialEq)]
 pub enum VoiceStatus {
     Starting,
-    /// Listening for the wake word (always on mode).
+
     Idle,
-    /// Push to talk armed or speech detected.
+
     Listening,
     Transcribing,
-    /// Engine stopped; reason when it failed.
+
     Off(Option<String>),
 }
 
-/// Live input levels, written by the capture thread and read by the UI
-/// without locks (f32 bits in atomics).
 #[derive(Default)]
 pub struct Levels {
     db: std::sync::atomic::AtomicU32,
     peak: std::sync::atomic::AtomicU32,
     floor: std::sync::atomic::AtomicU32,
     threshold: std::sync::atomic::AtomicU32,
-    /// The mic is open.
+
     pub open: AtomicBool,
-    /// Speech is being captured right now.
+
     pub speech: AtomicBool,
 }
 
@@ -110,7 +99,6 @@ fn load(a: &std::sync::atomic::AtomicU32) -> f32 {
 }
 
 impl Levels {
-    /// (level, peak, noise floor, speech threshold) in dBFS.
     pub fn read(&self) -> (f32, f32, f32, f32) {
         (
             load(&self.db),
@@ -124,45 +112,38 @@ impl Levels {
 #[derive(Debug, Clone)]
 pub enum VoiceEvent {
     Status(VoiceStatus),
-    /// A partial transcript of speech still going on, and how long the
-    /// request took (ms).
+
     Partial(String, u128),
-    /// A transcript; `ptt` when captured by push to talk (no wake word needed).
+
     Heard {
-        /// Length and loudness of the utterance.
         stats: wake_profile::UttStats,
         text: String,
         ptt: bool,
     },
     Info(String),
-    /// The user talked over our reply: playback was stopped. `stop_ms`:
-    /// from the decision to the output being silent.
+
     BargeIn {
         speech_ms: u32,
         stop_ms: u32,
     },
-    /// Speaker lock: a scored utterance, or enrollment progress.
+
     Speaker(speaker::Event),
 }
 
 pub enum Ctl {
-    /// Capture the next utterance regardless of the wake word.
     PushToTalk,
-    /// Stop the current push to talk capture early.
+
     StopTalk,
     SetVocabulary(String),
     SetProfile(Option<wake_profile::WakeProfile>),
     Speaker(speaker::Cmd),
-    /// The mic off (false) or on again with the engine kept: capture
-    /// closes, talk back goes on (the headphone tap).
+
     Mic(bool),
-    /// Brainstorm mode: every utterance is transcribed (no wake word
-    /// screening), as in open mic.
+
     Brainstorm(bool),
     Shutdown,
 }
 
-/// Handle owned by the app.
 pub struct Voice {
     ctl: Sender<Ctl>,
     pub levels: Arc<Levels>,
@@ -227,19 +208,14 @@ impl Voice {
         let _ = self.ctl.send(Ctl::SetProfile(p));
     }
 
-    /// Speaker lock enrollment and reset.
     pub fn speaker(&self, c: speaker::Cmd) {
         let _ = self.ctl.send(Ctl::Speaker(c));
     }
 
-    /// Close the mic (false) or open it again (true), without touching
-    /// what is being said.
     pub fn set_mic(&self, on: bool) {
         let _ = self.ctl.send(Ctl::Mic(on));
     }
 
-    /// Tests: a handle with no engine and an idle speaker that reports it
-    /// is talking; the receiver sees what the app sent.
     #[cfg(test)]
     pub fn fake(speaking: bool) -> (Voice, Receiver<Ctl>) {
         let (tx, rx) = mpsc::channel();
@@ -254,13 +230,11 @@ impl Voice {
         (v, rx)
     }
 
-    /// Tests: how many times what was being said was cut off.
     #[cfg(test)]
     pub fn speech_stops(&self) -> u64 {
         self.speaker.stops()
     }
 
-    /// Brainstorm mode on or off (no wake word screening while on).
     pub fn set_brainstorm(&self, on: bool) {
         let _ = self.ctl.send(Ctl::Brainstorm(on));
     }
@@ -269,8 +243,6 @@ impl Voice {
         let _ = self.ctl.send(Ctl::SetVocabulary(v));
     }
 
-    /// Speak, sentence by sentence (Kokoro or `say`). Capture is muted
-    /// while it talks. A new phrase cuts off the old one.
     pub fn say(&self, text: &str) {
         if !self.tts || text.trim().is_empty() {
             return;
@@ -278,41 +250,34 @@ impl Voice {
         self.speaker.say(text);
     }
 
-    /// New talk back settings (voice, speed, volume, engine) without a
-    /// restart of the mic side.
     pub fn configure_tts(&mut self, cfg: &VoiceCfg) {
         self.tts = cfg.tts && cfg.tts_engine != "off";
         self.speaker.configure(cfg);
     }
 
-    /// Speak after what is being said (does not interrupt).
     pub fn say_queued(&self, text: &str) {
         if self.tts && !text.trim().is_empty() {
             self.speaker.enqueue(text);
         }
     }
 
-    /// Cut off whatever is being said.
     pub fn stop_speaking(&self) {
         self.speaker.stop();
     }
 
-    /// Talking back right now.
     pub fn speaking(&self) -> bool {
         self.speaking.load(Ordering::SeqCst)
     }
 
-    /// The talk back engine in use ("kokoro af_heart ...", "say (...)").
     pub fn tts_engine(&self) -> String {
         self.speaker.engine()
     }
 
-    /// A short system sound when the wake word is heard.
     pub fn chime(&self) {
         if !self.chime {
             return;
         }
-        // A browser that is the voice plays it (the Mac stays quiet).
+
         if tts::web_chime() {
             return;
         }
@@ -346,7 +311,6 @@ impl Drop for Voice {
 }
 
 struct Engine {
-    /// Grok speech recognition (engine = grok), local ones as fallback.
     grok_stt: std::cell::RefCell<Option<grok_stt::GrokStt>>,
     speaker: Arc<tts::Speaker>,
     levels: Arc<Levels>,
@@ -356,12 +320,10 @@ struct Engine {
     rx: Receiver<Ctl>,
     events: Sender<AppEvent>,
     speaking: Arc<AtomicBool>,
-    /// Brainstorm mode: transcribe everything, as open mic does.
+
     brainstorm: std::cell::Cell<bool>,
 }
 
-/// The extra end of speech wait for what was said so far: `hold_ms` when
-/// the latest partial sounds unfinished ("and", "um", a comma), else 0.
 pub fn partial_hold(last_partial: Option<&str>, hold_ms: u32) -> u32 {
     match last_partial {
         Some(t) if hold_ms > 0 && grammar::ends_unfinished(t) => hold_ms.min(4000),
@@ -387,8 +349,6 @@ pub fn vad_cfg(c: &VoiceCfg) -> VadCfg {
     }
 }
 
-/// The wake screening model: `wake_model` if set to a path, or with
-/// "auto" a tiny or base ggml model next to the main one. None when absent.
 pub fn wake_model_path(c: &VoiceCfg) -> Option<std::path::PathBuf> {
     match c.wake_model.as_str() {
         "" | "off" | "none" => None,
@@ -409,16 +369,12 @@ pub fn wake_model_path(c: &VoiceCfg) -> Option<std::path::PathBuf> {
     }
 }
 
-/// How long a device or voice listing may take (ffmpeg's avfoundation
-/// listing can hang on a permission prompt or a stuck audio system).
 pub const LIST_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// avfoundation input device names, from `ffmpeg -list_devices`.
 pub fn input_devices(ffmpeg: &str) -> Vec<String> {
     input_devices_timed(ffmpeg).unwrap_or_default()
 }
 
-/// The input devices, or why not (it timed out and was stopped).
 pub fn input_devices_timed(ffmpeg: &str) -> Result<Vec<String>, String> {
     let o = crate::procs::output_timeout(
         Command::new(expand_tilde(ffmpeg)).args([
@@ -444,7 +400,6 @@ pub fn parse_input_devices(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// macOS `say` voices (English ones first).
 pub fn say_voices() -> Vec<String> {
     let text = crate::procs::output_timeout(Command::new("say").args(["-v", "?"]), LIST_TIMEOUT)
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
@@ -456,7 +411,6 @@ pub fn parse_say_voices(text: &str) -> Vec<String> {
     let mut en = vec![];
     let mut other = vec![];
     for l in text.lines() {
-        // "Samantha            en_US    # Hello, my name is Samantha."
         let Some((head, _)) = l.split_once('#') else {
             continue;
         };
@@ -476,8 +430,6 @@ pub fn parse_say_voices(text: &str) -> Vec<String> {
     en
 }
 
-/// The Apple speech helper: the signed copy shipped next to the binary in
-/// GodTerm.app (release builds), else the one `godterm install` builds.
 pub fn apple_helper_path() -> std::path::PathBuf {
     if let Some(p) = crate::config::env_var("SPEECH_BIN") {
         return std::path::PathBuf::from(p);
@@ -491,18 +443,14 @@ pub fn apple_helper_path() -> std::path::PathBuf {
         .unwrap_or_else(user_apple_helper_path)
 }
 
-/// Where `godterm install` compiles the Apple speech helper.
 pub fn user_apple_helper_path() -> std::path::PathBuf {
     crate::config::app_home().join("bin").join("godterm-speech")
 }
 
-/// Where debug utterances go.
 pub fn debug_dir() -> std::path::PathBuf {
     crate::config::app_home().join("voice").join("debug")
 }
 
-/// Keep this utterance (the exact WAV whisper got, and what came of it),
-/// and only the newest 20.
 pub fn save_debug(samples: &[i16], meta: serde_json::Value) {
     let d = debug_dir();
     if std::fs::create_dir_all(&d).is_err() {
@@ -570,7 +518,7 @@ impl Engine {
                 )));
             }
         }
-        // Which mic this really is, and whether it suits speech.
+
         if matches!(self.source, Source::Mic(_)) && !cfg!(test) {
             let (tx, dev) = (self.events.clone(), self.cfg.device.clone());
             std::thread::spawn(move || {
@@ -585,8 +533,7 @@ impl Engine {
             });
         }
         let mut whisper = make_whisper(&self.cfg);
-        // Apple's on-device recognizer (voice.engine apple, or auto when the
-        // helper works); whisper stays the fallback.
+
         let locale = if self.cfg.language.contains('-') {
             self.cfg.language.clone()
         } else if self.cfg.language == "en" {
@@ -594,8 +541,7 @@ impl Engine {
         } else {
             self.cfg.language.clone()
         };
-        // With Grok, a local recognizer is the fallback (and gives the
-        // partials): whisper, or Apple when that is the chosen fallback.
+
         let want_apple = !cfg!(test)
             && match self.cfg.engine.as_str() {
                 "apple" => true,
@@ -629,7 +575,7 @@ impl Engine {
             if let Err(e) = whisper.check() {
                 return self.status(VoiceStatus::Off(Some(e.to_string())));
             }
-            // Load the model up front so the first command is quick.
+
             match whisper.start_server() {
                 Ok(()) => self.send(VoiceEvent::Info(format!(
                     "whisper ready ({}, {} threads, beam {}{})",
@@ -647,8 +593,7 @@ impl Engine {
                 ))),
             }
         }
-        // Optional small model that only screens for the wake word, so the
-        // large model runs only on speech addressed to us.
+
         let mut wake_whisper: Option<Whisper> = None;
         if self.always_on {
             if let Some(m) = wake_model_path(&self.cfg) {
@@ -670,10 +615,9 @@ impl Engine {
                 }
             }
         }
-        // Wake mode keeps the mic open; push to talk opens it per utterance
-        // so the microphone indicator is only on while you talk.
+
         let mut cap: Option<Capture> = None;
-        // The headphone tap closed the mic (Ctl::Mic(false)).
+
         let mut mic_off = false;
         let mut want_open = false;
         if self.always_on {
@@ -685,15 +629,15 @@ impl Engine {
                 }
             }
         }
-        // Noise suppression when the capture does not already do it.
+
         let mut denoiser: Option<denoise::Denoiser> = None;
         let mut cap_vp: Option<bool> = None;
         let mut ep = Endpointer::new(vad_cfg(&self.cfg));
         let mut frame = Vec::with_capacity(audio::FRAME);
         let mut ptt = false;
-        // A push to talk release waits for queued browser audio.
+
         let mut stop_queued = false;
-        // Voice debugging: the endpointer once a second.
+
         let mut dbg = (Instant::now(), 0usize, -90f32, 0usize);
         let mut got_audio = false;
         let mut cap_started = Instant::now();
@@ -701,14 +645,13 @@ impl Engine {
         let mut peak_at = Instant::now();
         let mut last_partial = Instant::now();
         let partial_busy = Arc::new(AtomicBool::new(false));
-        // Partials of the utterance going on (for debug_save_audio).
+
         let partial_log: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Default::default();
         let mut utt_started: Option<Instant> = None;
         let mut profile = wake_profile::WakeProfile::load();
         let mut gate = audio::EchoGate::new(self.cfg.barge_in, self.cfg.barge_margin_db);
         let mut barged = false;
-        // Barge-in on words, not noise: a trigger ducks the reply and the
-        // overlapping audio goes to the fast ASR until it is decided.
+
         let mut barge = barge::Decider::new(barge::BargeCfg::new(
             self.cfg.barge_in,
             self.cfg.barge_in_min_words as usize,
@@ -731,17 +674,13 @@ impl Engine {
         };
         self.status(idle());
         loop {
-            // The helper's headset mute gesture (call mode, where no
-            // play/pause comes): a headphone tap that turns the mic off.
             for ev in capture::take_events() {
                 if let Some(p) = capture::helper_press(&ev) {
                     let _ = self.events.send(AppEvent::MediaKey(p));
                 }
             }
-            // Control messages (block briefly when the mic is closed).
+
             loop {
-                // A release with browser audio still queued ends once that
-                // audio is read (it may have waited for the model to load).
                 let drained = cap.as_ref().is_none_or(|c| c.queued() < audio::FRAME);
                 let msg = if stop_queued && drained {
                     stop_queued = false;
@@ -761,14 +700,13 @@ impl Engine {
                     Ok(Ctl::PushToTalk) => {
                         stop_queued = false;
                         mic_off = false;
-                        // Talking to us cuts off whatever we were saying.
+
                         self.speaker.stop();
                         barged = true;
                         barge.cancel();
                         barge_pcm.clear();
                         duck(1.0);
                         if cap.is_none() {
-                            // The model was unloaded when the mic failed.
                             if apple.is_none() {
                                 let _ = whisper.start_server();
                             }
@@ -847,11 +785,6 @@ impl Engine {
                     }
                     Ok(Ctl::SetProfile(p)) => profile = p,
                     Ok(Ctl::Mic(false)) => {
-                        // What was being captured is dropped; talk back goes on.
-                        // The stream itself closes once nothing is being
-                        // said: closing it moves a Bluetooth headset out of
-                        // call mode, and that route change must not land in
-                        // the middle of a reply.
                         mic_off = true;
                         want_open = false;
                         if !self.speaking.load(Ordering::SeqCst) {
@@ -901,8 +834,7 @@ impl Engine {
                     }
                 }
             }
-            // Mic off during a reply: frames are dropped until it ends,
-            // then the stream closes.
+
             if mic_off && cap.is_some() {
                 let still = self.speaking.load(Ordering::SeqCst)
                     && cap.as_mut().is_some_and(|c| c.frame(&mut frame).is_some());
@@ -920,15 +852,13 @@ impl Engine {
                 continue;
             }
             let Some(c) = cap.as_mut() else { continue };
-            // A new capture: echo cancellation in it relaxes the echo
-            // gate, and denoising runs only when it has none.
+
             if cap_vp != Some(c.vp) {
                 cap_vp = Some(c.vp);
                 gate.set_aec(c.vp);
                 denoiser = capture::denoise_on(&self.cfg, c.vp).then(denoise::Denoiser::new);
             }
             if c.frame(&mut frame).is_none() {
-                // End of stream (file input) or ffmpeg died (mic denied).
                 if let Some(u) = ep.flush() {
                     self.finish(
                         &mut whisper,
@@ -958,14 +888,12 @@ impl Engine {
                     Some(reason)
                 };
                 self.status(VoiceStatus::Off(msg));
-                // No mic: do not keep the speech model (about 2 GB) loaded
-                // for nothing; it loads again when the mic comes back.
+
                 if !file && !got_audio {
                     crate::log::info("voice: mic unavailable, unloading the speech model");
                     whisper.shutdown();
                 }
                 if self.always_on || file {
-                    // Do not spin on a dead mic: wait for push to talk or shutdown.
                     while let Ok(m) = self.rx.recv() {
                         match m {
                             Ctl::Shutdown => {
@@ -991,14 +919,13 @@ impl Engine {
                 continue;
             }
             got_audio = true;
-            // A browser's mic: it says when it plays our speech.
+
             let web_playing = c.web_playing();
             audio::apply_gain(&mut frame, self.cfg.gain_db);
             if let Some(d) = denoiser.as_mut() {
                 d.process(&mut frame);
             }
-            // Level meter: frame level, a peak that holds then falls back,
-            // and the endpointer's floor and threshold.
+
             let l = audio::db(audio::rms(&frame));
             {
                 store(&self.levels.db, l);
@@ -1031,22 +958,15 @@ impl Engine {
                     dbg = (Instant::now(), 0, -90.0, 0);
                 }
             }
-            // Do not hear ourselves: the mic is muted while we talk back,
-            // unless someone talks over us (barge-in, when enabled).
-            // (A browser plays the reply in its own time: also while it
-            // says it does.)
+
             let talking = self.speaking.load(Ordering::SeqCst) || web_playing;
             if !talking {
                 barged = false;
             }
-            // The loudest thing we played in the last 400 ms: our own echo
-            // can only be about that loud (times the learned coupling).
-            // A browser's playback counts too (player::WebClock).
+
             let played = player::played_db(Duration::from_millis(400));
             let now_ms = t_base.elapsed().as_millis() as u64;
-            // Our reply coming back from a browser's speakers (where no
-            // echo canceller of ours runs) is not room noise: it must not
-            // lift the barge-in bar over the user talking over it.
+
             let web_echo = talking
                 && player::web_played_db(Duration::from_millis(400)).is_some_and(|p| p > -60.0);
             if web_echo {
@@ -1071,7 +991,6 @@ impl Engine {
                         .and_then(|w| w.port())
                         .or_else(|| whisper.port());
                     if port.is_none() && apple_partial.is_none() {
-                        // No fast recognizer to check for words: energy alone.
                         crate::log::info(
                             "voice: barge-in accepted (no recognizer to check for words)",
                         );
@@ -1142,7 +1061,7 @@ impl Engine {
                 if d.stop {
                     self.barge_stop(&gate);
                     barged = true;
-                    // Capture it now, wake word or not, from its start.
+
                     if !self.always_on {
                         ptt = true;
                     }
@@ -1161,8 +1080,7 @@ impl Engine {
             if !self.always_on && !ptt {
                 continue;
             }
-            // A sentence that sounds unfinished ("and", "um", a comma at
-            // the end of the latest partial) waits longer for the rest.
+
             if ep.snapshot().is_some() && ep.trailing_silence_ms() > 0 {
                 let last = partial_log
                     .lock()
@@ -1185,8 +1103,7 @@ impl Engine {
             self.levels
                 .speech
                 .store(ep.snapshot().is_some(), Ordering::Relaxed);
-            // Partial transcript of the speech so far, at most one request
-            // in flight, on the small model's server when there is one.
+
             if let (Some(buf), Some(ap)) = (ep.snapshot(), apple_partial.as_ref()) {
                 if self.cfg.partial_model != "off"
                     && buf.len() > audio::RATE as usize * 6 / 10
@@ -1229,8 +1146,6 @@ impl Engine {
                         .or_else(|| whisper.port()),
                 };
                 if let Some(port) = port {
-                    // Not once speech is trailing off: the final is near and
-                    // must not wait behind a partial. At most the last 8 s.
                     if buf.len() > audio::RATE as usize * 6 / 10
                         && ep.trailing_silence_ms() < 150
                         && last_partial.elapsed() >= Duration::from_millis(400)
@@ -1286,13 +1201,11 @@ impl Engine {
         }
     }
 
-    /// Stop talking for a barge-in and tell the app; returns once the
-    /// output is silent (or after 60 ms).
     fn barge_stop(&self, gate: &audio::EchoGate) {
         let t0 = Instant::now();
         *player::FLUSHED_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.speaker.stop();
-        // How quickly the output went quiet (the callback flushes).
+
         let mut stop_ms = 0;
         while t0.elapsed() < Duration::from_millis(60) {
             if let Some(at) = *player::FLUSHED_AT.lock().unwrap_or_else(|e| e.into_inner()) {
@@ -1323,9 +1236,6 @@ impl Engine {
         guard: &mut speaker::Guard,
         debug: (Vec<serde_json::Value>, Option<u64>),
     ) {
-        // Speaker lock: enroll the user's clip, or drop speech that is not
-        // the user (another voice, or someone far away) before it costs a
-        // transcription.
         if guard.enrolling() && ptt {
             let ev = match guard.enroll_clip(samples) {
                 Ok(n) => speaker::Event::Clips(n),
@@ -1364,8 +1274,7 @@ impl Engine {
         if let (false, Some(w)) = (ptt, wake) {
             if let Ok(t) = w.transcribe(samples) {
                 let norm = grammar::normalize(&t);
-                // Small models sometimes drop the wake word itself, so only
-                // skip longer speech; short phrases get the large model.
+
                 let words = norm.split(' ').filter(|w| !w.is_empty()).count();
                 if self.cfg.mode != "open"
                     && !self.brainstorm.get()
@@ -1378,7 +1287,6 @@ impl Engine {
                     )
                     .is_none()
                 {
-                    // Not for us: skip the large model entirely.
                     return self.send(VoiceEvent::Info(format!("ignored (no wake word): {t}")));
                 }
             }
@@ -1394,8 +1302,7 @@ impl Engine {
         } else {
             samples
         };
-        // Grok first when chosen; a failure (no login, no credits, a
-        // timeout) falls back to the local recognizer for this utterance.
+
         let mut engine_used = if apple.is_some() { "apple" } else { "whisper" };
         let mut grok_text: Option<String> = None;
         if let Some(g) = self.grok_stt.borrow_mut().as_mut() {
@@ -1423,7 +1330,6 @@ impl Engine {
                 ..Default::default()
             }),
             (None, Some(a)) => a.transcribe(samples).map(|h| {
-                // n-best: an alternative that is exactly an instant command.
                 let table = crate::instant::table(&self.cfg.instant);
                 match apple::prefer_instant(&h.decoded.text, &h.alternatives, &table) {
                     Some(alt) => stt::Decoded {
@@ -1468,15 +1374,11 @@ impl Engine {
     }
 }
 
-/// The reply's volume while a barge-in is decided: this Mac's speakers
-/// and the browser that is the voice.
 fn duck(v: f32) {
     player::set_duck(v);
     tts::web_duck(v);
 }
 
-/// One fast transcription of the audio over our reply (barge-in check),
-/// on its own thread; the result goes back to the voice loop.
 struct BargeAsr {
     port: Option<u16>,
     apple: Option<Arc<std::sync::Mutex<apple::AppleSpeech>>>,
@@ -1491,7 +1393,7 @@ impl BargeAsr {
     fn run(self) {
         let max = audio::RATE as usize * 4;
         let pcm = &self.pcm[self.pcm.len().saturating_sub(max)..];
-        // No vocabulary prompt: it would bias noise toward our own words.
+
         let got = if let Some(port) = self.port {
             stt::post_decode(
                 port,
@@ -1521,14 +1423,14 @@ impl BargeAsr {
 
 #[cfg(all(test, unix))]
 mod kill_helpers_tests {
-    /// A recorder that ignores SIGTERM does not outlive the app.
+
     #[test]
     fn a_helper_that_ignores_sigterm_is_killed() {
         let mut child = std::process::Command::new("sh")
             .args(["-c", "trap '' TERM; sleep 30"])
             .spawn()
             .unwrap();
-        // Let the shell set its trap before the signal goes out.
+
         std::thread::sleep(std::time::Duration::from_millis(200));
         super::track(child.id());
         super::kill_helpers();
@@ -1547,8 +1449,6 @@ mod kill_helpers_tests {
 mod hold_tests {
     use super::partial_hold;
 
-    /// The engine's end of speech waits longer while the latest partial
-    /// ends on a filler or connective, by the configured amount.
     #[test]
     fn connectives_extend_the_end_of_speech() {
         assert_eq!(
@@ -1559,7 +1459,7 @@ mod hold_tests {
         assert_eq!(partial_hold(Some("first the parser,"), 2000), 2000);
         assert_eq!(partial_hold(Some("Run the tests."), 1500), 0);
         assert_eq!(partial_hold(None, 1500), 0);
-        // Off when set to 0.
+
         assert_eq!(partial_hold(Some("and"), 0), 0);
         assert_eq!(
             crate::config::VoiceCfg::default().connective_hold_ms,

@@ -1,7 +1,3 @@
-//! The assistant panel's window chrome: the minimized strip, the width
-//! carets and window controls on its title row, its draggable left edge,
-//! and the quick action bar above the input.
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -12,15 +8,12 @@ use crate::app_panelwin::{PanelCtl, PanelWin};
 use crate::hits::{contains, Hits, UiAction};
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 
-/// The window controls (three 3 cell buttons), as on a pane header.
 pub const CONTROLS_W: u16 = 9;
-/// The width carets " < > ".
+
 pub const CARETS_W: u16 = 5;
-/// The title keeps at least this much room, or the carets go.
+
 const TITLE_MIN: u16 = 14;
 
-/// The minimized panel: a thin strip at the right edge with "◂", the word
-/// assistant down it, and the mic and state dot. A click restores it.
 pub fn draw_strip(f: &mut Frame, app: &App, area: Rect) {
     let buf = f.buffer_mut();
     let hovered = app.mouse_pos.is_some_and(|(c, r)| contains(area, c, r));
@@ -47,7 +40,7 @@ pub fn draw_strip(f: &mut Frame, app: &App, area: Rect) {
     };
     put(buf, y, "◂", Style::default().fg(theme::SLATE));
     y += 2;
-    // The state dot first (it must show even on a short strip).
+
     let (dot, color) = strip_dot(app);
     let word_room = end.saturating_sub(y + 2) as usize;
     for ch in "assistant".chars().take(word_room) {
@@ -67,7 +60,6 @@ pub fn draw_strip(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// The strip's dot: the mic muted, or what it is doing.
 fn strip_dot(app: &App) -> (&'static str, Color) {
     if app.voice.muted {
         return ("●", theme::MUTED_RED);
@@ -81,14 +73,11 @@ fn strip_dot(app: &App) -> (&'static str, Color) {
     }
 }
 
-/// Whether the width carets show in a panel this wide (they go before the
-/// title gets too short).
 pub fn carets_fit(app: &App, width: u16) -> bool {
     app.assistant.win == PanelWin::Normal
         && width.saturating_sub(6 + CONTROLS_W + 1 + CARETS_W + 1) >= TITLE_MIN
 }
 
-/// Cells the title row's right side takes (controls, carets, gaps).
 pub fn title_tail(app: &App, width: u16) -> u16 {
     CONTROLS_W
         + 1
@@ -99,8 +88,6 @@ pub fn title_tail(app: &App, width: u16) -> u16 {
         }
 }
 
-/// The title row's right side: [< >] (wider, narrower) and _ □ ×, ending
-/// before the top right corner. Returns where it starts.
 pub fn draw_title_controls(buf: &mut Buffer, hits: &mut Hits, app: &App, area: Rect) -> u16 {
     let y = area.y;
     let right = area.x + area.width - 1;
@@ -145,7 +132,7 @@ pub fn draw_title_controls(buf: &mut Buffer, hits: &mut Hits, app: &App, area: R
                     .max(crate::app_panelwin::PANEL_MIN)
             ),
         );
-        // " < > ": "<" takes the first three cells, ">" the last two.
+
         caret(
             buf,
             hits,
@@ -165,7 +152,7 @@ pub fn draw_title_controls(buf: &mut Buffer, hits: &mut Hits, app: &App, area: R
             &gt,
         );
         left = cx;
-        // The width a moment after it changed.
+
         if app
             .assistant
             .width_shown
@@ -228,7 +215,6 @@ fn caret(buf: &mut Buffer, hits: &mut Hits, app: &App, r: Rect, s: &str, c: Pane
     hits.add(r, UiAction::AssistantPanel(c), hint);
 }
 
-/// The left edge: drag it to resize (at normal size).
 pub fn edge_region(hits: &mut Hits, app: &App, area: Rect) {
     if app.assistant.win == PanelWin::Normal && area.height > 2 {
         hits.add(
@@ -239,15 +225,14 @@ pub fn edge_region(hits: &mut Hits, app: &App, area: Rect) {
     }
 }
 
-/// One quick action: its words, its key, what a click does.
 pub struct Quick {
     pub label: String,
     pub key: &'static str,
     pub action: UiAction,
     pub hint: String,
-    /// A state worth a color (muted, waiting, on).
+
     pub tone: Option<Color>,
-    /// A small ⓘ at its right end with its own action and hint.
+
     pub info: Option<(UiAction, String)>,
 }
 
@@ -267,8 +252,6 @@ fn q(
     }
 }
 
-/// The quick actions, most needed first (what does not fit is left out
-/// from the end).
 pub fn quick_items(app: &App) -> Vec<Quick> {
     let mut v = vec![];
     v.push(if app.voice.muted {
@@ -379,7 +362,6 @@ pub fn quick_items(app: &App) -> Vec<Quick> {
     v
 }
 
-/// Brainstorm (on: its state), its ⓘ, and Undo after a discard.
 pub fn brainstorm_items(app: &App) -> Vec<Quick> {
     use crate::menus::Cmd;
     let mut v = vec![];
@@ -421,7 +403,6 @@ pub fn brainstorm_items(app: &App) -> Vec<Quick> {
     v
 }
 
-/// Cells a quick button takes: " label key ".
 fn quick_w(it: &Quick) -> u16 {
     let key = if it.key.is_empty() {
         0
@@ -432,8 +413,6 @@ fn quick_w(it: &Quick) -> u16 {
     crate::ui_assistant::cells(&it.label) + key + info + 2
 }
 
-/// The quick bar: `rows` rows of buttons from (x, y) to `limit`, in
-/// order; what does not fit is left out. Returns the actions drawn.
 pub fn draw_quick(
     buf: &mut Buffer,
     hits: &mut Hits,
@@ -449,7 +428,6 @@ pub fn draw_quick(
         let w = quick_w(&it);
         if x + w > limit {
             if x == x0 || row + 1 >= rows {
-                // Too wide for a row of its own, or no rows left.
                 continue;
             }
             row += 1;
@@ -500,8 +478,6 @@ pub fn draw_quick(
     shown
 }
 
-/// Rows for the quick bar, given the rows left above the input: two on a
-/// tall panel, one, or none (it goes first on a short screen).
 pub fn quick_rows(free: u16) -> u16 {
     if free >= 18 {
         2

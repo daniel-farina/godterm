@@ -1,7 +1,3 @@
-//! `godterm sync init | clone <owner/repo> | status | now | plan | doctor`
-//! (docs/SYNC.md 6.4), `sync get <session>` (place one conversation on
-//! demand) and the internal `sync git-credential`.
-
 use anyhow::{bail, Result};
 
 use super::{restore, state_repo, Ctx};
@@ -47,7 +43,6 @@ pub fn command(args: &[String]) -> Result<()> {
     run(&ctx, sub, &args[1..], &restore::ask_yes)
 }
 
-/// The commands, on a given context (tests run them on fixtures).
 pub fn run(ctx: &Ctx, sub: &str, rest: &[String], yes: &dyn Fn(&str) -> bool) -> Result<()> {
     match sub {
         "init" => {
@@ -150,7 +145,6 @@ pub fn run(ctx: &Ctx, sub: &str, rest: &[String], yes: &dyn Fn(&str) -> bool) ->
     Ok(())
 }
 
-/// The status lines of a report (CLI, the TUI's Sync view, the tool).
 pub fn report_lines(ctx: &Ctx, r: &state_repo::Report) -> Vec<String> {
     let mut v = vec![];
     let s = ctx.sync();

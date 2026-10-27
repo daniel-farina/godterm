@@ -1,14 +1,3 @@
-//! Grok (xAI cloud) text to speech. `POST https://api.x.ai/v1/tts` with
-//! `output_format {codec: pcm, sample_rate: 24000}` streams raw 16 bit
-//! little endian mono PCM back as it is made, so playback starts on the
-//! first chunk. Two ways to authenticate, both a bearer token:
-//!   - a grok login (the Grok Build OAuth token in a slot's or ~/.grok's
-//!     auth.json, the same token grok itself sends to api.x.ai/v1/stt),
-//!   - an xAI API key, kept in the Keychain (service GodTerm-xai-api-key),
-//!     never in config.toml.
-//!
-//! Tokens and keys are never logged or shown.
-
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -20,19 +9,16 @@ use crate::config::GrokTtsCfg;
 
 pub const API: &str = "https://api.x.ai/v1";
 pub const SAMPLE_RATE: u32 = 24_000;
-/// Keychain service (and the file or secret-service name elsewhere).
+
 pub const KEY_SERVICE: &str = "GodTerm-xai-api-key";
 const KEY_ACCOUNT: &str = "godterm";
 
-/// The built in voices (GET /v1/tts/voices, October 2026), for the picker
-/// before the live list is fetched.
 pub const KNOWN_VOICES: &[&str] = &[
     "eve", "ara", "leo", "rex", "sal", "altair", "atlas", "aurora", "carina", "castor", "celeste",
     "cosmo", "helios", "helix", "iris", "kepler", "liora", "lumen", "luna", "lux", "naksh",
     "orion", "perseus", "rigel", "sirius", "ursa", "zagan", "zenith",
 ];
 
-/// The JSON body for one sentence.
 pub fn request_body(text: &str, c: &GrokTtsCfg) -> Value {
     let or = |s: &str, d: &'static str| {
         let s = s.trim();
@@ -51,8 +37,6 @@ pub fn request_body(text: &str, c: &GrokTtsCfg) -> Value {
     })
 }
 
-/// 16 bit little endian PCM to floats, across chunk boundaries that may
-/// split a sample.
 #[derive(Default)]
 pub struct Pcm {
     carry: Option<u8>,
@@ -116,17 +100,15 @@ pub fn parse_voices(v: &Value) -> Vec<Voice> {
         .collect()
 }
 
-/// Why a request did not speak.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TtsError {
-    /// No login or key to use.
     NoCredential(String),
-    /// 401: the login expired or the key is wrong.
+
     Auth,
-    /// 403: the team may not use it (out of credits, no subscription).
+
     Denied,
     RateLimited,
-    /// No audio within the timeout.
+
     Timeout,
     Http(u16),
     Network(String),
@@ -147,7 +129,6 @@ impl TtsError {
         }
     }
 
-    /// Not worth retrying every sentence: skip grok for a while.
     pub fn lasting(&self) -> bool {
         matches!(
             self,
@@ -190,14 +171,11 @@ fn net_error(e: ureq::Error) -> TtsError {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stats {
-    /// Request sent to the first audio byte.
     pub first_audio_ms: u64,
     pub total_ms: u64,
     pub samples: usize,
 }
 
-/// Speak one sentence: `sink` gets the samples (24 kHz mono) as they
-/// arrive and returns false to stop (barge-in, a newer reply).
 pub fn speak(
     base: &str,
     text: &str,
@@ -218,7 +196,7 @@ pub fn speak(
     let mut body = resp.body_mut().as_reader();
     let mut pcm = Pcm::default();
     let mut st = Stats::default();
-    // 50 ms of audio per read keeps the first chunk early.
+
     let mut buf = vec![0u8; 2400];
     loop {
         if cancel.load(Ordering::SeqCst) {
@@ -243,7 +221,6 @@ pub fn speak(
     Ok(st)
 }
 
-/// The voices this credential can use (free; used by Test and doctor).
 pub fn fetch_voices(base: &str, token: &str) -> Result<Vec<Voice>, TtsError> {
     let mut r = agent(Duration::from_secs(6))
         .get(&format!("{base}/tts/voices"))
@@ -258,20 +235,15 @@ pub fn fetch_voices(base: &str, token: &str) -> Result<Vec<Voice>, TtsError> {
     Ok(parse_voices(&v))
 }
 
-// ---- Credentials ----
-
-/// A grok login that can speak: a grok account slot or the main ~/.grok.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Source {
-    /// "main" or the account name (what `voice.grok.source` holds).
     pub id: String,
     pub label: String,
     pub home: PathBuf,
-    /// auth.json is there (its contents are only read to speak).
+
     pub logged_in: bool,
 }
 
-/// The grok accounts of `cfg`, then the main ~/.grok.
 pub fn sources(cfg: &crate::config::Config) -> Vec<Source> {
     let mut v: Vec<Source> = cfg
         .accounts
@@ -297,8 +269,6 @@ pub fn sources(cfg: &crate::config::Config) -> Vec<Source> {
     v
 }
 
-/// Logins xAI refused this run (out of credits, expired), by source id,
-/// for the Settings picker ("out of credits") and auto's choice.
 static REFUSED: std::sync::Mutex<Vec<(String, chrono::DateTime<chrono::Local>)>> =
     std::sync::Mutex::new(Vec::new());
 
@@ -309,7 +279,6 @@ pub fn note_refused(id: &str) {
     }
 }
 
-/// When xAI last refused that login ("out of credits at 10:20").
 pub fn refused_at(id: &str) -> Option<chrono::DateTime<chrono::Local>> {
     REFUSED
         .lock()
@@ -319,7 +288,6 @@ pub fn refused_at(id: &str) -> Option<chrono::DateTime<chrono::Local>> {
         .map(|x| x.1)
 }
 
-/// Forget a refusal (the user logged in again, or refreshed).
 pub fn clear_refusal(id: &str) {
     REFUSED
         .lock()
@@ -341,13 +309,10 @@ pub fn refused_ids() -> Vec<String> {
         .collect()
 }
 
-/// What auto signs in with now: the first logged in login xAI has not
-/// refused.
 pub fn auto_choice<'a>(all: &'a [Source], refused: &[String]) -> Option<&'a Source> {
     all.iter().find(|s| s.logged_in && !refused.contains(&s.id))
 }
 
-/// The sources from config.toml (the speech worker has no Config).
 pub fn sources_now() -> Vec<Source> {
     let cfg = std::fs::read_to_string(crate::config::Config::path())
         .ok()
@@ -356,8 +321,6 @@ pub fn sources_now() -> Vec<Source> {
     sources(&cfg)
 }
 
-/// Which source `voice.grok.source` picks: the named one, or for "auto"
-/// the first logged in account, then ~/.grok.
 pub fn pick_source<'a>(want: &str, all: &'a [Source]) -> Option<&'a Source> {
     match want.trim() {
         "" | "auto" => all.iter().find(|s| s.logged_in),
@@ -365,12 +328,10 @@ pub fn pick_source<'a>(want: &str, all: &'a [Source]) -> Option<&'a Source> {
     }
 }
 
-/// A token to speak with, and where it came from (for the HUD, never the
-/// token itself).
 pub struct Cred {
     pub token: String,
     pub from: String,
-    /// The source id ("main", an account) for a grok login; "" for a key.
+
     pub id: String,
 }
 
@@ -378,8 +339,6 @@ pub fn credential(c: &GrokTtsCfg, all: &[Source], store: &dyn KeyStore) -> Resul
     credential_except(c, all, store, &[])
 }
 
-/// With source "auto", logins that xAI refused (401, 403: an expired
-/// login, a team with no credits) are passed over for the next one.
 pub fn credential_except(
     c: &GrokTtsCfg,
     all: &[Source],
@@ -433,18 +392,14 @@ pub fn credential_except(
     }
 }
 
-/// Where the xAI API key is kept. Behind a trait so tests never touch the
-/// real Keychain.
 pub trait KeyStore: Send + Sync {
     fn get(&self) -> Result<Option<String>, String>;
     fn set(&self, key: &str) -> Result<(), String>;
     fn remove(&self) -> Result<(), String>;
-    /// "Keychain", "secret service", "~/.godterm file".
+
     fn place(&self) -> &'static str;
 }
 
-/// The login Keychain through /usr/bin/security; the key goes in on stdin
-/// (`security -i`), never on a command line.
 pub struct MacKeychain;
 
 fn hex(s: &str) -> String {
@@ -464,7 +419,6 @@ fn unhex(s: &str) -> Option<String> {
         .filter(|t| t.chars().all(|c| c.is_ascii_graphic()))
 }
 
-/// What `security -w` printed: the text, or hex when it chose hex.
 pub fn keychain_text(out: &str) -> String {
     let s = out.trim_end_matches('\n');
     if s.starts_with("xai-") {
@@ -538,7 +492,7 @@ impl KeyStore for MacKeychain {
             .stderr(std::process::Stdio::null())
             .status()
             .map_err(|e| e.to_string())?;
-        // Not there is removed too.
+
         let _ = st;
         Ok(())
     }
@@ -548,7 +502,6 @@ impl KeyStore for MacKeychain {
     }
 }
 
-/// Linux: the secret service through `secret-tool` (the key on stdin).
 pub struct SecretTool;
 
 impl KeyStore for SecretTool {
@@ -604,8 +557,6 @@ impl KeyStore for SecretTool {
     }
 }
 
-/// An owner only (0600) file under GodTerm's home: Linux without a secret
-/// service, and every unit test.
 pub struct FileStore(pub PathBuf);
 
 impl KeyStore for FileStore {
@@ -637,7 +588,6 @@ impl KeyStore for FileStore {
     }
 }
 
-/// The store for this machine. Tests always get a file in the test home.
 pub fn key_store() -> Box<dyn KeyStore> {
     let file = || {
         FileStore(
@@ -658,8 +608,6 @@ pub fn key_store() -> Box<dyn KeyStore> {
     Box::new(file())
 }
 
-/// Whether a key is saved, cached so the Settings screen can show it every
-/// frame without asking the Keychain: 0 unknown, 1 none, 2 saved.
 static KEY_STATUS: AtomicU8 = AtomicU8::new(0);
 
 pub fn key_saved() -> Option<bool> {
@@ -670,7 +618,6 @@ pub fn key_saved() -> Option<bool> {
     }
 }
 
-/// Look again (off the UI thread).
 pub fn refresh_key_status() {
     let saved = matches!(key_store().get(), Ok(Some(_)));
     KEY_STATUS.store(if saved { 2 } else { 1 }, Ordering::SeqCst);
@@ -696,8 +643,6 @@ pub fn remove_key() -> Result<(), String> {
     Ok(())
 }
 
-/// Test the configured credential with the (free) voices list:
-/// "ok: grok login demo8, 28 voices" or why not.
 pub fn check(c: &GrokTtsCfg, base: &str) -> Result<String, String> {
     let all = sources_now();
     let cred = credential(c, &all, key_store().as_ref()).map_err(|e| e.reason())?;
@@ -711,8 +656,6 @@ pub fn check(c: &GrokTtsCfg, base: &str) -> Result<String, String> {
     ))
 }
 
-/// The voices for the picker: fetched with the configured credential
-/// (free), else the known list.
 pub fn live_voices(c: &GrokTtsCfg) -> Vec<String> {
     let all = sources_now();
     let known = || KNOWN_VOICES.iter().map(|s| s.to_string()).collect();
@@ -727,10 +670,8 @@ pub fn live_voices(c: &GrokTtsCfg) -> Vec<String> {
     }
 }
 
-/// The last Settings > Test result, shown under the rows.
 pub static LAST_CHECK: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Test the credential in the background (Settings > Test).
 pub fn check_in_background(c: GrokTtsCfg) {
     *LAST_CHECK.lock().unwrap_or_else(|e| e.into_inner()) = Some("testing...".into());
     std::thread::spawn(move || {
@@ -765,7 +706,7 @@ mod tests {
         assert_eq!(b["output_format"]["codec"], "pcm");
         assert_eq!(b["output_format"]["sample_rate"], 24000);
         assert_eq!(b["speed"], 1.5, "clamped to what xAI takes");
-        // A real reply's first bytes (16 bit LE mono 24 kHz), split oddly.
+
         let bytes = include_bytes!("../../tests/fixtures/grok_tts_hello.pcm");
         let mut p = Pcm::default();
         let mut all = p.push(&bytes[..7]);
@@ -829,7 +770,7 @@ mod tests {
         ];
         let store = FileStore(d.join("key"));
         let mut c = GrokTtsCfg::default();
-        // auto: the first logged in one.
+
         let cr = credential(&c, &all, &store).ok().unwrap();
         assert_eq!(
             (cr.token.as_str(), cr.from.as_str()),
@@ -838,7 +779,7 @@ mod tests {
         c.source = "a".into();
         let e = credential(&c, &all, &store).err().unwrap();
         assert!(e.lasting() && e.reason().contains("not logged in"), "{e}");
-        // API key: none, then saved (owner only), then removed.
+
         c.auth = "api_key".into();
         assert!(matches!(
             credential(&c, &all, &store),
@@ -860,7 +801,7 @@ mod tests {
         );
         store.remove().unwrap();
         assert!(credential(&c, &all, &store).is_err());
-        // The store tests use is never the Keychain.
+
         assert_eq!(key_store().place(), "~/.godterm file");
         save_key("xai-from-settings").unwrap();
         assert_eq!(key_saved(), Some(true));
@@ -871,17 +812,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// A local stand in for api.x.ai: streams PCM in chunks, or answers
-    /// with an error status.
     fn serve(status: u16, body: Vec<u8>) -> String {
         use std::io::Write;
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         std::thread::spawn(move || {
             if let Ok((mut s, _)) = l.accept() {
-                // Read the whole request first: closing with unread bytes
-                // resets the connection on Windows before the client reads
-                // the reply.
                 let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
                 let mut req: Vec<u8> = vec![];
                 let mut chunk = [0u8; 4096];
@@ -915,8 +851,7 @@ mod tests {
                 }
                 let _ = s.write_all(b"0\r\n\r\n");
                 let _ = s.flush();
-                // Close gracefully: no more writes, then wait for the
-                // client to finish reading and hang up.
+
                 let _ = s.shutdown(std::net::Shutdown::Write);
                 let _ = s.read(&mut chunk);
             }
@@ -941,7 +876,7 @@ mod tests {
         assert_eq!(got, bytes.len() / 2);
         assert_eq!(st.samples, got);
         assert!(chunks > 1, "played as it arrives");
-        // Barge-in: the sink says stop.
+
         let base = serve(200, bytes.clone());
         let r = speak(&base, "Hi.", &c, "tok", &cancel, &mut |_| false);
         assert_eq!(r, Err(TtsError::Cancelled));

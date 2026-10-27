@@ -1,11 +1,8 @@
-# shellcheck shell=bash
-# GodTerm TUI steps shared by mac-e2e.sh and linux-e2e.sh (needs lib.sh).
 
 GT_ENV="${GT_ENV:-GODTERM_NO_AUDIO=1 GODTERM_NO_MIC=1}"
 COLS="${COLS:-160}"
 ROWS="${ROWS:-48}"
 
-# ui <id> <desc> <session> <timeout> <regex> <capture>: one TUI expectation.
 ui() {
   local id="$1" desc="$2" s="$3" t="$4" re="$5" cap="$6"
   if expect_screen "$s" "$t" "$re" "$cap"; then step PASS "$id" "$desc" "$LAST_CAP"; return 0; fi
@@ -13,7 +10,6 @@ ui() {
   return 1
 }
 
-# quit_tui <id> <session>: Ctrl-a q, confirm with y, expect exit code 0.
 quit_tui() {
   local id="$1" s="$2" rc
   tmux_keys "$s" Escape; sleep 1
@@ -30,8 +26,6 @@ quit_tui() {
   tmux_kill "$s"
 }
 
-# answer_setup <session> <slots>: the text prompts of the first run setup
-# (slot count, then label and directory per account, all defaults).
 answer_setup() {
   local s="$1" n="$2" i
   wait_screen "$s" 30 'How many agent slots' || return 1
@@ -44,7 +38,6 @@ answer_setup() {
   return 0
 }
 
-# demo_smoke <prefix> <session> <godterm command>: grid, help, quit, no panic.
 demo_smoke() {
   local p="$1" s="$2" cmd="$3"
   vrun 20 <<<'rm -rf ~/.godterm-demo' >/dev/null
@@ -63,8 +56,6 @@ echo "NOTE: $(find ~/.godterm-demo -name '*.log' | wc -l | tr -d ' ') logs, $n w
 EOF
 }
 
-# collect_logs: every godterm log in the VM into logs/godterm-logs.txt, and
-# one step that fails on any panic.
 collect_logs() {
   vrun 30 >"$RESULTS/logs/godterm-logs.txt" 2>&1 <<'EOF'
 for f in $(find ~/.godterm ~/.godterm-demo /tmp/h-* -name '*.log' 2>/dev/null); do

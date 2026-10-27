@@ -1,5 +1,3 @@
-// The tab list: grouped (by account, agent, folder or status, or not at
-// all), pinned first, with a filter box, state chips and a sort.
 import { $, h, esc, on, emit, store, icon, isDesk, pctClass, debounce, hscroll, tcOf, tcStyle } from './util.js';
 import { S } from './state.js';
 import { panes } from './term.js';
@@ -20,7 +18,7 @@ export const setTabActions = (fn) => (tabActions = fn);
 const posOf = (t) => parseInt(String(t.position || '').replace(/^tab /, ''), 10) || 0;
 
 function fuzzy(hay, needle) {
-  // Every word of the needle appears, in any order; or the letters in order.
+
   hay = hay.toLowerCase();
   const words = needle.toLowerCase().split(/\s+/).filter(Boolean);
   if (words.every((w) => hay.includes(w))) return true;
@@ -41,9 +39,10 @@ function keep(t) {
 
 const ORDER = { approval: 0, waiting: 1, working: 2, background: 3, ready: 4 };
 function cmp(a, b) {
-  if (!!b.pinned - !!a.pinned) return !!b.pinned - !!a.pinned;
+
+  if (sort !== 'recent' && sort !== 'oldest' && !!b.pinned - !!a.pinned) return !!b.pinned - !!a.pinned;
   if (sort === 'recent' || sort === 'oldest') {
-    // Newest activity first (or last); a server without the time keeps tab order.
+
     const d = (b.active_at || 0) - (a.active_at || 0);
     if (d) return sort === 'recent' ? d : -d;
     return posOf(a) - posOf(b);
@@ -54,7 +53,6 @@ function cmp(a, b) {
   return posOf(a) - posOf(b);
 }
 
-// The groups the list shows, each with its tabs in the sort's order.
 const HARNESS = { claude: 'Claude', grok: 'Grok', codex: 'Codex', opencode: 'OpenCode', gemini: 'Gemini' };
 const acctOf = (t) => S.accounts.find((a) => a.account === t.account);
 const harnessOf = (t) => t.harness || acctOf(t)?.harness || 'claude';
@@ -78,7 +76,6 @@ function groups(tabs) {
   return out;
 }
 
-// "active now", "active 5 min ago", "active 3 h ago", "active 2 days ago".
 function agoWords(at) {
   const s = Math.max(0, Date.now() / 1000 - at);
   if (s < 75) return 'active now';
@@ -102,9 +99,7 @@ function sub(t) {
 }
 
 let lastHtml = '', dirty = true;
-// The list is drawn only while it can be seen (the drawer open, or the
-// desktop side list): state comes up to ten times a second.
-// (A squeezed desktop's list is an overlay too: drawn while it is open.)
+
 const seen = () => isDesk() && !$('#app').classList.contains('sq-side') ? !$('#app').classList.contains('noside') : $('#side').classList.contains('open');
 function render() {
   if (!seen()) { dirty = true; return; }
@@ -113,7 +108,7 @@ function render() {
   const shown = new Set(panes.visible().map((p) => p.id));
   let html = '';
   const open = S.tabs.filter(keep);
-  // While filtering, the open tabs are the first of three sections.
+
   if (q) html += `<div class="acct fhead"><span class="an">Open tabs</span><span>${open.length}</span></div>`;
   for (const g of groups(open)) {
     if (grp === 'account') {
@@ -127,12 +122,11 @@ function render() {
     }
     for (const t of g.tabs) {
       html += `<div class="row${shown.has(t.id) ? ' on' : ''}${tcOf(t) ? ' tc" style="' + tcStyle(t) : ''}" role="listitem" tabindex="0" aria-current="${shown.has(t.id)}" data-id="${esc(t.id)}" draggable="${isDesk()}">` +
-        `<span class="dot ${esc(t.state)}"></span><span class="tx"><span class="n">${esc(t.name)}${t.pinned ? ' <span class="pin">pinned</span>' : ''}${t.git_warn ? ` <span class="gitw" style="color:var(--warn)" title="Git: ${esc(t.git_warn)}">⚠</span>` : ''}</span>` +
-        `<span class="s">${esc(sub(t))}</span></span><button class="ib" data-act="1" aria-label="Tab actions" title="Tab actions">${icon('dots')}</button></div>`;
+        `<span class="dot ${esc(t.state)}"></span><span class="tx"><span class="n">${hbadge(harnessOf(t))}${esc(t.name)}${t.pinned ? ' <span class="pin">pinned</span>' : ''}${t.git_warn ? ` <span class="gitw" style="color:var(--warn)" title="Git: ${esc(t.git_warn)}">⚠</span>` : ''}</span>` +
+        `<span class="s">${esc(sub(t))}</span></span>${indicators(t)}<button class="ib" data-act="1" aria-label="Tab actions" title="Tab actions">${icon('dots')}</button></div>`;
     }
   }
-  // Nothing anywhere: one line. Else the open tabs' line, then the
-  // archived and other sessions found.
+
   if (q && !open.length && foundNone()) html = `<div class="empty">Nothing matches "${esc(q)}": no open tab, archived tab or other session</div>`;
   else {
     if (q && !open.length) html += '<div class="empty fnone">No open tab matches</div>';
@@ -145,8 +139,6 @@ function render() {
 }
 export const renderTabs = () => { if (dirty || seen()) render(); };
 
-// Every tab in the drawer's order (its grouping, then the sort), for
-// switching to the next or previous one with a swipe.
 export const tabOrder = () => groups(S.tabs).flatMap((g) => g.tabs).map((t) => t.id);
 
 export function initTabs() {
@@ -178,8 +170,7 @@ export function initTabs() {
   list.addEventListener('keydown', (e) => {
     const row = e.target.closest('.row');
     if (row && e.target === row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); row.click(); }
-    // The arrows walk the rows (Home and End: the first and the last),
-    // Shift+F10 opens the row's options as a right click does.
+
     if (!row || e.altKey || e.metaKey || e.ctrlKey) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End') {
       const rows = [...list.querySelectorAll('.row')];
@@ -202,4 +193,29 @@ export function initTabs() {
   });
   on('state', render);
   on('focus', render);
+}
+
+function indicators(t) {
+  const run = (S.loops || []).filter((l) => l.tab === t.id).length;
+  const jobs = (S.jobs?.jobs || []).filter((j) => j.tab === t.name);
+  const live = jobs.filter((j) => !j.paused).length;
+  const idle = jobs.length - live;
+  const on = Math.min(run + live, 5), off = Math.min(idle, 5 - on);
+  if (!on && !off) return '';
+  const tip = [run && run + ' loop' + (run > 1 ? 's' : ''), live && live + ' scheduled', idle && idle + ' paused'].filter(Boolean).join(', ');
+  return `<span class="ind" title="${esc(tip)}">${'<i class="run"></i>'.repeat(on)}${'<i></i>'.repeat(off)}</span>`;
+}
+
+const HGLYPH = {
+  claude: '<path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/>',
+  grok: '<circle cx="12" cy="12" r="8"/><path d="M8 16l8-8"/>',
+  codex: '<path d="M6 8l5 4-5 4M13 17h5"/>',
+  cursor: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/>',
+  antigravity: '<path d="M12 4l8 15H4z"/>',
+  opencode: '<path d="M9 5C7 5 7 8 7 10s-1 2-2 2c1 0 2 0 2 2s0 5 2 5M15 5c2 0 2 3 2 5s1 2 2 2c-1 0-2 0-2 2s0 5-2 5"/>',
+};
+function hbadge(k) {
+  const g = HGLYPH[k];
+  if (!g) return '';
+  return `<span class="hb hb-${esc(k)}" title="${esc(HARNESS[k] || k)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${g}</svg></span>`;
 }

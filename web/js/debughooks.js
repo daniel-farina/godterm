@@ -1,12 +1,7 @@
-// The debug log's hooks (see debuglog.js): the console copy, the page's
-// visibility, the viewport and the on-screen keyboard, theme changes,
-// taps and keys in summary, and the state report. Loaded by debuglog.js
-// after the first paint while the log is on; never typed text.
 import { on } from './util.js';
 import { conn } from './conn.js';
 import { dlog, flush, safeJson, device, standalone, errors } from './debuglog.js';
 
-// Console: kept as it was, and copied here.
 for (const lvl of ['log', 'info', 'warn', 'error']) {
   const orig = console[lvl];
   if (typeof orig !== 'function') continue;
@@ -15,18 +10,15 @@ for (const lvl of ['log', 'info', 'warn', 'error']) {
     dlog(lvl === 'error' ? 'error' : lvl === 'warn' ? 'warn' : 'console', a.map((x) => (typeof x === 'string' ? x : x instanceof Error ? `${x.name}: ${x.message}${x.stack ? ' ' + x.stack.split('\n').slice(0, 4).join(' | ') : ''}` : safeJson(x))).join(' '));
   };
 }
-// The page: shown or hidden, back from the cache.
+
 document.addEventListener('visibilitychange', () => dlog('page', document.visibilityState));
 addEventListener('pageshow', (e) => dlog('page', 'show' + (e.persisted ? ' (from cache)' : '')));
 addEventListener('pagehide', () => { dlog('page', 'hide'); flush(); });
 addEventListener('online', () => dlog('net', 'online'));
 addEventListener('offline', () => dlog('net', 'offline'));
 
-// The viewport and the on-screen keyboard (main.js sets body.kb), once
-// things settle.
 const vv = window.visualViewport;
-// Also where the page is scrolled to (it should never be) and where the
-// app and its key bar end up, to see the keyboard's effect on a phone.
+
 const vpText = () => {
   const r = (sel) => { const e = document.querySelector(sel); if (!e || !e.offsetParent && sel !== '#app') return ''; const b = e.getBoundingClientRect(); return `${Math.round(b.top)}-${Math.round(b.bottom)}`; };
   const kbar = r('#keybar');
@@ -44,12 +36,9 @@ new MutationObserver(() => {
   if (kb !== kbWas) { kbWas = kb; dlog('keyboard', kb ? `open (visual height ${Math.round(vv?.height || innerHeight)})` : 'closed'); }
 }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
-// Theme changes (data-theme on <html>).
 new MutationObserver(() => dlog('theme', document.documentElement.dataset.theme || '?'))
   .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
-// Touches and keys, summed up every 2 s: taps and swipes by area, special
-// keys by name, typed text only as a count.
 const SPECIAL = new Set(['Escape', 'Tab', 'Enter', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown', 'Insert']);
 let sum = {}, typed = 0, sumT = 0;
 function count(k) {
@@ -80,7 +69,7 @@ addEventListener('touchend', (e) => {
   t0 = null;
   count(`${kind} ${a}`);
 }, { capture: true, passive: true });
-// Key bar buttons: their labels (Esc, Ctrl, arrows...), never text.
+
 addEventListener('pointerup', (e) => {
   const b = e.target.closest?.('#keybar button');
   if (b) count('key ' + (b.getAttribute('aria-label') || b.textContent || '?').trim().slice(0, 16));
@@ -90,8 +79,7 @@ addEventListener('keydown', (e) => {
   if (SPECIAL.has(e.key) || (mods && e.key.length === 1)) count('key ' + mods + (e.key.length === 1 ? e.key.toUpperCase() : e.key));
   else if (e.key.length === 1) { typed++; keyAt = Date.now(); if (!sumT) sumT = setTimeout(sumUp, 2000); }
 }, true);
-// Text from a phone keyboard (its keydowns say "Unidentified"), dictation
-// or autocorrect arrives as input events: counted unless a key just was.
+
 let keyAt = 0;
 addEventListener('input', (e) => {
   if (Date.now() - keyAt < 100 || !e.data) return;
@@ -100,12 +88,10 @@ addEventListener('input', (e) => {
 }, true);
 addEventListener('paste', () => count('paste'), true);
 
-// The second boot line: the screen and viewport.
 const theme = () => document.documentElement.dataset.theme || '?';
 dlog('boot', `screen ${screen.width}x${screen.height} dpr ${devicePixelRatio} ${vpText()} theme ${theme()} touch ${matchMedia('(pointer:coarse)').matches} lang ${navigator.language} sw ${navigator.serviceWorker?.controller ? 'controlled' : 'none'}`);
 lastVp = vpText();
 
-// A state dump, as one `report` block (no screenshot).
 export function report() {
   const L = (t) => dlog('report', t);
   const G = window.GT || {};

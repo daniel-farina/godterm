@@ -1,7 +1,3 @@
-//! `godterm sync plan`: a dry run. What would be synced, how big, what is
-//! left out and why, which projects are not backed up. Reads only the
-//! allowlist; writes nothing.
-
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -16,12 +12,12 @@ pub struct Plan {
     pub env_projects: usize,
     pub env_files: usize,
     pub env_not_ignored: Vec<String>,
-    /// The .env files that go in (portable paths, the first 50).
+
     pub env_paths: Vec<String>,
     pub sessions: usize,
     pub hot: usize,
     pub session_bytes: u64,
-    /// Bytes not pushed yet (the whole of it on a first sync).
+
     pub new_bytes: u64,
     pub left_out: Vec<String>,
     pub vault_mentions: usize,
@@ -162,37 +158,31 @@ impl Plan {
     }
 }
 
-/// What `sync init` or `sync clone` would use and whether it can go
-/// ahead: the owner and gh account, the repos, and warnings (no gh
-/// login, a repo that is there already or is not private, secret files).
-/// Asks gh (read only: `gh auth status`, `gh repo view`), writes nothing.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Preflight {
     pub owner: String,
     pub account: String,
-    /// owner/name of the state repo.
+
     pub state_repo: String,
-    /// The monthly conversation repos, as a pattern.
+
     pub convos: String,
-    /// "github", or the folder that stands in for it.
+
     pub remote: String,
     pub github: bool,
-    /// The gh logins on github.com (names only).
+
     pub gh_accounts: Vec<String>,
     pub logged_in: bool,
-    /// Whether the state repo is there (None: could not tell).
+
     pub exists: Option<bool>,
-    /// PRIVATE, PUBLIC or INTERNAL, when it is there and could be told.
+
     pub visibility: Option<String>,
-    /// Enable sync here (init) would go ahead.
+
     pub can_init: bool,
-    /// Join it (clone) would go ahead.
+
     pub can_clone: bool,
     pub warnings: Vec<String>,
 }
 
-/// The checks for the state repo `owner/name` with gh account `account`
-/// (`gh`: the gh logins). Blocking warnings set can_init / can_clone off.
 pub fn preflight(ctx: &Ctx, owner: &str, name: &str, account: &str, gh: &[String]) -> Preflight {
     let mut sc = ctx.sync().clone();
     sc.owner = owner.to_string();
@@ -270,7 +260,6 @@ pub fn preflight(ctx: &Ctx, owner: &str, name: &str, account: &str, gh: &[String
 }
 
 impl Plan {
-    /// The warnings a person should see before the first sync.
     pub fn warnings(&self) -> Vec<String> {
         let mut v = vec![];
         if self.env_files > 0 {

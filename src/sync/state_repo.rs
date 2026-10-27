@@ -1,9 +1,3 @@
-//! The state repo and one sync (docs/SYNC.md 2.2, 5): fetch, apply what
-//! other machines changed, project the home into the working copy, push
-//! the conversation chunks, then the state commit. Never forced: a push
-//! someone beat fetches and runs the cycle again. Bases (what was last
-//! synced) are saved only once the push went through.
-
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -17,27 +11,25 @@ use super::git::{self, Pushed};
 use super::merge::{self, Base};
 use super::{shards, Ctx};
 
-/// What one sync did, also saved as `sync/status.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Report {
     pub ok: bool,
     pub at_ms: i64,
-    /// Last time a sync reached the remote and pushed (or had nothing).
+
     #[serde(default)]
     pub last_ok_ms: i64,
     #[serde(default)]
     pub error: Option<String>,
     pub committed: bool,
     pub pushed: bool,
-    /// Commits made here that are not on the remote yet.
+
     pub waiting: usize,
     pub sessions: usize,
     pub sessions_pushed: usize,
     pub bytes_pushed: u64,
     pub extended: usize,
     pub forked: Vec<String>,
-    /// Sessions open in a tab here that another machine extended or
-    /// diverged from (left alone until the tab closes; Phase 3 leases).
+
     pub held: Vec<String>,
     pub remote_only: usize,
     pub left_out: Vec<String>,
@@ -47,15 +39,14 @@ pub struct Report {
     pub env_not_ignored: Vec<String>,
     pub new_jobs_paused: Vec<String>,
     pub secret_warnings: usize,
-    /// Long-lived tokens were left out: the repo is not verified private.
+
     #[serde(default)]
     pub token_warning: Option<String>,
-    /// More to upload than one sync takes (a first upload): the next
-    /// sync goes on at once.
+
     #[serde(default)]
     pub more: bool,
     pub errors: Vec<String>,
-    /// Projects with no GitHub backup or unpushed work (never acted on).
+
     pub projects: Vec<super::projects::Health>,
     pub machines: Vec<Value>,
     pub shards: Vec<Value>,
@@ -78,7 +69,6 @@ impl Report {
     }
 }
 
-/// Per file: what was last pushed or placed from here.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LedFile {
     pub len: u64,
@@ -111,15 +101,11 @@ pub(crate) fn save_ledger(ctx: &Ctx, l: &Ledger) {
     );
 }
 
-/// A lock so a CLI sync and the app's worker never run at once (the
-/// file, across processes), nor two threads of one process (the set of
-/// sync folders held here: the lease worker shares the repos).
 pub struct Lock(PathBuf);
 
 static HELD: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTreeSet::new());
 
 impl Lock {
-    /// Take it, waiting up to `wait` for another holder to finish.
     pub fn wait(ctx: &Ctx, wait: std::time::Duration) -> Result<Lock> {
         let t = std::time::Instant::now();
         loop {
@@ -189,7 +175,6 @@ impl Drop for Lock {
 fn alive(pid: i32) -> bool {
     #[cfg(unix)]
     {
-        // SAFETY: signal 0 only checks that the process exists.
         unsafe { libc::kill(pid, 0) == 0 }
     }
     #[cfg(not(unix))]
@@ -206,7 +191,6 @@ project .env files and conversation manifests. Conversations themselves are in \
 the monthly godterm-convos repos.\n\n\
 PRIVATE: it holds .env files and conversations as is. Never make it public.\n";
 
-/// The working copy of the state repo, cloned the first time.
 pub fn open_wc(ctx: &Ctx) -> Result<PathBuf> {
     let wc = ctx.state_dir();
     if git::is_sync_repo(&wc) {
@@ -234,7 +218,6 @@ pub fn open_wc(ctx: &Ctx) -> Result<PathBuf> {
         r.cred().as_ref(),
     )
     .or_else(|_| {
-        // An empty repo has no main yet.
         git::run(
             &ctx.sync_dir(),
             &["clone", "-q", &r.url(owner, name), &ws],
@@ -246,8 +229,6 @@ pub fn open_wc(ctx: &Ctx) -> Result<PathBuf> {
     Ok(wc)
 }
 
-/// Write the leases branch layout (Phase 3 adds the leases themselves):
-/// `leases/.keep` and this machine's `heartbeats/<id>.json`.
 pub fn write_heartbeat(ctx: &Ctx, wc: &Path) -> Result<()> {
     let cred = ctx.remote().cred();
     let idx = wc.join(".git").join("sync-leases-index");
@@ -295,7 +276,6 @@ pub fn write_heartbeat(ctx: &Ctx, wc: &Path) -> Result<()> {
     bail!("could not write the heartbeat")
 }
 
-/// Run one sync now.
 pub fn sync_now(ctx: &Ctx) -> Result<Report> {
     let _lock = Lock::take(ctx)?;
     let prev = Report::load(ctx).unwrap_or_default();
@@ -306,8 +286,7 @@ pub fn sync_now(ctx: &Ctx) -> Result<Report> {
     };
     let res = (|| -> Result<()> {
         let wc = open_wc(ctx)?;
-        // Who owns what (docs/SYNC.md 4): only the owner pushes a
-        // session's new bytes. Offline: the board as last fetched.
+
         let (board, _) = super::lease::current(ctx);
         for attempt in 0..4 {
             let mut r = Report {
@@ -408,14 +387,12 @@ fn write_json(p: &Path, v: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Paths in store entries, both ways.
 fn fix_paths(map: &super::portable::PathMap, to_portable: bool) -> impl Fn(&str, &mut Value) + '_ {
     move |store: &str, v: &mut Value| {
         let f = |s: &str| -> String {
             if to_portable {
                 map.portable_text(s)
             } else {
-                // Stores hold absolute paths.
                 map.to_local(s)
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_else(|| s.to_string())
@@ -450,13 +427,10 @@ fn fix_paths(map: &super::portable::PathMap, to_portable: bool) -> impl Fn(&str,
     }
 }
 
-/// Jobs pulled from another machine wait for a yes here: they arrive
-/// paused, and run once the user turns them on.
 fn jobs_pending_path(ctx: &Ctx) -> PathBuf {
     ctx.sync_dir().join("jobs-pending.json")
 }
 
-/// Apply remote, project local; returns the bases to save after the push.
 fn cycle(
     ctx: &Ctx,
     wc: &Path,
@@ -466,12 +440,11 @@ fn cycle(
     let mut pending: Vec<(PathBuf, Base)> = vec![];
     let map = ctx.paths();
     let now = ctx.now_ms;
-    // Fixed files.
+
     std::fs::write(wc.join("format.json"), "{\"version\":1}\n")?;
     std::fs::write(wc.join("README.md"), README)?;
     std::fs::write(wc.join(".gitattributes"), "* -text\n")?;
 
-    // config.toml: portable keys, newest change per key.
     let cfg_path = ctx.app_home.join("config.toml");
     if let Ok(text) = std::fs::read_to_string(&cfg_path) {
         let local = super::portable::flatten(&text, &map, &ctx.sync().machine_local)?;
@@ -505,15 +478,14 @@ fn cycle(
             super::portable::render(&m.live()).as_bytes(),
         )?;
         super::write_file(&wc.join("config/stamps.json"), &merge::doc_bytes(&m.doc))?;
-        // A refused key never counts as synced (its absence here is not a
-        // delete).
+
         let mut b = m.base();
         for k in refused_keys {
             b.remove(&k);
         }
         pending.push((bp, b));
     }
-    // accounts.json: no config dirs, no credentials.
+
     let accts: Vec<Value> = ctx
         .cfg
         .accounts
@@ -525,7 +497,6 @@ fn cycle(
         .collect();
     write_json(&wc.join("accounts.json"), &Value::Array(accts))?;
 
-    // Keyed stores.
     let out_fix = fix_paths(&map, true);
     let in_fix = fix_paths(&map, false);
     let mut pend_jobs: BTreeSet<String> =
@@ -534,7 +505,6 @@ fn cycle(
         let hp = ctx.app_home.join(s.file);
         let whole = read_json(&hp);
         if s.name == "jobs" {
-            // Turned on here since: approved.
             for j in whole["jobs"].as_array().into_iter().flatten() {
                 if j["enabled"] == true {
                     if let Some(id) = j["id"].as_str() {
@@ -563,8 +533,7 @@ fn cycle(
                             pend_jobs.insert(k.clone());
                             r.new_jobs_paused
                                 .push(v["name"].as_str().unwrap_or(k).to_string());
-                            // The paused copy is the synced one here, so it
-                            // is not pushed back as a change.
+
                             if let Some(b) = nbase.get_mut(k) {
                                 b.h = merge::hash(v);
                             }
@@ -575,10 +544,6 @@ fn cycle(
             let outv = merge::with_entries(s, &whole, &live, &in_fix);
             let app_owned = super::APP_STORES.contains(&s.name);
             match ctx.link.as_ref().filter(|_| app_owned) {
-                // The running app holds this store: it applies the
-                // change to its own copy and saves it (a write here could
-                // race its next save). Not applied: the base stays, and
-                // the next sync hands it over again.
                 Some(link) => {
                     let ents = merge::entries_of(s, &outv, &|_, _| {});
                     let set = m
@@ -610,15 +575,12 @@ fn cycle(
     }
     let _ = write_json(&jobs_pending_path(ctx), &json!(pend_jobs));
 
-    // git-bindings.json (Phase 1's): keyed by portable project path.
     sync_bindings(ctx, wc, &mut pending, r)?;
 
-    // Long-lived tokens (opt in): only into a repo checked private now.
     super::tokens::sync_tokens(ctx, wc, r, &crate::acct_tokens::store(), &|| {
         super::tokens::repo_private(ctx)
     });
 
-    // File sets.
     let c = collect::collect(ctx);
     r.left_out
         .extend(c.skipped.iter().map(|(a, b)| format!("{a}: {b}")));
@@ -679,7 +641,7 @@ fn cycle(
             kind: Kind::Plain,
         });
     }
-    // .env files of every known project.
+
     let mut env_index: BTreeMap<String, String> =
         serde_json::from_value(read_json(&wc.join("env/index.json"))).unwrap_or_default();
     for root in super::env::project_roots(ctx) {
@@ -745,7 +707,6 @@ fn cycle(
         pending.push((bp, o.base));
     }
 
-    // Prompt history: the union of the lines.
     for (acct, p) in &c.histories {
         let rp = wc.join(format!("claude/{acct}/history.jsonl"));
         let local = collect::read_lines(p);
@@ -758,7 +719,6 @@ fn cycle(
         super::write_file(&rp, &join_lines(&merged))?;
     }
 
-    // This machine.
     let mdir = wc.join("machines").join(&ctx.machine.id);
     write_json(
         &mdir.join("machine.json"),
@@ -780,10 +740,8 @@ fn cycle(
         write_json(&mdir.join("state.json"), &st)?;
     }
 
-    // Conversations.
     sessions(ctx, wc, &c.sessions, board, r)?;
 
-    // Machines and shards, for the Sync screen.
     r.machines = std::fs::read_dir(wc.join("machines"))
         .into_iter()
         .flatten()
@@ -809,8 +767,6 @@ fn cycle(
     write_json(&wc.join("shards.json"), &Value::Array(shard_list.clone()))?;
     r.shards = shard_list;
 
-    // Projects that are not backed up (warnings only; nothing is done to
-    // them).
     for root in super::env::project_roots(ctx) {
         let w = super::projects::check(&root);
         if !w.is_empty() {
@@ -856,7 +812,6 @@ fn sync_bindings(
         };
         let mut o = serde_json::Map::new();
         for (k, v) in m.live() {
-            // Phase 1 keys bindings by `~/...`; other paths placed here.
             o.insert(map.local_text(&k), v);
         }
         out["projects"] = Value::Object(o);
@@ -875,8 +830,6 @@ fn ts(l: &[u8]) -> i64 {
         .unwrap_or(0)
 }
 
-/// Every line of both, once, in time order (the local order kept for
-/// equal times).
 pub fn union_lines(local: &[Vec<u8>], remote: &[Vec<u8>]) -> Vec<Vec<u8>> {
     let mut seen: BTreeSet<&[u8]> = BTreeSet::new();
     let mut v: Vec<Vec<u8>> = vec![];
@@ -900,7 +853,6 @@ fn join_lines(v: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-/// Bytes each conversation repo holds, from the manifests.
 pub fn shard_bytes(wc: &Path) -> BTreeMap<String, u64> {
     let mut used: BTreeMap<String, u64> = BTreeMap::new();
     for m in all_manifests(wc) {
@@ -939,9 +891,6 @@ pub fn all_manifests(wc: &Path) -> Vec<Manifest> {
     v
 }
 
-/// Sessions whose CLI may be running here (never extended, replaced or
-/// forked under it): the app's own list when the sync runs inside it,
-/// else every session open in a tab.
 fn running_here(ctx: &Ctx) -> BTreeSet<String> {
     match &ctx.link {
         Some(l) => l.running(),
@@ -949,8 +898,6 @@ fn running_here(ctx: &Ctx) -> BTreeSet<String> {
     }
 }
 
-/// Forks made outside a sync (a lost lease, a reconcile): new id ->
-/// the session it came from, for its manifest's `forked_from`.
 pub fn forks_path(ctx: &Ctx) -> PathBuf {
     ctx.sync_dir().join("forks.json")
 }
@@ -965,7 +912,6 @@ pub fn note_fork(ctx: &Ctx, new_id: &str, from: &str) {
     let _ = write_json(&forks_path(ctx), &json!(f));
 }
 
-/// Sessions open in a tab here.
 fn open_here(ctx: &Ctx) -> BTreeSet<String> {
     let st = read_json(&ctx.app_home.join("state.json"));
     let mut v = BTreeSet::new();
@@ -988,25 +934,20 @@ fn mtime_ms(p: &Path) -> i64 {
         .unwrap_or(0)
 }
 
-/// Most new transcript bytes one sync pushes.
 pub const CYCLE_BYTES: u64 = 256 << 20;
 
-/// A new chunk waiting for its conversation repo push.
 struct NewChunk {
     repo: String,
     path: String,
     bytes: Vec<u8>,
 }
 
-/// One file's plan.
 enum Plan {
-    /// Keep (manifest entry as given).
     Keep(FileMan),
-    /// Push new chunks, then the entry.
+
     Push(FileMan, Vec<NewChunk>),
 }
 
-/// Plan one file against its remote entry.
 #[allow(clippy::too_many_arguments)]
 fn plan_file(
     ctx: &Ctx,
@@ -1021,8 +962,7 @@ fn plan_file(
 ) -> Result<(Cmp, Plan)> {
     let len = std::fs::metadata(p)?.len();
     let mt = mtime_ms(p);
-    // What is known to be in the conversation repos: the remote entry, or
-    // this machine's own pushes past it (a manifest push that failed).
+
     let known = if led.chunks.len() > remote.chunks.len() && led.chunks.starts_with(&remote.chunks)
     {
         FileMan {
@@ -1055,13 +995,12 @@ fn plan_file(
     if cmp != Cmp::LocalAhead {
         return Ok((cmp, Plan::Keep(known)));
     }
-    // One sync uploads at most CYCLE_BYTES (a first upload goes in
-    // batches).
+
     if r.bytes_pushed >= CYCLE_BYTES {
         r.more = true;
         return Ok((Cmp::Equal, Plan::Keep(known)));
     }
-    // New bytes: up to the last line end while the file is being written.
+
     let from = known.len;
     let mut new = chunks::read_range(p, from, len - from)?;
     let quiet = ctx.now_ms - mt > 30_000;
@@ -1110,7 +1049,6 @@ pub(crate) fn led_key(acct: &str, id: &str, name: &str) -> String {
     format!("{acct}/{id}/{name}")
 }
 
-/// Sync every conversation: chunks first, then manifests.
 fn sessions(
     ctx: &Ctx,
     wc: &Path,
@@ -1122,8 +1060,7 @@ fn sessions(
     let mut used = shard_bytes(wc);
     let open = running_here(ctx);
     let forks = load_forks(ctx);
-    // May this machine push a session's new bytes? Only its owner (or
-    // anyone, for a session nobody leased).
+
     let writable = |id: &str| {
         board.is_none_or(|b| {
             b.status(id, &ctx.machine.id, ctx.now_ms, ctx.lease_ms())
@@ -1144,7 +1081,7 @@ fn sessions(
         seen.insert((s.account.clone(), s.id.clone()));
         let key = |name: &str| led_key(&s.account, &s.id, name);
         let files = s.files();
-        // The vault: a session naming it stays here (unless included).
+
         if !ctx.sync().include_sessions.contains(&s.id) {
             let mut vault = false;
             for (name, p) in &files {
@@ -1210,7 +1147,6 @@ fn sessions(
                 (Cmp::Diverged, _)
                     if whole_file && led.sha256 == rf.sha256 && !rf.chunks.is_empty() =>
                 {
-                    // A summary rewritten here since our last push: replace.
                     let b = std::fs::read(p)?;
                     let path = format!(
                         "{}/{}/{name}/v{}",
@@ -1269,10 +1205,7 @@ fn sessions(
                     out_files.push(rf);
                     r.extended += 1;
                 }
-                // New bytes of a session another machine owns (it took
-                // over, or this machine was away): never pushed under its
-                // id. Running here: the app's lost lease flow stops the
-                // CLI first; otherwise they become a fork now.
+
                 (_, Plan::Push(..)) if !writable(&s.id) => {
                     if open.contains(&s.id) {
                         behind = true;
@@ -1304,8 +1237,7 @@ fn sessions(
                 r.held.push(format!("{} (diverged)", s.id));
                 continue;
             }
-            // Never merged: this machine's version becomes a new session,
-            // the remote one takes the original id.
+
             let Some(rm) = remote.clone() else { continue };
             let (nid, np) = if s.provider == "claude" {
                 let head =
@@ -1371,7 +1303,7 @@ fn sessions(
         .iter()
         .filter(|m| !seen.contains(&(m.account.clone(), m.session.clone())))
         .count();
-    // Chunks first, per conversation repo.
+
     let mut by_repo: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
     for c in new_chunks {
         by_repo.entry(c.repo).or_default().push((c.path, c.bytes));
@@ -1383,7 +1315,7 @@ fn sessions(
             failed.insert(repo);
         }
     }
-    // Then the manifests of what made it.
+
     for (man, leds) in manifests {
         if man
             .all_files()
@@ -1414,8 +1346,6 @@ pub(crate) fn led_from(f: &FileMan, p: &Path) -> LedFile {
     }
 }
 
-/// Place one remote session here (a restore, or a session opened on
-/// demand). Returns its local path.
 pub fn place_session(ctx: &Ctx, m: &Manifest) -> Result<PathBuf> {
     let map = ctx.paths();
     let acct = ctx

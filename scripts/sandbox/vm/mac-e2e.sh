@@ -1,36 +1,9 @@
 #!/usr/bin/env bash
-# GodTerm clean-machine test on a fresh macOS VM (tart).
-#
-# Clones a cirruslabs macOS base image into godterm-e2e-mac-<timestamp>,
-# boots it headless, copies the release artifacts in, installs them the way
-# a new user would, drives godterm in tmux inside the VM, saves the screens
-# to the host and deletes the VM (unless --keep).
-#
-# Usage: scripts/sandbox/vm/mac-e2e.sh [options]
-#   --artifacts DIR   release artifacts (default dist/release of the main
-#                     checkout, or $GODTERM_ARTIFACTS); needs the macOS arm64
-#                     zip, optionally the arm64 DMG, the universal zip and
-#                     SHA256SUMS. A fresh local build works too: a dir with a
-#                     godterm-*-macos-arm64.zip from scripts/release.
-#   --version V       expected version (default: from the zip name)
-#   --only LIST       scenarios to run, comma separated: 1..6 (default all)
-#                     1 install (zip, DMG, Gatekeeper)  2 first launch
-#                     3 setup wizard  4 voice onboarding  5 demo  6 Homebrew
-#   --brew MODE       tap | local | both | none (default both; tap is
-#                     skipped when the tap is not reachable from the VM)
-#   --results DIR     where to write (default e2e-results/vm-<ts>/mac)
-#   --base IMAGE      tart image (default ghcr.io/cirruslabs/macos-sonoma-base:latest)
-#   --cpu N --memory MB   VM size (default 4 / 8192, the maximum allowed)
-#   --keep            leave the VM running at the end (prints how to delete)
-#
-# Exit code: 0 when no step failed, 1 otherwise.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
-# shellcheck source=lib.sh
 source "$HERE/lib.sh"
-# shellcheck source=tui.sh
 source "$HERE/tui.sh"
 
 TS=$(date +%Y%m%d-%H%M%S)
@@ -68,7 +41,6 @@ T0=$(date +%s)
 
 want() { case ",$ONLY," in *",$1,"*) return 0 ;; esac; return 1; }
 
-# --- artifacts on the host ---------------------------------------------------
 pick() { # pattern...: first match in $ARTIFACTS
   local p f
   for p in "$@"; do
@@ -87,7 +59,6 @@ fi
 log "results: $RESULTS"
 log "artifacts: $ARTIFACTS (zip $(basename "$ZIP"), dmg ${DMG:+$(basename "$DMG")}, expect $EXPECT_VERSION)"
 
-# --- VM ------------------------------------------------------------------------
 cleanup() {
   local rc=$?
   vm_teardown
@@ -106,7 +77,6 @@ RA=/Users/admin/e2e-artifacts
 vrun 20 <<<"mkdir -p $RA" || die "mkdir in VM failed"
 FILES=("$ZIP")
 for f in "$DMG" "$UZIP" "$SUMS"; do [ -n "$f" ] && FILES+=("$f"); done
-# The repo's Homebrew formula and cask (for the local formula test).
 FILES+=("$REPO/packaging/homebrew/Formula/godterm.rb")
 log "copy ${#FILES[@]} files into the VM"
 vcopy_to "${FILES[@]}" "$RA/" || die "scp of artifacts failed"
@@ -124,18 +94,12 @@ EOF
 cd $RA && shasum -a 256 -c SHA256SUMS --ignore-missing
 EOF
 
-# tmux drives the TUI. The base image has Homebrew; tmux is not part of
-# GodTerm's install, only of this harness.
 vstep tmux 300 "install tmux in the VM (harness only)" <<'EOF' || die "no tmux in the VM, cannot drive the TUI"
 export PATH=/opt/homebrew/bin:$PATH HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1
 command -v tmux >/dev/null || brew install tmux
 tmux -V
 EOF
 
-
-# ============================================================================
-# 1. Install: zip on PATH, DMG into /Applications, Gatekeeper
-# ============================================================================
 if want 1; then
   log "== 1. install from the zip and the DMG"
   vstep 1.zip-contents 30 "zip unpacks: godterm, godterm-speech, README, LICENSE" <<EOF
@@ -224,9 +188,6 @@ EOF
   fi
 fi
 
-# ============================================================================
-# 2. First launch of godterm on a fresh home
-# ============================================================================
 if want 2; then
   log "== 2. first launch (fresh ~/.godterm)"
   vrun 20 <<<'rm -rf ~/.godterm ~/.godterm-demo' >/dev/null
@@ -262,7 +223,6 @@ ls -la ~/.godterm
 cat ~/.godterm/voice_onboarding; echo
 test -f ~/.godterm/config.toml && grep -q skip ~/.godterm/voice_onboarding
 EOF
-    # Second launch: the tour should come now.
     S=second
     tmux_start $S $COLS $ROWS "$GT_ENV godterm"
     if ui 2.tour-second-launch "tour shows on the second launch" $S 30 'tour 1/' second-launch-tour; then
@@ -287,9 +247,6 @@ EOF
   fi
 fi
 
-# ============================================================================
-# 3. godterm setup (the wizard), quit without finishing
-# ============================================================================
 if want 3; then
   log "== 3. setup wizard"
   S=setup
@@ -313,8 +270,6 @@ extra=$(find /tmp/h-setup -type f ! -name 'godterm.lock*' ! -name last_exit.json
 echo "NOTE: files left: $(cd /tmp/h-setup && ls | tr '\n' ' ')"
 [ "$extra" = 0 ]
 EOF
-  # With an existing config (from scenario 2): setup shows the accounts,
-  # Ctrl-C must leave config.toml as it was.
   if want 2; then
     vrun 10 <<<'shasum ~/.godterm/config.toml > /tmp/cfg.sha' >/dev/null
     S=setup2
@@ -330,9 +285,6 @@ EOF
   fi
 fi
 
-# ============================================================================
-# 4. Voice onboarding (no mic, no speakers)
-# ============================================================================
 if want 4; then
   log "== 4. voice onboarding"
   S=onb
@@ -362,8 +314,6 @@ EOF
     step FAIL 4.setup "answer the setup prompts before onboarding" "$LAST_CAP"
     tmux_kill $S
   fi
-  # The same without GODTERM_NO_AUDIO / NO_MIC: the VM has no audio device
-  # at all (tart --no-audio), the real "no hardware" case.
   S=onbhw
   tmux_start $S $COLS $ROWS "GODTERM_HOME=/tmp/h-onb2 godterm --onboarding"
   if answer_setup $S 1; then
@@ -381,9 +331,6 @@ EOF
   fi
 fi
 
-# ============================================================================
-# 5. Demo mode
-# ============================================================================
 if want 5; then
   log "== 5. demo"
   S=demo
@@ -405,9 +352,6 @@ echo "NOTE: $(find ~/.godterm-demo -name '*.log' | wc -l | tr -d ' ') logs, $n w
 EOF
 fi
 
-# ============================================================================
-# 6. Homebrew: the public tap, and the repo's formula on the local zip
-# ============================================================================
 BREW_ENV='export PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1'
 brew_check_installed() { # id desc
   vstep "$1" 60 "$2" <<EOF
@@ -417,8 +361,6 @@ v=\$(/opt/homebrew/bin/godterm --version); echo "\$v"; echo "NOTE: \$v"
 echo "\$v" | grep -q "^godterm $EXPECT_VERSION "
 EOF
 }
-# cask_test <id prefix> <cask ref> <label>: install, version, uninstall.
-# Returns 1 when the install fails (the later steps are then skipped).
 cask_test() {
   local p="$1" ref="$2" label="$3"
   vrun 30 <<<'rm -rf /Applications/GodTerm.app' >/dev/null
@@ -472,8 +414,6 @@ EOF
     vrun 60 <<<"$BREW_ENV; brew untap daniel-farina/godterm" >/dev/null 2>&1
   fi
   if [ "$BREW_MODE" = local ] || [ "$BREW_MODE" = both ]; then
-    # The repo's formula with its macOS url pointed at the copied zip, in a
-    # throwaway local tap, so the install and test blocks run unchanged.
     FZ="${UN:-$ZN}"
     vstep 6.local-install 600 "repo formula on the local zip (file://$RA/$FZ)" <<EOF
 $BREW_ENV
@@ -499,8 +439,6 @@ EOF
 $BREW_ENV
 brew uninstall godterm && test ! -e /opt/homebrew/bin/godterm
 EOF
-    # The repo's cask on the copied DMG (any DMG: the cask only needs
-    # GodTerm.app inside).
     FD="$DN"
     if [ -n "$FD" ]; then
       vstep 6.local-cask-write 60 "repo cask with url file://$RA/$FD in the local tap" <<EOF
@@ -511,7 +449,6 @@ sed -e "s|^  url \".*\"|  url \"file://$RA/$FD\"|" -e "s|^  sha256 \".*\"|  sha2
 grep -E '^  (url|sha256|depends_on)' \$T/Casks/godterm.rb
 EOF
       if ! cask_test 6.local-cask e2e/local/godterm "repo cask"; then
-        # Diagnostic: the same cask with depends_on macos: ">= :monterey".
         vstep 6.local-cask-fixed-deps 60 "diagnostic: repo cask with depends_on macos: \">= :monterey\"" <<EOF
 $BREW_ENV
 T=\$(brew --repository e2e/local)

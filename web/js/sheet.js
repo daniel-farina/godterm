@@ -1,11 +1,8 @@
-// One bottom sheet (a centered panel on desktop) for every dialog, and a
-// small popover menu anchored where it was asked for (desktop menus).
 import { $, h, emit, isDesk } from './util.js';
 
 let onClose = null;
 export let sheetKind = '';
-// The control that opened the sheet or menu: the focus goes back to it
-// when they close (while the focus is still inside them, or lost).
+
 let opener = null;
 const FOCUSABLE = 'button:not([disabled]),[href],input:not([disabled]):not([type=hidden]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 const focusables = (root) => [...root.querySelectorAll(FOCUSABLE)].filter((el) => (el.offsetWidth || el.offsetHeight || el.getClientRects().length) && !el.closest('[hidden]'));
@@ -21,8 +18,7 @@ function giveBack() {
   const inside = !a || a === document.body || $('#sheet').contains(a) || (pop && pop.contains(a));
   if (o && o.isConnected && inside) { try { o.focus({ preventScroll: true }); } catch {} }
 }
-// Tab stays inside the open sheet or menu (it is modal); the arrows walk
-// a menu's rows.
+
 function trap(box) {
   box.addEventListener('keydown', (e) => {
     if (e.key === 'Tab') {
@@ -58,19 +54,17 @@ export function openSheet(...kids) {
   $('#sheet').classList.toggle('tall', !!opts.tall);
   $('#sheet').classList.toggle('wide', !!opts.wide);
   $('#sheet').classList.toggle('big', !!opts.big);
-  // The kind sizes the dialog on a desktop (app.css).
+
   $('#sheet').dataset.kind = sheetKind;
   $('#sheet').classList.add('on');
   $('#scrim').classList.add('on');
-  // The focus moves into the sheet (its container: no field, so no phone
-  // keyboard pops up); Tab goes to its first control.
+
   if (!$('#sheet').contains(document.activeElement)) $('#sheet').focus({ preventScroll: true });
   emit('sheet', sheetKind);
 }
 
 let pop = null;
-// A popover at `at` ({x, y}, viewport px), kept inside the window. Called
-// again while open it replaces its content in place (a submenu).
+
 export function openMenu(at, ...kids) {
   if (!pop) {
     pop = h('div', { id: 'pop', role: 'menu', hidden: true, tabindex: -1 });
@@ -88,13 +82,13 @@ export function openMenu(at, ...kids) {
   if (!wasOpen) pop.at = at;
   const a = pop.at || { x: 8, y: 8 };
   const w = pop.offsetWidth, hh = pop.offsetHeight;
-  // Inside the window and the safe areas (a phone's home indicator).
+
   const cs = getComputedStyle(document.documentElement);
   const sab = parseFloat(cs.getPropertyValue('--sab')) || 0, sal = parseFloat(cs.getPropertyValue('--sal')) || 0, sar = parseFloat(cs.getPropertyValue('--sar')) || 0;
   pop.style.left = Math.max(8 + sal, Math.min(a.x, innerWidth - w - 8 - sar)) + 'px';
-  // `up`: it ends at a.y (a status bar item opens it above itself).
+
   pop.style.top = Math.max(8, Math.min(a.up ? a.y - hh : a.y, innerHeight - hh - 8 - sab)) + 'px';
-  // Opened from the keyboard: the focus lands on the first row.
+
   if (!pop.contains(document.activeElement)) (document.body.classList.contains('kbd') ? focusables(pop)[0] || pop : pop).focus({ preventScroll: true });
   emit('sheet', sheetKind);
 }
@@ -103,7 +97,7 @@ export const menuOpen = () => !!pop && !pop.hidden;
 export function closeSheet() {
   if (pop && !pop.hidden) { pop.hidden = true; pop.replaceChildren(); }
   $('#sheet').classList.remove('on');
-  // The drawer may still be open under the sheet: its scrim stays.
+
   $('#scrim').classList.toggle('on', $('#side').classList.contains('open'));
   const f = onClose; onClose = null; sheetKind = '';
   giveBack();
@@ -113,12 +107,6 @@ export function closeSheet() {
 
 export const sheetOpen = () => $('#sheet').classList.contains('on') || menuOpen();
 
-// A finger drags the sheet down to close it (phones): from the grip, the
-// title or anything else that does not scroll, or from a scrolling part
-// once it sits at its top. The sheet follows the finger; past a third
-// of its height (180 px at most), or on a flick down, it closes, else it
-// settles back. A sideways move, a slider, a text field or a horizontal strip
-// keeps its own gesture.
 {
   const sheet = $('#sheet');
   let g = null;
@@ -131,7 +119,7 @@ export const sheetOpen = () => $('#sheet').classList.contains('on') || menuOpen(
   };
   sheet.addEventListener('touchstart', (e) => {
     g = null;
-    // A desktop's centred dialog (an iPad on its side too) has no pull down.
+
     if (e.touches.length !== 1 || !sheet.classList.contains('on') || isDesk()) return;
     if (e.target.closest('input[type=range], textarea, select, [data-nodrag]')) return;
     const t = e.touches[0];
@@ -144,8 +132,7 @@ export const sheetOpen = () => $('#sheet').classList.contains('on') || menuOpen(
       if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) { g = null; return; }
       if (dy <= 0) { if (dy < -8) g = null; return; }
       if (g.sc && g.sc.scrollTop > 0) { g = null; return; }
-      // A pull down with nothing left to scroll is ours from the first
-      // pixel (else the browser starts a scroll and cancels the touch).
+
       if (e.cancelable) e.preventDefault();
       if (dy < 8) return;
       g.on = true;

@@ -1,17 +1,9 @@
-//! The talk back voice a browser chose for itself. While a browser is
-//! GodTerm's voice, replies spoken to it use its own engine and voice
-//! (Kokoro af_heart unless it chose another), and the Mac's settings stay
-//! as they are for the Mac's speakers. The web app sends the choice in a
-//! `voice` frame (`web_tts`); `web_cfg` makes the settings speech uses.
-
 use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
 use crate::config::VoiceCfg;
 
-/// A browser's choice: an engine id and that engine's voice ("" is the
-/// engine's default). Engine "mac" means the Mac's own settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebTts {
     pub engine: String,
@@ -31,16 +23,12 @@ impl WebTts {
     }
 }
 
-/// The engine ids a browser may choose ("mac": the Mac's settings).
 pub const ENGINES: &[&str] = &["kokoro", "chatterbox", "ming", "say", "grok", "off", "mac"];
 
-/// What a browser that never chose hears: the local Kokoro Heart voice.
 pub fn default_choice() -> WebTts {
     WebTts::new("kokoro", "af_heart")
 }
 
-/// The `web_tts` value of a frame: `{engine, voice}`, or null for the
-/// Mac's settings (returned as engine "mac").
 pub fn parse(v: &Value) -> Result<WebTts, String> {
     if v.is_null() {
         return Ok(WebTts::new("mac", ""));
@@ -92,10 +80,6 @@ pub fn parse(v: &Value) -> Result<WebTts, String> {
     Ok(WebTts { engine, voice })
 }
 
-/// The settings speech for the browser uses: the Mac's, with the engine
-/// and its voice replaced by the browser's choice (Kokoro af_heart when it
-/// never chose). The Mac's fallbacks still apply when that engine cannot
-/// run here.
 pub fn web_cfg(mac: &VoiceCfg, choice: Option<&WebTts>) -> VoiceCfg {
     let c = choice.cloned().unwrap_or_else(default_choice);
     if c.engine == "mac" {
@@ -118,7 +102,7 @@ pub fn web_cfg(mac: &VoiceCfg, choice: Option<&WebTts>) -> VoiceCfg {
         "say" => {
             v.tts_voice = (!voice.is_empty() && voice != "system").then(|| voice.to_string());
         }
-        // "clone" keeps the Mac's clip; anything else is the built in voice.
+
         "chatterbox" if voice != "clone" => v.local.chatterbox_ref = String::new(),
         "ming" => {
             v.local.ming_voice = if voice.is_empty() {
@@ -132,7 +116,6 @@ pub fn web_cfg(mac: &VoiceCfg, choice: Option<&WebTts>) -> VoiceCfg {
     v
 }
 
-/// The Mac's own engine and its voice, as a choice (the list's `mac`).
 pub fn mac_choice(mac: &VoiceCfg) -> WebTts {
     let voice = match mac.tts_engine.as_str() {
         "kokoro" => mac.kokoro_voice.clone(),
@@ -145,9 +128,6 @@ pub fn mac_choice(mac: &VoiceCfg) -> WebTts {
     WebTts::new(&mac.tts_engine, &voice)
 }
 
-// ---------------------------------------------------------------------
-// The browser that is the voice now and its choice, for the speech worker.
-
 struct Route {
     client: u64,
     choice: Option<WebTts>,
@@ -155,14 +135,11 @@ struct Route {
 
 static ROUTE: Mutex<Option<Route>> = Mutex::new(None);
 
-/// The voice browser changed: `Some((client, its choice))`, or None when
-/// the voice is back on the Mac.
 pub fn set_route(r: Option<(u64, Option<WebTts>)>) {
     *ROUTE.lock().unwrap_or_else(|e| e.into_inner()) =
         r.map(|(client, choice)| Route { client, choice });
 }
 
-/// A browser changed its choice: it applies now if it is the voice.
 pub fn choice_changed(client: u64, choice: Option<WebTts>) {
     if let Some(r) = ROUTE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         if r.client == client {
@@ -171,7 +148,6 @@ pub fn choice_changed(client: u64, choice: Option<WebTts>) {
     }
 }
 
-/// The voice browser and its choice (None: no browser is the voice).
 pub fn route() -> Option<(u64, Option<WebTts>)> {
     ROUTE
         .lock()
@@ -180,9 +156,6 @@ pub fn route() -> Option<(u64, Option<WebTts>)> {
         .map(|r| (r.client, r.choice.clone()))
 }
 
-// ---------------------------------------------------------------------
-// The engines and voices a browser can choose from.
-
 fn region(id: &str) -> &'static str {
     match id.get(..1) {
         Some("b") => "UK",
@@ -190,7 +163,6 @@ fn region(id: &str) -> &'static str {
     }
 }
 
-/// "Heart (US, female)" for a Kokoro voice id.
 pub fn kokoro_voice_label(id: &str) -> String {
     let name = super::catalog::kokoro_name(id);
     match super::catalog::KOKORO_EN.iter().find(|v| v.0 == id) {
@@ -199,8 +171,6 @@ pub fn kokoro_voice_label(id: &str) -> String {
     }
 }
 
-/// Why Grok cannot speak here, from what is known without the network
-/// (or the Keychain): no API key saved, no grok login.
 pub fn grok_problem(mac: &VoiceCfg) -> Option<String> {
     let g = &mac.grok;
     if g.auth == "api_key" {
@@ -218,7 +188,6 @@ pub fn grok_problem(mac: &VoiceCfg) -> Option<String> {
     }
 }
 
-/// Voice lists known already (from Settings), or read now.
 pub struct Lists {
     pub kokoro: Vec<String>,
     pub say: Vec<String>,
@@ -226,8 +195,6 @@ pub struct Lists {
 }
 
 impl Lists {
-    /// The lists Settings read, else the voices file and `say -v ?`
-    /// (blocking: call off the UI thread). No network.
     pub fn now(mac: &VoiceCfg) -> Lists {
         let cached = crate::settings::AUDIO_LISTS
             .lock()
@@ -270,8 +237,6 @@ fn engine(id: &str, label: &str, voices: Vec<Value>, problem: Option<String>) ->
     })
 }
 
-/// The `web_tts_list` reply: each engine with its voices, whether it can
-/// run here (and why not), the default and the Mac's own choice.
 pub fn list(mac: &VoiceCfg, lists: &Lists, choice: Option<&WebTts>) -> Value {
     let mut engines = vec![];
     let kokoro: Vec<Value> = super::catalog::kokoro_choices(&lists.kokoro)
@@ -402,7 +367,7 @@ mod tests {
             tts_speed: 1.3,
             ..Default::default()
         };
-        // Never chose: Kokoro Heart, the Mac's speed and fallbacks.
+
         let d = web_cfg(&mac, None);
         assert_eq!(
             (d.tts_engine.as_str(), d.kokoro_voice.as_str()),
@@ -411,7 +376,7 @@ mod tests {
         assert_eq!(d.tts_speed, 1.3);
         assert_eq!(d.tts_fallback, mac.tts_fallback);
         assert_eq!(d.grok, mac.grok);
-        // The Mac's settings, as they are.
+
         assert_eq!(web_cfg(&mac, Some(&WebTts::new("mac", ""))), mac);
         let k = web_cfg(&mac, Some(&WebTts::new("kokoro", "bf_emma")));
         assert_eq!(
@@ -458,7 +423,7 @@ mod tests {
                 .ming_voice,
             "UK_George"
         );
-        // Kokoro missing here: the chain falls back as on the Mac.
+
         let gone = VoiceCfg {
             kokoro_model: "/nonexistent/kokoro.onnx".into(),
             tts_engine: "say".into(),
@@ -520,7 +485,7 @@ mod tests {
         );
         let grok = e.iter().find(|x| x["engine"] == "grok").unwrap();
         assert_eq!(grok["voices"][0], json!({"id": "eve", "label": "Eve"}));
-        // The test home has no grok login.
+
         assert_eq!(grok["available"], false);
         assert!(grok["note"].as_str().unwrap().contains("logged in"));
         assert_eq!(kokoro_voice_label("bm_george"), "George (UK, male)");

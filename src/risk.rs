@@ -1,10 +1,3 @@
-//! Which approvals the assistant must confirm with the user first. The
-//! rule is inverted from a blocklist: a shell command is approved without
-//! asking only when every part of it clearly just reads, builds or tests.
-//! Anything else (deletes, moves, installs, pushes, piping into a shell,
-//! writing files with `>`) asks. When in doubt, ask.
-
-/// Commands that only read.
 const READ: &[&str] = &[
     "ls",
     "cat",
@@ -76,7 +69,6 @@ const READ: &[&str] = &[
     "bat",
 ];
 
-/// Build and test runners, with the subcommands that only build or test.
 fn build_or_test(cmd: &str, args: &[&str]) -> bool {
     let sub = args
         .iter()
@@ -151,7 +143,6 @@ fn build_or_test(cmd: &str, args: &[&str]) -> bool {
     }
 }
 
-/// git subcommands that only read.
 fn git_read(args: &[&str]) -> bool {
     let sub = args
         .iter()
@@ -176,8 +167,6 @@ fn git_read(args: &[&str]) -> bool {
     }
 }
 
-/// Split a command line into its simple commands (on | ; && || and new
-/// lines), keeping quoted text whole.
 fn segments(cmd: &str) -> Vec<String> {
     let mut out = vec![];
     let mut cur = String::new();
@@ -194,7 +183,7 @@ fn segments(cmd: &str) -> Vec<String> {
                 quote = Some(c);
                 cur.push(c);
             }
-            // | || ; && & and new lines all end a simple command.
+
             (None, '|' | ';' | '\n' | '&') => {
                 if matches!(c, '|' | '&') && it.peek() == Some(&c) {
                     it.next();
@@ -211,20 +200,18 @@ fn segments(cmd: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whitespace words, quotes stripped (good enough to classify).
 fn words(seg: &str) -> Vec<String> {
     seg.split_whitespace()
         .map(|w| w.trim_matches(|c| c == '"' || c == '\'').to_string())
         .collect()
 }
 
-/// A shell command that clearly only reads, builds or tests.
 pub fn safe_command(cmd: &str) -> bool {
     let c = cmd.trim();
     if c.is_empty() || c.contains("$(") || c.contains('`') {
         return false;
     }
-    // Writing a file with a redirect (2>&1 and >/dev/null are fine).
+
     let cleaned = c
         .replace("2>&1", "")
         .replace(">/dev/null", "")
@@ -236,7 +223,7 @@ pub fn safe_command(cmd: &str) -> bool {
     segments(&cleaned).iter().all(|seg| {
         let w = words(seg);
         let mut i = 0;
-        // Leading VAR=value assignments and `cd dir` are fine.
+
         while i < w.len() && w[i].contains('=') && !w[i].starts_with('-') {
             i += 1;
         }
@@ -264,15 +251,13 @@ pub fn safe_command(cmd: &str) -> bool {
     })
 }
 
-/// Must the user confirm approving this request ("Tool: detail")?
 pub fn needs_confirm(summary: &str) -> bool {
     let (tool, detail) = summary.split_once(": ").unwrap_or(("", summary));
     let t = tool.to_ascii_lowercase();
     if t.starts_with("bash") || t.is_empty() {
         return !safe_command(detail);
     }
-    // File edits, reads, searches and fetches are approved on request;
-    // unknown tools (other MCP servers, ...) and bypass mode ask.
+
     let known = [
         "edit", "create", "write", "read", "fetch", "web", "search", "glob", "grep", "list",
         "notebook", "todo", "task", "plan", "trust",

@@ -1,10 +1,3 @@
-// The keyboard on a desktop: F6 (Shift+F6 back) and Ctrl+` move the
-// focus between the areas (the tab list, the pane shown, the status bar,
-// the tab panel, the assistant, the toolbar), Shift+Escape leaves the
-// terminal for its pane header, and "?" lists every shortcut. Without
-// these the Tab key entered xterm's hidden textarea and never left it
-// (xterm takes Tab for the tab). body.kbd says the keyboard moved the
-// focus last: the focus rings (and the terminal's) show only then.
 import { $, $$, h, icon, isDesk } from './util.js';
 import { openSheet, closeSheet, sheetKind } from './sheet.js';
 
@@ -15,8 +8,6 @@ export const focusables = (root) => $$(FOCUSABLE, root).filter(visible);
 const typing = (el) => !!el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && !/^(checkbox|radio|button|file|range)$/.test(el.type)) || el.isContentEditable || !!el.closest?.('.xterm'));
 const inTerm = (el) => !!el?.closest?.('.xterm');
 
-// The areas in order: each names the element to land on, or null while
-// it is not on screen.
 const AREAS = [
   ['tabs', () => {
     if (isDesk() ? $('#app').classList.contains('noside') : !$('#side').classList.contains('open')) return null;
@@ -39,7 +30,6 @@ export function land(el) {
   return document.activeElement === el;
 }
 
-// The next (dir 1) or previous (dir -1) area that is on screen.
 export function cycle(dir) {
   const n = AREAS.length, cur = areaOf(document.activeElement);
   const from = cur < 0 ? (dir > 0 ? -1 : 0) : cur;
@@ -50,7 +40,6 @@ export function cycle(dir) {
   return '';
 }
 
-// Out of the terminal: to its pane header (a desktop), else the Tab button.
 export function leaveTerm() {
   const pane = document.activeElement?.closest('.pane');
   const to = (pane && focusables(pane.querySelector('.pane-head') || pane)[0]) || $('#b-tabmenu') || $('#title');
@@ -62,7 +51,6 @@ const R = (keys, what) => h('div.kh-r', {}, K(...[].concat(keys)), h('span', {},
 const G = (label, rows) => [h('div.gl', {}, label), h('div.list.kh', {}, rows)];
 const mac = /Mac|iPhone|iPad/.test(navigator.platform || '');
 
-// The shortcuts, as a sheet ("?" or Settings > This browser > Keyboard).
 export function helpSheet() {
   const desk = isDesk();
   openSheet({ kind: 'keys', tall: true },

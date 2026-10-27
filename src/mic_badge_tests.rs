@@ -1,8 +1,3 @@
-//! The mic badge: which tab holds the voice in direct mode, shown on its
-//! pane's header with the live state; a click opens a menu to move the
-//! mic to another tab or back to the assistant; the assistant panel says
-//! when the mic is away.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
@@ -25,7 +20,7 @@ fn test_app(tag: &str) -> (App, std::path::PathBuf) {
     for a in 0..app.accounts.len() {
         app.accounts[a].login.source = Some(CredSource::Keychain);
     }
-    // Nothing runs here: suspended tabs are ones direct mode may start with.
+
     for p in app.panes.iter_mut() {
         for t in p.tabs.iter_mut() {
             t.suspended = true;
@@ -94,7 +89,7 @@ fn only_the_pane_with_the_mic_has_the_badge() {
     assert!(find(&app, &UiAction::MicMenu(0)).is_none());
     let text = row(&t, r.y);
     assert!(text.contains("● mic"), "{text}");
-    // Muted shows, in the calm red, and the listening state reads too.
+
     app.voice.muted = true;
     draw(&mut app, &mut t);
     assert!(row(&t, r.y).contains("● mic · muted"), "{}", row(&t, r.y));
@@ -106,7 +101,7 @@ fn only_the_pane_with_the_mic_has_the_badge() {
         "{}",
         row(&t, r.y)
     );
-    // Direct mode off: the badge goes.
+
     app.end_direct("test", false);
     draw(&mut app, &mut t);
     assert!(app
@@ -150,7 +145,7 @@ fn the_menu_moves_the_mic_to_another_tab() {
     let menu: String = (0..50).map(|y| row(&t, y)).collect::<Vec<_>>().join("\n");
     assert!(menu.contains("move the mic to"), "{menu}");
     assert!(menu.contains("bring the mic back"), "{menu}");
-    // Pick the first other tab.
+
     let (uid, _) = targets[0].clone();
     click(&mut app, &UiAction::MicMoveTo(uid));
     assert_eq!(app.modal, Modal::None);
@@ -171,7 +166,7 @@ fn the_menu_brings_the_mic_back_and_the_badge_toggles_it() {
     draw(&mut app, &mut t);
     click(&mut app, &UiAction::MicMenu(0));
     assert_eq!(app.modal, Modal::MicMenu(0));
-    // A second click on the badge closes the menu.
+
     draw(&mut app, &mut t);
     click(&mut app, &UiAction::MicMenu(0));
     assert_eq!(app.modal, Modal::None);

@@ -1,8 +1,3 @@
-//! The UI thread's side of the web app: `hello` for new browsers, state
-//! pushed when it changes (at most every 100 ms, from the app loop), the
-//! assistant's messages, approvals, toasts and update news, and what
-//! browsers ask for (a turn, an answer, a tab's size).
-
 use super::{Hub, ToApp};
 use crate::app::App;
 use crate::app_assistant::{Entry, Who};
@@ -13,42 +8,36 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// State goes out at most this often.
 pub const PUSH_EVERY: Duration = Duration::from_millis(100);
-/// A busy web port is tried again this often.
+
 pub const WEB_RETRY: Duration = Duration::from_secs(5);
 
-/// What the browsers were last sent.
 pub struct WebSide {
     pub hub: Arc<Hub>,
-    /// Something happened since the last push (an event or a tick).
+
     pub changed: bool,
     last_push: Instant,
     state: String,
-    /// The assistant's log as last sent, with the ids given to it and
-    /// whether the chat leaves it out (see `hidden`).
+
     log: Vec<(u64, Entry, bool)>,
-    /// The last entry sent belongs to a turn GodTerm started itself.
+
     in_system: bool,
     next_id: u64,
-    /// The reply being streamed, as last sent, and when it started.
+
     live: String,
     live_at: i64,
     approvals: Vec<String>,
     update: String,
     flash: Option<String>,
-    /// Sizes browsers took: tab uid -> client.
+
     taken: HashMap<u64, u64>,
-    /// The device that took it, in words ("iPhone", "a browser"): the
-    /// other devices say who has the size.
+
     taken_by: HashMap<u64, String>,
-    /// Sizes whose browser left, kept a moment for it to come back (a
-    /// phone back from another app reconnects and takes them again, so
-    /// the tab is not resized twice): tab uid -> when they go back.
+
     left_sizes: Vec<(u64, Instant)>,
-    /// The browser that is the voice (its mic in, speech out).
+
     pub voice: Option<super::voice::WebVoice>,
-    /// What push notifications watch for (push.rs).
+
     pub push: super::push::Watch,
 }
 
@@ -86,8 +75,6 @@ fn role(w: &Who) -> &'static str {
     }
 }
 
-/// The note a turn GodTerm started itself opens with ("(events: t2
-/// finished)", "(t3 answered)", "(hyper replied; summing it up)").
 fn system_note(text: &str) -> bool {
     text.starts_with('(')
         && text.ends_with(')')
@@ -96,11 +83,6 @@ fn system_note(text: &str) -> bool {
             || text.ends_with(" replied; summing it up)"))
 }
 
-/// Whether the web chat leaves an entry out: what GodTerm's own turns (tab
-/// events, follow-ups) carry before their reply: the note that opens them
-/// and the chips and preambles of their calls (tools a report turn may not
-/// use are refused anyway). The user's turns and every reply are shown.
-/// `in_system` says whether such a turn is open, and is kept up to date.
 pub(super) fn hidden(e: &Entry, in_system: &mut bool) -> bool {
     match e.who {
         Who::User | Who::Reply => {
@@ -130,7 +112,6 @@ fn hex(c: ratatui::style::Color) -> String {
     }
 }
 
-/// The terminal UI's palette, for the web app to match.
 pub fn theme_json() -> Value {
     use crate::theme::*;
     json!({
@@ -142,14 +123,9 @@ pub fn theme_json() -> Value {
     })
 }
 
-/// How long a size stays after its browser left.
 const SIZE_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
 
 impl App {
-    /// The Mac's user typed into tab `uid` while a browser had sized it:
-    /// its pane takes the size back. The browser sees that in the state
-    /// (no `size_taken_by`) and stops sizing it until it is used there
-    /// again.
     pub fn web_size_back(&mut self, uid: u64) {
         if let Some(w) = self.web.as_mut() {
             w.taken.remove(&uid);
@@ -165,15 +141,12 @@ impl App {
         }
     }
 
-    /// Start the web server when it is wanted (config or --web).
     pub fn start_web(&mut self) {
         if super::wanted(&self.cfg) {
             self.try_start_web(true);
         }
     }
 
-    /// Serve the web app now. When the port is taken it says so once
-    /// (`first`) and tries again every 5 s until it gets it.
     pub(crate) fn try_start_web(&mut self, first: bool) {
         let port = super::port(&self.cfg);
         let web = self.cfg.web.clone();
@@ -203,8 +176,6 @@ impl App {
         }
     }
 
-    /// From the app loop: another try at a busy port when it is time.
-    /// Returns how long until the next one.
     pub fn web_retry_tick(&mut self) -> Option<Duration> {
         let at = self.web_retry_at?;
         if Instant::now() < at {
@@ -215,8 +186,6 @@ impl App {
             .map(|a| a.saturating_duration_since(Instant::now()))
     }
 
-    /// Stop serving: browsers are disconnected (their sizes and voice
-    /// handed back) and the port is freed.
     pub fn stop_web(&mut self) {
         self.web_retry_at = None;
         let ids: Vec<u64> = match &self.web {
@@ -231,8 +200,6 @@ impl App {
         }
     }
 
-    /// `[web] enabled` or `port` changed in config.toml: start, stop or
-    /// move the server. Returns what changed, for the reload note.
     pub fn web_config_changed(&mut self, old: &crate::config::WebCfg) -> Option<String> {
         let new = self.cfg.web.clone();
         let running = self.web.is_some() || self.web_retry_at.is_some();
@@ -261,8 +228,6 @@ impl App {
         None
     }
 
-    /// The tab list as the web app shows it: get_state's tabs with their
-    /// numeric uid and size.
     fn web_tabs(&self, state: &Value) -> Value {
         let tabs = state["tabs"].as_array().cloned().unwrap_or_default();
         let all = self.all_tabs();
@@ -278,13 +243,22 @@ impl App {
                 v["pane"] = json!(s + 1);
                 v["active"] = json!(self.panes[s].active == t);
                 v["running"] = json!(tab.is_running());
-                // When it last printed, was typed in or changed state (unix
-                // seconds, to 30 s so a busy tab does not change every frame):
-                // the browser sorts by it and says "5 min ago".
+
                 let idle = tab.last_activity().elapsed().as_secs();
-                let at = crate::app_assistant::now_ms() / 1000 - idle as i64;
+                let mut at = crate::app_assistant::now_ms() / 1000 - idle as i64;
+
+                if !matches!(tab.activity, Activity::Working | Activity::Permission) {
+                    let m = self
+                        .transcript_path(s, t)
+                        .and_then(|p| std::fs::metadata(p).ok())
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok());
+                    if let Some(m) = m {
+                        at = m.as_secs() as i64;
+                    }
+                }
                 v["active_at"] = json!(at - at.rem_euclid(30));
-                // The conversation it runs ("copy session", "resume").
+
                 if let Some(id) = &tab.session_id {
                     v["session_id"] = json!(id);
                 }
@@ -294,13 +268,11 @@ impl App {
                         v["size_device"] = json!(d);
                     }
                 }
-                // Its repo in numbers for the status bar (branch,
-                // uncommitted files, unpushed commits), from the cache.
+
                 if let Some(g) = self.web_git_facts(&tab.cwd) {
                     v["git_facts"] = g;
                 }
-                // GodTerm Sync: owned by another machine (read only), or
-                // moving there.
+
                 if let Some(l) = self.lease_json(s, t) {
                     v["lease"] = l;
                 }
@@ -310,9 +282,6 @@ impl App {
         json!(out)
     }
 
-    /// A folder's repo facts from the project index cache (never runs
-    /// git): `{branch, dirty, unpushed, behind, error}`. None outside a
-    /// repo, before its first git pass, or while the cache is busy.
     pub fn web_git_facts(&self, dir: &std::path::Path) -> Option<Value> {
         let top = crate::project_git::repo_top(dir)?;
         let ix = self.project_index.try_lock().ok()?;
@@ -326,9 +295,6 @@ impl App {
         }))
     }
 
-    /// get_state's accounts plus the models a tab of each can switch to
-    /// (its model bar; none for a CLI that picks its model itself), for
-    /// the web app's Switch model sheet.
     fn web_account_models(&self, accounts: Value) -> Value {
         let mut v = accounts.as_array().cloned().unwrap_or_default();
         for (i, a) in v.iter_mut().enumerate() {
@@ -340,12 +306,14 @@ impl App {
                 .map(|m| json!({"arg": m.arg, "label": m.label, "desc": m.desc}))
                 .collect();
             a["models"] = json!(models);
+
+            if let Some(e) = self.email_label(i, 64) {
+                a["email"] = json!(e);
+            }
         }
         json!(v)
     }
 
-    /// What waits for a yes: the assistant's questions and tabs at a
-    /// permission prompt.
     pub fn web_approvals(&self) -> Vec<Value> {
         let mut v = vec![];
         for p in self.pending_confirms.iter().filter(|p| p.answerable()) {
@@ -375,9 +343,7 @@ impl App {
                     }
                 })
                 .unwrap_or_else(|| "waiting for approval".into());
-            // Only the answers its prompt has (a CLI's folder trust has no
-            // "always"; a menu GodTerm cannot read, none: answer it in the
-            // tab). Claude and Grok keep all three (1 / 2 / Esc fallback).
+
             use crate::prompt::Choice;
             let all = [
                 ("yes", Choice::Approve),
@@ -408,7 +374,6 @@ impl App {
         v
     }
 
-    /// The state browsers see (`hello` and `state`).
     pub fn web_state(&self) -> Value {
         let s = self.state_json();
         let pick = |k: &str| s.get(k).cloned().unwrap_or(Value::Null);
@@ -425,8 +390,7 @@ impl App {
             "accounts": self.web_account_models(pick("accounts")),
             "tabs": self.web_tabs(&s),
             "focused": self.panes.get(self.focus).map(|p| p.cur().uid),
-            // Tabs moved to another account continue under a new id: the
-            // browser follows a pane that shows the old one.
+
             "moved": self
                 .moved_ids
                 .iter()
@@ -452,13 +416,12 @@ impl App {
                 "action": self.voice.action,
                 "web": self.web_voice_client(),
                 "web_muted": self.web_mic_is_muted(),
-                // Hands free: the reply is being spoken, the wake word's
-                // follow up window is open (the next utterance is a
-                // command), the wake word itself, and barge-in.
+
                 "speaking": self.voice.engine.as_ref().is_some_and(|v| v.speaking()),
                 "awake": self.voice.wake_until.is_some_and(|t| t > std::time::Instant::now()),
                 "wake_word": self.cfg.voice.wake_words.first(),
                 "barge_in": self.cfg.voice.barge_in,
+                "typed_spoken": self.cfg.assistant.speak_typed,
                 "status": match &self.voice.status {
                     crate::voice::VoiceStatus::Starting => "starting",
                     crate::voice::VoiceStatus::Idle => "idle",
@@ -489,7 +452,6 @@ impl App {
         })
     }
 
-    /// A browser's request, on the UI thread.
     pub fn web_event(&mut self, ev: ToApp) {
         match ev {
             ToApp::Hello(id) => self.web_hello(id),
@@ -502,7 +464,7 @@ impl App {
                     "web: a turn typed in browser {client} ({} images)",
                     images.len()
                 ));
-                // The turn knows where it came from (assist.rs).
+
                 self.assistant.pending_web = Some(client);
                 self.web_say(&text, &images);
                 self.assistant.pending_web = None;
@@ -597,9 +559,6 @@ impl App {
         }
     }
 
-    /// A turn from the browser: images pasted with it are attached as the
-    /// panel attaches them ("[image 1: 1280x720]" in the text, the image
-    /// for the model, referable for tabs).
     fn web_say(&mut self, text: &str, images: &[Vec<u8>]) {
         let mut text = text.to_string();
         let mut atts = vec![];
@@ -629,11 +588,10 @@ impl App {
         }
         self.assistant.next_images = atts;
         self.ask_assistant(&text);
-        // Not taken (the request was answered without a turn).
+
         self.assistant.next_images.clear();
     }
 
-    /// Answer an approval as the user (the browser holds the token).
     pub fn web_answer(&mut self, id: &str, choice: &str) -> Result<String, String> {
         let c = choice.trim().to_lowercase();
         let yes = matches!(c.as_str(), "yes" | "approve" | "always");
@@ -648,13 +606,12 @@ impl App {
                 _ if yes => crate::prompt::Choice::Approve,
                 _ => crate::prompt::Choice::Deny,
             };
-            // A prompt that cannot be answered that way is an error for the
-            // browser (it said "answered" before, and nothing happened).
+
             self.tab_answerable(s, t, pick)?;
             crate::log::info(&format!("web: the user answered t{uid}'s prompt: {c}"));
             return Ok(self.answer_tab(s, t, pick));
         }
-        // The assistant's question: the same as its Yes and No buttons.
+
         if id == "switch" || id.starts_with("confirm:") {
             if let Some(tok) = id.strip_prefix("confirm:") {
                 if !self.pending_confirms.iter().any(|p| p.token == tok) {
@@ -695,13 +652,11 @@ impl App {
             "live_at": (!self.assistant.current.is_empty()).then(|| w.live_at),
             "update": self.web_update(),
         });
-        // The log as sent is caught up first, so the hello carries it.
+
         c.out.text(hello.to_string());
         c.ready.store(true, Ordering::Relaxed);
     }
 
-    /// When the loop should come back for a push that waits (None: none
-    /// waits).
     pub fn web_due(&self) -> Option<Duration> {
         let w = self.web.as_ref()?;
         if !w.changed {
@@ -710,12 +665,11 @@ impl App {
         Some(PUSH_EVERY.saturating_sub(w.last_push.elapsed()))
     }
 
-    /// From the app loop: push what changed, at most every 100 ms.
     pub fn web_pump(&mut self) {
         let Some(w) = self.web.as_mut() else {
             return;
         };
-        // Sizes whose browser did not come back go back to their panes.
+
         if !w.left_sizes.is_empty() {
             let now = Instant::now();
             let (gone, keep): (Vec<_>, Vec<_>) =
@@ -738,10 +692,9 @@ impl App {
         }
         w.changed = false;
         w.last_push = Instant::now();
-        // The log is followed even with no browser, so a new one's hello
-        // has it with stable ids.
+
         self.web_sync_log();
-        // Push notifications go out with no browser open too.
+
         self.web_push_tick();
         let Some(w) = self.web.as_ref() else {
             return;
@@ -760,8 +713,7 @@ impl App {
             w.hub.broadcast(&state);
             w.state = state;
         }
-        // Each new approval once as its own frame (for a notification);
-        // the list in state stays the authority.
+
         let ids: Vec<String> = approvals
             .iter()
             .filter_map(|a| a["id"].as_str().map(str::to_string))
@@ -788,7 +740,6 @@ impl App {
         }
     }
 
-    /// Send the assistant's new messages (and the reply as it streams).
     fn web_sync_log(&mut self) {
         let log = &self.assistant.log;
         let live = self.assistant.current.clone();
@@ -799,8 +750,6 @@ impl App {
         let sent: Vec<&Entry> = w.log.iter().map(|(_, e, _)| e).collect();
         let same = sent.len() == log.len() && sent.iter().zip(log.iter()).all(|(a, b)| *a == b);
         if !same {
-            // Appended to, maybe trimmed at the front: the sent tail that
-            // starts the log now. Anything else: send it all again.
             let start = if sent.is_empty() {
                 Some(0)
             } else {

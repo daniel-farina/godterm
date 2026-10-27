@@ -1,8 +1,3 @@
-// Settings (the gear in the top bar): every setting in one place, with a
-// search box. This browser's own (kept on the device), then GodTerm's
-// (list_settings, saved with set_setting as the Settings screen does),
-// grouped as the user thinks of them: Voice, Terminal, Assistant,
-// Accounts and usage, Jobs and loops, Web app, General, About.
 import { $, h, on, emit, toast, store, icon, isDesk, isTouch, hscroll } from './util.js';
 import { tool, send } from './conn.js';
 import { S } from './state.js';
@@ -22,8 +17,7 @@ const SECTIONS = [
   ['accounts', 'Accounts and usage'], ['jobs', 'Jobs and loops'], ['web', 'Web app'], ['general', 'General'], ['about', 'About'], ['sync', 'Sync'],
 ];
 SECTIONS.splice(5, 0, ['github', 'GitHub accounts and repos']);
-// Where each GodTerm setting goes: by its key, else by its Settings
-// screen section.
+
 function sectionOf(s, from) {
   const k = s.key || '';
   if (k.startsWith('web.')) return 'web';
@@ -35,23 +29,19 @@ function sectionOf(s, from) {
   return 'general';
 }
 
-// One row: a label with a line of help, and its control.
 const row = (label, help, control, q = '') => h('label.li.st', { 'data-q': (label + ' ' + help + ' ' + q).toLowerCase() },
   h('span.stl', {}, h('span', {}, label), help ? h('small', {}, help) : null), control);
 const check = (on, fn) => { const c = h('input', { type: 'checkbox', checked: !!on }); c.onchange = () => fn(c.checked); return c; };
 const select = (opts, cur, fn, aria) => { const s = h('select.inl', { 'aria-label': aria }, opts.map(([v, l]) => h('option', { value: v, selected: String(cur) === String(v) }, l))); s.onchange = () => fn(s.value); return s; };
 const btn = (label, fn, cls = '') => h('button.btn.sm' + cls, { type: 'button', onclick: (e) => { e.preventDefault(); fn(); } }, label);
 
-// A GodTerm setting (list_settings' row), saved by set_setting (a risky
-// one asks first, as everywhere).
 function godRow(s) {
   const k = s.kind;
   const v = String(s.value ?? '');
   const args = (value) => (s.account ? { key: s.key, value, account: s.account } : { key: s.key, value });
-  // The tap is the user's own request (as typing it to the assistant
-  // would be): GodTerm runs admin changes only from the user.
+
   const save = (value) => run('set_setting', args(value), `${s.label}: ${value}`, { user_says: `set ${s.label} to ${value}` })
-    // (The confirm sheet took Settings' place: back to it, same search.)
+
     .then(() => { if (!sheetKind || sheetKind === 'confirm') settingsSheet(lastQ); });
   let input;
   if (k === 'on/off') input = check(/^(on|true|yes)$/i.test(v), (b) => save(b ? 'on' : 'off'));
@@ -101,8 +91,7 @@ function browserRows() {
       if (!debugOn()) return toast('Turn on Debug log first', 'warn');
       report().then((ok) => toast(ok ? 'Debug report sent' : 'Debug report queued: not connected'));
     })),
-    // iOS Safari: there is no install prompt, and notifications need the
-    // home screen app, so the two rows say the same thing.
+
     standalone() ? null : ios() && safari() ? row('Add to Home Screen', 'Share, then Add to Home Screen: full screen, and notifications work from there', btn('How', () => { closeSheet(); install(); }), 'install app')
       : row('Install as an app', 'On the home screen, full screen, with notifications', btn('Install', () => { closeSheet(); install(); })),
   ];
@@ -170,12 +159,10 @@ export async function settingsSheet(query = '') {
   body('web').append(h('div.list.st-god'));
   body('general').append(h('div.list.st-god'));
   body('about').append(L(aboutRows()));
-  // Settings > Sync: its own screen (web/js/syncui.js), filtered again
-  // each time it draws.
+
   body('sync').append(syncSection());
   secs.sync.addEventListener('sy-render', () => filter());
-  // One section shows at a time (kept per browser); a search looks through
-  // all of them and shows every match, by section.
+
   let cur = store.get('st-sec', 'browser');
   if (!secs[cur]) cur = 'browser';
   const tabs = {};
@@ -187,21 +174,22 @@ export async function settingsSheet(query = '') {
     sheet?.closest('#sheet-body, .sheet-body')?.scrollTo?.({ top: 0 });
     secs[id].scrollIntoView({ block: 'nearest' });
   } }, h('span', {}, name), h('span.st-n')))));
-  // What a row is found by: its words, its labels, its options' text.
+
   const words = (r) => ((r.dataset.q || '') + ' ' + r.textContent + ' ' + [...r.querySelectorAll('option, [placeholder], [aria-label], [title]')].map((e) => e.textContent + ' ' + (e.placeholder || '') + ' ' + (e.getAttribute('aria-label') || '') + ' ' + (e.title || '')).join(' ')).toLowerCase();
   const filter = () => {
     const t = q.value.trim().toLowerCase();
+    sheet?.classList.toggle('st-searching', !!t);
     for (const [id, sec] of Object.entries(secs)) {
       let n = 0;
       if (!t) {
         for (const r of sec.querySelectorAll('[hidden][data-st]')) { r.hidden = false; delete r.dataset.st; }
         sec.hidden = id !== cur;
       } else {
-        // A section's name matching shows all of it.
+
         const whole = sec.dataset.name.includes(t);
         for (const r of sec.querySelectorAll('[data-stm]')) delete r.dataset.stm;
         for (const r of sec.querySelectorAll('[data-q], .st-body > .list > *, .st-body > .mnote')) {
-          // Inside a match counts as a match (its words are the match's).
+
           const hit = words(r).includes(t);
           if (hit) r.dataset.stm = '1';
           const show = whole || hit || !!r.parentElement?.closest('[data-stm]');
@@ -230,7 +218,7 @@ export async function settingsSheet(query = '') {
   hscroll(nav);
   openSheet({ kind: 'settings', tall: true, wide: true }, head, sheet);
   filter();
-  // GodTerm's own settings, by section of its Settings screen.
+
   const r = await tool('list_settings', {});
   const names = r.result?.sections || r.sections || ['General', 'Layout', 'Accounts', 'Voice and Audio', 'Assistant', 'Memory'];
   const all = await Promise.all(names.map((n) => tool('list_settings', { section: n }).then((x) => [n, x.result?.settings || x.settings || []])));
@@ -241,15 +229,37 @@ export async function settingsSheet(query = '') {
       const id = (s.key || '') + '/' + (s.account || '');
       if (seen.has(id)) continue;
       seen.add(id);
-      secs[sectionOf(s, from)].querySelector('.st-god')?.append(godRow(s));
+      const row = godRow(s);
+      if (s.group) row.dataset.grp = s.group;
+      secs[sectionOf(s, from)].querySelector('.st-god')?.append(row);
     }
   }
   for (const g of sheet.querySelectorAll('.st-god')) {
     if (!g.children.length) g.remove();
-    else g.before(h('div.st-sub', {}, 'GodTerm (all devices)'));
+    else { groupRows(g); g.before(h('div.st-sub', {}, 'GodTerm (all devices)')); }
   }
   if (r.error) body('general').append(note('GodTerm\'s settings did not load: ' + r.error));
   filter();
+}
+
+function groupRows(list) {
+  const rows = [...list.children];
+  const groups = [...new Set(rows.map((r) => r.dataset.grp).filter(Boolean))];
+  if (groups.length < 2) return;
+  const open = store.get('st-grp', {});
+  const key = (g) => (list.closest('section')?.id || '') + '/' + g;
+  const paint = (head, g) => {
+    const o = open[key(g)] ?? g === groups[0];
+    head.setAttribute('aria-expanded', String(o));
+    for (const r of list.querySelectorAll('[data-grp]')) if (r.dataset.grp === g) r.classList.toggle('grp-closed', !o);
+  };
+  for (const g of groups) {
+    const n = rows.filter((r) => r.dataset.grp === g).length;
+    const head = h('button.st-grp', { type: 'button', 'aria-expanded': 'true' }, h('span.chv', {}), h('span.gn', {}, g), h('span.gc', {}, String(n)));
+    head.onclick = () => { open[key(g)] = head.getAttribute('aria-expanded') !== 'true'; store.set('st-grp', open); paint(head, g); };
+    rows.find((r) => r.dataset.grp === g).before(head);
+    paint(head, g);
+  }
 }
 
 on('sheet', (k) => { if (k !== 'settings') sheet = null; });

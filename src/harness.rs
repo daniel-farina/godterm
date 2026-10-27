@@ -1,8 +1,3 @@
-//! Coding agent CLIs: Claude, Grok, Codex, Cursor, Antigravity and OpenCode.
-//! Launch flags and home policy live here. Claude/Grok also have usage,
-//! credential and transcript adapters; native integrations let their CLIs
-//! manage those features (see docs/CLI_HARNESSES.md).
-
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -60,35 +55,27 @@ impl Harness {
         }
     }
 
-    /// The variable naming each account's isolated home.
     pub fn home_env(self) -> &'static str {
         match self {
             Harness::Claude => "CLAUDE_CONFIG_DIR",
             Harness::Grok => "GROK_HOME",
             Harness::Codex => "CODEX_HOME",
-            // These CLIs use their native config and credential stores.
-            // An empty key means no home override; never invent an env var
-            // and claim it isolates logins.
+
             Harness::Cursor | Harness::Antigravity | Harness::OpenCode => "",
         }
     }
 
-    /// The binary to run, given the configured override.
     pub fn bin(self, configured: Option<&str>) -> String {
         if let Some(c) = configured.filter(|c| !c.trim().is_empty()) {
             return crate::config::expand_tilde(c)
                 .to_string_lossy()
                 .into_owned();
         }
-        // Tests never start the user's real claude or grok (nor anything
-        // on PATH by those names): unless a test names one, a program that
-        // exits at once.
+
         if cfg!(test) {
             return test_agent();
         }
         match self {
-            // On PATH; else the installer's place (a GodTerm started from
-            // launchd, by the supervisor, has a short PATH).
             Harness::Claude => {
                 let local = crate::config::home_dir().join(".local/bin/claude");
                 if crate::deps::which("claude").is_none() && local.exists() {
@@ -118,7 +105,6 @@ impl Harness {
         }
     }
 
-    /// Flags for a permission mode (GodTerm's names, see config.rs).
     pub fn permission_args(self, mode: &str) -> Vec<String> {
         match self {
             Harness::Claude => crate::config::permission_args(mode),
@@ -158,11 +144,7 @@ impl Harness {
                 "plan" => vec!["--mode".into(), "plan".into()],
                 _ => vec![],
             },
-            // OpenCode 2.x has no flag for an agent (`opencode --agent plan`
-            // is "Unrecognized flag", verified against 2.0.32): plan mode
-            // goes in the per-launch config file (see `opencode_config`).
-            // Its permission policy belongs in its own config; --auto
-            // approves what is not explicitly denied.
+
             Harness::OpenCode => match mode {
                 "bypass" => vec!["--auto".into()],
                 _ => vec![],
@@ -170,9 +152,6 @@ impl Harness {
         }
     }
 
-    /// Whether `id` may follow a resume flag: letters, digits and `._:-`,
-    /// not starting with `-`, so a stored or imported id can never be read
-    /// by the CLI as an option (for example a sandbox switch).
     pub fn safe_session_id(id: &str) -> bool {
         !id.is_empty()
             && id.len() <= 128
@@ -182,8 +161,6 @@ impl Harness {
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
     }
 
-    /// The flags that resume session `id`; none (a fresh conversation)
-    /// when `id` is not a plain identifier.
     pub fn resume_args(self, id: &str) -> Vec<String> {
         if !Self::safe_session_id(id) {
             crate::log::error("resume: refusing a session id that is not a plain identifier");
@@ -199,8 +176,6 @@ impl Harness {
         }
     }
 
-    /// Always added: grok gets its own leader per account, so accounts
-    /// never share one (and its login).
     pub fn base_args(self, home: &Path) -> Vec<String> {
         match self {
             Harness::Claude
@@ -215,19 +190,17 @@ impl Harness {
         }
     }
 
-    /// What a login tab runs (after the binary).
     pub fn login_args(self) -> Option<Vec<String>> {
         match self {
-            Harness::Claude => None, // claude's own onboarding / /login
+            Harness::Claude => None,
             Harness::Grok => Some(vec!["login".into()]),
             Harness::Codex | Harness::Cursor => Some(vec!["login".into()]),
             Harness::OpenCode => Some(vec!["auth".into(), "login".into()]),
-            // agy has no login subcommand: its onboarding and /login do it.
+
             Harness::Antigravity => None,
         }
     }
 
-    /// Short badge shown in pane headers (None for the default harness).
     pub fn badge(self) -> Option<&'static str> {
         match self {
             Harness::Claude => None,
@@ -235,7 +208,6 @@ impl Harness {
         }
     }
 
-    /// The user's main (non GodTerm) home of this harness.
     pub fn main_home(self) -> PathBuf {
         match self {
             Harness::Claude => crate::session_ops::main_dir(),
@@ -269,22 +241,14 @@ impl Harness {
         }
     }
 
-    /// Only these harnesses have GodTerm transcript, usage and admin adapters.
     pub fn integrated(self) -> bool {
         matches!(self, Self::Claude | Self::Grok)
     }
 
-    /// Whether tabs of this CLI get GodTerm's tab-scoped job and browser
-    /// tools: it needs a per-launch MCP server that edits no global config.
-    /// Claude (`--mcp-config`), Grok (its slot's config.toml), Codex (`-c
-    /// mcp_servers...`), Cursor (`--plugin-dir`) and OpenCode
-    /// (`OPENCODE_CONFIG` with `--standalone`) have one, verified against
-    /// the real CLIs; Antigravity only reads its global mcp_config.json.
     pub fn has_tab_tools(self) -> bool {
         !matches!(self, Harness::Antigravity)
     }
 
-    /// Why a tab of this CLI has no job or browser tools (None: it has them).
     pub fn no_tab_tools_reason(self) -> Option<String> {
         (!self.has_tab_tools()).then(|| {
             format!(
@@ -294,17 +258,10 @@ impl Harness {
         })
     }
 
-    /// Whether the CLI has a model picker GodTerm drives from the model bar
-    /// (`/model` with a name). The others get a bar with only the loops and
-    /// Browser buttons; the model is chosen inside the CLI.
     pub fn has_model_picker(self) -> bool {
         self.integrated()
     }
 
-    /// Why conversations of this CLI cannot be moved or copied between
-    /// slots (None: they can). GodTerm reads no transcripts or session ids
-    /// for the CLIs without an adapter, so a move would open an empty tab
-    /// and close the real one.
     pub fn no_move_reason(self) -> Option<String> {
         (!self.integrated()).then(|| {
             format!(
@@ -329,8 +286,6 @@ fn test_agent() -> String {
     unreachable!("only tests")
 }
 
-/// Variables a parent grok leaves in the environment that would make a
-/// child grok act as its subagent, or use another account's login.
 pub fn scrub_grok(key: &str) -> bool {
     key == "GROK_HOME"
         || key.starts_with("GROK_AGENT")
@@ -344,10 +299,6 @@ pub fn scrub_grok(key: &str) -> bool {
 pub mod grok {
     use super::*;
 
-    /// Mirror the compat switches into the slot's own config.toml
-    /// ([compat.claude], comments and other keys kept), so they hold even
-    /// without the environment. Only ever the GodTerm slot's file, never
-    /// the user's ~/.grok/config.toml.
     pub fn write_slot_compat(home: &Path, c: &crate::config::GrokCompat) {
         if !home.starts_with(crate::config::app_home()) && !cfg!(test) {
             return;
@@ -376,11 +327,7 @@ pub mod grok {
         ] {
             claude[k] = toml_edit::value(v);
         }
-        // compat.claude.hooks covers ~/.claude/settings.json; grok still
-        // loads the hooks of Claude plugins it finds in ~/.claude/plugins.
-        // With hooks off, those plugins are listed as disabled for this
-        // slot (the user's own entries are kept).
-        // (Demo mode never looks at the user's ~/.claude.)
+
         if !c.hooks && !crate::demo::active() {
             let names =
                 claude_plugins_with_hooks(&crate::config::home_dir().join(".claude/plugins"));
@@ -415,9 +362,6 @@ pub mod grok {
         }
     }
 
-    /// Names of Claude Code plugins that ship hooks
-    /// (`cache/<market>/<name>/<version>/hooks/hooks.json`,
-    /// `marketplaces/<market>/plugins/<name>/hooks/hooks.json`).
     pub fn claude_plugins_with_hooks(root: &Path) -> Vec<String> {
         let mut out: Vec<String> = vec![];
         let mut add = |n: String| {
@@ -464,13 +408,10 @@ pub mod grok {
         out
     }
 
-    /// Logged in: the slot has a non empty auth.json (its contents are only
-    /// read for the usage call, never shown or logged).
     pub fn logged_in(home: &Path) -> bool {
         std::fs::metadata(home.join("auth.json")).is_ok_and(|m| m.len() > 2)
     }
 
-    /// The account email in a slot's auth.json, if it records one.
     pub fn email(home: &Path) -> Option<String> {
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).ok()?).ok()?;
@@ -487,7 +428,6 @@ pub mod grok {
         find(&v)
     }
 
-    /// The bearer key in a slot's auth.json.
     pub fn token(home: &Path) -> Option<String> {
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).ok()?).ok()?;
@@ -520,9 +460,6 @@ pub mod grok {
 
     pub const BILLING_URL: &str = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 
-    /// The credits reply as usage buckets: the period's credits (grok's
-    /// "Weekly limit") as "seven_day", then each product that reports a
-    /// percent. grok 1.0.45 wraps it all in "config".
     pub fn parse_billing(v: &Value) -> Usage {
         let v = v.get("config").unwrap_or(v);
         let resets_at = v
@@ -552,8 +489,7 @@ pub mod grok {
             "Weekly"
         };
         let mut windows = vec![];
-        // proto3 JSON leaves zero values out: a reply with a period but no
-        // creditUsagePercent has used none of it (100% left).
+
         let credit = v
             .get("creditUsagePercent")
             .and_then(Value::as_f64)
@@ -602,7 +538,6 @@ pub mod grok {
         }
     }
 
-    /// grok's own status line: "Weekly limit left: 37%" (or Monthly, Daily).
     pub fn status_line_left(screen: &str) -> Option<(String, f64)> {
         let i = screen.find(" limit left:")?;
         let label = screen[..i]
@@ -622,8 +557,6 @@ pub mod grok {
             .then_some((label, left.clamp(0.0, 100.0)))
     }
 
-    /// Live credits for a slot (one GET). Every attempt is logged (host,
-    /// path, status, what came back), never the token.
     pub fn fetch_usage(home: &Path) -> Result<Usage, UsageError> {
         let name = home
             .file_name()
@@ -673,9 +606,6 @@ pub mod grok {
         res
     }
 
-    /// Sessions of a grok home: `sessions/<cwd>/<id>/summary.json` (+
-    /// usage.json for tokens and cost). The session folder is the unit
-    /// copied between slots.
     pub fn scan_sessions(home: &Path) -> Vec<SessionInfo> {
         let mut out = vec![];
         let Ok(dirs) = std::fs::read_dir(home.join("sessions")) else {
@@ -696,8 +626,6 @@ pub mod grok {
         out
     }
 
-    /// Copy (or move, into `trash`) a session folder from one grok home to
-    /// another, at the same relative place (`sessions/<cwd>/<id>`).
     pub fn copy_session(
         dir: &Path,
         from_home: &Path,
@@ -769,7 +697,7 @@ pub mod grok {
     pub fn parse_session_any(dir: &Path, include_subagents: bool) -> Option<SessionInfo> {
         let summary: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("summary.json")).ok()?).ok()?;
-        // Subagent sessions are not resumable on their own.
+
         let kind_is_sub = summary
             .get("session_kind")
             .and_then(Value::as_str)
@@ -846,7 +774,7 @@ pub mod grok {
                 .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                 .map(std::time::SystemTime::from),
             headless: summary.get("session_kind").and_then(Value::as_str) == Some("headless"),
-            // A title set with /rename (or GodTerm's rename_session).
+
             name: summary
                 .get("title_is_manual")
                 .and_then(Value::as_bool)
@@ -942,7 +870,7 @@ mod tests {
             Some("Always allow this command")
         );
         assert_eq!(label(Choice::Deny).as_deref(), Some("Reject"));
-        // Unnumbered: arrows from the highlighted one, then Enter.
+
         assert_eq!(p.keys_for(3, false), b"\x1b[B\x1b[B\x1b[B\r".to_vec());
         assert_eq!(
             detect_activity(include_str!("../tests/fixtures/screens/grok_working.txt")),
@@ -952,16 +880,12 @@ mod tests {
             detect_activity(include_str!("../tests/fixtures/screens/grok_ready.txt")),
             Activity::Ready
         );
-        // Grok Build 1.0.69 starts on a home card (Resume session, New
-        // worktree...) above a boxed `❯` input: ready, not "starting"
-        // forever (found by scripts/e2e on a real login).
+
         assert_eq!(
             detect_activity(include_str!("../tests/fixtures/screens/grok_home_1069.txt")),
             Activity::Ready
         );
-        // Its turn: a "Waiting for response…" spinner and a Ctrl+c:cancel
-        // footer. Read as ready before, a prompt sent there was reported
-        // dropped although grok answered it.
+
         assert_eq!(
             detect_activity(include_str!(
                 "../tests/fixtures/screens/grok_working_1069.txt"
@@ -974,8 +898,6 @@ mod tests {
         );
     }
 
-    /// A reply with nothing used leaves the zero values out (proto3): it
-    /// reads as 100% left, not as a bad response.
     #[test]
     fn billing_reply_with_nothing_used() {
         let v: Value = serde_json::from_str(
@@ -992,7 +914,6 @@ mod tests {
 
     #[test]
     fn billing_reply_as_grok_sends_it() {
-        // The shape grok 1.0.45 gets back (sanitized).
         let v: Value =
             serde_json::from_str(include_str!("../tests/fixtures/grok_billing.json")).unwrap();
         let u = grok::parse_billing(&v);
@@ -1048,7 +969,7 @@ mod tests {
         .unwrap();
         assert!(grok::logged_in(&home));
         assert_eq!(grok::token(&home).as_deref(), Some("secret-token"));
-        // A session as grok 1.0.45 writes it (synthesized).
+
         let s = home.join("sessions/%2FUsers%2Fx%2Fproj/0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee");
         std::fs::create_dir_all(&s).unwrap();
         std::fs::write(s.join("summary.json"), json!({"info": {"id": "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee", "cwd": "/Users/x/proj"}, "num_chat_messages": 12, "generated_title": "Fix login flow", "current_model_id": "grok-4.7-build-fast", "session_kind": null}).to_string()).unwrap();
@@ -1062,7 +983,7 @@ mod tests {
         .unwrap();
         let v = grok::scan_sessions(&home);
         assert_eq!(v.len(), 1, "subagents are left out");
-        // Copy to another grok home at the same place, then move back.
+
         let other = home.join("other");
         let trash = home.join("trash");
         let (c, m) = grok::copy_session(&s, &home, &other, false, &trash).unwrap();

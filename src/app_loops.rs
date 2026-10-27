@@ -1,6 +1,3 @@
-//! The Loops view: scheduled prompts in running tabs, found by scanning
-//! their transcripts in the background, and stopping them.
-
 use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::{Arc, Mutex};
@@ -10,7 +7,6 @@ use crate::app::{App, AppEvent, Modal, View};
 use crate::loops::{Kind, Loop, LoopCache};
 use crate::pane::Activity;
 
-/// A loop and the tab it runs in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoopRow {
     pub uid: u64,
@@ -19,7 +15,6 @@ pub struct LoopRow {
     pub lp: Loop,
 }
 
-/// A stop request typed into a tab once it is idle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StopReq {
     pub uid: u64,
@@ -28,7 +23,6 @@ pub struct StopReq {
     pub sent: Option<Instant>,
 }
 
-/// The prompt that asks Grok Build to cancel these scheduled tasks.
 pub fn grok_stop_prompt(ids: &[String]) -> String {
     format!(
         "Cancel the scheduled task{} {} with scheduler_delete. Do nothing else and reply only with what you cancelled.",
@@ -37,7 +31,6 @@ pub fn grok_stop_prompt(ids: &[String]) -> String {
     )
 }
 
-/// The prompt that asks claude to stop these loops.
 pub fn stop_prompt(ids: &[String], wakeup: bool) -> String {
     let mut parts = vec![];
     if !ids.is_empty() {
@@ -55,8 +48,6 @@ pub fn stop_prompt(ids: &[String], wakeup: bool) -> String {
 }
 
 impl App {
-    /// Rescan running tabs' transcripts in the background (every few
-    /// seconds from tick, at once when the view opens).
     pub fn refresh_loops(&mut self, now: bool) {
         if self.loops_scanning || (!now && self.loops_scanned.elapsed() < Duration::from_secs(5)) {
             return;
@@ -64,7 +55,6 @@ impl App {
         let mut jobs = vec![];
         for (s, slot) in self.panes.iter().enumerate() {
             for (t, tab) in slot.tabs.iter().enumerate() {
-                // Grok Build's scheduled tasks are in its chat history.
                 let grok = slot.account.is_some_and(|a| {
                     self.cfg.accounts[a].harness() == crate::harness::Harness::Grok
                 });
@@ -97,8 +87,7 @@ impl App {
             let mut paths = std::collections::HashSet::new();
             for (uid, account, tab_name, path, cwd, grok) in jobs {
                 let mut seen = vec![];
-                // Two tabs on one transcript (the same session opened
-                // twice) would list each loop twice: the first tab has it.
+
                 let path = path.filter(|p| paths.insert(p.clone()));
                 if let Some(p) = path {
                     let sc = c.scanners.entry(p.clone()).or_default();
@@ -135,7 +124,7 @@ impl App {
 
     pub fn on_loops(&mut self, rows: Vec<LoopRow>) {
         self.loops_scanning = false;
-        // Confirm stops that went through.
+
         let gone: Vec<(u64, String)> = rows
             .iter()
             .filter(|r| r.lp.deleted)
@@ -172,7 +161,6 @@ impl App {
         self.transcript_of(slot, tab).map(|(p, _)| p)
     }
 
-    /// Active loops in a tab.
     pub fn loops_in(&self, uid: u64) -> usize {
         self.loops.iter().filter(|r| r.uid == uid).count()
     }
@@ -188,7 +176,6 @@ impl App {
         }
     }
 
-    /// Stop these loops of one tab: typed in when it is idle.
     pub fn stop_loops(&mut self, uid: u64, ids: Vec<String>) {
         let wakeup = ids.iter().any(|i| i == "wakeup");
         let ids: Vec<String> = ids.into_iter().filter(|i| i != "wakeup").collect();
@@ -228,14 +215,13 @@ impl App {
         ));
     }
 
-    /// Send queued stop requests to tabs that are ready.
     pub fn stop_tick(&mut self) {
         let mut sends = vec![];
         for q in self.stop_reqs.iter_mut() {
             if q.sent
                 .is_some_and(|t| t.elapsed() > Duration::from_secs(120))
             {
-                q.sent = None; // no confirmation: try again
+                q.sent = None;
             }
             if q.sent.is_some() {
                 continue;
@@ -270,7 +256,6 @@ impl App {
                 .any(|p| p.tabs.iter().any(|t| t.uid == q.uid))
         });
         if !sends.is_empty() {
-            // Look for the confirmation soon.
             self.loops_scanned = crate::clock::ago(Duration::from_secs(3));
         }
         for (s, t, text) in sends {
@@ -292,7 +277,6 @@ impl App {
         }
     }
 
-    /// The selected loop's detail card (the same as the panel's).
     pub fn loop_card(&mut self) {
         if let Some(r) = self.loops.get(self.sel_loop) {
             let key = format!("{}:{}", r.uid, r.lp.id);
@@ -318,8 +302,6 @@ impl App {
     }
 }
 
-/// One row per (tab, loop id): the same loop found twice (two scans of
-/// one session, a resumed transcript) is shown once.
 pub fn dedupe_loops(rows: Vec<LoopRow>) -> Vec<LoopRow> {
     let mut seen = std::collections::HashSet::new();
     rows.into_iter()
@@ -327,7 +309,6 @@ pub fn dedupe_loops(rows: Vec<LoopRow>) -> Vec<LoopRow> {
         .collect()
 }
 
-/// Short label for a loop's kind.
 pub fn kind_label(l: &Loop) -> &'static str {
     match (l.kind, l.durable) {
         (Kind::Wakeup, _) => "loop",

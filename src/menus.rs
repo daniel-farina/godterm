@@ -1,9 +1,3 @@
-//! The menu bar's dropdown menus (Tabs, View, Voice, Settings), the way
-//! macOS does them: click a title to open, hover across titles to switch,
-//! click outside (consumed) or Esc to close, arrows and Enter, a first
-//! letter jumps, submenus open on hover or Right, separators, checkmarks,
-//! disabled items with a reason, shortcuts right aligned, never off screen.
-
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 
@@ -16,11 +10,11 @@ pub enum MenuId {
     View,
     Voice,
     Settings,
-    // Submenus.
+
     TabPos,
     TabWidth,
     Layout,
-    /// The Sessions view's Sort ▾ and its Group by ▸.
+
     SessSort,
     SessGroup,
     RecentlyClosed,
@@ -28,11 +22,11 @@ pub enum MenuId {
     PauseListening,
     AssistantAccount,
     Permissions,
-    /// Tabs ▾ > Sort tabs ▸ (the focused pane's list).
+
     SortTabs,
-    /// The assistant panel's ⋯ menu.
+
     AssistantMore,
-    /// View ▾ > Closed accounts ▸.
+
     ClosedAccounts,
 }
 
@@ -41,7 +35,6 @@ impl MenuId {
         &[MenuId::Tabs, MenuId::View, MenuId::Voice, MenuId::Settings];
 }
 
-/// Commands only the menus need.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
     Duplicate,
@@ -52,26 +45,26 @@ pub enum Cmd {
     SessReverse,
     Reopen(u8),
     RestoreArchived(u8),
-    /// Pause listening for this many seconds (0: resume).
+
     Pause(u32),
     TabHistory,
     SessGroup(u8),
     AssistantAccount(Option<usize>),
-    /// The assistant's model (alias or name).
+
     AssistantModel(String),
     AssistantProvider(String),
     OpenSetup,
     AssistantRemote,
     AssistantLogin,
-    /// Open closed accounts (None: all of them).
+
     OpenAccount(Option<usize>),
-    /// Expand every collapsed pane.
+
     ExpandAll,
     AssistantRules,
     AssistantPrompt,
     AssistantAdmin,
     AssistantDetails,
-    /// The panel: docked, overlay, auto (app_talkback::PANEL_MODES).
+
     PanelMode(u8),
     SpeakTyped,
     AssistantSettings,
@@ -79,33 +72,32 @@ pub enum Cmd {
     Permission(u8),
     TrainWake,
     Tour,
-    /// Brainstorm mode's explanation card (the ⓘ).
+
     BrainstormInfo,
-    /// Bring a discarded brainstorm back.
+
     BrainstormUndo,
-    /// Update mode on or off.
+
     UpdateMode,
-    /// Update mode's explanation card.
+
     UpdatesInfo,
-    /// An update roundup now ("what's the latest").
+
     UpdatesNow,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Entry {
     pub label: String,
-    /// The shortcut, shown right aligned ("C-a t").
+
     pub key: &'static str,
     pub action: Option<UiAction>,
-    /// Some: a toggle or radio row (✓ or •).
+
     pub check: Option<bool>,
     pub radio: bool,
-    /// Some: dimmed, with why on hover.
+
     pub disabled: Option<String>,
     pub sub: Option<MenuId>,
     pub sep: bool,
-    /// More about the row, dim after its name (tone 1: stands out, 2: a
-    /// warning); cut with … first when the menu is too narrow.
+
     pub info: Vec<(String, u8)>,
 }
 
@@ -842,14 +834,13 @@ pub fn entries(app: &App, id: MenuId) -> Vec<Entry> {
     }
 }
 
-/// An open menu.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Open {
     pub id: MenuId,
     pub sel: Option<usize>,
-    /// Where it hangs from (the title or chip that opened it).
+
     pub anchor: Option<(u16, u16)>,
-    /// An open submenu and its selection.
+
     pub sub: Option<(MenuId, Option<usize>)>,
 }
 
@@ -868,8 +859,6 @@ fn usable(e: &Entry) -> bool {
     !e.sep && e.disabled.is_none()
 }
 
-/// Where the menu box goes: under the anchor, shifted left to fit, or
-/// above it when there is no room below.
 pub fn place(area: Rect, anchor: (u16, u16), w: u16, h: u16) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);
@@ -883,7 +872,6 @@ pub fn place(area: Rect, anchor: (u16, u16), w: u16, h: u16) -> Rect {
     Rect::new(x, y, w, h)
 }
 
-/// Text width of a menu's rows.
 pub fn width(es: &[Entry]) -> u16 {
     let lw = es
         .iter()
@@ -896,7 +884,6 @@ pub fn width(es: &[Entry]) -> u16 {
     (lw + iw + kw + 8) as u16
 }
 
-/// The info column's width of a row.
 pub fn info_width(e: &Entry) -> usize {
     e.info
         .iter()
@@ -920,7 +907,6 @@ impl App {
         }
     }
 
-    /// Run a row's action (closes the menu first).
     pub fn menu_run(&mut self, e: &Entry) {
         let Some(a) = e.action.clone() else { return };
         self.modal = Modal::None;
@@ -1011,8 +997,6 @@ impl App {
             },
             Cmd::OpenSetup => self.open_setup(),
             Cmd::AssistantRemote => {
-                // A click is the user's own request; turning it on still
-                // asks once (the panel's question), off is immediate.
                 let r = if self.assistant.remote.is_some() {
                     self.disable_remote()
                 } else if self.remote_click_armed() {
@@ -1120,7 +1104,6 @@ impl App {
         }
     }
 
-    /// Keys while a menu is open. Always consumed.
     pub fn on_menu_key(&mut self, k: KeyEvent) {
         let Some(mut o) = self.menu_state().cloned() else {
             return;
@@ -1162,7 +1145,6 @@ impl App {
                     || k.code == KeyCode::Right
                         && sel.and_then(|i| es.get(i)).is_some_and(|e| e.sub.is_some())) =>
             {
-                // Next or previous menu along the bar.
                 let i = MenuId::TOP.iter().position(|m| *m == o.id).unwrap_or(0) as isize;
                 let d = if k.code == KeyCode::Left { -1 } else { 1 };
                 let next = MenuId::TOP[(i + d).rem_euclid(MenuId::TOP.len() as isize) as usize];
@@ -1187,7 +1169,6 @@ impl App {
                 }
             }
             KeyCode::Char(c) => {
-                // Type to select: the next row starting with that letter.
                 let c = c.to_ascii_lowercase();
                 let start = sel.map(|s| s + 1).unwrap_or(0);
                 let n = es.len();
@@ -1203,13 +1184,11 @@ impl App {
         self.modal = Modal::Menu(o);
     }
 
-    /// Mouse over the menu bar or an open menu: hovering another title
-    /// switches menus; hovering a row selects it and opens its submenu.
     pub fn on_menu_hover(&mut self, col: u16, row: u16) {
         let Some(o) = self.menu_state().cloned() else {
             return;
         };
-        // Another menu title (it sits under the popup's regions).
+
         let title = self
             .last_hits
             .regions
@@ -1241,7 +1220,6 @@ impl App {
         }
     }
 
-    /// A click on a menu row.
     pub fn menu_click(&mut self, id: MenuId, i: usize) {
         let es = entries(self, id);
         let Some(e) = es.get(i).cloned() else { return };
@@ -1269,9 +1247,9 @@ mod tests {
     fn placement_stays_on_screen() {
         let area = Rect::new(0, 0, 80, 24);
         assert_eq!(place(area, (10, 0), 30, 10), Rect::new(10, 1, 30, 10));
-        // Shifted left at the right edge.
+
         assert_eq!(place(area, (70, 0), 30, 10).x, 50);
-        // Flipped above near the bottom.
+
         let r = place(area, (5, 22), 20, 8);
         assert!(r.y + r.height <= 22);
     }

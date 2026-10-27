@@ -1,49 +1,41 @@
-//! The assistant's brain: one long lived headless claude
-//! (`claude -p` with stream-json in and out) on the chosen account's
-//! config dir, with only godterm's MCP tools, in an empty scratch folder.
-
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BrainEvent {
-    /// A piece of the reply as it streams.
     Delta(String),
-    /// A whole text block (when no deltas were streamed).
+
     Text(String),
-    /// It called a tool.
+
     Tool(String, Value),
-    /// What a tool returned.
+
     ToolResult(String),
-    /// A content block began ("text" or "tool_use").
+
     BlockStart(String),
-    /// The turn ended: final text, cost in USD if reported, error flag.
+
     Done {
         text: String,
         cost: Option<f64>,
         error: bool,
     },
-    /// The process ended (with the tail of stderr).
+
     Exited(String),
-    /// A control request answered: (request id, response or error).
+
     Control(String, Result<Value, String>),
-    /// A user message in the conversation (echoed with
-    /// --replay-user-messages; one GodTerm did not send came through
-    /// Remote Control).
+
     UserText(String),
-    /// Remote Control's link to claude.ai: "connected", "reconnecting",
-    /// "disconnected", ...
+
     Bridge(String),
 }
 
 pub struct Brain {
     inner: Box<dyn crate::providers::Backend>,
-    /// The account it spends (None: a provider with its own login).
+
     pub account: Option<usize>,
     pub model: String,
     pub provider: &'static str,
-    /// Which process this is (events from an older one are ignored).
+
     pub gen: u64,
 }
 
@@ -57,23 +49,19 @@ pub fn dir() -> PathBuf {
     crate::config::app_home().join("assistant")
 }
 
-/// The `godterm mcp` server entry the brain gets: its command, args and
-/// environment (the brain's own token).
 pub fn mcp_server(exe: &Path) -> Value {
     let mut v = json!({
         "command": exe,
         "args": ["mcp"],
         "env": {"GODTERM_HOME": crate::config::app_home(), "GODTERM_CLIENT": "brain", "GODTERM_TOKEN": crate::control::brain_token().unwrap_or_default()},
     });
-    // In tests the server would be the test binary: mark it, so its guard
-    // stops it before it runs the suite (see test_guard).
+
     if cfg!(test) {
         v["env"][crate::test_guard::ENV] = json!("brain-mcp");
     }
     v
 }
 
-/// The MCP config handing claude the `godterm mcp` server.
 pub fn write_mcp_config(exe: &Path) -> Result<PathBuf> {
     let d = dir();
     std::fs::create_dir_all(&d)?;
@@ -83,7 +71,6 @@ pub fn write_mcp_config(exe: &Path) -> Result<PathBuf> {
     Ok(p)
 }
 
-/// Tool names as claude sees them.
 pub fn allowed_tools() -> Vec<String> {
     crate::control::TOOLS
         .iter()
@@ -91,14 +78,11 @@ pub fn allowed_tools() -> Vec<String> {
         .collect()
 }
 
-/// GodTerm's assistant prompt: its sections (the user's edits included,
-/// see `sysprompt`), without the learned rules.
 pub fn system_prompt(style: &str) -> String {
     crate::sysprompt::assemble(style)
 }
 
 impl Brain {
-    /// Start `provider` (on `account`, or its own login).
     pub fn start(
         provider: &'static crate::providers::Provider,
         account: Option<usize>,
@@ -116,7 +100,6 @@ impl Brain {
         })
     }
 
-    /// Send one user turn (with images, when it has any).
     pub fn send_images(
         &mut self,
         text: &str,
@@ -125,12 +108,10 @@ impl Brain {
         self.inner.send_images(text, images)
     }
 
-    /// Whether its model sees images.
     pub fn takes_images(&self) -> bool {
         self.inner.takes_images()
     }
 
-    /// Stop the current turn (the turn still ends with a result).
     pub fn interrupt(&mut self) -> Result<()> {
         self.inner.interrupt()
     }
@@ -143,13 +124,11 @@ impl Brain {
         self.inner.running()
     }
 
-    /// A control request (remote control); returns its request id.
     pub fn control(&mut self, request: Value) -> Result<String> {
         self.inner.control(request)
     }
 }
 
-/// Events in one stream-json line.
 pub fn parse_line(line: &str) -> Vec<BrainEvent> {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return vec![];
@@ -179,7 +158,7 @@ pub fn parse_line(line: &str) -> Vec<BrainEvent> {
                     }
                     Some("tool_use") => {
                         let name = b["name"].as_str().unwrap_or("");
-                        // Grok reaches MCP tools through use_tool.
+
                         if name == "use_tool" {
                             if let Some((n, a)) =
                                 crate::providers::grok::unwrap_use_tool(&b["input"])
@@ -256,15 +235,11 @@ pub fn parse_line(line: &str) -> Vec<BrainEvent> {
     out
 }
 
-/// The sentences of a reply: cut after . ! ? (or a line break) that is
-/// followed by space, so "1.08" and "v2.1" stay whole.
-/// claude's "response exceeded the N output token maximum" error.
 pub fn token_cap_hit(text: &str) -> bool {
     let t = text.to_lowercase();
     t.contains("exceeded the") && t.contains("output token maximum")
 }
 
-/// The most a retry may raise the reply limit to.
 pub const MAX_OUTPUT_CAP: u32 = 32000;
 
 #[cfg(test)]
@@ -275,8 +250,6 @@ pub fn sentences(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The byte ranges of `sentences` (each trimmed), so a text can be cut
-/// at a sentence with its own line breaks kept.
 pub fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut out = vec![];
@@ -305,8 +278,6 @@ pub fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
     out
 }
 
-/// A sentence that only says what it is about to do ("Let me check...",
-/// "I'll check the tab."): never spoken.
 pub fn is_narration(sentence: &str) -> bool {
     let s = sentence
         .trim()
@@ -344,8 +315,6 @@ pub fn is_narration(sentence: &str) -> bool {
     OPENERS.iter().any(|o| s.starts_with(o))
 }
 
-/// What of a reply is spoken: narration dropped, at most `max` sentences
-/// (0: all). Returns (spoken, narration, the rest left unsaid).
 pub fn spoken_part(text: &str, max: usize) -> (String, Vec<String>, Option<String>) {
     let r = crate::md::reply(text, max);
     (r.say, r.narration, r.rest_say)

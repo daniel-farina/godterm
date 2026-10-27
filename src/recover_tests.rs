@@ -1,7 +1,3 @@
-//! A start on damaged state files (recover.rs): state.json, jobs.json,
-//! archive.json and config.toml cut short or not valid at all are moved
-//! aside, the start is clean, and a note says so. Temp homes only.
-
 use std::path::{Path, PathBuf};
 
 use crate::config::testing::LOCK as ENV_LOCK;
@@ -60,7 +56,7 @@ fn damaged_files_are_moved_aside_and_the_start_is_clean() {
         );
     }
     assert!(notes.iter().any(|n| n.contains("(empty)")), "{notes:?}");
-    // What it saves now is whole and reads back.
+
     a.jobs.save().unwrap();
     assert!(crate::jobs::Store::load().jobs.is_empty());
     assert_eq!(backups(&h, "jobs.json"), 1, "a good file stays put");
@@ -75,7 +71,7 @@ fn a_config_that_does_not_parse_is_moved_aside_and_setup_comes_back() {
     cfg.claude_bin = Some(crate::test_stub::true_bin());
     cfg.save().unwrap();
     let good = std::fs::read_to_string(h.join("config.toml")).unwrap();
-    // A good one loads as it is.
+
     assert!(Config::load_or_recover().is_ok());
     assert_eq!(backups(&h, "config.toml"), 0);
     crate::recover::take_notes();
@@ -89,7 +85,6 @@ fn a_config_that_does_not_parse_is_moved_aside_and_setup_comes_back() {
         std::fs::write(h.join("config.toml"), &bad).unwrap();
         let c = Config::load_or_recover();
         if bad.is_empty() {
-            // An empty file is a valid (empty) TOML document: defaults.
             assert!(c.is_ok());
             continue;
         }
@@ -109,8 +104,7 @@ fn a_config_that_does_not_parse_is_moved_aside_and_setup_comes_back() {
         );
     }
     assert_eq!(backups(&h, "config.toml"), 4);
-    // The original, cut at any byte, loads or is moved aside: never an
-    // error or a panic.
+
     let bytes = good.as_bytes();
     for cut in (0..bytes.len()).step_by(7) {
         std::fs::write(h.join("config.toml"), &bytes[..cut]).unwrap();
@@ -154,7 +148,7 @@ fn saved_state_cut_at_any_byte_never_panics() {
         std::fs::write(h.join("jobs.json"), &jobs[..cut]).unwrap();
         let _ = crate::jobs::Store::load();
     }
-    // The whole files still read back.
+
     std::fs::write(h.join("state.json"), &full).unwrap();
     assert_eq!(crate::state::AppState::load().unwrap().privacy, Some(true));
     std::fs::write(h.join("jobs.json"), &jobs).unwrap();

@@ -1,9 +1,3 @@
-//! The assistant's git_status tool: the git state of every project (or
-//! one) from the project index's cached facts, brought up to date first
-//! (cheap: only repos whose refs or index changed, or that a tab just
-//! worked in, run git). refresh true also fetches every repo with a
-//! remote, in the background.
-
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -11,9 +5,8 @@ use crate::app::App;
 use crate::control::plural;
 use crate::project_git::{self, Row};
 
-/// Rows shown at most (the summary counts every one).
 const MAX_ROWS: usize = 60;
-/// One fetch may take this long per repo.
+
 const FETCH_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn names(rows: &[&Row], n: usize) -> String {
@@ -33,7 +26,6 @@ fn names(rows: &[&Row], n: usize) -> String {
     v.join(", ")
 }
 
-/// What a filter means, for the spoken answer.
 fn filter_words(f: &str) -> &'static str {
     match f {
         "no_remote" => {
@@ -48,7 +40,6 @@ fn filter_words(f: &str) -> &'static str {
 }
 
 impl App {
-    /// The git facts of `dir` from the cache, one line (never runs git).
     pub fn git_line(&self, dir: &Path) -> Option<String> {
         let ix = self.project_index.lock().unwrap_or_else(|e| e.into_inner());
         if ix.git.is_empty() {
@@ -57,8 +48,6 @@ impl App {
         project_git::line_for(&ix, dir)
     }
 
-    /// "40 projects: 31 on GitHub, 5 only local, 3 dirty, 2 unpushed"
-    /// from the cache, or None before the first git pass.
     pub fn git_summary_line(&self) -> Option<String> {
         let ix = self.project_index.lock().unwrap_or_else(|e| e.into_inner());
         if ix.git.is_empty() {
@@ -78,7 +67,6 @@ impl App {
         ))
     }
 
-    /// A tab finished a turn in `dir`: recompute its repo's facts soon.
     pub fn git_tab_finished(&mut self, dir: &Path) {
         let Some(top) = project_git::mark_stale(&self.project_index, dir) else {
             return;
@@ -92,7 +80,6 @@ impl App {
         });
     }
 
-    /// The folders `project` names: a path, else the best index hit.
     fn git_project(&mut self, q: &str) -> Result<Vec<PathBuf>, String> {
         let p = crate::config::expand_tilde(&crate::fuzzy::spoken_punctuation(q.trim()));
         if p.is_absolute() {
@@ -106,7 +93,7 @@ impl App {
         }
         let ix = self.project_index.lock().unwrap_or_else(|e| e.into_inner());
         let hits = crate::project_index::search(&ix, q, 5);
-        // A project root beats a folder inside one.
+
         let best = hits
             .iter()
             .find(|h| h.rel.is_empty() && h.score >= 0.7)
@@ -176,7 +163,6 @@ impl App {
                     .collect();
                 rows.retain(|r| tops.contains(&r.path));
                 if rows.is_empty() {
-                    // A folder the index does not know yet.
                     rows = tops
                         .iter()
                         .map(|t| Row {
@@ -256,8 +242,6 @@ impl App {
                 .collect::<Vec<_>>());
         }
         if refresh {
-            // Every repo in scope, not only the filtered ones: a fetch is
-            // what shows which are behind.
             let tops: Vec<PathBuf> = all
                 .iter()
                 .filter_map(|r| r.facts.as_ref())
@@ -313,10 +297,6 @@ impl App {
     }
 }
 
-/// `godterm projects [--git] [--filter F] [--fetch] [--in DIR]`: the git
-/// state of every project, for humans, with how long the cold and warm
-/// passes took. --in DIR lists DIR's subfolders instead of the index
-/// (nothing of GodTerm's own is read or written then).
 pub fn command(args: &[String]) -> anyhow::Result<()> {
     let flag = |k: &str| {
         args.iter()

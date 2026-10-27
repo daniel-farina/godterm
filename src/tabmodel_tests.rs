@@ -1,8 +1,3 @@
-//! The model bar (app_tabmodel, ui_modelbar): what it shows, clicks and
-//! keys, a busy tab queued until its turn ends, the set_tab_model tool,
-//! and the current model read from a transcript, a session and a screen.
-//! Tabs run the test stub only (never claude or grok), in a test home.
-
 use crate::app_tabmodel::*;
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::harness::Harness;
@@ -31,7 +26,7 @@ fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
     for a in &mut app.accounts {
         a.login.source = Some(CredSource::Keychain);
     }
-    // Account 2 runs Grok Build.
+
     app.cfg.accounts[1].harness = "grok".into();
     (app, home)
 }
@@ -48,7 +43,6 @@ fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
     out
 }
 
-/// Where `label` is drawn as button `k` of pane `i`'s bar.
 fn button(app: &crate::app::App, i: usize, k: usize) -> ratatui::layout::Rect {
     app.last_hits
         .regions
@@ -76,7 +70,6 @@ fn click(app: &mut crate::app::App, r: ratatui::layout::Rect) {
     app.last_click = None;
 }
 
-/// Tab (s, 0) runs a stub that records its input; returns that file.
 #[cfg(unix)]
 fn run_stub(app: &mut crate::app::App, home: &std::path::Path, s: usize) -> std::path::PathBuf {
     let input = home.join(format!("stdin-{s}.txt"));
@@ -105,12 +98,9 @@ fn run_stub(app: &mut crate::app::App, home: &std::path::Path, s: usize) -> std:
     input
 }
 
-/// The Enter after the paste.
 #[cfg(unix)]
 const ENTER: &str = "\x1b[201~\r";
 
-/// Press the pending Enters (as if the paste showed), then wait for the
-/// stub to have read `want`.
 #[cfg(unix)]
 fn typed(app: &mut crate::app::App, input: &std::path::Path, want: &str) -> String {
     for p in &mut app.pending_enters {
@@ -120,7 +110,7 @@ fn typed(app: &mut crate::app::App, input: &std::path::Path, want: &str) -> Stri
     let t0 = Instant::now();
     loop {
         let got = std::fs::read_to_string(input).unwrap_or_default();
-        // The tty turns the Enter (CR) into a newline.
+
         if got.contains(want) || (want == ENTER && got.contains("\x1b[201~\n")) {
             return got;
         }
@@ -144,7 +134,7 @@ fn registry_models_per_harness_and_overrides() {
     );
     assert_eq!(labels(Harness::Grok, &cfg), ["4.7 fast", "4.7", "4.6"]);
     assert_eq!(models_for(Harness::Claude, &cfg)[0].arg, "haiku");
-    // A list of its own: known ones keep their labels, new ones get one.
+
     cfg.tab_models.claude = vec![
         "haiku".into(),
         "opus".into(),
@@ -162,7 +152,7 @@ fn registry_models_per_harness_and_overrides() {
         (m[2].arg.as_str(), m[2].label.as_str()),
         ("claude-fable-5-1", "Fable")
     );
-    // Model ids and display names find their button; the longest wins.
+
     let g = models_for(Harness::Grok, &crate::config::Config::default());
     assert_eq!(index_of(&g, "grok-4.7-build-fast"), Some(0));
     assert_eq!(index_of(&g, "grok-4.7"), Some(1));
@@ -199,17 +189,17 @@ fn bar_shows_each_harness_models_with_the_current_one_highlighted() {
     );
     let buf = term.backend().buffer().clone();
     let bg = |r: ratatui::layout::Rect| buf[(r.x + 2, r.y)].bg;
-    // The current one on the calm slate fill, the others plain.
+
     assert_eq!(bg(button(&app, 0, 1)), crate::theme::SELECT_BG);
     assert_ne!(bg(button(&app, 0, 0)), crate::theme::SELECT_BG);
     assert_ne!(bg(button(&app, 0, 2)), crate::theme::SELECT_BG);
     assert_eq!(bg(button(&app, 1, 0)), crate::theme::SELECT_BG);
     assert_ne!(bg(button(&app, 1, 1)), crate::theme::SELECT_BG);
-    // The bar sits right above the usage footer, under the terminal.
+
     let b = button(&app, 0, 0);
     let term_rect = app.term_rects[0];
     assert_eq!(b.y, term_rect.y + term_rect.height, "{b:?} {term_rect:?}");
-    // The user switched inside the tab: the bar follows.
+
     app.panes[0].tabs[0].model = Some("Opus 5.5".into());
     term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let buf = term.backend().buffer().clone();
@@ -234,14 +224,13 @@ fn hidden_when_short_collapsed_or_off() {
     term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     assert!(has_bar(&app, 0));
     let tall = app.panes[0].tabs[0].pty_size().0;
-    // Short panes (under 12 rows inside) have none, and the PTY keeps
-    // the row.
+
     let mut short = Terminal::new(TestBackend::new(240, 24)).unwrap();
     short.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     assert!(!has_bar(&app, 0), "no bar on a short pane");
     assert!(!model_bar_on_any(&app));
     assert!(tall > 2);
-    // Collapsed: no bar on its strip.
+
     term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     assert!(has_bar(&app, 0));
     app.toggle_fold_pane(0);
@@ -249,7 +238,7 @@ fn hidden_when_short_collapsed_or_off() {
     assert!(!has_bar(&app, 0), "collapsed");
     assert!(has_bar(&app, 1), "the others keep theirs");
     app.toggle_fold_pane(0);
-    // Off in Settings: none anywhere, the terminal gets the row back.
+
     term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let with = app.term_rects[0].height;
     app.cfg.tab_model_bar = false;
@@ -285,7 +274,7 @@ fn a_click_on_an_idle_tab_types_model_haiku() {
         "{:?}",
         app.flash
     );
-    // The paste path: the paste now, Enter once it shows.
+
     assert_eq!(app.pending_enters.len(), 1);
     assert_eq!(app.pending_enters[0].text, "/model haiku");
     let got = typed(&mut app, &input, ENTER);
@@ -294,18 +283,18 @@ fn a_click_on_an_idle_tab_types_model_haiku() {
         "bracketed paste: {got:?}"
     );
     assert!(app.pending_enters.is_empty());
-    // Shown as current at once.
+
     term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let buf = term.backend().buffer().clone();
     let b = button(&app, 0, 0);
     assert_eq!(buf[(b.x + 2, b.y)].bg, crate::theme::SELECT_BG);
-    // Its own model again: nothing typed.
+
     app.panes[0].tabs[0].model = Some("claude-haiku-4-5".into());
     app.panes[0].tabs[0].model_set = None;
     app.click_tab_model(0, 0);
     assert!(app.pending_enters.is_empty());
     assert!(app.flash.as_ref().unwrap().0.contains("already"));
-    // Keys: Ctrl-a # then 3 is Opus; digits otherwise go to the tab.
+
     app.start_model_entry();
     assert!(app
         .flash
@@ -348,7 +337,7 @@ fn a_busy_tab_is_queued_and_switched_when_its_turn_ends() {
         "{}",
         buffer_text(term.backend().buffer())
     );
-    // The assistant's state says so.
+
     assert!(
         app.state_preamble().contains("Opus, Haiku queued"),
         "{}",
@@ -358,14 +347,14 @@ fn a_busy_tab_is_queued_and_switched_when_its_turn_ends() {
         app.control_tick();
     }
     assert!(app.pending_enters.is_empty() && app.model_switches.len() == 1);
-    // A draft in the input box: still waits.
+
     app.panes[0].tabs[0].activity = Activity::Ready;
     app.panes[0].tabs[0].parser.lock().unwrap().process(
         b"\x1b[2J\x1b[H\r\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\r\n\xe2\x9d\xaf half typed\r\n",
     );
     app.control_tick();
     assert!(app.pending_enters.is_empty(), "not over the user's draft");
-    // The turn ended, the box is empty: switched now.
+
     app.panes[0].tabs[0]
         .parser
         .lock()
@@ -413,8 +402,7 @@ fn the_tool_resolves_model_names() {
     ] {
         assert_eq!(resolve(&g, said), want, "{said}");
     }
-    // The tool: at once, no confirmation; a tab not started yet gets it
-    // once it starts.
+
     let (mut app, home) = test_app("tool");
     let id = crate::control::tab_id(app.panes[0].tabs[0].uid);
     let v = app.control_call("set_tab_model", &json!({"tab": id, "model": "haiku"}));
@@ -432,7 +420,7 @@ fn the_tool_resolves_model_names() {
         json!("Haiku"),
         "{st}"
     );
-    // A Grok tab resolves Grok's names; a wrong one lists the choices.
+
     let gid = crate::control::tab_id(app.panes[1].tabs[0].uid);
     let v = app.control_call(
         "set_tab_model",
@@ -452,12 +440,12 @@ fn the_current_model_comes_from_the_transcript() {
     let fixture = include_str!("../tests/fixtures/transcript_models.jsonl");
     let file = home.join("t.jsonl");
     std::fs::write(&file, fixture).unwrap();
-    // The newest assistant reply's model, not a subagent's or a synthetic.
+
     assert_eq!(
         claude_transcript_model(&file).as_deref(),
         Some("claude-opus-5-5")
     );
-    // The tab's own transcript, in the account's home (a test home).
+
     let sid = "5e55a0de-0000-4000-8000-000000000001";
     let work = home.join("work");
     std::fs::create_dir_all(&work).unwrap();
@@ -472,7 +460,7 @@ fn the_current_model_comes_from_the_transcript() {
     app.panes[0].tabs[0].session_id = Some(sid.into());
     app.refresh_tab_model(0, 0, true);
     assert_eq!(app.tab_model_label(0, 0).as_deref(), Some("Opus"));
-    // The user runs /model sonnet in the tab: Claude Code logs it.
+
     let mut t = fixture.to_string();
     t.push_str(&json!({"type": "user", "isSidechain": false, "message": {"role": "user", "content": "<command-name>/model</command-name>\n<command-args>sonnet</command-args>"}}).to_string());
     t.push('\n');
@@ -483,12 +471,12 @@ fn the_current_model_comes_from_the_transcript() {
     assert_eq!(app.panes[0].tabs[0].model.as_deref(), Some("Sonnet 5.5"));
     assert_eq!(app.tab_model_label(0, 0).as_deref(), Some("Sonnet"));
     assert!(app.state_preamble().contains("Sonnet"));
-    // ANSI bold instead of backticks reads the same.
+
     assert_eq!(
         set_model_text("Set model to \u{1b}[1mHaiku 4.5\u{1b}[22m (claude-haiku-4-5)").as_deref(),
         Some("Haiku 4.5")
     );
-    // No transcript yet: the screen's banner, and its effort.
+
     let screen = include_str!("../tests/fixtures/screens/input_ready.txt");
     assert_eq!(
         screen_model(Harness::Claude, screen).as_deref(),
@@ -504,9 +492,6 @@ fn the_current_model_comes_from_the_transcript() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Grok Build has /model too (`/model <name> [window] [effort]`, model
-/// id or display name): the same paste, with Grok's ids; its model is
-/// read from its status line, header or session.
 #[test]
 fn grok_tabs_switch_with_its_own_model_command() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -530,10 +515,10 @@ fn grok_tabs_switch_with_its_own_model_command() {
     let mut p = vt100::Parser::new(10, 80, 0);
     p.process(" ╭──────────╮\r\n │ draft    │\r\n ╰──────────╯\r\n".as_bytes());
     assert_eq!(input_empty(Harness::Grok, p.screen()), Some(false));
-    // The app is used only by the Unix stub part below.
+
     #[cfg_attr(not(unix), allow(unused_mut, unused_variables))]
     let (mut app, home) = test_app("grok");
-    // Its session's summary.json.
+
     let dir = home.join("sess");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(

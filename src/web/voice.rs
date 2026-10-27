@@ -1,11 +1,3 @@
-//! Voice from a browser (module 5): while a browser has voice on, its mic
-//! is the voice engine's input (binary kind 3, 16 kHz mono PCM16) and the
-//! assistant's speech goes to it (binary kind 2, WAV clips) instead of
-//! this Mac's speakers. Speech heard becomes a turn exactly as from the
-//! Mac's mic: the same engine, the same recognizer. Voice off (or the
-//! browser leaving) gives the mic and speakers back, in the voice mode
-//! from before.
-
 use super::tap::Outbox;
 use crate::app::App;
 use crate::voice::audio::WebMic;
@@ -13,21 +5,17 @@ use crate::voice::tts::{set_web_out, WebAudio};
 use serde_json::json;
 use std::sync::Arc;
 
-/// The browser that is GodTerm's voice now.
 pub struct WebVoice {
     pub client: u64,
-    /// 1 push to talk, 2 wake word, 3 open mic (as set_voice_mode numbers
-    /// them).
+
     pub mode: u8,
     pub mic: Arc<WebMic>,
-    /// The voice mode from before, given back at the end.
+
     prev: u8,
-    /// The browser muted its mic (`voice {muted}`): it sends only silence
-    /// and keeps its mode, so open mic does not go to sleep meanwhile.
+
     pub muted: bool,
 }
 
-/// The settings the web app's voice sheet shows and may change.
 pub const WEB_SETTINGS: &[&str] = &[
     "voice.tts",
     "voice.tts_engine",
@@ -52,7 +40,6 @@ pub const WEB_SETTINGS: &[&str] = &[
     "voice.speaker_lock",
 ];
 
-/// set_voice_mode's number for a web voice mode.
 fn mode_num(mode: &str) -> u8 {
     match mode {
         "open" => 3,
@@ -69,7 +56,6 @@ fn mode_name(m: u8) -> &'static str {
     }
 }
 
-/// A WAV clip (PCM16 mono) of `samples` at `rate`.
 pub fn wav(samples: &[f32], rate: u32) -> Vec<u8> {
     let data_len = (samples.len() * 2) as u32;
     let mut v = Vec::with_capacity(44 + data_len as usize);
@@ -91,12 +77,14 @@ pub fn wav(samples: &[f32], rate: u32) -> Vec<u8> {
     v
 }
 
-/// Speech for one browser: clips as binary frames, a stop as `audio_stop`.
 fn route_to(out: Arc<Outbox>) {
     set_web_out(Some(Box::new(move |a| match a {
         WebAudio::Pcm(s, rate) => out.audio(wav(&s, rate)),
         WebAudio::Stop => {
             out.text(json!({"t": "audio_stop"}).to_string());
+        }
+        WebAudio::Said(t) => {
+            out.text(json!({"t": "audio_said", "text": t}).to_string());
         }
         WebAudio::Duck(v) => {
             out.text(
@@ -108,19 +96,15 @@ fn route_to(out: Arc<Outbox>) {
 }
 
 impl App {
-    /// The browser's mic while one is the voice input.
     pub fn web_mic(&self) -> Option<Arc<WebMic>> {
         let v = self.web.as_ref()?.voice.as_ref()?;
         Some(Arc::clone(&v.mic))
     }
 
-    /// The client whose browser is the voice now.
     pub fn web_voice_client(&self) -> Option<u64> {
         Some(self.web.as_ref()?.voice.as_ref()?.client)
     }
 
-    /// The answer to a `voice` frame: `{t: "voice", ok, on, mode}` or
-    /// `{t: "voice", ok: false, error}` (the web app keeps it on screen).
     fn web_voice_reply(&self, client: u64, v: serde_json::Value) {
         if let Some(c) = self.web.as_ref().and_then(|w| w.hub.client(client)) {
             let mut v = v;
@@ -134,12 +118,9 @@ impl App {
         self.web_voice_reply(client, json!({"ok": false, "code": code, "error": text}));
     }
 
-    /// A `voice` frame from a browser.
     pub fn web_voice(&mut self, client: u64, on: Option<bool>, mode: &str, talk: Option<bool>) {
         let mine = self.web_voice_client() == Some(client);
-        // A press from a browser that is not the voice (yet, or any more:
-        // another browser took it, GodTerm gave it back) makes it the
-        // voice in push to talk, rather than a press that does nothing.
+
         let on = match (on, talk) {
             (None, Some(true)) if !mine => Some(true),
             _ => on,
@@ -198,8 +179,7 @@ impl App {
                         ""
                     }
                 ));
-                // Ended whatever the status shows: a release that lands
-                // while the engine still reports its start is not lost.
+
                 match &self.voice.engine {
                     Some(v) if !listening => v.stop_talk(),
                     _ if listening => self.push_to_talk(),
@@ -210,9 +190,6 @@ impl App {
         }
     }
 
-    /// A voice setting changed in the web app's voice sheet: the user's own
-    /// change, as in the Settings screen, so it is saved at once. Only the
-    /// keys the sheet shows (no secrets, nothing risky).
     fn web_voice_setting(
         &mut self,
         key: &str,
@@ -235,7 +212,6 @@ impl App {
         Ok(shown)
     }
 
-    /// Make this browser the voice: its mic in, the speech out.
     fn web_voice_on(&mut self, client: u64, mode: u8) -> bool {
         if self.voice.muted {
             self.web_voice_refuse(
@@ -251,13 +227,12 @@ impl App {
         let Some(c) = w.hub.client(client) else {
             return false;
         };
-        // Another browser had it: it ends there (the Mac's mode is kept).
+
         let prev = match w.voice.take() {
             Some(old) => {
                 if let Some(oc) = w.hub.client(old.client) {
                     *oc.mic.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                    // The same browser changing mode keeps its voice: only
-                    // another browser taking it over is a move.
+
                     if old.client != client {
                         oc.out.text(
                             json!({"t": "voice", "ok": true, "on": false, "moved": true})
@@ -267,7 +242,7 @@ impl App {
                 }
                 old.prev
             }
-            // (No engine is voice off, whatever the demo shows.)
+
             None if self.voice.engine.is_none() && !self.voice.open_mic_asleep => 0,
             None => self.voice_mode(),
         };
@@ -286,8 +261,6 @@ impl App {
         w.changed = true;
         route_to(Arc::clone(&c.out));
         {
-            // Its talk back voice from now on (under its lock: a choice
-            // arriving meanwhile is not lost).
             let held = c.tts.lock().unwrap_or_else(|e| e.into_inner());
             crate::voice::web_tts::set_route(Some((client, held.clone())));
         }
@@ -300,7 +273,7 @@ impl App {
             }
         ));
         crate::voice::webdec::set_ffmpeg(&self.cfg.voice.ffmpeg);
-        // The engine starts again on the browser's audio.
+
         self.voice.reopen = None;
         match mode {
             3 => self.start_open_mic(),
@@ -314,16 +287,7 @@ impl App {
         true
     }
 
-    /// A `voice` frame for the rest of hands free use, from the browser
-    /// that is the voice: `direct` (a tab uid: talk to it directly; false:
-    /// back to the assistant), `brainstorm` (on or off), `hush` (stop the
-    /// reply being spoken, as talking over it does), `away` (the page
-    /// went to the background or came back: iOS stops the mic meanwhile)
-    /// `muted` (the browser's mic mute: silence comes meanwhile) and
-    /// `unmute_mac` (lift GodTerm's own mute, Ctrl-a X).
     pub fn web_voice_ctl(&mut self, client: u64, v: &serde_json::Value) {
-        // GodTerm's own mic mute (Ctrl-a X), lifted from a browser that
-        // was refused for it: the browser asks again right after.
         if v["unmute_mac"].as_bool() == Some(true) && self.voice.muted {
             crate::log::info(&format!("web: client {client} unmuted GodTerm's mic"));
             self.toggle_mute();
@@ -397,10 +361,6 @@ impl App {
         }
     }
 
-    /// The voice browser muted or unmuted its mic. Its mode stays; while
-    /// muted open mic does not count the silence toward its auto sleep, and
-    /// the count starts again at the unmute. Another browser's word is
-    /// ignored.
     fn web_mic_muted(&mut self, client: u64, on: bool) {
         let Some(wv) = self
             .web
@@ -424,7 +384,6 @@ impl App {
         self.voice.action = Some(if on { "web mic muted" } else { "web mic on" }.into());
     }
 
-    /// The voice browser has its mic muted.
     pub fn web_mic_is_muted(&self) -> bool {
         self.web
             .as_ref()
@@ -432,8 +391,6 @@ impl App {
             .is_some_and(|wv| wv.muted)
     }
 
-    /// `voice {web_tts_list: true}`: the engines and voices a browser may
-    /// choose, made off the UI thread (reading the voices file, `say -v ?`).
     fn web_tts_list(&self, client: u64) {
         let Some(c) = self.web.as_ref().and_then(|w| w.hub.client(client)) else {
             return;
@@ -449,8 +406,6 @@ impl App {
             });
     }
 
-    /// The browser's voice ends: the Mac's own mic and speakers, in the
-    /// mode from before.
     pub fn web_voice_off(&mut self, why: &str) {
         let Some(w) = self.web.as_mut() else {
             return;

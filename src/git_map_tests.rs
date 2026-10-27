@@ -1,6 +1,3 @@
-//! Folder rules, owners to accounts, bindings from remotes, undefined and
-//! unknown owners asking, and the vault refused.
-
 use super::*;
 use crate::project_git::{Facts, Remote};
 
@@ -61,12 +58,12 @@ fn resolution_paths() {
     assert_eq!(r.account.as_deref(), Some("alice"));
     assert_eq!(r.repo.as_deref(), Some("team-hub"));
     assert!(r.complete() && r.ask.is_none());
-    // Acme: choose per project, kept off the state repo.
+
     let r = resolve(&h("acme/Billing App"), None, &c, &s);
     assert_eq!(r.choices, vec!["acme-org", "alice"]);
     assert!(r.owner.is_none() && r.ask.is_some() && r.state_exclude);
     assert_eq!(r.repo.as_deref(), Some("billing-app"));
-    // No rule at all: undefined, never guessed.
+
     let r = resolve(Path::new("/opt/elsewhere/x"), None, &GitCfg::default(), &s);
     assert!(r.undefined() && r.owner.is_none());
     assert!(r.ask.unwrap().contains("No repo defined"));
@@ -98,7 +95,7 @@ fn binding_from_remote_and_unknown_owner_asks() {
     let r = resolve(&h("code/tool"), Some(&f), &c, &s);
     assert!(r.account.is_none());
     assert!(r.ask.as_deref().unwrap().contains("stranger"));
-    // The user's pick is saved and used.
+
     let _g = crate::config::testing::LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -116,7 +113,7 @@ fn binding_from_remote_and_unknown_owner_asks() {
     let r = resolve(&h("code/tool"), Some(&f), &c, &s);
     assert_eq!(r.account.as_deref(), Some("alice"));
     assert!(s.projects.contains_key("~/code/tool"));
-    // A saved binding for a folder with no GitHub remote yet.
+
     s.bind(
         Path::new("/opt/elsewhere/x"),
         Binding {
@@ -129,7 +126,7 @@ fn binding_from_remote_and_unknown_owner_asks() {
     .unwrap();
     let r = resolve(Path::new("/opt/elsewhere/x"), None, &GitCfg::default(), &s);
     assert_eq!(r.source, "saved");
-    // Bad names are refused.
+
     let bad = Binding {
         owner: "a b".into(),
         repo: "x".into(),

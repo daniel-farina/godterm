@@ -1,6 +1,3 @@
-//! The Approvals button asks for attention: red, blinking slowly, on an
-//! injected clock (nothing sleeps).
-
 use crate::app::App;
 use crate::attention::{approvals_style, lit_at, next_flip, style_for};
 use crate::config::testing::LOCK as ENV_LOCK;
@@ -29,7 +26,6 @@ fn bg(s: ratatui::style::Style) -> Color {
     s.bg.unwrap()
 }
 
-/// The first cell of the "Approvals" label in a drawn bar, with its style.
 fn drawn(app: &App) -> (String, ratatui::style::Style, u16) {
     let mut term = Terminal::new(TestBackend::new(120, 1)).unwrap();
     term.draw(|f| crate::ui_chrome::draw_menu_bar(f, app, f.area()))

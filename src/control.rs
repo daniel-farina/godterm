@@ -1,19 +1,3 @@
-//! The control API: godterm's own actions as tools, for the assistant
-//! (through `godterm mcp`) and anything else on this Mac that holds the
-//! per-launch token. Tools reuse the same actions the voice grammar, the
-//! palette and the mouse use.
-//!
-//! Safety is enforced here, not only in the assistant's prompt:
-//! - batch tools (close_tabs, stop_loops, send_prompt to several tabs,
-//!   answer_prompt for several tabs, a deny or a destructive approve)
-//!   resolve their targets to an exact plan and return
-//!   `needs_confirmation` with a token and one question; the token runs
-//!   that plan, only from the user's next turn (their yes);
-//! - tool results carry ground truth: a prompt is "delivered" only once
-//!   claude took it;
-//! - nothing here changes permission modes, credentials or settings files;
-//! - every call is logged.
-
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -29,7 +13,6 @@ use crate::app::{App, AppEvent, View};
 use crate::pane::Activity;
 use crate::prompt::Choice;
 
-/// One tool: name, description, JSON schema of its arguments.
 pub struct Tool {
     pub name: &'static str,
     pub description: &'static str,
@@ -963,12 +946,11 @@ pub const TOOLS: &[Tool] = &[
     },
 ];
 
-/// A pending confirmation: the exact plan the user is asked about.
 #[derive(Debug, Clone)]
 pub struct Pending {
     pub token: String,
     pub tool: String,
-    /// The resolved targets and parameters; the confirmed call runs this.
+
     pub plan: Value,
     pub summary: String,
     pub turn: u64,
@@ -976,12 +958,10 @@ pub struct Pending {
 }
 
 impl Pending {
-    /// How long ago it was asked, time the Mac slept included.
     pub fn age(&self) -> Duration {
         crate::clock::age(self.at)
     }
 
-    /// Still answerable with its token (else it can only be asked again).
     pub fn answerable(&self) -> bool {
         self.age() < CONFIRM_TTL
     }
@@ -995,15 +975,12 @@ fn err(msg: impl Into<String>) -> Value {
     json!({"ok": false, "error": msg.into()})
 }
 
-/// Where a prompt is on its way into a tab.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stage {
-    /// Waiting for the tab to be ready.
     Queued,
-    /// Pasted; Enter follows once the tab shows the text in its input.
+
     Pasted(Instant),
-    /// Enter sent (again, when `retried`); `echoed`: the text was seen
-    /// in the input box before it.
+
     Submitted {
         at: Instant,
         retried: bool,
@@ -1013,7 +990,6 @@ pub enum Stage {
     Failed(String),
 }
 
-/// A paste whose Enter waits for the tab to show it.
 #[derive(Debug, Clone)]
 pub struct PendingEnter {
     pub uid: u64,
@@ -1021,7 +997,6 @@ pub struct PendingEnter {
     pub at: Instant,
 }
 
-/// A prompt sent to a tab, followed until claude has accepted it.
 #[derive(Debug, Clone)]
 pub struct Delivery {
     pub id: u64,
@@ -1029,11 +1004,11 @@ pub struct Delivery {
     pub text: String,
     pub stage: Stage,
     pub created: Instant,
-    /// The tab's last user message before this one (to see a new one).
+
     pub(crate) before: Option<String>,
-    /// Its final status went out in a tool reply or a note.
+
     pub reported: bool,
-    /// What the tab's transcript shows (receipts, app_receipts).
+
     pub rc: crate::app_receipts::Track,
 }
 
@@ -1057,27 +1032,25 @@ impl Delivery {
     }
 }
 
-/// A tool reply held until its tab is ready or its prompts are accepted.
 pub struct Waiting {
     pub reply: Value,
     pub tx: Sender<Value>,
     pub since: Instant,
-    /// New tabs that must come up first.
+
     pub ready_uids: Vec<u64>,
-    /// Deliveries to report on.
+
     pub deliveries: Vec<u64>,
-    /// Also wait for queued deliveries (a new tab's first prompt).
+
     pub wait_queued: bool,
     pub max: Duration,
-    /// Sessions being taken over: the reply waits for their tabs.
+
     pub takeovers: Vec<String>,
-    /// Work done off the UI thread (system_check): its result is the reply.
+
     pub job: Option<std::sync::mpsc::Receiver<Value>>,
-    /// The error when `job` does not answer in time.
+
     pub timeout_error: Option<String>,
 }
 
-/// A safe folder name from a task name: "Simple Calculator!" -> "simple-calculator".
 pub fn slug(name: &str) -> String {
     let s: String = name
         .trim()
@@ -1094,10 +1067,6 @@ pub fn slug(name: &str) -> String {
 }
 
 impl App {
-    /// The id a tab has now: a moved tab continues under its new id. A
-    /// tab that is still there is itself, whatever moves recorded (a
-    /// failed move leaves the source open; a tab can be reused), unless
-    /// it is the source of a move in progress.
     pub fn current_uid(&self, mut uid: u64) -> u64 {
         for _ in 0..16 {
             if self.find_tab(uid).is_some()
@@ -1113,18 +1082,15 @@ impl App {
         uid
     }
 
-    /// Where a tab is, following moves.
     pub fn locate_uid(&self, uid: u64) -> Option<(usize, usize)> {
         self.find_tab(self.current_uid(uid))
     }
 
-    /// A tab that is moving away (its new copy takes over).
     pub fn moving_away(&self, uid: u64) -> bool {
         self.moved_ids.contains_key(&uid)
     }
 }
 
-/// A tab's stable id, as the assistant sees it.
 pub fn tab_id(uid: u64) -> String {
     format!("t{uid}")
 }
@@ -1137,27 +1103,18 @@ pub fn plural(n: usize, one: &str) -> String {
     }
 }
 
-/// A confirmation question stays answerable this long (clarifying
-/// questions and noise in between do not use it up).
 const CONFIRM_TTL: Duration = Duration::from_secs(120);
-/// Plans are kept this long so they can be asked again unchanged.
+
 const KEEP_PLANS: Duration = Duration::from_secs(600);
 
-/// A delivery: paste, then Enter as a write of its own once the tab
-/// shows the text in its input box (so the two never reach claude in one
-/// read, where the CR would be a new line), at the latest after this...
 const ECHO_WAIT: Duration = Duration::from_millis(2500);
-/// ...Enter is pressed once more if claude has not taken it after this...
+
 const RETRY_AFTER: Duration = Duration::from_millis(1500);
-/// ...and it fails after this.
-const FAIL_AFTER: Duration = Duration::from_millis(6000);
-/// ...later for a tab that was just opened: claude's first turn there waits
-/// on its start-up (MCP servers, a long paste, rate limits) and can take
-/// over 8 seconds to show any sign of life.
+
+const FAIL_AFTER: Duration = Duration::from_secs(25);
+
 const FAIL_AFTER_FRESH: Duration = Duration::from_secs(40);
 
-/// The start of a prompt as the tab's input box shows it, to look for:
-/// its first line's first words (long pastes show as "[Pasted text").
 fn echo_head(text: &str) -> String {
     let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     first
@@ -1169,8 +1126,6 @@ fn echo_head(text: &str) -> String {
         .collect()
 }
 
-/// Whether a tab's screen shows the pasted prompt (claude draws it, or a
-/// "[Pasted text #1 +3 lines]" stand in for a long one).
 pub fn shows_prompt(screen: &str, text: &str) -> bool {
     let head = echo_head(text);
     let flat = screen.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1178,8 +1133,6 @@ pub fn shows_prompt(screen: &str, text: &str) -> bool {
 }
 
 impl App {
-    /// A new folder for an assistant made tab: `<new_tab_base>/<name>` (or
-    /// the dated name of the New Tab dialog), never the base itself.
     pub fn assistant_folder(&self, acct: usize, name: Option<&str>) -> anyhow::Result<PathBuf> {
         let base = self.cfg.base_for(acct);
         let stem = match name.map(slug).filter(|s| !s.is_empty()) {
@@ -1207,8 +1160,6 @@ impl App {
         Ok(p)
     }
 
-    /// Send a prompt to a tab and follow it until claude accepts it. A tab
-    /// that is not ready gets it later. Returns the delivery id.
     pub fn deliver(&mut self, uid: u64, text: &str) -> u64 {
         self.delivery_seq += 1;
         let id = self.delivery_seq;
@@ -1241,8 +1192,6 @@ impl App {
         id
     }
 
-    /// A prompt for a tab in `slot` with image files: path lines for
-    /// Claude Code (it attaches them), "Image: /path" for Grok.
     pub fn with_images(&self, slot: usize, text: &str, images: &[PathBuf]) -> String {
         let grok = self.panes[slot]
             .account
@@ -1251,8 +1200,6 @@ impl App {
         crate::assistant_images::tab_text(text, images, grok)
     }
 
-    /// A request from the user to a tab (send_prompt, open_tab, resend):
-    /// delivered with receipts that are shown and said.
     pub fn deliver_request(&mut self, uid: u64, text: &str) -> u64 {
         let id = self.deliver(uid, text);
         if let Some(d) = self.deliveries.iter_mut().find(|d| d.id == id) {
@@ -1261,21 +1208,13 @@ impl App {
         id
     }
 
-    /// Paste now; Enter is a step of its own (deliveries_tick), never on a
-    /// timer: a CR in the same read as the paste reads as a new line, and
-    /// a busy machine bunches timed writes together.
     fn paste_prompt(&mut self, s: usize, t: usize, text: &str) {
         let tab = &mut self.panes[s].tabs[t];
         tab.reset_scroll();
-        // Always bracketed: claude reads ESC [200~ even before it turns the
-        // mode on, and a multi line prompt then stays one prompt.
+
         tab.write(&crate::keys::encode_paste(text, true));
     }
 
-    /// Paste into a tab, then Enter as a write of its own once the tab
-    /// shows the text (pending_enters_tick), never on a timer: a CR in the
-    /// same read as the paste is a new line, and a busy machine bunches
-    /// timed writes together.
     pub fn paste_then_enter(&mut self, s: usize, t: usize, text: &str) {
         let tab = &mut self.panes[s].tabs[t];
         tab.reset_scroll();
@@ -1287,7 +1226,6 @@ impl App {
         });
     }
 
-    /// Press the Enters whose paste now shows (or waited long enough).
     pub fn pending_enters_tick(&mut self) {
         let ps = std::mem::take(&mut self.pending_enters);
         for p in ps {
@@ -1295,7 +1233,6 @@ impl App {
                 continue;
             };
             if crate::pane::asks_question(&self.tab_screen(s, t)) {
-                // Enter would answer the question that opened since the paste.
                 crate::log::info(&format!(
                     "paste: {} shows a question, no Enter",
                     tab_id(p.uid)
@@ -1326,14 +1263,11 @@ impl App {
             .contents()
     }
 
-    /// The last prompt the user (or we) gave claude in a tab, from its transcript.
     pub fn last_user_text(&self, s: usize, t: usize) -> Option<String> {
         let p = self.transcript_path(s, t)?;
         crate::sessions::last_user_text(&p)
     }
 
-    /// True once claude has taken the prompt: it works on it, its
-    /// transcript has it, or the text it showed left its input box.
     fn accepted(&self, d: &Delivery, s: usize, t: usize, echoed: bool) -> bool {
         let tab = &self.panes[s].tabs[t];
         if matches!(tab.activity, Activity::Working | Activity::Permission) {
@@ -1363,8 +1297,6 @@ impl App {
         }
     }
 
-    /// Move every delivery along: paste when the tab is ready, Enter, check,
-    /// one more Enter, then delivered or failed.
     pub fn deliveries_tick(&mut self) {
         let mut ds = std::mem::take(&mut self.deliveries);
         for d in &mut ds {
@@ -1377,7 +1309,6 @@ impl App {
                 ));
                 d.uid = now;
                 if d.in_flight() {
-                    // Typed into the old copy: type it into the new one.
                     d.stage = Stage::Queued;
                 }
             }
@@ -1390,10 +1321,13 @@ impl App {
             match d.stage.clone() {
                 Stage::Queued => {
                     let tab = &self.panes[s].tabs[t];
-                    // Not over a paste still waiting for its Enter (a
-                    // model switch).
+
                     let typing = self.pending_enters.iter().any(|p| p.uid == d.uid);
-                    if tab.activity == Activity::Ready && tab.is_running() && !typing {
+
+                    let drafting = tab.activity == Activity::Ready
+                        && tab.is_running()
+                        && crate::archive::unsent_input(&self.tab_screen(s, t)).is_some();
+                    if tab.activity == Activity::Ready && tab.is_running() && !typing && !drafting {
                         crate::log::info(&format!(
                             "deliver: pasting into {} ({} chars)",
                             tab_id(d.uid),
@@ -1401,7 +1335,7 @@ impl App {
                         ));
                         let text = d.text.clone();
                         d.rc.before = Some((tab.model.clone(), tab.effort.clone()));
-                        // Its records come after this (claude only appends).
+
                         d.rc.from_offset = self
                             .transcript_path(s, t)
                             .and_then(|p| std::fs::metadata(p).ok())
@@ -1421,8 +1355,6 @@ impl App {
                     }
                 }
                 Stage::Pasted(at) => {
-                    // A question or menu opened since the paste: Enter
-                    // would answer it. Leave it for the user.
                     if crate::pane::asks_question(&self.tab_screen(s, t)) {
                         crate::log::info(&format!(
                             "deliver: {} shows a question, not sending",
@@ -1434,7 +1366,7 @@ impl App {
                         );
                         continue;
                     }
-                    // Enter once the text is in claude's input box.
+
                     let echoed = shows_prompt(&self.tab_screen(s, t), &d.text);
                     if echoed || at.elapsed() >= ECHO_WAIT {
                         if !echoed {
@@ -1463,7 +1395,6 @@ impl App {
                         ));
                         d.stage = Stage::Delivered;
                     } else if !retried && at.elapsed() >= RETRY_AFTER {
-                        // Still sitting in the input box: Enter once more.
                         crate::log::info(&format!(
                             "deliver: {} did not take it, pressing Enter again",
                             tab_id(d.uid)
@@ -1491,9 +1422,7 @@ impl App {
                 Stage::Delivered | Stage::Failed(_) => {}
             }
         }
-        // Keep finished ones a while so replies and the state can report them.
-        // A request's receipt is followed to its end, and a lost one is
-        // kept an hour for a resend.
+
         ds.retain(|d| !d.done() || d.rc.keep());
         if ds.len() > 50 {
             let mut cut = ds.len() - 50;
@@ -1509,7 +1438,6 @@ impl App {
         self.deliveries = ds;
     }
 
-    /// Prompts still waiting to go into a tab.
     pub fn queued_for(&self, uid: u64) -> usize {
         self.deliveries
             .iter()
@@ -1553,7 +1481,6 @@ impl App {
         }
     }
 
-    /// Deliver queued prompts and finish held replies once tabs are ready.
     pub fn control_tick(&mut self) {
         self.deliveries_tick();
         self.pending_enters_tick();
@@ -1614,8 +1541,7 @@ impl App {
                             || self.external_starting(d.id))
                 })
             });
-            // A take-over is done once its session runs in a tab here, or
-            // the take-over itself ended (failed).
+
             let takeover_tab = |app: &App, sid: &str| {
                 app.panes
                     .iter()
@@ -1724,15 +1650,14 @@ impl App {
             if let Some(warn) = w.reply["warning"].as_str() {
                 said = format!("{said} {warn}");
             }
-            // send_prompt: whether the answer will be reported back.
+
             if let Some(r) = w.reply["report_say"].as_str() {
                 said = format!("{said} {r}");
             }
             w.reply["say"] = json!(said);
             let _ = w.tx.send(ok(w.reply));
         }
-        // Outcomes that came after the tool replied: tell the assistant
-        // (and the user) so nothing is left unknown.
+
         let late: Vec<(String, String)> = self
             .deliveries
             .iter_mut()
@@ -1755,8 +1680,6 @@ impl App {
         }
     }
 
-    /// An account from a tool argument: 1 based number, "a2", label or
-    /// name, "best" or "current".
     pub fn account_arg(&self, v: &Value) -> Result<usize, String> {
         let n = self.cfg.accounts.len();
         let by_num = |k: usize| {
@@ -1791,7 +1714,7 @@ impl App {
                         a.name.eq_ignore_ascii_case(s) || a.display().eq_ignore_ascii_case(s)
                     }) {
                         Some(i) => Ok(i),
-                        // A misheard label: the closest account.
+
                         None => {
                             let idx: Vec<String> = (0..n).map(|i| i.to_string()).collect();
                             let labels: Vec<(&str, &str)> = self
@@ -1833,7 +1756,6 @@ impl App {
         }
     }
 
-    /// Every tab, leaving out ones moving away (their new tab counts).
     pub fn all_tabs(&self) -> Vec<(usize, usize)> {
         (0..self.panes.len())
             .flat_map(|s| (0..self.panes[s].tabs.len()).map(move |t| (s, t)))
@@ -1841,7 +1763,6 @@ impl App {
             .collect()
     }
 
-    /// Tabs one reference names.
     fn tabs_named(&self, r: &str) -> Result<Vec<(usize, usize)>, String> {
         let r = r.trim();
         let low = r.to_lowercase();
@@ -1863,8 +1784,7 @@ impl App {
             }
             "waiting" => pick(&|t| t.activity == Activity::Permission),
             "working" => pick(&|t| t.activity == Activity::Working),
-            // Idle (and "ready" in a batch) never includes a tab with
-            // background work: it is busy.
+
             "idle" | "ready" => all
                 .iter()
                 .copied()
@@ -1897,7 +1817,6 @@ impl App {
                             .is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(r))
                 });
                 if by_name.is_empty() {
-                    // A misheard name: the closest tab name or folder.
                     let labels: Vec<(String, String)> = all
                         .iter()
                         .flat_map(|&(s, t)| {
@@ -1956,10 +1875,7 @@ impl App {
         Ok(v)
     }
 
-    /// Every tab the arguments name (`tab` and/or `account`), in order,
-    /// without duplicates. `many` allows more than one.
     pub fn tab_targets(&self, args: &Value, many: bool) -> Result<Vec<(usize, usize)>, String> {
-        // A group: all its tabs ("close the experiments group").
         if let Some(g) = args.get("group").and_then(Value::as_str) {
             let acct = match args.get("account") {
                 Some(v) if !v.is_null() => Some(self.account_arg(v)?),
@@ -2010,7 +1926,6 @@ impl App {
         let mut out: Vec<(usize, usize)> = vec![];
         if refs.is_empty() {
             match acct {
-                // An account alone: every tab of it (batch), or its shown tab.
                 Some(a) if many => {
                     out = self
                         .all_tabs()
@@ -2060,12 +1975,6 @@ impl App {
         Ok(out)
     }
 
-    /// The one place a tab's agent is held to its own tab. `args` as the
-    /// agent sent them become the arguments the job tools run with: only
-    /// the five job tools, only their own arguments, `tab` (if given) its
-    /// own id, a job named only if it is this tab's. Anything that names
-    /// another tab, an archived conversation or an account, or that tries
-    /// to confirm, is refused. Nothing here reveals another tab's jobs.
     pub(crate) fn tab_scoped(&self, uid: u64, tool: &str, args: &Value) -> Result<Value, String> {
         use crate::tab_jobs::TAB_TOOLS;
         if !TAB_TOOLS.contains(&tool) {
@@ -2115,7 +2024,7 @@ impl App {
             ));
         }
         let mut a = given;
-        // Which tab: this one, or nothing.
+
         match a.get("tab") {
             None | Some(Value::Null) => {}
             Some(Value::String(t))
@@ -2140,7 +2049,6 @@ impl App {
             }
             "list_browsers" | "browser_status" => {}
             _ => {
-                // update_job, delete_job: one of this tab's jobs.
                 let key = a
                     .remove("job")
                     .or_else(|| a.remove("id"))
@@ -2191,8 +2099,7 @@ impl App {
         match tab.activity {
             Activity::Working => "working",
             Activity::Permission => "waiting for approval",
-            // At its prompt but subagents, shells or tasks still run: busy,
-            // not idle (it can still take a prompt).
+
             Activity::Ready if self.tab_background_work(s, t).is_some() => "background",
             Activity::Ready => "ready",
             Activity::Starting => "starting",
@@ -2209,21 +2116,22 @@ impl App {
             "id": tab_id(tab.uid),
             "account": slot.account.map(|a| a + 1),
             "account_label": slot.account.map(|a| self.cfg.accounts[a].display().to_string()),
+
+            "harness": slot.account.map(|a| self.cfg.accounts[a].harness().name()),
             "position": format!("tab {} of {}", t + 1, slot.tabs.len()),
             "name": tab.name(),
             "folder": crate::config::tilde(&tab.cwd),
             "state": self.state_word(s, t),
         });
-        // Its folder's git state, from the cache (never runs git here).
+
         if let Some(g) = self.git_line(&tab.cwd) {
             v["git"] = json!(g);
         }
-        // What is not on GitHub yet ("Not backed up: no GitHub repo").
+
         if let Some(w) = self.git_badge(&tab.cwd) {
             v["git_warn"] = json!(w);
         }
-        // Busy covers background work too: such a tab is not idle, though
-        // it still accepts prompts.
+
         if self.tab_busy(s, t) {
             v["busy"] = json!(true);
         }
@@ -2231,11 +2139,11 @@ impl App {
             v["background_work"] = json!(w);
             v["accepts_prompts"] = json!(true);
         }
-        // The row's label (finished, blocked, confirm, limit, error, queued).
+
         if let Some(l) = self.tab_label(s, t) {
             v["label"] = json!(l.word());
         }
-        // Its resume is held by a Claude Code background run.
+
         if let Some(l) = self.bg_lock_json(s, t) {
             v["background_lock"] = l;
         }
@@ -2274,12 +2182,11 @@ impl App {
         if q > 0 {
             v["queued_prompts"] = json!(q);
         }
-        // A move waiting for its work to end.
+
         if let Some((to, why)) = self.move_pending(tab.uid) {
             v["move_pending"] = json!({"to": to, "waiting_for": why});
         }
-        // Background sessions forked from this tab for requests it was too
-        // busy for (its own work and loops are counted above).
+
         let bg = self.tab_background_runs(tab.uid);
         if !bg.is_empty() {
             v["background_sessions"] = json!(bg);
@@ -2314,10 +2221,6 @@ impl App {
         }
     }
 
-    /// Batch tools: resolve the arguments to an exact plan; ask once when
-    /// it needs a yes; with the token (from the user's next turn) run the
-    /// plan that was asked about. A confirmation never covers more than
-    /// the user heard: new arguments must resolve to the same plan.
     pub(crate) fn planned(&mut self, tool: &str, args: &Value) -> Result<Value, String> {
         let turn = self.assistant_turn;
         self.pending_confirms.retain(|p| p.age() < KEEP_PLANS);
@@ -2327,8 +2230,7 @@ impl App {
                 "next": format!("Ask the user exactly once, as one short question: \"{}\" Then stop. Only after a clear yes in a later message, call {} again with only confirm_token; that runs the whole set at once.", p.summary, p.tool)
             })
         };
-        // Ask the same question again (after an expiry): the same plan, so
-        // nothing can drift.
+
         if let Some(tok) = args.get("reissue_token").and_then(Value::as_str) {
             let i = self.pending_confirms.iter().position(|p| p.token == tok && p.tool == tool).ok_or("that plan is gone (over 10 minutes old); build it again from what the user asked")?;
             let mut p = self.pending_confirms.remove(i);
@@ -2358,7 +2260,7 @@ impl App {
                 return Err("that confirmation token is unknown; ask the user again".into());
             };
             let p = self.pending_confirms[i].clone();
-            // Never in the turn that asked: the user must have heard it.
+
             if p.turn >= turn {
                 crate::log::info(&format!(
                     "control: {tool} token {tok} refused: same turn it was issued"
@@ -2385,8 +2287,7 @@ impl App {
                     json!({"ok": true, "result": {"cancelled": true}, "say": "Okay, I left them as they are."}),
                 );
             }
-            // Only a clear yes confirms; a question or anything unclear
-            // leaves it pending (for two minutes from the question).
+
             if !crate::instant::affirmative(&said) {
                 crate::log::info(&format!(
                     "control: {tool} token {tok} not confirmed by \"{said}\""
@@ -2401,8 +2302,7 @@ impl App {
             if let Some(o) = rest.as_object_mut() {
                 o.remove("confirm_token");
             }
-            // (A prompt edit was checked when asked; the yes turn is not a
-            // request to change anything, so it is not planned again.)
+
             if tool != "edit_system_prompt" && rest.as_object().is_some_and(|o| !o.is_empty()) {
                 let (fresh, _, _) = self.plan_for(tool, &rest)?;
                 if fresh != p.plan {
@@ -2429,7 +2329,6 @@ impl App {
         Ok(self.ask_question(tool, plan, question))
     }
 
-    /// Put `question` about `plan` to the user (a token to confirm with).
     pub(crate) fn ask_question(&mut self, tool: &str, plan: Value, question: String) -> Value {
         let turn = self.assistant_turn;
         let ask = |p: &Pending| {
@@ -2439,8 +2338,7 @@ impl App {
             })
         };
         let token = crate::session_ops::new_uuid()[..8].to_string();
-        // A new question for the same tool replaces the old one: the brain
-        // is told, and the old token says so if it comes back.
+
         let replaced: Vec<Pending> = self
             .pending_confirms
             .iter()
@@ -2473,10 +2371,6 @@ impl App {
         reply
     }
 
-    /// The no-confirmation tier for closing: a single tab, idle (nothing
-    /// runs in it: no subagents, shells or loops), no prompt on its way,
-    /// asked for in a direct command ("close it", "close the notes tab"),
-    /// and neither confirm policy set to always.
     pub fn closes_without_a_yes(&self, (sl, t): (usize, usize)) -> bool {
         if self.cfg.assistant.confirm == "always" || self.cfg.confirm_close == "always" {
             return false;
@@ -2497,9 +2391,6 @@ impl App {
             && !self.tab_busy(sl, t)
     }
 
-    /// Whether the user's own latest words ask to stop, interrupt, cancel
-    /// or escape tab (sl, t): a stop word, not negated or asked about, and
-    /// no other tab named instead. A turn of our own never counts.
     pub fn stop_asked_for(&self, sl: usize, t: usize) -> bool {
         let raw = self.assistant.last_user.trim();
         if raw.is_empty() || raw.ends_with('?') {
@@ -2562,7 +2453,6 @@ impl App {
         this || !other
     }
 
-    /// (plan, question, needs a yes) for a batch tool's arguments.
     pub(crate) fn plan_for(
         &mut self,
         tool: &str,
@@ -2665,9 +2555,7 @@ impl App {
             "edit_system_prompt" => self.plan_prompt_edit(args),
             "close_tabs" => {
                 let mut tabs = self.tab_targets(args, true)?;
-                // Pinned tabs stay out of batches ("close all", "close
-                // everything except pinned") unless asked for by name or
-                // with include_pinned.
+
                 let batch = !matches!(args.get("tab"), Some(Value::String(t))
                     if !matches!(t.as_str(), "all" | "waiting" | "working" | "idle" | "ready" | "busy" | "background"));
                 let with_pinned = args
@@ -2684,8 +2572,7 @@ impl App {
                     }
                 }
                 let q = format!("Close {}?", self.describe_set(&tabs));
-                // One idle tab the user named in a direct command closes
-                // at once (with Undo); everything else asks once.
+
                 let named = matches!(args.get("tab"), Some(Value::String(t))
                     if !matches!(t.as_str(), "all" | "waiting" | "working" | "idle" | "ready" | "busy" | "background"));
                 let needs = !(named && tabs.len() == 1 && self.closes_without_a_yes(tabs[0]));
@@ -2790,8 +2677,6 @@ impl App {
                 Ok((json!({"args": a}), q, true))
             }
             "take_over_session" => {
-                // One plan for every session asked for: ids, or "idle"
-                // (nothing runs in it at all) / "all".
                 let lives = self.live_sessions();
                 let procs = crate::activity::process_table();
                 let ids: Vec<String> = match args.get("id").or(args.get("ids")) {
@@ -2912,7 +2797,6 @@ impl App {
         self.takeover_target(id, args)
     }
 
-    /// The live session `id` and where it should continue.
     fn takeover_target(
         &self,
         id: &str,
@@ -2949,7 +2833,6 @@ impl App {
         Ok((live, target))
     }
 
-    /// Run a (confirmed or harmless) plan. Results carry what happened.
     pub(crate) fn run_plan(&mut self, tool: &str, plan: &Value) -> Result<Value, String> {
         if let Some(r) = self.admin_run_plan(tool, plan) {
             return r;
@@ -2993,8 +2876,7 @@ impl App {
                 let uid = self.current_uid(plan["uid"].as_u64().unwrap_or(0));
                 let (sl, t) = self.find_tab(uid).ok_or("that tab was closed")?;
                 let key = plan["key"].as_str().unwrap_or("escape");
-                // An interrupt can drop requests claude holds in its queue:
-                // warn, and check that tab's requests afterwards.
+
                 let warning = self.interrupt_warning(uid);
                 self.panes[sl].tabs[t].write(key_bytes(Some(key))?);
                 self.last_target = Some(uid);
@@ -3064,7 +2946,7 @@ impl App {
                 let mut closed = 0;
                 let mut names: Vec<String> = vec![];
                 let mut accts = std::collections::BTreeSet::new();
-                // One group: one reopen_closed brings them all back.
+
                 let group = self.next_close_group();
                 for u in &uids {
                     let Some((sl, t)) = self.find_tab(*u) else {
@@ -3106,7 +2988,7 @@ impl App {
                 let mut failed = vec![];
                 let items: Vec<Value> = match plan["items"].as_array() {
                     Some(a) => a.clone(),
-                    // A plan from before batches.
+
                     None => vec![
                         json!({"id": plan["id"], "pid": plan["pid"], "account": plan["account"], "title": ""}),
                     ],
@@ -3143,8 +3025,7 @@ impl App {
                     }
                 }
                 let sessions: Vec<Value> = started.iter().map(|s| s["session"].clone()).collect();
-                // The reply waits until each is open as a tab here (or up to
-                // 45 s), so the next step (a rename, a prompt) can use its id.
+
                 Ok(
                     json!({"ok": !started.is_empty(), "_wait": {"takeovers": sessions, "deliveries": [], "max_ms": 45000}, "started": started, "failed": failed}),
                 )
@@ -3178,7 +3059,6 @@ impl App {
             .collect::<Vec<_>>())
     }
 
-    /// A path a tool may read: inside the tab's folder.
     fn path_in_tab(&mut self, args: &Value) -> Result<PathBuf, String> {
         let (s, t) = self.one_tab(args)?;
         self.spoken_path(
@@ -3187,9 +3067,6 @@ impl App {
         )
     }
 
-    /// A path inside a tab's folder as it may have been said: spoken
-    /// punctuation resolved, and a misheard name matched to the closest
-    /// entry, one component at a time (noted for the reply).
     pub fn spoken_path(
         &self,
         root: &std::path::Path,
@@ -3247,7 +3124,6 @@ impl App {
         Ok(fixed)
     }
 
-    /// Tabs a read-only tool looks at: one, a list or "all".
     fn read_targets(&mut self, args: &Value) -> Result<Vec<(usize, usize)>, String> {
         let many = matches!(args.get("tab"), Some(Value::Array(_)))
             || args
@@ -3261,8 +3137,6 @@ impl App {
         Ok(v)
     }
 
-    /// Folders the user makes tab workspaces in (new_tab_base and each
-    /// account's): allowed even inside GodTerm's home.
     pub fn workspaces(&self) -> Vec<PathBuf> {
         let mut v = vec![crate::config::expand_tilde(&self.cfg.new_tab_base)];
         v.extend(
@@ -3275,7 +3149,6 @@ impl App {
         v
     }
 
-    /// Every open tab's folder (canonical), for open_path's scope.
     fn tab_roots(&self) -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = self
             .panes
@@ -3292,9 +3165,6 @@ impl App {
     }
 }
 
-/// The first `n` lines of a regular file (never a FIFO, device or
-/// folder), streamed, at most 12000 chars, read off the UI thread with a
-/// timeout. Also the line count when the file is small enough to count.
 fn read_head(p: &std::path::Path, n: usize) -> Result<(String, Option<usize>, bool), String> {
     let md = std::fs::metadata(p).map_err(|e| format!("{e}"))?;
     if md.is_dir() {
@@ -3317,7 +3187,7 @@ fn read_head(p: &std::path::Path, n: usize) -> Result<(String, Option<usize>, bo
             let mut more = false;
             loop {
                 line.clear();
-                // A line longer than 64 KB is cut there.
+
                 let got = (&mut rd)
                     .take(64 * 1024)
                     .read_until(b'\n', &mut line)
@@ -3337,7 +3207,7 @@ fn read_head(p: &std::path::Path, n: usize) -> Result<(String, Option<usize>, bo
                 lines += 1;
             }
             let out: String = out.trim_end().chars().take(12000).collect();
-            // Count the lines of files up to 8 MB (streamed).
+
             let total = if !more {
                 Some(lines)
             } else if len <= 8 << 20 {
@@ -3363,7 +3233,6 @@ fn read_head(p: &std::path::Path, n: usize) -> Result<(String, Option<usize>, bo
         .map_err(|_| "reading it took too long (a slow disk or network folder)".to_string())?
 }
 
-/// A path inside `root` (relative to it, or absolute within it).
 fn path_under(root: &std::path::Path, path: Option<&str>) -> Result<PathBuf, String> {
     {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
@@ -3392,7 +3261,6 @@ fn path_under(root: &std::path::Path, path: Option<&str>) -> Result<PathBuf, Str
     }
 }
 
-/// The bytes press_key sends for a key name.
 fn key_bytes(key: Option<&str>) -> Result<&'static [u8], String> {
     match key {
         Some("escape") | Some("esc") => Ok(b"\x1b"),
@@ -3403,7 +3271,6 @@ fn key_bytes(key: Option<&str>) -> Result<&'static [u8], String> {
     }
 }
 
-/// The canonical name of press_key's bytes.
 fn key_word(bytes: &[u8]) -> &'static str {
     match bytes {
         b"\x1b" => "escape",
@@ -3422,7 +3289,6 @@ fn key_label(key: &str) -> &'static str {
     }
 }
 
-/// "*.html", ".html", "index" or "" against a file name.
 fn name_matches(name: &str, pat: &str) -> bool {
     let p = pat.trim().to_lowercase();
     let n = name.to_lowercase();
@@ -3437,15 +3303,9 @@ fn name_matches(name: &str, pat: &str) -> bool {
 }
 
 impl App {
-    /// Run one tool. Returns {"ok": true, "result": ...} or an error /
-    /// needs_confirmation object.
     pub fn control_call(&mut self, tool: &str, args: &Value) -> Value {
-        // The web app (the user in a browser): tools that size their
-        // replies for the model's context give it more (sessions), and
-        // its calls are not the assistant's (kept out of its chat). Set
-        // for each call; read only during one.
         self.web_caller = args.get("_client").and_then(Value::as_str) == Some("web");
-        // Demo mode's own tools (its driver script): not logged anywhere.
+
         if let Some(r) = crate::demo::control_tool(self, tool, args) {
             return r.unwrap_or_else(err);
         }
@@ -3453,7 +3313,7 @@ impl App {
             "control: {tool} {}",
             args.to_string().chars().take(300).collect::<String>()
         ));
-        // A tab's agent: scoped to its own tab's jobs, whatever it asks.
+
         if let Some(uid) = args
             .get("_client")
             .and_then(Value::as_str)
@@ -3468,8 +3328,7 @@ impl App {
             }
             return self.tab_call(uid, tool, &own);
         }
-        // Who is calling: the assistant's own brain (godterm mcp started by
-        // it; in-process calls count as it too) or another client.
+
         let brain = args
             .get("_client")
             .and_then(Value::as_str)
@@ -3480,9 +3339,7 @@ impl App {
         }
 
         let args = &args;
-        // A tab id from the brain's memory that now names another tab:
-        // refused once with where that tab is now (it may then use the id
-        // on purpose).
+
         if brain && !self.assistant.stale_ids.is_empty() {
             let named: Vec<String> = match &args["tab"] {
                 Value::String(t) => vec![t.to_lowercase()],
@@ -3506,11 +3363,11 @@ impl App {
                 }
             }
         }
-        // Looking never changes anything: always allowed, never counted.
+
         let read_only = READ_ONLY.contains(&tool);
         if brain {
             self.assistant.last_event = Some(Instant::now());
-            // Tab or file contents entered this turn (learn checks it).
+
             if matches!(
                 tool,
                 "read_tab"
@@ -3526,9 +3383,7 @@ impl App {
                 self.assistant.turn_reads += 1;
             }
         }
-        // A turn GodTerm started itself to read out a tab's answer: that
-        // text is the tab's, not the user's, so nothing may change in it
-        // (an answer saying "now send X to t3" stays words).
+
         if brain && !read_only && self.assistant.system_turn && !matches!(tool, "speak" | "ignore")
         {
             crate::log::info(&format!(
@@ -3557,9 +3412,7 @@ impl App {
                 ));
             }
         }
-        // "Update and restart" with confirm true counts only as the answer
-        // to the question asked in an earlier turn, after the user's yes
-        // (the brain cannot ask and answer in one go).
+
         if brain
             && tool == "restart_to_update"
             && args["confirm"].as_bool() == Some(true)
@@ -3588,7 +3441,7 @@ impl App {
                 at: Instant::now(),
             });
         }
-        // Names matched for misheard ones: the model mentions them.
+
         let fixes = std::mem::take(&mut *self.corrections.borrow_mut());
         if !fixes.is_empty() && v["error"].is_null() {
             let list: Vec<Value> = fixes
@@ -3601,7 +3454,7 @@ impl App {
                 v["corrected_from"] = json!(list);
             }
         }
-        // QA-9: opening onto an account that is out says so.
+
         if matches!(tool, "open_tab" | "new_tab" | "new_tab_with_prompt")
             && v["error"].is_null()
             && v["needs_confirmation"].is_null()
@@ -3620,11 +3473,11 @@ impl App {
                 }
             }
         }
-        // A question to a tab: its answer is told when it comes.
+
         if brain && tool == "send_prompt" && v["error"].is_null() {
             self.follow_up_sends(args, &mut v, false);
         }
-        // A new tab given a question: its first turn's reply is told too.
+
         if brain
             && matches!(tool, "open_tab" | "new_tab" | "new_tab_with_prompt")
             && v["error"].is_null()
@@ -3639,8 +3492,6 @@ impl App {
         v
     }
 
-    /// The restart question was asked in an earlier turn, for the update
-    /// that is ready now, not long ago, and the user's latest words say yes.
     pub(crate) fn restart_confirmed(&mut self) -> Result<(), String> {
         let tool = "restart_to_update";
         let Some(i) = self.pending_confirms.iter().position(|p| p.tool == tool) else {
@@ -3697,8 +3548,6 @@ impl App {
             return Ok(json!({"ok": true, "result": {"say": say}}));
         }
         if tool == "switch_assistant" {
-            // Only another account of the same provider: Remote Control
-            // comes along (the conversation is moved, not restarted).
             let same_provider = args["provider"].as_str().is_none_or(|p| {
                 let p = p.trim().to_lowercase();
                 p == self.cfg.assistant.provider
@@ -3799,7 +3648,6 @@ impl App {
                 };
                 let confirm = args.get("confirm").and_then(Value::as_bool) == Some(true);
                 if !confirm {
-                    // The assistant's own turn is not a blocker: it restarts after it.
                     let blockers: Vec<String> = self
                         .restart_blockers()
                         .into_iter()
@@ -3833,8 +3681,7 @@ impl App {
             "read_tab" => {
                 let (sl, t) = self.one_tab(args)?;
                 let id = tab_id(self.panes[sl].tabs[t].uid);
-                // Asked by an id that moved: say so, never pass another
-                // tab's screen off as the one asked for.
+
                 let moved = s("tab").map(|a| a.trim().to_lowercase()).filter(|a| {
                     a.strip_prefix('t')
                         .is_some_and(|n| n.parse::<u64>().is_ok())
@@ -3928,15 +3775,12 @@ impl App {
                     }
                     ok(v)
                 } else {
-                    // Every tab in one reply: no need to call again per tab.
                     ok(
                         json!({"tabs": tabs.iter().map(|&(sl, t)| one(self, sl, t)).collect::<Vec<_>>()}),
                     )
                 }
             }
             "open_path" => {
-                // Open files or folders inside the tabs' folders with their
-                // default app, or http(s) URLs in the browser. Local, free.
                 let items: Vec<String> = match args.get("paths").or(args.get("path")) {
                     Some(Value::Array(a)) => a
                         .iter()
@@ -3946,7 +3790,7 @@ impl App {
                     _ => return Err("paths is required (files, folders or http URLs)".into()),
                 };
                 let mut roots = self.tab_roots();
-                // Project folders find and search_projects report.
+
                 roots.extend(
                     self.project_roots()
                         .into_iter()
@@ -3967,7 +3811,7 @@ impl App {
                         continue;
                     }
                     let raw = crate::config::expand_tilde(it);
-                    // A relative path: in the given tab, else the tab that has it.
+
                     let p = if raw.is_absolute() {
                         raw
                     } else {
@@ -3990,7 +3834,7 @@ impl App {
                         Err(_) => refused.push(json!({"path": it, "reason": "does not exist"})),
                     }
                 }
-                // Links open in the tab's Chrome profile, else the default one.
+
                 let link_uid = args
                     .get("tab")
                     .and_then(|_| self.one_tab(args).ok())
@@ -4046,12 +3890,10 @@ impl App {
                 ok(v)
             }
             "open_tab" | "new_tab" | "new_tab_with_prompt" => {
-                // A confirmed (or re-asked) open in the home folder.
                 if args.get("confirm_token").is_some() || args.get("reissue_token").is_some() {
                     return self.planned("open_tab", args);
                 }
-                // Never a blank session in place of a tab whose resume a
-                // background run holds: that tab is fixed (fix_resume).
+
                 if args["fresh"].as_bool() != Some(true) {
                     if let Some(e) = self.held_tab_for(s("dir").as_deref(), s("name").as_deref()) {
                         return Err(e);
@@ -4083,18 +3925,13 @@ impl App {
                     {
                         let p = crate::config::expand_tilde(&d);
                         if !p.is_dir() {
-                            // New work in a folder that is not there yet:
-                            // made (under the home folder, never a system
-                            // or private place), then opened.
                             let create = args["create"].as_bool() == Some(true);
                             match new_folder(&p, create, &self.workspaces()) {
-                                // Said as the user named it.
                                 Ok(_) => created = Some(p.clone()),
                                 Err(e) => return Err(e),
                             }
                         }
-                        // Never system folders or private ones; the home
-                        // folder itself only after the user says yes.
+
                         match crate::guard::tab_folder(&p, &self.workspaces()) {
                             Err(why) => {
                                 crate::log::info(&format!("control: open_tab refused {d}: {why}"));
@@ -4118,7 +3955,7 @@ impl App {
                         .map(|r| PathBuf::from(&r.path))
                     {
                         Some(p) => p,
-                        // Said aloud: the closest recent or session folder.
+
                         None => {
                             let mut known: Vec<String> =
                                 self.recents.iter().map(|r| r.path.clone()).collect();
@@ -4200,7 +4037,6 @@ impl App {
                         folder.clone()
                     } else {
                         if k == 0 {
-                            // Made for the plain name; each gets name-N instead.
                             let _ = std::fs::remove_dir(&folder);
                         }
                         self.assistant_folder(acct, name.as_deref())
@@ -4337,14 +4173,12 @@ impl App {
                 if args.get("confirm_token").is_some() || args.get("reissue_token").is_some() {
                     return self.planned("press_key", args);
                 }
-                // Escape, Ctrl-C and Ctrl-D interrupt: a working tab asks
-                // first unless the user said to stop it.
+
                 if key_bytes(s("key").as_deref())? != b"\r" {
                     return self.planned("press_key", args);
                 }
                 let (sl, t) = self.one_tab(args)?;
-                // Enter on a permission or trust prompt would approve it
-                // without the user's yes: that goes through answer_prompt.
+
                 let asking = self.panes[sl].tabs[t].activity == Activity::Permission
                     || self.request_of(sl, t).is_some();
                 if asking {
@@ -4435,8 +4269,7 @@ impl App {
             "copy_session" => {
                 let sid = s("session").ok_or("session is required")?;
                 let target = self.account_arg(args.get("account").ok_or("account is required")?)?;
-                // Any source the sessions tool lists: accounts and the main
-                // ~/.claude and ~/.grok (through the index, like open_session).
+
                 self.kick_index(false);
                 let r = {
                     let ix = self.session_index.lock().unwrap_or_else(|e| e.into_inner());
@@ -4533,7 +4366,7 @@ impl App {
                     .iter()
                     .map(|&(sl, t)| self.panes[sl].tabs[t].uid)
                     .collect();
-                // Their groups come along.
+
                 let groups: Vec<(u64, crate::tab_groups::TabGroup)> = tabs
                     .iter()
                     .filter_map(|&(sl, t)| {
@@ -4552,17 +4385,12 @@ impl App {
                         there.push(tab_id(uid));
                         continue;
                     }
-                    // Another harness's account, or a CLI whose sessions
-                    // GodTerm does not read: refused, never queued (the
-                    // move would fail later, or resume the wrong thing).
+
                     if let Some(why) = self.move_refusal(sl, to) {
                         refused.push(json!({"tab": tab_id(uid), "why": why}));
                         continue;
                     }
                     if self.tab_has_running_work(sl, t) {
-                        // Busy (also with background work, which a move
-                        // would stop): it moves once that ends, and the
-                        // answer says what it waits for.
                         let why = self
                             .tab_busy_why(sl, t)
                             .unwrap_or_else(|| "it is busy".into());
@@ -4684,7 +4512,6 @@ impl App {
                 ok(json!(did.join(", ")))
             }
             "system_check" => {
-                // Checked here, run off the UI thread; every call logged.
                 let job: Box<dyn FnOnce() -> Value + Send> = match s("helper").as_deref() {
                     Some("process_tree") => {
                         let pid = args
@@ -4786,6 +4613,21 @@ impl App {
             }
             "reopen_tab" => {
                 let id = s("id").ok_or("id is required")?;
+
+                let open = id
+                    .trim()
+                    .strip_prefix('t')
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .and_then(|u| self.locate_uid(u))
+                    .filter(|&(sl, t)| !self.panes[sl].tabs[t].is_running());
+                if let Some((sl, t)) = open {
+                    let kind = self.panes[sl].tabs[t].relaunch_kind();
+                    self.launch_tab(sl, t, kind);
+                    let name = self.panes[sl].tabs[t].name();
+                    return Ok(ok(
+                        json!({"reopened": true, "tab": id.trim(), "say": format!("Started '{name}' again.")}),
+                    ));
+                }
                 let msg = self.reopen_record(id.trim())?;
                 if let Some(n) = s("name").filter(|n| !n.trim().is_empty()) {
                     let (p, t) = (self.focus, self.panes[self.focus].active);
@@ -4935,8 +4777,6 @@ impl App {
                 }
             },
             "ignore" => {
-                // Not for pauses: GodTerm drops speech while paused, so a
-                // message that arrives is meant to be answered.
                 let reason = s("reason").unwrap_or_default().to_lowercase();
                 if !self.paused()
                     && (reason.contains("paus")
@@ -4982,10 +4822,7 @@ impl App {
                     Some(v) if !v.is_null() => Some(self.account_arg(v)?),
                     _ => None,
                 };
-                // A session lives in one config dir per account (resumed on
-                // an account that lacks it, claude says "No conversation
-                // found"): open the freshest copy where it is, the asked
-                // account's own copy when that is as fresh.
+
                 let newest = rows
                     .iter()
                     .max_by_key(|r| r.info.modified)
@@ -5010,7 +4847,6 @@ impl App {
                         a
                     }
                     _ => {
-                        // A main install session: copy it into an account first.
                         let want = match want {
                             Some(w) => w,
                             None => (0..self.cfg.accounts.len())
@@ -5043,8 +4879,7 @@ impl App {
                         }
                         let from = self.src_dir(r.src);
                         let to = self.cfg.accounts[want].config_dir();
-                        // The account's older copy is replaced by the newer
-                        // one (kept in GodTerm's trash first).
+
                         let older = rows
                             .iter()
                             .find(|x| x.src == Src::Account(want))
@@ -5099,15 +4934,14 @@ impl App {
                     "open_session: {} from {} on {}",
                     r.info.id, r.source, self.cfg.accounts[acct].name
                 ));
-                // Codex and Cursor slots list no sessions of their own:
-                // the row gives the resume its folder.
+
                 if let Some(st) = self.accounts.get_mut(acct) {
                     if !st.sessions.iter().any(|x| x.id == r.info.id) {
                         st.sessions.insert(0, r.info.clone());
                     }
                 }
                 self.resume(acct, r.info.id.clone());
-                // A rename asked with it happens at once.
+
                 if let Some(n) = s("name").filter(|n| !n.trim().is_empty()) {
                     let (p, t) = (self.focus, self.panes[self.focus].active);
                     self.rename_tab(p, t, &n);
@@ -5126,7 +4960,7 @@ impl App {
                     tab.clone().unwrap_or_default(),
                     note.as_deref().map(|n| format!(" {n}")).unwrap_or_default()
                 );
-                // The folder too: remembered later, it finds the tab again.
+
                 ok(
                     json!({"opened": r.info.id, "account": shown, "from": r.source, "tab": tab, "folder": folder, "say": say}),
                 )
@@ -5149,7 +4983,6 @@ impl App {
         })
     }
 
-    /// Where sessions live, for the index.
     pub fn index_sources(&self) -> Vec<crate::session_index::Source> {
         use crate::app_sessions::Src;
         use crate::harness::Harness;
@@ -5163,10 +4996,9 @@ impl App {
                 )
             })
             .collect();
-        // Tests only look at the main installs when pointed at fixtures.
+
         let mains = crate::config::dirs().mains;
-        // Cursor slots share the CLI's own store: it is read once, as the
-        // first Cursor slot's (which can resume any of them).
+
         let mut cursor_seen = false;
         v.retain_mut(|(_, h, home, label)| {
             if *h != Harness::Cursor {
@@ -5195,7 +5027,6 @@ impl App {
         v
     }
 
-    /// Refresh the session index in the background when it is stale.
     pub fn kick_index(&mut self, force: bool) {
         let stale = {
             let ix = self.session_index.lock().unwrap_or_else(|e| e.into_inner());
@@ -5216,7 +5047,7 @@ impl App {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .building = true;
-        // Then what is inside each project the sessions and tabs were in.
+
         let (projects, extra, allowed) = (
             std::sync::Arc::clone(&self.project_index),
             self.project_extra_roots(),
@@ -5227,8 +5058,7 @@ impl App {
             crate::project_index::refresh_from_sessions(
                 &projects, &shared, &extra, force, &allowed,
             );
-            // And the git state of each, on the same schedule (tests run
-            // git only where they ask for it).
+
             if !cfg!(test) {
                 crate::project_git::update(
                     &projects,
@@ -5245,7 +5075,6 @@ impl App {
         }
     }
 
-    /// The sessions tool.
     fn query_sessions(&mut self, args: &Value) -> Result<Value, String> {
         use crate::harness::Harness;
         self.kick_index(false);
@@ -5293,8 +5122,7 @@ impl App {
             Some(k) => Some((crate::sess_sort::SortKey::parse(k).ok_or(format!("sort: unknown \"{k}\" (modified, created, messages, tokens, context, project, source, title)"))?, reverse)),
         };
         let state = s("state").unwrap_or_else(|| "all".into());
-        // The web app pages through everything (offset); the model gets
-        // at most 50 rows.
+
         let web = self.web_caller;
         let limit = args
             .get("limit")
@@ -5318,7 +5146,7 @@ impl App {
             .into_iter()
             .map(|l| (l.session_id.clone(), l))
             .collect();
-        // One process listing for every session running elsewhere.
+
         let procs = if external.is_empty() {
             vec![]
         } else {
@@ -5327,14 +5155,11 @@ impl App {
         let ix = self.session_index.lock().unwrap_or_else(|e| e.into_inner());
         let building = ix.building && ix.built.is_none();
         let hidden = std::cell::Cell::new(0usize);
-        // The project as said: spoken punctuation resolved, compared
-        // without spaces, dashes or dots; a misheard one ("code slash pod
-        // mesh") is matched to the closest known folder.
+
         let mut project = s("project").map(|p| crate::fuzzy::spoken_punctuation(&p));
         let mut project_fix: Option<(String, String)> = None;
         let mut did_you_mean: Option<Vec<crate::fuzzy::Candidate>> = None;
-        // "~" / "home" means sessions run in the home folder itself; a
-        // path starting with ~ is that folder and below.
+
         let home = crate::config::home_dir().to_string_lossy().into_owned();
         if let Some(p) = project.as_deref() {
             let t = p.trim().trim_end_matches('/').to_lowercase();
@@ -5390,10 +5215,7 @@ impl App {
                 }
             }
         }
-        // A session id (whole, its first 8 characters, or cut short when
-        // pasted), or a Claude Code background run's job id: matched on
-        // the id itself. A background run also finds the session it
-        // continues (its own fork may have no conversation yet).
+
         const ID_HIT: usize = 10_000;
         let id_q = s("text").and_then(|q| crate::session_ids::id_query(&q));
         let bg_runs: Vec<(usize, crate::session_ids::BgJob)> = match &id_q {
@@ -5453,14 +5275,13 @@ impl App {
                 _ => true,
             })
             .filter_map(|r| {
-                // An id (or a background run's job id): the id decides.
                 if let Some(q) = &id_q {
                     let hit = crate::session_ids::id_matches(q, &r.info.id)
                         || continued.contains(&r.info.id);
                     return hit.then_some((ID_HIT, r));
                 }
                 let live_name = external.get(&r.info.id).and_then(|l| l.name.as_deref());
-                // Its saved description and the files it touched count too.
+
                 let memo = memos
                     .get("session", &r.info.id)
                     .or_else(|| memos.get("project", &r.info.cwd));
@@ -5483,7 +5304,6 @@ impl App {
                         .join(" "),
                 );
                 match s("text").map(|q| crate::fuzzy::spoken_punctuation(&q)) {
-                    // Words found, or a name that sounds like it.
                     Some(q) => crate::session_index::score(&q, &hay)
                         .map(|sc| (sc, r))
                         .or_else(|| {
@@ -5493,7 +5313,6 @@ impl App {
                     None => Some((0, r)),
                 }
             })
-            // Headless last, so the hidden count is of otherwise matching rows.
             .filter(|(sc, r)| {
                 let h = crate::sess_sort::headless(&r.info) && *sc != ID_HIT;
                 if h && !with_headless {
@@ -5518,8 +5337,7 @@ impl App {
             None if reverse => hits.sort_by_key(|(_, r)| r.info.modified),
             None => hits.sort_by_key(|(_, r)| std::cmp::Reverse(r.info.modified)),
         }
-        // Nothing matched the text: the closest sessions, so the model can
-        // offer them (or ask) instead of saying none.
+
         let text_dym: Option<Vec<Value>> = match s("text") {
             Some(q) if hits.is_empty() => {
                 let mut c: Vec<(f64, &crate::session_index::Row)> = ix
@@ -5549,7 +5367,7 @@ impl App {
         let total = hits.len();
         hits.drain(..offset.min(hits.len()));
         hits.truncate(limit);
-        // Grouped: Claude first, then Grok (each keeping its order).
+
         if grouped {
             hits.sort_by_key(|(_, r)| r.harness != Harness::Claude);
         }
@@ -5564,7 +5382,7 @@ impl App {
                     v["project_saved"] = json!(m.description);
                 }
                 if let Some(l) = external.get(&r.info.id) {
-                    // Idle only when nothing at all runs (see activity.rs).
+
                     let act = crate::activity::of_live(l, &procs, 0);
                     v["external"] = json!({"pid": l.pid, "tty": l.tty, "name": l.name, "terminal": crate::takeover::terminal_of(l.pid), "state": act.state, "activity": act.json(), "take_over": "take_over_session brings it here"});
                 }
@@ -5630,12 +5448,11 @@ impl App {
         Ok(out)
     }
 
-    /// The whole state for get_state.
     pub fn state_json(&self) -> Value {
         let now = chrono::Utc::now();
         json!({
             "modes": self.modes_line().trim(),
-            // What GodTerm itself said or showed the user (not the assistant).
+
             "told_user": self.told_json(),
             "pending_answers": self.pending_answers_json(),
             "providers": self.providers_json(),
@@ -5651,7 +5468,7 @@ impl App {
                 "account": a + 1,
                 "label": self.cfg.accounts[a].display(),
                 "logged_in": self.accounts[a].login.logged_in(),
-                // logged_in, logged_out, expired or cli (its CLI keeps it).
+
                 "login_state": crate::app_accounts::login_state(&self.accounts[a]),
                 "five_hour_left_pct": self.accounts[a].five_hour_left().map(|x| x.round()),
                 "five_hour_reset_passed": self.accounts[a].five_hour_reset_passed(),
@@ -5662,7 +5479,7 @@ impl App {
                 "extra_usage": self.accounts[a].usage.as_ref().and_then(|u| u.extra.as_ref()).map(|e| json!({"enabled": e.enabled, "used": e.used, "limit": e.limit})),
                 "effective_left_pct": self.accounts[a].effective_left().map(|x| x.round()),
                 "limited_by": self.accounts[a].binding().map(|b| b.1),
-                // Why there may be no usage numbers (QA-15).
+
                 "usage_error": self.accounts[a].usage_err.as_ref().map(|e| match e {
                     crate::usage::UsageError::Unauthorized => "unauthorized: the login expired or was revoked".to_string(),
                     crate::usage::UsageError::RateLimited(_) => "rate_limited: the usage API asked to wait".to_string(),
@@ -5692,8 +5509,6 @@ impl App {
         })
     }
 
-    /// "Alpha is out for the week (resets Fri 17:29); <best> has the most
-    /// left." when account `a` has under 2% left, else None.
     pub fn out_warning(&self, a: usize) -> Option<String> {
         let (left, which, resets) = self.accounts.get(a)?.binding()?;
         if left >= 2.0 {
@@ -5736,7 +5551,6 @@ impl App {
     }
 }
 
-/// A factual sentence for the assistant to say about deliveries.
 pub fn say_deliveries(ds: &[Value], opened: usize) -> String {
     let n = |st: &str| ds.iter().filter(|d| d["status"] == st).count();
     let mut parts = vec![];
@@ -5747,7 +5561,7 @@ pub fn say_deliveries(ds: &[Value], opened: usize) -> String {
         return parts.join(" ");
     }
     let (q, f, s) = (n("queued"), n("failed"), n("sending"));
-    // Delivered ones, by what the tab's transcript shows (the receipt).
+
     let by = |sts: &[&str]| {
         ds.iter()
             .filter(|d| d["status"] == "delivered")
@@ -5832,7 +5646,6 @@ fn choice_of(s: &str) -> Option<Choice> {
     }
 }
 
-/// Entries under `dir`, as paths relative to `root` ("src/", "main.rs 2 KB").
 fn list_dir(root: &std::path::Path, dir: &std::path::Path, depth: usize, out: &mut Vec<String>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
@@ -5856,7 +5669,7 @@ fn list_dir(root: &std::path::Path, dir: &std::path::Path, depth: usize, out: &m
             }
             continue;
         }
-        // Logins, keys and tokens are never listed.
+
         if crate::guard::denied(&e.path(), &[root.to_path_buf()]).is_some() {
             continue;
         }
@@ -5882,11 +5695,9 @@ fn list_dir(root: &std::path::Path, dir: &std::path::Path, depth: usize, out: &m
     }
 }
 
-/// Where the socket and its token live.
 pub fn socket_path() -> PathBuf {
     let p = crate::config::app_home().join("control.sock");
-    // Unix socket paths are limited (104 bytes on macOS): a long home gets
-    // a short one in the temp dir (clients read it from control.json).
+
     if p.as_os_str().len() < 100 {
         return p;
     }
@@ -5899,7 +5710,6 @@ pub fn socket_path() -> PathBuf {
     ))
 }
 
-/// On exit: remove the socket and token file if they are still ours.
 pub fn cleanup(token: &str) {
     let tp = token_path();
     let mine = std::fs::read_to_string(&tp)
@@ -5916,12 +5726,10 @@ pub fn token_path() -> PathBuf {
     crate::config::app_home().join("control.json")
 }
 
-/// Start the socket server: each line is {"token", "tool", "args"}, each
-/// reply one line. Calls run on the UI thread through AppEvent::Control.
 pub fn serve(events: Sender<AppEvent>) -> Result<String> {
     use crate::platform::{OpenOptionsExt, PermissionsExt};
     let path = socket_path();
-    // Never take over a socket another GodTerm is serving.
+
     if UnixStream::connect(&path).is_ok() {
         return Err(anyhow!("another GodTerm is serving {}", path.display()));
     }
@@ -5929,7 +5737,7 @@ pub fn serve(events: Sender<AppEvent>) -> Result<String> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    // Created owner only from the start (no window with default modes).
+
     let bound = crate::platform::with_umask(0o177, || UnixListener::bind(&path));
     let listener = bound.map_err(|e| anyhow!("binding {}: {e}", path.display()))?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
@@ -5941,10 +5749,7 @@ pub fn serve(events: Sender<AppEvent>) -> Result<String> {
         )
         .replace('-', "")
     };
-    // Two tokens per launch (QA-26): read-write for the assistant's own
-    // brain only (handed over in its mcp.json, never written where tabs
-    // can read it), and read-only for every other local client, unless
-    // GodTerm runs with --control-rw (or for tests).
+
     let (token, ro) = (fresh(), fresh());
     let _ = TOKENS.set((token.clone(), ro.clone()));
     let shared = if control_rw() {
@@ -5985,22 +5790,18 @@ pub fn serve(events: Sender<AppEvent>) -> Result<String> {
     Ok(token)
 }
 
-/// This launch's (read-write, read-only) control tokens.
 static TOKENS: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
 
-/// The read-write token, for the brain's mcp.json only.
 pub fn brain_token() -> Option<String> {
     TOKENS.get().map(|t| t.0.clone())
 }
 
-/// Other local clients may change things too: --control-rw, or tests.
 pub fn control_rw() -> bool {
     test_control()
         || crate::config::env_var("CONTROL_RW").is_some_and(|v| v == "1")
         || std::env::args().any(|a| a == "--control-rw")
 }
 
-/// Equal without an early exit on the first differing byte.
 fn same(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
@@ -6009,11 +5810,8 @@ fn same(a: &str, b: &str) -> bool {
             == 0
 }
 
-/// The processes GodTerm started as its assistant (the brain's claude or
-/// grok, newest last): the read-write token works only from their trees.
 static BRAIN_PIDS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
-/// A brain process was started (its `godterm mcp` runs under it).
 pub fn trust_brain_pid(pid: u32) {
     let mut v = BRAIN_PIDS.lock().unwrap_or_else(|e| e.into_inner());
     v.retain(|&p| p != pid);
@@ -6022,9 +5820,6 @@ pub fn trust_brain_pid(pid: u32) {
     v.drain(..n);
 }
 
-/// Whether a client holding the read-write token may use it: it runs
-/// under one of `roots` (the brain), or the OS cannot tell who it is
-/// (only where peer pids are unknown, never on macOS or Linux).
 pub(crate) fn rw_peer_ok(peer: Option<u32>, roots: &[u32]) -> bool {
     match peer {
         Some(p) => crate::peer::descends_from(p, roots, crate::peer::parent_of),
@@ -6033,17 +5828,12 @@ pub(crate) fn rw_peer_ok(peer: Option<u32>, roots: &[u32]) -> bool {
 }
 
 fn handle(conn: UnixStream, events: Sender<AppEvent>, token: &str, ro_token: &str) {
-    // Who connected: the read-write token is the brain's alone, so it only
-    // counts from the brain's own processes (a tab's agent can read
-    // ~/.godterm/assistant/mcp.json, being the same user).
     let peer = crate::peer::pid_of(&conn);
     let Ok(read) = conn.try_clone() else { return };
     let mut out = conn;
     for line in BufReader::new(read).lines() {
         let Ok(line) = line else { break };
         let reply = match serde_json::from_str::<Value>(&line) {
-            // A tab's own client (its agent's godterm mcp): its tab's
-            // token, the five job tools, scoped to that tab in control_call.
             Ok(req) if req.get("client").and_then(Value::as_str) == Some("tab") => {
                 match crate::tab_jobs::authorize(token, &req) {
                     Err(e) => {
@@ -6069,7 +5859,7 @@ fn handle(conn: UnixStream, events: Sender<AppEvent>, token: &str, ro_token: &st
                     }
                 }
             }
-            // The read-only token: looking only.
+
             Ok(req)
                 if req
                     .get("token")
@@ -6096,11 +5886,7 @@ fn handle(conn: UnixStream, events: Sender<AppEvent>, token: &str, ro_token: &st
                     .and_then(Value::as_str)
                     .is_some_and(|t| same(t, token) || same(t, ro_token)) =>
             {
-                // A client acting for the user can answer a confirmation
-                // (godterm mcp, the assistant's path, never sends this).
                 if let Some(u) = req.get("user_says").and_then(Value::as_str) {
-                    // Only for test harnesses: otherwise any local client
-                    // holding the token could confirm destructive plans.
                     if !test_control() {
                         crate::log::info(
                             "control: refused user_says (start with GODTERM_TEST_CONTROL=1 to allow it)",
@@ -6146,7 +5932,7 @@ fn handle(conn: UnixStream, events: Sender<AppEvent>, token: &str, ro_token: &st
                     .unwrap_or("")
                     .to_string();
                 let mut args = req.get("args").cloned().unwrap_or(json!({}));
-                // Socket clients are "external" unless they say "brain".
+
                 let client = if req.get("client").and_then(Value::as_str) == Some("brain") {
                     "brain"
                 } else {
@@ -6179,15 +5965,11 @@ pub(crate) fn handle_for_tests(conn: UnixStream, events: Sender<AppEvent>, token
     handle(conn, events, token, ro)
 }
 
-/// GodTerm was started for scripted tests (GODTERM_TEST_CONTROL=1 or
-/// --test-control): the socket may then carry the user's answers.
 pub fn test_control() -> bool {
     crate::config::env_var("TEST_CONTROL").is_some_and(|v| v == "1")
         || std::env::args().any(|a| a == "--test-control")
 }
 
-/// Tools that only look: never refused after a barge-in, never counted
-/// against the per turn limit.
 pub const READ_ONLY: &[&str] = &[
     "get_state",
     "account_capabilities",
@@ -6222,8 +6004,6 @@ pub const READ_ONLY: &[&str] = &[
     "prompt_history",
 ];
 
-/// How long a tool's reply may take: turning Remote Control on waits for
-/// its outcome (two attempts of up to 20 s each).
 pub fn reply_wait(tool: &str) -> Duration {
     if tool == "enable_remote_control" || tool == "sync_plan" {
         Duration::from_secs(60)
@@ -6232,7 +6012,6 @@ pub fn reply_wait(tool: &str) -> Duration {
     }
 }
 
-/// Client side (used by `godterm mcp`): one call over the socket.
 pub fn call(tool: &str, args: &Value) -> Result<Value> {
     let info: Value = serde_json::from_str(
         &std::fs::read_to_string(token_path()).map_err(|_| anyhow!("godterm is not running"))?,
@@ -6241,7 +6020,7 @@ pub fn call(tool: &str, args: &Value) -> Result<Value> {
         .get("socket")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("no socket"))?;
-    // The brain gets its own token through its mcp.json env.
+
     let own = crate::config::env_var("TOKEN");
     let token = own
         .as_deref()
@@ -6250,11 +6029,10 @@ pub fn call(tool: &str, args: &Value) -> Result<Value> {
     let mut s = UnixStream::connect(sock)
         .map_err(|e| anyhow!("cannot reach godterm ({e}); is it running?"))?;
     s.set_read_timeout(Some(reply_wait(tool) + Duration::from_secs(5)))?;
-    // The assistant's own brain says so (its mcp.json sets GODTERM_CLIENT).
+
     let client = crate::config::env_var("CLIENT").unwrap_or_else(|| "external".into());
     let mut req = json!({"token": token, "tool": tool, "args": args, "client": client});
     if client == "tab" {
-        // Which tab this agent is: its uid, from the launch.
         req["tab"] = json!(crate::config::env_var("TAB")
             .and_then(|t| t.trim().parse::<u64>().ok())
             .unwrap_or(0));
@@ -6267,9 +6045,7 @@ pub fn call(tool: &str, args: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    /// Enter waits for the paste to show in claude's input box: its
-    /// first words (however the box wraps spaces), or a long paste's
-    /// stand in.
+
     #[test]
     fn a_paste_shows_in_the_input_box() {
         let p = "Create a simple calculator app.\nKeep it tiny.";
@@ -6311,7 +6087,7 @@ mod tests {
             line.contains("read-only"),
             "a read-only client never answers for the user: {line}"
         );
-        // A look goes through to the app.
+
         writeln!(
             client,
             "{}",
@@ -6340,7 +6116,7 @@ mod tests {
     #[test]
     fn user_says_is_refused_outside_test_control() {
         if test_control() {
-            return; // the suite itself runs with test control on
+            return;
         }
         let (mut client, server) = UnixStream::pair().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -6361,12 +6137,10 @@ mod tests {
         );
         drop(client);
         t.join().unwrap();
-        // Neither the turn nor the tool reached the app.
+
         assert!(rx.try_recv().is_err());
     }
 
-    /// QA: the read-write token read off disk by another process (a tab's
-    /// agent) is refused; from the brain's own tree it works.
     #[test]
     fn the_read_write_token_works_only_from_the_brain() {
         let me = std::process::id();
@@ -6382,9 +6156,9 @@ mod tests {
             );
         }
         if control_rw() {
-            return; // test control lets every client change things
+            return;
         }
-        // Over the socket: this process is no brain, so the token is refused.
+
         let (mut client, server) = UnixStream::pair().unwrap();
         let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
         let t = std::thread::spawn(move || handle(server, tx, "rw-secret", "ro"));
@@ -6424,8 +6198,6 @@ mod tests {
     }
 }
 
-/// Where new folders may be made: the home folder (tests: the temp
-/// folder, never the real home).
 fn new_folder_root() -> PathBuf {
     if cfg!(test) {
         std::env::temp_dir()
@@ -6434,16 +6206,13 @@ fn new_folder_root() -> PathBuf {
     }
 }
 
-/// Make `p` for a new tab: when its parent exists (or `deep`, after the
-/// user's yes, any missing parents), only under the home folder, never a
-/// system or private place. Err says why, or asks.
 pub fn new_folder(p: &std::path::Path, deep: bool, allowed: &[PathBuf]) -> Result<PathBuf, String> {
     let shown = crate::config::tilde(p);
     if p.exists() {
         return Err(format!("{shown} is a file, not a folder"));
     }
     let root = std::fs::canonicalize(new_folder_root()).unwrap_or_else(|_| new_folder_root());
-    // The nearest folder that exists, and what is missing below it.
+
     let mut base = p.to_path_buf();
     let mut missing: Vec<std::ffi::OsString> = vec![];
     while !base.is_dir() {

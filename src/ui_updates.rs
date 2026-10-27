@@ -1,10 +1,3 @@
-//! The new version indicator and the Updates window: a chip with a slow,
-//! calm shimmer (sand to sage, no glow; still with reduced motion) in the
-//! menu bar, or the status bar when the menu bar is hidden; a click (or
-//! Ctrl-a D) opens what is new in every version since this one, newest
-//! first, with Download / Restart to update / Later / Release page, or the
-//! package manager's command for Homebrew and system installs.
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -17,11 +10,8 @@ use crate::hits::UiAction;
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG};
 use crate::update::{Method, Version};
 
-/// One shimmer cycle.
 const CYCLE_MS: u128 = 2000;
 
-/// Whether the chip moves: `splash_motion` (off, auto: macOS Reduce
-/// Motion, on) and GODTERM_REDUCED_MOTION.
 pub fn motion(app: &App) -> bool {
     if std::env::var_os("GODTERM_REDUCED_MOTION").is_some_and(|v| !v.is_empty() && v != "0") {
         return false;
@@ -33,7 +23,6 @@ pub fn motion(app: &App) -> bool {
     }
 }
 
-/// macOS Reduce Motion, asked once.
 fn reduce_motion() -> bool {
     static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *R.get_or_init(|| {
@@ -58,9 +47,6 @@ const SAND: (u8, u8, u8) = (196, 176, 134);
 const SAGE: (u8, u8, u8) = (138, 160, 128);
 const LIGHT: (u8, u8, u8) = (226, 214, 184);
 
-/// The chip's background at cell `i` of `n`: a sand to sage gradient, and
-/// a soft lighter band sweeping across once per cycle (`phase` 0..1;
-/// None: still).
 pub fn chip_bg(i: usize, n: usize, phase: Option<f64>) -> (u8, u8, u8) {
     let p = if n <= 1 {
         0.0
@@ -71,7 +57,6 @@ pub fn chip_bg(i: usize, n: usize, phase: Option<f64>) -> (u8, u8, u8) {
     match phase {
         None => base,
         Some(ph) => {
-            // The band runs a little past both ends, so it fades in and out.
             let at = ph * 1.6 - 0.3;
             let d = (p - at) / 0.18;
             mix(base, LIGHT, 0.55 * (-d * d).exp())
@@ -79,7 +64,6 @@ pub fn chip_bg(i: usize, n: usize, phase: Option<f64>) -> (u8, u8, u8) {
     }
 }
 
-/// The shimmer's phase now (None: still).
 pub fn phase(app: &App) -> Option<f64> {
     motion(app).then(|| {
         let ms = std::time::SystemTime::now()
@@ -90,7 +74,6 @@ pub fn phase(app: &App) -> Option<f64> {
     })
 }
 
-/// Draw the chip at `x` (registers its click); returns its end.
 pub fn draw_chip(buf: &mut Buffer, app: &App, x: u16, y: u16, label: &str) -> u16 {
     let text = format!(" {label} ");
     let cells: Vec<char> = text.chars().collect();
@@ -121,7 +104,6 @@ pub fn chip_width(label: &str) -> u16 {
     unicode_width::UnicodeWidthStr::width(label) as u16 + 2
 }
 
-/// A line of the Updates window: text and how it looks.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tone {
     Title,
@@ -131,8 +113,6 @@ pub enum Tone {
     Warn,
 }
 
-/// Markdown to readable lines: headings, bullets (•), bold and code marks
-/// and link targets dropped, wrapped to `w`.
 pub fn render_markdown(md: &str, w: usize) -> Vec<(String, Tone)> {
     let mut out = vec![];
     for raw in md.lines() {
@@ -175,7 +155,6 @@ pub fn render_markdown(md: &str, w: usize) -> Vec<(String, Tone)> {
     out
 }
 
-/// "**b**", "`c`", "[text](url)" -> "b", "c", "text".
 fn clean_inline(s: &str) -> String {
     let s = s.replace("**", "").replace('`', "");
     let mut out = String::new();
@@ -198,10 +177,9 @@ fn clean_inline(s: &str) -> String {
     out
 }
 
-/// Word wrap; continuation lines are indented by `indent`.
 fn wrap(s: &str, w: usize, indent: usize) -> Vec<String> {
     let mut lines = vec![];
-    // Leading spaces (a nested bullet) stay.
+
     let body = s.trim_start_matches(' ');
     let mut cur = " ".repeat(s.len() - body.len());
     for word in body.split(' ') {
@@ -222,9 +200,6 @@ fn wrap(s: &str, w: usize, indent: usize) -> Vec<String> {
 }
 
 impl App {
-    /// The chip's label: "↑ v0.2.8" (out, or downloading), "↑ Update
-    /// ready" (downloaded and verified). None: nothing new, a development
-    /// build, or "Later" for this version.
     pub fn update_badge(&self) -> Option<String> {
         let s = self.update.snapshot();
         if matches!(s.method, Some(Method::Dev { .. })) {
@@ -246,7 +221,6 @@ impl App {
         self.modal = Modal::Updates(0);
     }
 
-    /// "Download": now, through the usual checks (signature, SHA-256).
     pub fn updates_download(&mut self) {
         self.update
             .force_download
@@ -258,7 +232,6 @@ impl App {
         self.flash("Downloading the update...");
     }
 
-    /// "Later": no chip for this version until the next launch.
     pub fn updates_later(&mut self) {
         let s = self.update.snapshot();
         self.update.later = s.latest.map(|r| r.version().to_string());
@@ -273,7 +246,6 @@ impl App {
         }
     }
 
-    /// What survives a restart into the update, as the restore code does it.
     pub fn restart_survival(&self) -> Vec<String> {
         let mut v = vec![
             "Every tab comes back in its pane and folder; a tab with a conversation resumes it (claude --resume).".to_string(),
@@ -295,7 +267,6 @@ impl App {
         v
     }
 
-    /// The Updates window's lines (`w` wide) and buttons.
     #[allow(clippy::type_complexity)]
     pub fn updates_view(
         &self,
@@ -387,7 +358,6 @@ impl App {
     }
 }
 
-/// The Updates window.
 pub fn draw(f: &mut Frame, area: Rect, app: &App, scroll: u16) {
     let w = 96u16.min(area.width.saturating_sub(2)).max(30);
     let h = (area.height.saturating_sub(4)).clamp(8, 40);
@@ -451,7 +421,6 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, scroll: u16) {
     crate::ui_chrome::modal_chrome(buf, app, r, &b);
 }
 
-/// The restart confirmation: what comes back and what is interrupted.
 pub fn draw_restart_confirm(f: &mut Frame, area: Rect, app: &App) {
     let v = app.update.ready().unwrap_or_default();
     let mut body = vec![format!("Restart into v{v} now?")];

@@ -1,5 +1,3 @@
-# Shared settings for the release scripts. Sourced, not run.
-# shellcheck shell=bash
 
 set -euo pipefail
 
@@ -24,21 +22,14 @@ STAGE="$DIST/stage"
 PROFILE="${PROFILE:-dist}"
 mkdir -p "$DIST" "$STAGE"
 
-# Machine specific settings (signing identity, the Windows build host) live
-# outside the repo, in ~/.config/godterm/release.env (KEY=value lines):
-#   SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-#   WIN_HOST=<windows build machine>  WIN_USER=<user>  WIN_SSH_KEY=<key path>
 RELEASE_ENV="${RELEASE_ENV:-$HOME/.config/godterm/release.env}"
 if [[ -f "$RELEASE_ENV" ]]; then
-  # shellcheck disable=SC1090
   set -a; . "$RELEASE_ENV"; set +a
 fi
 
 log() { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-# Parallel jobs: free cores minus headroom, and fewer when RAM is short
-# (another build may be running on this machine).
 njobs() {
   if [[ -n "${JOBS:-}" ]]; then echo "$JOBS"; return; fi
   local ncpu idle free_gb j
@@ -56,17 +47,12 @@ njobs() {
   echo "$j"
 }
 
-# notarytool credentials as an argument list, never printed. In order:
-#   NOTARY_PROFILE      a `xcrun notarytool store-credentials` keychain profile
-#   APPLE_API_KEY (path to AuthKey_XXXX.p8), APPLE_API_KEY_ID, APPLE_API_ISSUER
-#   the same three in ~/.config/godterm/notary.env (KEY=value lines)
 notary_args() {
   if [[ -n "${NOTARY_PROFILE:-}" ]]; then
     NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE"); return 0
   fi
   local f="${NOTARY_ENV:-$HOME/.config/godterm/notary.env}"
   if [[ -z "${APPLE_API_KEY:-}" && -f "$f" ]]; then
-    # shellcheck disable=SC1090
     set -a; . "$f"; set +a
   fi
   if [[ -n "${APPLE_API_KEY:-}" && -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER:-}" ]]; then

@@ -1,14 +1,6 @@
-//! The speaker (talk back) mute, typed versus spoken replies, the volume
-//! and the assistant panel's mode, as tools the assistant runs at once.
-//!
-//! "Be quiet" mutes the speaker (it stops talking; the mic keeps
-//! listening); "hold on" is pause_listening (it stops hearing).
-
 use crate::app::App;
 use serde_json::{json, Value};
 
-/// Settings that change at once from set_setting, with no yes: they are
-/// how it talks and looks, nothing to undo.
 pub const INSTANT_KEYS: &[&str] = &[
     "voice.speaker_muted",
     "voice.tts_volume",
@@ -19,7 +11,6 @@ pub const INSTANT_KEYS: &[&str] = &[
     "voice.headphone_tap",
 ];
 
-/// "50%", "50", "0.5", "half" -> 0.5.
 pub fn parse_volume(v: &Value) -> Option<f32> {
     let n = match v {
         Value::Number(n) => n.as_f64()? as f32,
@@ -53,7 +44,6 @@ fn truthy(v: &Value) -> Option<bool> {
 }
 
 impl App {
-    /// The speaker and panel tools, and set_setting on INSTANT_KEYS.
     pub fn speaker_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         let r = match tool {
             "speaker" => self.tool_speaker(args),
@@ -152,7 +142,7 @@ impl App {
         }
         if let Some(v) = args.get("muted").filter(|v| !v.is_null()) {
             let on = truthy(v).ok_or("muted: true or false")?;
-            // Unmuting first, so the confirmation is heard.
+
             self.set_speaker_muted(on);
             said.push(if on {
                 "Muted; I'll answer in text.".into()
@@ -184,7 +174,6 @@ impl App {
         })
     }
 
-    /// The state block's line on talking back and the panel.
     pub fn speaker_state_line(&self) -> String {
         format!(
             "speaker: {} (volume {}%), typed replies spoken: {}, this message came {}; panel: {}, {} (speaker mutes your voice, pause_listening stops hearing)\n",
@@ -202,13 +191,10 @@ impl App {
     }
 }
 
-/// The panel's width in `main` (0: not shown).
 pub fn panel_width(app: &App, main: ratatui::layout::Rect) -> u16 {
     crate::app_panelwin::panel_width(app, main)
 }
 
-/// The floating panel's edge: a one column shadow left of it, so it reads
-/// as a layer over the pane beneath.
 pub fn draw_overlay_edge(
     f: &mut ratatui::Frame,
     r: ratatui::layout::Rect,
@@ -227,24 +213,18 @@ pub fn draw_overlay_edge(
     }
 }
 
-/// A calm, dark shadow (no glow).
 pub const SHADOW: ratatui::style::Color = ratatui::style::Color::Rgb(18, 19, 21);
 
 pub const PANEL_MODES: &[&str] = &["docked", "overlay", "auto"];
 
-/// Under this many columns a pane is too narrow to share the screen with
-/// a docked panel (auto mode floats it then).
 pub const AUTO_MIN_COLS: u16 = 80;
 
 impl App {
-    /// Whether the panel docks this frame (auto: while every visible
-    /// pane keeps about 80 columns beside it).
     pub fn panel_docked(&self, main: ratatui::layout::Rect, w: u16) -> bool {
         match self.cfg.assistant.panel.as_str() {
             "overlay" => false,
             "auto" => {
                 if self.view != crate::app::View::Grid {
-                    // Other screens have no panes to keep wide.
                     return true;
                 }
                 let left = ratatui::layout::Rect::new(
@@ -263,7 +243,6 @@ impl App {
         }
     }
 
-    /// docked / overlay / auto, kept in config.toml; at once.
     pub fn set_panel_mode(&mut self, mode: &str) -> Result<String, String> {
         let m = mode.trim().to_lowercase();
         let m = match m.as_str() {

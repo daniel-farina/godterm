@@ -1,10 +1,5 @@
-//! Account emails: shown in pane headers unless turned off (globally or
-//! per account), and hidden everywhere in privacy mode.
-
 use crate::app::App;
 
-/// "jordan.rivera@gmail.com" in at most `max` columns, cutting the middle
-/// of the name and keeping the domain: "jor…era@gmail.com".
 pub fn middle_truncate(s: &str, max: usize) -> String {
     let n = s.chars().count();
     if n <= max {
@@ -17,7 +12,7 @@ pub fn middle_truncate(s: &str, max: usize) -> String {
         Some((a, b)) if b.chars().count() + 5 <= max => (a, format!("@{b}")),
         _ => (s, String::new()),
     };
-    let room = max - domain.chars().count() - 1; // the ellipsis
+    let room = max - domain.chars().count() - 1;
     let head = room.div_ceil(2);
     let tail = room - head;
     let chars: Vec<char> = name.chars().collect();
@@ -26,7 +21,6 @@ pub fn middle_truncate(s: &str, max: usize) -> String {
     format!("{h}…{t}{domain}")
 }
 
-/// Hide an email in text: "a@b.c" -> "(hidden)".
 pub fn mask_emails(text: &str) -> String {
     text.split_inclusive(char::is_whitespace)
         .map(|w| {
@@ -51,7 +45,6 @@ impl App {
         self.rt_show_email.unwrap_or(self.cfg.show_email)
     }
 
-    /// Whether account `a`'s email may be shown.
     pub fn show_email_for(&self, a: usize) -> bool {
         if self.privacy() {
             return false;
@@ -62,7 +55,6 @@ impl App {
         }
     }
 
-    /// The email to show for account `a`, middle truncated to `max`.
     pub fn email_label(&self, a: usize, max: usize) -> Option<String> {
         if !self.show_email_for(a) {
             return None;
@@ -115,7 +107,7 @@ mod tests {
         let t = middle_truncate("jordan.rivera@gmail.com", 17);
         assert_eq!(t.chars().count(), 17);
         assert!(t.ends_with("@gmail.com") && t.contains('…'), "{t}");
-        // Too narrow for the domain: cut the middle of the whole thing.
+
         let t = middle_truncate("jordan.rivera@gmail.com", 9);
         assert_eq!(t.chars().count(), 9);
         assert!(t.contains('…'));

@@ -1,7 +1,3 @@
-//! A tab's options, one list for both places that offer them: the right
-//! click menu (each row runs or opens its dialog) and the double click
-//! panel, where they sit under the Move section and most act in place.
-
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::{App, Modal};
@@ -34,15 +30,14 @@ pub enum TabAct {
 pub struct TabActRow {
     pub act: TabAct,
     pub label: String,
-    /// The right click menu's shortcut.
+
     pub key: char,
     pub hint: &'static str,
-    /// Some: shown dim, with why.
+
     pub disabled: Option<String>,
 }
 
 impl App {
-    /// Every per tab action, in menu order.
     pub fn tab_actions(&self, s: usize, t: usize) -> Vec<TabActRow> {
         use TabAct::*;
         let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
@@ -189,17 +184,13 @@ impl App {
         ]
     }
 
-    /// The rows the double click panel lists under its Move section.
     pub fn panel_rows(&self, s: usize, t: usize) -> Vec<TabActRow> {
         self.tab_actions(s, t)
             .into_iter()
-            // Move is the panel's top section; Git opens its own section
-            // from the right click menu (the panel stays 80x24).
             .filter(|r| r.act != TabAct::Move && r.act != TabAct::Git)
             .collect()
     }
 
-    /// The session's own title, when the index has it (never waits on it).
     pub fn session_title(&self, s: usize, t: usize) -> Option<String> {
         let id = self.panes.get(s)?.tabs.get(t)?.session_id.clone()?;
         let ix = self.session_index.try_lock().ok()?;
@@ -209,7 +200,6 @@ impl App {
             .and_then(|r| r.info.name.clone().or_else(|| r.info.title.clone()))
     }
 
-    /// Run an action from the right click menu (or one the panel hands on).
     pub fn tab_act_run(&mut self, s: usize, t: usize, act: TabAct) {
         self.modal = Modal::None;
         let Some(tab) = self.panes.get(s).and_then(|p| p.tabs.get(t)) else {
@@ -281,8 +271,6 @@ impl App {
         self.panel_rows(s, t).iter().position(|r| r.act == act)
     }
 
-    /// Double click on a tab: Move on top, the tab's options below. Opens
-    /// even when no other account can take the tab.
     pub fn open_tab_panel(&mut self, s: usize, t: usize) {
         if self.panes.get(s).and_then(|p| p.tabs.get(t)).is_none() {
             return;
@@ -321,7 +309,6 @@ impl App {
         });
     }
 
-    /// Activate option row `i` of the panel (Enter or a click).
     pub fn panel_activate(&mut self, i: usize) {
         let Modal::MoveTab(mut p) = self.modal.clone() else {
             return;
@@ -356,7 +343,7 @@ impl App {
             TabAct::Pin => self.toggle_pin(s, t),
             TabAct::Group => {
                 self.group_pick_run(s, t, p.group_sel);
-                // New group... asks for its name; the others stay here.
+
                 if !matches!(self.modal, Modal::None) {
                     return;
                 }
@@ -371,7 +358,6 @@ impl App {
         self.modal = Modal::MoveTab(p);
     }
 
-    /// Activate the panel row of `act`.
     pub fn panel_activate_act(&mut self, act: TabAct) {
         if let Modal::MoveTab(p) = &self.modal {
             if let Some(i) = self.panel_index(p.slot, p.tab, act) {
@@ -380,7 +366,6 @@ impl App {
         }
     }
 
-    /// A click elsewhere in the panel keeps what was typed in a field.
     pub fn panel_end_edit(&mut self) {
         let Modal::MoveTab(mut p) = self.modal.clone() else {
             return;
@@ -401,7 +386,6 @@ impl App {
         }
     }
 
-    /// Save the session title typed in the panel.
     fn save_session_title(&mut self, p: &MovePicker) {
         let name = p.title.trim();
         if name.is_empty() || name == p.title_orig.trim() {
@@ -431,7 +415,6 @@ impl App {
         }
     }
 
-    /// Keys while the panel is open.
     pub fn on_tab_panel_key(&mut self, k: KeyEvent) {
         let Modal::MoveTab(mut p) = self.modal.clone() else {
             return;
@@ -477,7 +460,7 @@ impl App {
             }
             return;
         }
-        // One line through both sections: targets, then the options.
+
         let total = n + m;
         let cur = match p.opt {
             None => p.sel.min(n.saturating_sub(1)),

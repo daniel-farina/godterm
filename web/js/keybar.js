@@ -1,18 +1,9 @@
-// The touch key bar: keys a phone keyboard lacks, Ctrl and Alt latches,
-// paste, images, a prompt composer and font controls.
-//
-// A key fires on a tap (pointer up close to where it went down, the bar
-// not scrolled meanwhile), never on a swipe: the bar scrolls sideways with
-// the finger. Nothing calls preventDefault on pointerdown or touchstart
-// (on iOS that cancels both the tap and the scroll); the tap's touchend
-// and mousedown are cancelled instead, so the terminal keeps the focus
-// and the on-screen keyboard stays up.
 import { $, h, on, emit, toast, paintIcons, isTouch, store } from './util.js';
 import { panes, setInputHook } from './term.js';
 import { openSheet, closeSheet } from './sheet.js';
-// Images (prepared and sent by images.js) load on first use.
+
 const sendImages = (files, p) => import('./images.js').then((m) => m.sendImages(files, p));
-// A picker for photos (the library or the camera): `then` gets the files, else they go to the pane.
+
 function pickImages(pane, then) {
   const inp = h('input', { type: 'file', accept: 'image/*', multiple: true, style: 'position:fixed;left:-100px;top:0;width:1px;height:1px;opacity:0' });
   inp.addEventListener('change', () => { const f = [...inp.files]; if (then) { if (f.length) then(f); } else sendImages(f, pane); inp.remove(); });
@@ -21,7 +12,6 @@ function pickImages(pane, then) {
   setTimeout(() => inp.isConnected && !inp.files?.length && inp.remove(), 120000);
 }
 
-// ctrl / alt: 0 off, 1 for the next key, 2 locked (double tap).
 const mods = { ctrl: 0, alt: 0 };
 const btns = {};
 
@@ -29,11 +19,6 @@ function cur() { return panes.focused(); }
 function app() { return cur().term.modes.applicationCursorKeysMode; }
 function arrow(c) { return (app() ? '\x1bO' : '\x1b[') + c; }
 
-// Page keys: an app that scrolls itself (the drag's "app" path: an
-// alternate screen app such as less or vim, or Claude Code's fullscreen
-// view, which pages its transcript on PageUp / PageDown) gets them; else
-// they page this terminal's own history, as Shift+PgUp does in a desktop
-// terminal.
 const page = (dir) => () => {
   const p = cur();
   if (p.scrollPath() === 'app') return dir < 0 ? '\x1b[5~' : '\x1b[6~';
@@ -41,8 +26,6 @@ const page = (dir) => () => {
   return '';
 };
 
-// Most used first: Esc, Ctrl, Tab and the arrows show on a 390 px phone
-// without a swipe; the rest in the order of use.
 const KEYS = [
   [null, 'kbhide', 'Hide the keyboard', 'kbdown'], ['Esc', () => '\x1b'], ['Ctrl', 'ctrl'], ['Tab', () => '\t'],
   ['↑', () => arrow('A'), 'Up', null, 'arr'], ['↓', () => arrow('B'), 'Down', null, 'arr'], ['←', () => arrow('D'), 'Left', null, 'arr'], ['→', () => arrow('C'), 'Right', null, 'arr'],
@@ -58,15 +41,13 @@ function ctrlOf(d) {
   if (c >= 64 && c <= 95) return String.fromCharCode(c - 64);
   if (d === ' ' || d === '2') return '\x00';
   if (d === '?' || d === '8') return '\x7f';
-  if (d >= '3' && d <= '7') return String.fromCharCode(d.charCodeAt(0) - 24); // ^3..^7 as xterm: ESC FS GS RS US
+  if (d >= '3' && d <= '7') return String.fromCharCode(d.charCodeAt(0) - 24); 
   return d;
 }
 
-// Apply latched modifiers to what was typed (the phone keyboard or a key).
 function withMods(d) {
   if (!mods.ctrl && !mods.alt) return d;
-  // Ctrl-V on a phone pastes from the phone (an image or text); a ^V goes
-  // to the tab only when the phone's clipboard has nothing.
+
   if (mods.ctrl && !mods.alt && (d === 'v' || d === 'V') && isTouch()) {
     if (mods.ctrl === 1) setMod('ctrl', 0);
     paste(true);
@@ -89,8 +70,6 @@ function setMod(k, v) {
   b.setAttribute('aria-pressed', String(v > 0));
 }
 
-// A tap on Ctrl: off -> next key; a second tap within 350 ms locks it; a
-// tap while on turns it off.
 const lastTap = { ctrl: 0, alt: 0 };
 function tapMod(k) {
   const now = performance.now();
@@ -99,11 +78,6 @@ function tapMod(k) {
   lastTap[k] = now;
 }
 
-// Paste from this phone: an image on its clipboard goes in as an image
-// (saved on the Mac, its path typed into the tab), text as text. When the
-// browser will not hand the clipboard over (iOS asks with a Paste bubble,
-// a no or a dismissal lands here), the paste box opens instead. `ctrlV`:
-// an empty clipboard sends ^V on to the tab.
 export async function paste(ctrlV = false) {
   const p = cur();
   if (!p.id) return toast('Pick a tab first', 'warn');
@@ -141,8 +115,6 @@ function pickImage() {
   pickImages(p, (files) => promptSheet('image', files));
 }
 
-// The paste / prompt / image box: text, images (pasted into the box or
-// chosen, each with an x) and Send into the focused tab.
 export function promptSheet(mode = 'prompt', files = [], ctrlV = false) {
   if (mode === true) mode = 'paste';
   if (mode === false) mode = 'prompt';
@@ -155,7 +127,7 @@ export function promptSheet(mode = 'prompt', files = [], ctrlV = false) {
   const paint = () => thumbs.replaceChildren(...imgs.map((f, i) => h('span.thumb', {}, h('img', { src: URL.createObjectURL(f), alt: 'image ' + (i + 1) }),
     h('button', { type: 'button', 'aria-label': 'Remove image', title: 'Remove image', onclick: () => { imgs.splice(i, 1); paint(); } }, '×'))));
   paint();
-  // A prompt not sent yet is kept per tab on this device.
+
   const tabId = cur()?.id, dkey = 'draft.p.' + tabId;
   if (mode === 'prompt' && tabId) {
     ta.value = store.get(dkey, '') || '';
@@ -174,12 +146,11 @@ export function promptSheet(mode = 'prompt', files = [], ctrlV = false) {
     closeSheet();
     if (mode === 'prompt') store.set('draft.p.' + p.id, null);
     if (imgs.length) await sendImages(imgs, p);
-    // Enter as its own write once the text shows, so it sends the prompt.
+
     if (ta.value && enter.checked) await p.pasteThenEnter(ta.value);
     else if (ta.value) p.paste(ta.value);
     else if (enter.checked) {
-      // An image's path was just pasted: the same wait (Claude Code shows
-      // it as [Image #1], so there is no text to look for).
+
       if (imgs.length) await new Promise((r) => setTimeout(r, 600));
       p.input('\r');
     }
@@ -200,7 +171,7 @@ export function promptSheet(mode = 'prompt', files = [], ctrlV = false) {
 
 function press(act, b) {
   const p = cur();
-  // Puts the on-screen keyboard away (the key shows only while it is up).
+
   if (act === 'kbhide') return document.activeElement?.blur();
   if (act === 'ctrl' || act === 'alt') return tapMod(act);
   if (act === 'paste') return paste();
@@ -218,19 +189,12 @@ function press(act, b) {
   p.input(d);
 }
 
-// Edge fades say there is more to swipe to.
 function paintEdges(bar) {
   const max = bar.scrollWidth - bar.clientWidth;
   bar.classList.toggle('more-l', bar.scrollLeft > 2);
   bar.classList.toggle('more-r', bar.scrollLeft < max - 2);
 }
 
-// A hardware keyboard (an iPad in a keyboard case, a phone with a
-// Bluetooth one) has Esc, Tab, arrows and Ctrl of its own: once one is
-// used, the key bar steps aside and the terminal takes the room
-// (Settings > This browser > Key bar: Automatic, Always or Never). The
-// on-screen keyboard coming up means there is no hardware one after
-// all, so the bar comes back.
 let hw = false;
 export const keybarPref = () => store.get('keybar', 'auto');
 export function applyKeybar() {
@@ -285,15 +249,14 @@ export function initKeybar() {
     if (e.target.closest('button') !== d.b) return;
     press(map.get(d.b), d.b);
   });
-  // The tap's own follow ups: no focus change, no second (click) press.
+
   bar.addEventListener('touchend', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
   bar.addEventListener('mousedown', (e) => e.preventDefault());
   bar.addEventListener('click', (e) => e.preventDefault());
   bar.addEventListener('scroll', () => paintEdges(bar), { passive: true });
   new ResizeObserver(() => paintEdges(bar)).observe(bar);
   setInputHook(withMods);
-  // Send: always at the right end, outside the strip that scrolls. Enter
-  // into the tab (submits the prompt the Return key wrote lines into).
+
   const sendB = $('#b-ksend');
   const sendNow = (e) => { e.preventDefault(); const p = cur(); if (!p.id) return toast('Pick a tab first', 'warn'); p.input('\r'); };
   sendB.addEventListener('mousedown', (e) => e.preventDefault());

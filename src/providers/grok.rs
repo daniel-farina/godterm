@@ -1,18 +1,3 @@
-//! Grok Build as the brain: one headless `grok -p` per turn
-//! (streaming-messages-json, the Claude stream shape), the conversation
-//! kept with --session-id / --resume. It runs in a home of its own,
-//! ~/.godterm/assistant/grok-home, with its own Grok login: the user's
-//! Grok accounts are never touched, and HOME points there too so the
-//! user's ~/.claude and ~/.cursor plugins, hooks and MCP servers (which
-//! Grok would import) stay out. Every built in tool is removed and the
-//! shell denied: it acts only through godterm's MCP tools.
-//!
-//! Speed (docs/ASSISTANT_PROVIDERS.md has the numbers): a turn is almost
-//! all model time; starting grok costs about 0.25 s. Turns run at the
-//! assistant's effort (low by default, the quickest), and each session is
-//! opened with a primer so GodTerm's prompt holds from the first turn.
-//! A persistent leader does not help: headless grok never uses one.
-
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
@@ -67,7 +52,6 @@ pub const PROVIDER: Provider = Provider {
     start,
 };
 
-/// Grok's built in tools, all removed for the brain.
 pub const BUILTIN_TOOLS: &[&str] = &[
     "run_terminal_command",
     "read_file",
@@ -95,11 +79,9 @@ pub const BUILTIN_TOOLS: &[&str] = &[
     "reference_to_video",
     "write",
     "Agent",
-    // The shell's own id: "run_terminal_command" alone leaves it in.
     "run_terminal_cmd",
 ];
 
-/// The assistant's own Grok home (its login, sessions and MCP config).
 pub fn home() -> PathBuf {
     crate::assistant::dir().join("grok-home")
 }
@@ -108,8 +90,6 @@ pub fn logged_in() -> bool {
     crate::harness::grok::logged_in(&home())
 }
 
-/// Its config.toml: godterm's MCP server, and Grok's imports of other
-/// tools' settings off.
 pub fn write_config(home: &Path, exe: &Path) -> Result<()> {
     std::fs::create_dir_all(home.join("work"))?;
     let m = crate::assistant::mcp_server(exe);
@@ -147,8 +127,6 @@ pub fn write_config(home: &Path, exe: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The tool keys in the prompt, so it calls use_tool at once instead of
-/// searching first.
 pub fn tools_note() -> String {
     let keys: Vec<String> = crate::control::TOOLS
         .iter()
@@ -160,20 +138,10 @@ pub fn tools_note() -> String {
     )
 }
 
-/// The first command of every session: a local slash command that makes
-/// the session without a model call (about 0.25 s). Grok 1.0.45 applies
-/// --system-prompt-override only when a session is resumed, so a session
-/// opened by the user's first turn would answer it with Grok's own coding
-/// agent prompt; opened by this, every real turn is a resume and gets
-/// GodTerm's prompt.
 pub const PRIMER: &str = "/session-info";
 
-/// How long the primer may take before the turn goes on without it.
 const PRIMER_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 15 });
 
-/// Grok's reasoning effort for the assistant's setting: low unless the
-/// setting names one grok has (it has no "none"). Low is the quickest:
-/// about half the reasoning tokens of grok's default.
 pub fn effort_for(effort: &str) -> &'static str {
     match effort {
         "medium" => "medium",
@@ -193,12 +161,10 @@ pub struct GrokBackend {
     events: std::sync::mpsc::Sender<AppEvent>,
     gen: u64,
     child: Arc<Mutex<Option<Child>>>,
-    /// Set by interrupt: a turn still priming does not start.
+
     stop: Arc<AtomicBool>,
 }
 
-/// How a grok process is started: the binary, its home (HOME and
-/// GROK_HOME), and the environment it must not see.
 #[derive(Clone)]
 struct Launch {
     bin: String,
@@ -250,10 +216,6 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
     )))
 }
 
-/// Grok takes the system prompt only as an argument, and Windows limits
-/// a command line to 32767 characters (the prompt is about 50 KB): there
-/// it is cut at a paragraph so the rest of the line (the turn's text, the
-/// flags) fits.
 const WINDOWS_PROMPT_MAX: usize = 20_000;
 
 fn fit_prompt(p: String) -> String {
@@ -289,7 +251,6 @@ impl GrokBackend {
         gen: u64,
         session: Option<super::SessionPlan>,
     ) -> GrokBackend {
-        // A kept session: its id; resumed, it is open already (no primer).
         let (session, started) = match session {
             Some(s) => (s.id, s.resume),
             None => (crate::session_ops::new_uuid(), false),
@@ -320,7 +281,6 @@ impl GrokBackend {
     }
 }
 
-/// The argv for one turn.
 pub fn turn_args(
     model: &str,
     effort: &str,
@@ -343,8 +303,6 @@ pub fn turn_args(
         BUILTIN_TOOLS.join(","),
         "--deny".into(),
         "Bash(*)".into(),
-        // Headless grok cancels a tool call nobody approves: godterm's
-        // own tools are allowed (their confirmations are GodTerm's).
         "--allow".into(),
         "MCPTool(godterm__*)".into(),
         "--system-prompt-override".into(),
@@ -361,10 +319,6 @@ fn lock(slot: &Mutex<Option<Child>>) -> std::sync::MutexGuard<'_, Option<Child>>
     slot.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Opens the session with the primer: true once grok answered it. Its
-/// output is not the conversation's, so none of it reaches the app; the
-/// process finishes exiting on its own (grok takes a second or so after
-/// its result) while the turn starts.
 fn prime(launch: &Launch, args: &[String], slot: &Arc<Mutex<Option<Child>>>) -> Result<()> {
     let mut child = launch
         .command(args)
@@ -375,7 +329,7 @@ fn prime(launch: &Launch, args: &[String], slot: &Arc<Mutex<Option<Child>>>) -> 
     let id = child.id();
     crate::control::trust_brain_pid(id);
     *lock(slot) = Some(child);
-    // A primer that hangs (a login prompt, the network) is stopped.
+
     let (watch, done) = (slot.clone(), Arc::new(AtomicBool::new(false)));
     let d2 = done.clone();
     std::thread::spawn(move || {
@@ -415,7 +369,6 @@ fn prime(launch: &Launch, args: &[String], slot: &Arc<Mutex<Option<Child>>>) -> 
     }
 }
 
-/// One turn: its output to the app as events, ending with a Done.
 fn run_turn(
     launch: &Launch,
     args: &[String],
@@ -437,7 +390,7 @@ fn run_turn(
         Ok(c) => c,
         Err(e) => return fail(format!("starting {}: {e}", launch.bin)),
     };
-    // Its `godterm mcp` may use the read-write control token.
+
     crate::control::trust_brain_pid(child.id());
     let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
         return fail("grok has no output".into());
@@ -468,7 +421,7 @@ fn run_turn(
     if let Some(mut c) = lock(slot).take() {
         let _ = c.wait();
     }
-    // Ended without a result: the turn failed (say why).
+
     if !done {
         std::thread::sleep(Duration::from_millis(30));
         let t = tail.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -483,8 +436,6 @@ fn run_turn(
 }
 
 impl Backend for GrokBackend {
-    /// The first turn opens the session with the primer, then every turn
-    /// resumes it. If the primer fails the turn opens the session itself.
     fn send(&mut self, text: &str) -> Result<()> {
         let first = !self.started;
         self.started = true;
@@ -531,7 +482,6 @@ impl Backend for GrokBackend {
         Ok(())
     }
 
-    /// The turn's process is stopped; its end is reported as a Done.
     fn interrupt(&mut self) -> Result<()> {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(c) = lock(&self.child).as_ref() {
@@ -544,7 +494,6 @@ impl Backend for GrokBackend {
         lock(&self.child).as_ref().map(|c| c.id()).unwrap_or(0)
     }
 
-    /// A process per turn: always ready for the next one.
     fn running(&mut self) -> bool {
         true
     }
@@ -560,7 +509,6 @@ impl Drop for GrokBackend {
     }
 }
 
-/// The real tool behind a use_tool call ("godterm__get_state").
 pub fn unwrap_use_tool(input: &Value) -> Option<(String, Value)> {
     let name = ["tool_name", "name", "tool", "key"]
         .iter()

@@ -1,41 +1,22 @@
-//! Images the user attaches in the assistant panel: read from the
-//! clipboard (Ctrl-V, or an empty paste, which is what Cmd-V of an image
-//! gives a terminal) or pasted and dragged image file paths. Each is kept
-//! in `~/.godterm/assistant/images` (owner only, pruned after 7 days),
-//! shown in the input as a chip ("[image 1: 1280x720]"), sent to the
-//! assistant's own model as an image block, and stays referable by its
-//! number for 30 minutes so the assistant can pass it on to a tab
-//! (send_prompt or open_tab with images). Nothing is uploaded anywhere
-//! else.
-//!
-//! Claude Code tabs get the image as its path on a line of its own: a
-//! pasted line that is an image file path is attached as "[Image #1]"
-//! (Claude Code 2.1's paste handler), and else it reads the file by path.
-//! Grok tabs get "Image: /path" lines.
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 
-/// The long side images are scaled down to before the model sees them.
 pub const MAX_SIDE: u32 = 1568;
-/// The most bytes one image may have for the model (its base64 stays
-/// under the API's 5 MB per image).
+
 pub const MAX_BYTES: usize = 3_700_000;
-/// Saved images older than this are removed.
+
 pub const KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
-/// How long an attachment stays referable by its number.
+
 pub const REFER_FOR: Duration = Duration::from_secs(30 * 60);
-/// File types taken as images when their path is pasted or dragged.
+
 pub const EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "heic"];
 
-/// One attached image.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attachment {
-    /// Its number in this conversation ("image 1").
     pub id: u32,
-    /// The saved copy (absolute).
+
     pub path: PathBuf,
     pub w: u32,
     pub h: u32,
@@ -51,12 +32,10 @@ impl Attachment {
         }
     }
 
-    /// The chip in the input: "[image 1: 1280x720]".
     pub fn chip(&self) -> String {
         format!("[image {}: {}]", self.id, self.size())
     }
 
-    /// "image 1 (1280x720)".
     pub fn label(&self) -> String {
         format!("image {} ({})", self.id, self.size())
     }
@@ -70,7 +49,6 @@ pub fn dir() -> PathBuf {
     crate::assistant::dir().join("images")
 }
 
-/// The images folder, made owner only.
 fn ensure_dir() -> Result<PathBuf> {
     use crate::platform::PermissionsExt;
     let d = dir();
@@ -79,7 +57,6 @@ fn ensure_dir() -> Result<PathBuf> {
     Ok(d)
 }
 
-/// A new file name in the images folder: `<timestamp>-<n>.<ext>`.
 fn new_file(ext: &str) -> Result<PathBuf> {
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
     let d = ensure_dir()?;
@@ -93,26 +70,18 @@ fn new_file(ext: &str) -> Result<PathBuf> {
     }
 }
 
-/// What the clipboard holds that can be attached.
-// Only the macOS reader builds File, and Windows builds neither yet.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClipImage {
-    /// Image data, as PNG.
     Png(Vec<u8>),
-    /// A copied image file (Finder's Copy).
+
     File(PathBuf),
 }
 
-/// The system clipboard (a fake in tests: they never touch the real one).
 pub trait Clipboard: Send {
-    /// Its image, if it holds one.
     fn image(&self) -> Result<Option<ClipImage>>;
 }
 
-/// The real clipboard: NSPasteboard through osascript on macOS (PNG,
-/// TIFF or JPEG, made PNG), wl-paste or xclip on Linux. Windows: not yet
-/// (future work).
 pub struct SystemClipboard;
 
 #[cfg(target_os = "macos")]
@@ -207,14 +176,12 @@ impl Clipboard for SystemClipboard {
         Ok(None)
     }
 
-    // Windows: reading clipboard images is future work.
     #[cfg(windows)]
     fn image(&self) -> Result<Option<ClipImage>> {
         Ok(None)
     }
 }
 
-/// An image's type from its first bytes.
 pub fn media_type(b: &[u8]) -> Option<&'static str> {
     if b.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
@@ -229,7 +196,6 @@ pub fn media_type(b: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Width and height from the image's header (PNG, GIF, JPEG, WebP).
 pub fn dimensions(b: &[u8]) -> Option<(u32, u32)> {
     let be16 =
         |i: usize| -> Option<u32> { Some(u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?]) as u32) };
@@ -281,7 +247,6 @@ pub fn dimensions(b: &[u8]) -> Option<(u32, u32)> {
     }
 }
 
-/// Width and height of an image file (its header, else sips on macOS).
 pub fn file_dimensions(p: &Path) -> Option<(u32, u32)> {
     if let Some(d) = std::fs::read(p).ok().and_then(|b| dimensions(&b)) {
         return Some(d);
@@ -303,8 +268,6 @@ pub fn file_dimensions(p: &Path) -> Option<(u32, u32)> {
     Some((num("pixelWidth:")?, num("pixelHeight:")?))
 }
 
-/// The size that fits `max` on the long side (never larger), as sips -Z
-/// makes it.
 #[cfg(test)]
 pub fn fit(w: u32, h: u32, max: u32) -> (u32, u32) {
     let long = w.max(h);
@@ -315,7 +278,6 @@ pub fn fit(w: u32, h: u32, max: u32) -> (u32, u32) {
     (s(w), s(h))
 }
 
-/// Whether a path names an image by its extension.
 pub fn is_image_path(p: &Path) -> bool {
     p.extension()
         .map(|e| e.to_string_lossy().to_lowercase())
@@ -343,7 +305,6 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The words of a paste, shell style: quotes group, a backslash escapes.
 fn shell_words(text: &str) -> Option<Vec<String>> {
     let mut words = vec![];
     let mut cur = String::new();
@@ -354,7 +315,7 @@ fn shell_words(text: &str) -> Option<Vec<String>> {
         match (quote, c) {
             (Some(q), c) if c == q => quote = None,
             (Some('\''), c) => cur.push(c),
-            // Windows paths use the backslash as a separator: literal there.
+
             (_, '\\') if !cfg!(windows) => {
                 cur.push(chars.next()?);
                 have = true;
@@ -382,13 +343,11 @@ fn shell_words(text: &str) -> Option<Vec<String>> {
     Some(words)
 }
 
-/// One pasted word as a path: file:// URLs decoded, ~ expanded.
 fn word_path(w: &str) -> Option<PathBuf> {
     let w = match w.strip_prefix("file://") {
-        // file://localhost/x or file:///x
         Some(rest) => {
             let d = percent_decode(rest.strip_prefix("localhost").unwrap_or(rest));
-            // file:///C:/x names C:/x on Windows.
+
             let drive = d.as_bytes();
             if cfg!(windows)
                 && drive.len() > 2
@@ -407,9 +366,6 @@ fn word_path(w: &str) -> Option<PathBuf> {
     p.is_absolute().then_some(p)
 }
 
-/// The image paths a paste consists of (quoted, backslash escaped or
-/// file:// forms, one or several), if it is nothing but image paths.
-/// Only the form is checked here; see `pasted_images`.
 pub fn paste_paths(text: &str) -> Option<Vec<PathBuf>> {
     let words = shell_words(text.trim())?;
     if words.is_empty() {
@@ -422,8 +378,6 @@ pub fn paste_paths(text: &str) -> Option<Vec<PathBuf>> {
     paths.iter().all(|p| is_image_path(p)).then_some(paths)
 }
 
-/// The existing image files a paste names, if it names nothing else (a
-/// path with plain spaces in it counts too).
 pub fn pasted_images(text: &str) -> Option<Vec<PathBuf>> {
     if let Some(v) = paste_paths(text).filter(|v| v.iter().all(|p| p.is_file())) {
         return Some(v);
@@ -433,7 +387,6 @@ pub fn pasted_images(text: &str) -> Option<Vec<PathBuf>> {
     (!t.contains('\n') && is_image_path(&whole) && whole.is_file()).then(|| vec![whole])
 }
 
-/// Save PNG bytes (from the clipboard): its path and size.
 pub fn save_png(bytes: &[u8]) -> Result<(PathBuf, u32, u32)> {
     if media_type(bytes) != Some("image/png") {
         anyhow::bail!("the clipboard image is not a PNG");
@@ -444,8 +397,6 @@ pub fn save_png(bytes: &[u8]) -> Result<(PathBuf, u32, u32)> {
     Ok((p, w, h))
 }
 
-/// Save image bytes (PNG, JPEG, GIF or WebP, as a browser pastes them):
-/// the path and size.
 pub fn save_bytes(bytes: &[u8]) -> Result<(PathBuf, u32, u32)> {
     let ext = match media_type(bytes) {
         Some("image/jpeg") => "jpg",
@@ -458,8 +409,63 @@ pub fn save_bytes(bytes: &[u8]) -> Result<(PathBuf, u32, u32)> {
     Ok((p, w, h))
 }
 
-/// Standard base64 (padding optional, whitespace skipped) back to bytes;
-/// None on any other character.
+pub fn uploads_dir() -> PathBuf {
+    crate::assistant::dir().join("uploads")
+}
+
+pub fn safe_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let clean: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let clean = clean.trim_start_matches('.');
+    let clean: String = if clean.chars().count() > 80 {
+        let ext = clean
+            .rsplit_once('.')
+            .map(|(_, e)| e)
+            .filter(|e| e.len() <= 10)
+            .unwrap_or("");
+        let stem: String = clean.chars().take(60).collect();
+        if ext.is_empty() {
+            stem
+        } else {
+            format!("{stem}.{ext}")
+        }
+    } else {
+        clean.to_string()
+    };
+    if clean.is_empty() {
+        "file".into()
+    } else {
+        clean
+    }
+}
+
+pub fn save_upload(name: &str, bytes: &[u8]) -> Result<PathBuf> {
+    use crate::platform::PermissionsExt;
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let d = uploads_dir();
+    std::fs::create_dir_all(&d).with_context(|| format!("creating {}", d.display()))?;
+    let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let safe = safe_name(name);
+    loop {
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let p = d.join(format!("{stamp}-{n}-{safe}"));
+        if !p.exists() {
+            crate::config::write_private(&p, bytes)?;
+            return Ok(p);
+        }
+    }
+}
+
 pub fn unbase64(s: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len() / 4 * 3);
     let (mut acc, mut bits) = (0u32, 0u32);
@@ -483,8 +489,6 @@ pub fn unbase64(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Copy an image file into the images folder (HEIC made PNG): the copy
-/// and its size.
 pub fn import_file(src: &Path) -> Result<(PathBuf, u32, u32)> {
     let bytes = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
     let p = match media_type(&bytes) {
@@ -497,7 +501,7 @@ pub fn import_file(src: &Path) -> Result<(PathBuf, u32, u32)> {
             crate::config::write_private(&p, &bytes)?;
             p
         }
-        // HEIC and the like: made PNG with sips.
+
         None => {
             let p = new_file("png")?;
             let ok = cfg!(target_os = "macos")
@@ -525,17 +529,15 @@ fn set_private(p: &Path) {
     let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
 }
 
-/// An image block for the assistant's model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelImage {
     pub media_type: String,
-    /// Base64.
+
     pub data: String,
     pub w: u32,
     pub h: u32,
 }
 
-/// Run sips to make `dst` from `src` (macOS).
 fn sips(src: &Path, dst: &Path, args: &[&str]) -> Result<()> {
     if !cfg!(target_os = "macos") {
         anyhow::bail!("too large, and there is no image resizer on this system");
@@ -554,8 +556,6 @@ fn sips(src: &Path, dst: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// The image as the model gets it: at most MAX_SIDE on the long side and
-/// MAX_BYTES (scaled down, then JPEG if still too big; macOS sips).
 pub fn for_model(p: &Path) -> Result<ModelImage> {
     let mut bytes = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
     let (mut w, mut h) = dimensions(&bytes).unwrap_or((0, 0));
@@ -598,7 +598,6 @@ pub fn for_model(p: &Path) -> Result<ModelImage> {
     })
 }
 
-/// Standard base64 with padding.
 pub fn base64(b: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut s = String::with_capacity(b.len().div_ceil(3) * 4);
@@ -622,7 +621,6 @@ pub fn base64(b: &[u8]) -> String {
     s
 }
 
-/// Remove saved images older than `keep`: how many went.
 pub fn prune_in(d: &Path, keep: Duration, now: SystemTime) -> usize {
     let Ok(rd) = std::fs::read_dir(d) else {
         return 0;
@@ -642,14 +640,10 @@ pub fn prune_in(d: &Path, keep: Duration, now: SystemTime) -> usize {
     n
 }
 
-/// Prune the images folder (7 days).
 pub fn prune() -> usize {
     prune_in(&dir(), KEEP, SystemTime::now())
 }
 
-/// A prompt for a tab with its images: Claude Code takes a line that is
-/// an image path as an attachment (or reads it by path); Grok gets
-/// "Image: /path" lines.
 pub fn tab_text(text: &str, paths: &[PathBuf], grok: bool) -> String {
     if paths.is_empty() {
         return text.to_string();
@@ -674,8 +668,6 @@ fn image_line(l: &str) -> bool {
     !l.is_empty() && p.is_absolute() && is_image_path(p)
 }
 
-/// A prompt without the image lines `tab_text` added (what a tab's
-/// transcript shows as its text; receipts look for that).
 pub fn strip_image_lines(text: &str) -> &str {
     let mut end = text.trim_end().len();
     loop {
@@ -697,7 +689,7 @@ pub fn strip_image_lines(text: &str) -> &str {
 
 #[cfg(test)]
 pub mod testing {
-    //! A minimal PNG writer (stored deflate) and a fake clipboard.
+
     use super::*;
 
     fn crc32(data: &[u8]) -> u32 {
@@ -715,7 +707,6 @@ pub mod testing {
         !c
     }
 
-    /// A gray RGB PNG of w x h.
     pub fn png(w: u32, h: u32) -> Vec<u8> {
         let mut raw = Vec::with_capacity(((w * 3 + 1) * h) as usize);
         for y in 0..h {
@@ -757,7 +748,6 @@ pub mod testing {
         out
     }
 
-    /// A clipboard that holds what the test put there, and counts reads.
     #[derive(Clone, Default)]
     pub struct FakeClipboard {
         pub holds: std::sync::Arc<std::sync::Mutex<Option<ClipImage>>>,
@@ -797,7 +787,6 @@ mod tests {
             })
         };
         if cfg!(windows) {
-            // A dragged Windows path: plain, quoted, a file URL, several.
             assert_eq!(
                 p(r"C:\Users\me\a.png"),
                 Some(vec![r"C:\Users\me\a.png".into()])
@@ -859,7 +848,7 @@ mod tests {
                 "/tmp/d.jpg".into()
             ])
         );
-        // Not images, not paths, or text around them: pasted as text.
+
         for t in [
             "/tmp/a.txt",
             "a.png",
@@ -881,7 +870,7 @@ mod tests {
         std::fs::write(&a, testing::png(4, 3)).unwrap();
         let txt = d.join("notes.txt");
         std::fs::write(&txt, "x").unwrap();
-        // Unix pastes escape spaces with a backslash; Windows ones quote.
+
         let esc = if cfg!(windows) {
             format!("\"{}\"", a.display())
         } else {
@@ -892,7 +881,7 @@ mod tests {
             pasted_images(&format!("'{}'", a.display())),
             Some(vec![a.clone()])
         );
-        // A plain path with spaces (no quoting) still counts.
+
         assert_eq!(
             pasted_images(&a.display().to_string()),
             Some(vec![a.clone()])
@@ -912,7 +901,7 @@ mod tests {
         assert_eq!(dimensions(&png), Some((1280, 720)));
         let gif = [b"GIF89a".as_slice(), &[0x40, 0x01, 0xF0, 0x00]].concat();
         assert_eq!(dimensions(&gif), Some((320, 240)));
-        // JPEG: SOI, an APP0 segment, then SOF0 with 480 x 640.
+
         let jpg = [
             0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x02,
             0x80, 0x01, 0xE0, 0x03, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -928,7 +917,6 @@ mod tests {
 
     #[test]
     fn tab_text_forms_and_strip() {
-        // Absolute on every OS (a Windows path has a drive).
         let r = if cfg!(windows) { "C:" } else { "" };
         let (one, two) = (
             format!("{r}/h/.godterm/assistant/images/1.png"),
@@ -943,7 +931,7 @@ mod tests {
         assert_eq!(strip_image_lines(&g), "fix the button");
         assert_eq!(strip_image_lines("no images"), "no images");
         assert_eq!(tab_text("x", &[], false), "x");
-        // Only a path: kept (nothing else to look for).
+
         let only = format!("{r}/a.png");
         assert_eq!(strip_image_lines(&only), only);
     }
@@ -964,7 +952,7 @@ mod tests {
         {
             use crate::platform::PermissionsExt;
             let mode = std::fs::metadata(&small).unwrap().permissions().mode();
-            // Windows has no mode bits: the file is the user's own, writable.
+
             let want = if cfg!(windows) { 0o644 } else { 0o600 };
             assert_eq!(mode & 0o777, want);
         }
@@ -992,5 +980,18 @@ mod tests {
         assert_eq!(prune_in(&d, KEEP, SystemTime::now()), 1);
         assert!(!old.exists() && new.exists());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn upload_names_are_safe() {
+        assert_eq!(safe_name("../../etc/passwd"), "passwd");
+        assert_eq!(safe_name("C:\\x\\my file (1).txt"), "my_file__1_.txt");
+        assert_eq!(safe_name(".bashrc"), "bashrc");
+        assert_eq!(safe_name(""), "file");
+        assert_eq!(safe_name("..."), "file");
+        let long = format!("{}.pdf", "a".repeat(200));
+        let n = safe_name(&long);
+        assert!(n.len() <= 70 && n.ends_with(".pdf"));
+        assert!(!safe_name("a\u{202e}b\n$`'\"").contains(['\n', '$', '`', '\'', '"']));
     }
 }

@@ -2,8 +2,6 @@ use super::*;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-// A fake gh: a shell script in a temp folder, run with a temp
-// GH_CONFIG_DIR. The real gh and its login state are never reached.
 fn fake(tag: &str, body: &str) -> (PathBuf, PathBuf) {
     let dir = std::env::temp_dir().join(format!("godterm-ghlogin-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -118,7 +116,6 @@ fn cancel_stops_it_and_a_missing_gh_fails() {
 
 #[test]
 fn the_web_ops_never_reach_a_real_gh() {
-    // Under test gh_bin is /nonexistent/gh: the shared login fails at once.
     let gh = crate::git_cred::gh_bin(None);
     let i = start(&gh);
     assert_eq!(i.state, "failed", "{i:?}");

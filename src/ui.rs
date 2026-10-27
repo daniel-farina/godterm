@@ -1,5 +1,3 @@
-//! Rendering: pane grid, dashboard, sessions list, status bar, modals.
-
 use chrono::{DateTime, Local, Utc};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -31,7 +29,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         u16::from(app.voice_hud_visible())
     };
-    // A clickable menu bar on top when there is room for it.
+
     let menu_h = u16::from(area.height >= 8);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -57,12 +55,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if hud_h > 0 {
         draw_voice_hud(f, app, chunks[1]);
     }
-    // The assistant panel: docked, the panes make room (their PTYs
-    // resize); overlay, it floats over them and they keep their size.
+
     let full_main = main;
     let panel_w = crate::app_talkback::panel_width(app, main);
     app.assistant.main_geo.set((main.x, main.width));
-    // Maximized, it floats over the grid (the panes keep their size).
+
     let docked = panel_w > 0
         && app.assistant.win != crate::app_panelwin::PanelWin::Max
         && app.panel_docked(main, panel_w);
@@ -71,9 +68,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         main = Rect::new(main.x, main.y, main.width - panel_w, main.height);
     }
 
-    // Panes are always laid out (and resized) so PTYs keep a sane size even
-    // while another view covers them.
-    // Paging takes the bottom row of the main area when there are pages.
     let (_, _, probe) = pane_rects(app, main);
     let paged = probe.pages > 1 && !app.zoom && main.height > 12;
     let grid_area = if paged {
@@ -123,7 +117,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     draw_pane(f, app, i, *r);
                 }
             }
-            // Every pane collapsed: the strips, then how to get them back.
+
             let vis = app.visible_panes();
             if !vis.is_empty() && !app.zoom && vis.iter().all(|&p| app.pane_folded(p)) {
                 let below = vis
@@ -161,7 +155,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     ),
                 );
             }
-            // Free cells of a grid: a card to start something there.
+
             if !app.zoom {
                 let empty = app
                     .last_arranged
@@ -172,7 +166,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     draw_empty_slot(f, app, *r, k);
                 }
             }
-            // Pane borders can be dragged (registered last, so on top).
+
             if !app.zoom {
                 if let Some(a) = &app.last_arranged {
                     let mut hits = app.hits.borrow_mut();
@@ -188,7 +182,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         View::LiveMap => crate::ui_livemap::draw(f, app, main),
         _ if main.height > 4 => {
-            // Every other screen: a breadcrumb with Back and x, then the view.
             let crumb = Rect::new(main.x, main.y, main.width, 1);
             draw_breadcrumb(f, app, crumb);
             let body = Rect::new(main.x, main.y + 1, main.width, main.height - 1);
@@ -225,7 +218,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             crate::app_talkback::draw_overlay_edge(f, r, full_main);
         }
         crate::ui_assistant::draw(f, app, r);
-        // Floating: no pane cursor shows through it (nor its gap).
+
         if !docked && !app.assistant_has_focus() {
             if let Some((cx, cy)) = app.want_cursor.get() {
                 if cx + 1 >= r.x && cy >= r.y && cy < r.y + r.height {
@@ -236,7 +229,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     draw_status(f, app, chunks[2]);
 
-    // Regions registered from here on belong to the open popup.
     app.modal_from.set(Some(app.hits.borrow().regions.len()));
     match app.modal.clone() {
         Modal::None => {}
@@ -258,7 +250,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Modal::FindAll(fa) => crate::find_all::draw(f, area, app, &fa),
         Modal::Broadcast(buf) => draw_broadcast(f, area, app, &buf),
         Modal::Approvals(sel) => draw_approvals(f, area, app, sel),
-        // Edited in its sidebar row when that is on screen, else a popup.
+
         Modal::Rename(p, t, buf) if !app.inline_rename.get() => {
             crate::ui_chrome::draw_rename(f, area, app, p, t, &buf)
         }
@@ -683,19 +675,17 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             theme::SLATE,
         ),
     }
-    // The voice onboarding: over everything (the welcome covers it all).
+
     crate::ui_onboarding::draw(f, app);
-    // What was drawn is what can be clicked.
+
     app.last_hits = app.hits.take();
     app.last_modal_from = app.modal_from.get();
-    // The terminal cursor: only at the focused input, decided once, after
-    // everything is drawn (else it stays hidden this frame).
+
     if let Some(p) = app.want_cursor.get() {
         f.set_cursor_position(p);
     }
 }
 
-/// Rows given to the usage footer for a pane interior of this height.
 pub fn footer_height(inner_h: u16) -> u16 {
     match inner_h {
         0..=2 => 0,
@@ -705,19 +695,17 @@ pub fn footer_height(inner_h: u16) -> u16 {
     }
 }
 
-/// How a pane's left or right tab list is sized.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Side {
     pub collapsed: bool,
-    /// Dragged by hand.
+
     pub want: Option<u16>,
-    /// Share of the pane otherwise (the Narrow / Normal / Wide preset).
+
     pub pct: u16,
-    /// Over 9 tabs: the number strip needs two digit numbers.
+
     pub many: bool,
 }
 
-/// Percent of the pane for a tab list width preset.
 pub fn width_pct(preset: Option<&str>) -> u16 {
     match preset {
         Some("narrow") => 16,
@@ -728,14 +716,9 @@ pub fn width_pct(preset: Option<&str>) -> u16 {
 
 pub const SIDEBAR_MIN: u16 = 22;
 pub const SIDEBAR_MAX: u16 = 64;
-/// From this many columns a side tab list shows details: each tab's
-/// second line starts with the session's own title (Claude's or Grok's).
+
 pub const SIDEBAR_WIDE_AT: u16 = 36;
 
-/// Columns of a left or right tab list inside a pane interior of width
-/// `inner_w`: a 3 column strip when collapsed or under 60 columns, else
-/// the dragged width or a share of the pane, 22 to 64, leaving the
-/// terminal at least 30.
 pub fn sidebar_width(inner_w: u16, side: Side) -> u16 {
     if inner_w < 24 {
         0
@@ -754,8 +737,6 @@ pub fn sidebar_width(inner_w: u16, side: Side) -> u16 {
     }
 }
 
-/// (tab list, terminal, footer) inside a pane border. The PTY gets the
-/// terminal rect, so it shrinks and grows with the tab list.
 pub fn pane_layout(inner: Rect, pos: crate::slot::TabPos, side: Side) -> (Rect, Rect, Rect) {
     use crate::slot::TabPos;
     let (bar, rest) = match pos {
@@ -783,7 +764,6 @@ pub fn pane_layout(inner: Rect, pos: crate::slot::TabPos, side: Side) -> (Rect, 
     (bar, term, foot)
 }
 
-/// Split a pane interior into (terminal, footer).
 pub fn split_footer(inner: Rect) -> (Rect, Rect) {
     let fh = footer_height(inner.height);
     let term = Rect::new(inner.x, inner.y, inner.width, inner.height - fh);
@@ -791,13 +771,11 @@ pub fn split_footer(inner: Rect) -> (Rect, Rect) {
     (term, foot)
 }
 
-/// Where every pane goes this frame (zero sized when hidden or on another
-/// page), and the arrangement for paging and border drags.
 pub fn pane_rects(app: &App, area: Rect) -> (Vec<Rect>, Vec<Rect>, crate::layout::Arranged) {
     let n = app.panes.len();
     let (vis, arranged) = app.arrange(area);
     let mut shown = vec![Rect::new(area.x, area.y, 0, 0); n];
-    // Size for the PTY even when off this page, so it is right once shown.
+
     let mut sized = shown.clone();
     let fi = vis.iter().position(|&p| p == app.focus).unwrap_or(0);
     let page = fi / arranged.per_page.max(1);
@@ -809,7 +787,7 @@ pub fn pane_rects(app: &App, area: Rect) -> (Vec<Rect>, Vec<Rect>, crate::layout
             }
         }
     }
-    // A collapsed pane's PTY keeps the size it has when expanded.
+
     for p in &arranged.unfolded {
         if let Some(&i) = vis.get(p.index) {
             sized[i] = p.rect;
@@ -823,8 +801,6 @@ pub fn pane_rects(app: &App, area: Rect) -> (Vec<Rect>, Vec<Rect>, crate::layout
     (shown, sized, arranged)
 }
 
-/// The state colors everywhere: live work in the accent, a question in
-/// amber, idle dim (never green: green read as "active").
 pub fn activity_color(a: Activity) -> Color {
     match a {
         Activity::Working => theme::ACTIVE,
@@ -851,9 +827,6 @@ fn state_label(p: &Pane) -> (String, Color) {
     }
 }
 
-/// A collapsed pane: one row with ▸, its number, account, what runs,
-/// what is left and how many tabs. A click expands it; its tabs keep
-/// running.
 fn draw_folded(f: &mut Frame, app: &App, i: usize, r: Rect) {
     use crate::hits::{text, UiAction};
     let slot = &app.panes[i];
@@ -862,7 +835,7 @@ fn draw_folded(f: &mut Frame, app: &App, i: usize, r: Rect) {
     let buf = f.buffer_mut();
     let y = r.y;
     let full = r.x + r.width;
-    // The window controls keep the right end (on all but tiny strips).
+
     let controls = r.width > crate::ui_chrome::CONTROLS_W + 12;
     let limit = if controls {
         full - crate::ui_chrome::CONTROLS_W - 1
@@ -907,7 +880,7 @@ fn draw_folded(f: &mut Frame, app: &App, i: usize, r: Rect) {
     {
         x = text(buf, x, y, limit, &format!(" {b}"), st(theme::STONE));
     }
-    // The state dot: a question in amber, live work in the accent.
+
     let working = slot
         .tabs
         .iter()
@@ -977,9 +950,6 @@ fn draw_folded(f: &mut Frame, app: &App, i: usize, r: Rect) {
     }
 }
 
-/// A pane collapsed sideways: a narrow column with, top to bottom, the
-/// expand caret, the pane number, its state dot, % left and its tab
-/// count. A click anywhere on it expands it.
 fn draw_folded_col(f: &mut Frame, app: &App, i: usize, r: Rect) {
     use crate::hits::{text, UiAction};
     if r.width == 0 || r.height == 0 {
@@ -1000,7 +970,7 @@ fn draw_folded_col(f: &mut Frame, app: &App, i: usize, r: Rect) {
                 c.set_style(Style::default().bg(bg));
             }
         }
-        // A thin edge on its right, toward the panes that took its width.
+
         if r.width > 1 {
             if let Some(c) = buf.cell_mut((r.x + r.width - 1, y)) {
                 c.set_char('│');
@@ -1062,7 +1032,7 @@ fn draw_folded_col(f: &mut Frame, app: &App, i: usize, r: Rect) {
         if y >= r.y + r.height {
             break;
         }
-        // Centered in the strip.
+
         let w = s.chars().count() as u16;
         let x = r.x + cw.saturating_sub(w) / 2;
         text(buf, x, y, limit, s, *style);
@@ -1084,11 +1054,11 @@ fn draw_folded_col(f: &mut Frame, app: &App, i: usize, r: Rect) {
 fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
     let slot = &app.panes[i];
     let pane = slot.cur();
-    // A focused assistant panel has the keys: no pane looks focused.
+
     let focused = i == app.focus && !app.assistant_has_focus();
     let color = app.account_color(slot.account);
     let state = state_label(pane);
-    // Direct mode with this pane's tab: a calm sage border, thick.
+
     let direct = app.direct_with(pane.uid);
     let border = if direct {
         theme::SAGE
@@ -1126,9 +1096,7 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
         color,
         state,
         pane.scroll,
-        // Tabs go in the header only when the pane is too small for a list.
         bar.width == 0,
-        // The list folded to a strip of numbers (no labels in it).
         bar.width > 0 && bar.width <= 4,
     );
     crate::ui_chrome::draw_tab_list(f, app, i, bar, app.tab_pos(i));
@@ -1143,7 +1111,6 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
     crate::ui_modelbar::draw(f.buffer_mut(), app, i, model_row);
     crate::ui_loopsdrawer::draw(f.buffer_mut(), app, i, drawer);
 
-    // Owned by another machine (GodTerm Sync): its read only view.
     if crate::ui_lease::draw(f, pane, inner) {
         return;
     }
@@ -1208,7 +1175,6 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
     }
 }
 
-/// The selected text of a pane, over what render_screen drew.
 fn draw_selection(buf: &mut Buffer, app: &App, i: usize, pane: &Pane, area: Rect) {
     use crate::select::{Pos, Target};
     let Some(sel) = app.selection.as_ref().filter(|s| {
@@ -1239,7 +1205,6 @@ fn draw_selection(buf: &mut Buffer, app: &App, i: usize, pane: &Pane, area: Rect
     }
 }
 
-/// One cell drawn as selected: calm slate under the usual text color.
 pub fn select_cell(buf: &mut Buffer, x: u16, y: u16) {
     if let Some(cell) = buf.cell_mut((x, y)) {
         cell.set_bg(theme::SELECT_BG);
@@ -1248,7 +1213,6 @@ pub fn select_cell(buf: &mut Buffer, x: u16, y: u16) {
     }
 }
 
-/// A grid cell with no pane: start a session there.
 fn draw_empty_slot(f: &mut Frame, app: &App, r: Rect, k: usize) {
     use crate::hits::UiAction;
     if r.width < 20 || r.height < 6 {
@@ -1422,7 +1386,7 @@ fn draw_idle(f: &mut Frame, app: &App, i: usize, area: Rect) {
             .wrap(Wrap { trim: true }),
         area,
     );
-    // An Add account button under the text of an empty slot.
+
     let y = area.y + 4;
     if add_btn && y < area.y + area.height && area.width > 20 {
         let label = "Add account…";
@@ -1451,7 +1415,6 @@ fn conv_color(c: vt100::Color) -> Color {
     }
 }
 
-/// Copy the vt100 screen into the ratatui buffer.
 pub fn render_screen(screen: &vt100::Screen, area: Rect, buf: &mut Buffer) {
     let (rows, cols) = screen.size();
     for r in 0..rows.min(area.height) {
@@ -1628,7 +1591,7 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
         .max()
         .unwrap_or(6);
     let rows_total = n.div_ceil(cols);
-    // Keep the selection visible by skipping whole rows from the top.
+
     let visible_rows = (inner.height / card_h.max(1)).max(1) as usize;
     let sel_row = app.sel_account / cols;
     let first_row = sel_row.saturating_sub(visible_rows.saturating_sub(1));
@@ -1692,7 +1655,6 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// "just now", "5m ago", "3h ago", "2d ago" from a number of seconds.
 pub fn ago_secs(secs: i64) -> String {
     match secs.max(0) {
         0..=59 => "just now".into(),
@@ -1733,7 +1695,6 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    // Source chips: All, This Mac (main), every account.
     {
         let buf = f.buffer_mut();
         let r = chunks[0];
@@ -1775,7 +1736,7 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
             );
             x = crate::hits::text(buf, x, r.y, limit, &l, st) + 1;
         }
-        // Harness filter (when there are grok accounts) and subagents.
+
         let mut extra: Vec<(String, UiAction, bool, &str)> = vec![];
         if app.has_grok() {
             for (k, l) in [(0u8, "Claude"), (1, "Grok")] {
@@ -1809,7 +1770,7 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                 },
             ) + 1;
         }
-        // Actions.
+
         let r = chunks[1];
         let limit = r.x + r.width;
         let mut x = r.x;
@@ -1835,7 +1796,7 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
             }
             x = crate::hits::button(buf, &mut hits, app.mouse_pos, x, r.y, limit, label, UiAction::SessKey(k), hint, c) + 1;
         }
-        // Sort ▾: every column, reverse, group by.
+
         let arrow = |rev: bool, k: crate::sess_sort::SortKey| {
             if k.descending() != rev {
                 "▼"
@@ -1944,7 +1905,6 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                     })),
                 ];
                 if grouped {
-                    // The group's name on its first row only.
                     let g = group_of(*src, s);
                     let first = last_group.as_deref() != Some(g.as_str());
                     last_group = Some(g.clone());
@@ -1974,7 +1934,7 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                 Row::new(cells).style(Style::default().fg(FG))
             })
             .collect();
-        // (header, width, sort key) per column; the title takes the rest.
+
         let date_head = if created { "created" } else { "modified" };
         let mut cols: Vec<(&str, u16, Option<SortKey>)> = vec![
             ("", 1, None),
@@ -2030,7 +1990,7 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
             .highlight_symbol("› ")
             .column_spacing(2)
             .block(block);
-        // Click a header to sort by it (again: reverse).
+
         {
             let t = chunks[2];
             let mut hits = app.hits.borrow_mut();
@@ -2052,7 +2012,7 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                 }
                 x = x.saturating_add(*w + 2);
             }
-            // The title column runs to the edge.
+
             if x < right {
                 hits.add(
                     Rect::new(x, t.y + 1, right - x, 1),
@@ -2085,7 +2045,6 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
     let chunks = [chunks[0], chunks[2], chunks[3]];
     let sel = rows_data.get(app.sel_session).map(|(src, s)| (*src, *s));
 
-    // Details of the selected session.
     let detail_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(FAINT))
@@ -2139,7 +2098,6 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// A mode chip in the status bar.
 pub struct Chip {
     pub text: String,
     pub bg: Color,
@@ -2147,7 +2105,6 @@ pub struct Chip {
     pub hint: &'static str,
 }
 
-/// The status bar's mode chips, in their fixed order.
 pub fn status_chips(app: &App) -> Vec<Chip> {
     use crate::hits::UiAction;
     let mut v = vec![];
@@ -2183,7 +2140,7 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
             hint: "Voice mode: click to change",
         });
     }
-    // Direct mode: the voice goes to one tab; a click comes back.
+
     if let Some(text) = crate::app_direct::indicator(app) {
         v.push(Chip {
             text,
@@ -2192,7 +2149,7 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
             hint: "Talking to this tab directly by voice: click (or Ctrl-a K, or say \"back to the assistant\") to return to the assistant",
         });
     }
-    // An account running out: the move on offer (one yes moves it).
+
     if let Some(o) = app.failover_offer() {
         v.push(Chip {
             text: format!("{} [C-a F]", app.failover_text(o)),
@@ -2207,7 +2164,7 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
             hint: "Keep it on this account; no more offers for this tab",
         });
     }
-    // The speaker mute, beside the mic's state: it hears, it does not talk.
+
     if app.cfg.voice.speaker_muted {
         v.push(Chip {
             text: "SILENT".into(),
@@ -2216,7 +2173,7 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
             hint: "The speaker is muted: answers show as text. Click (or Ctrl-a O) to talk again",
         });
     }
-    // Paused listening: a calm amber countdown; a click resumes.
+
     if let Some(left) = app.pause_left() {
         v.push(Chip {
             text: format!("PAUSED {}:{:02}", left / 60, left % 60),
@@ -2258,8 +2215,6 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
     if app.assistant_on() {
         let p = crate::providers::by_id(&app.cfg.assistant.provider);
         if let Some(home) = p.own_home {
-            // A provider with its own login (Grok): its name and its own
-            // binding bucket, or that it is not signed in.
             let left = if crate::harness::grok::logged_in(&home()) {
                 app.assistant_buckets()
                     .as_deref()
@@ -2298,7 +2253,7 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
             hint: "Something GodTerm needs is not installed: click for Setup",
         });
     }
-    // The new version chip: in the menu bar; here only when it is hidden.
+
     if let Some(text) = app.update_badge().filter(|_| !app.menu_shown.get()) {
         v.push(Chip {
             text,
@@ -2329,7 +2284,6 @@ pub fn status_chips(app: &App) -> Vec<Chip> {
     v
 }
 
-/// After Ctrl-a, until the next key: the most used ones.
 pub const PREFIX_HINT: &str =
     "then a key: t new tab  w close  R rename  m move  a account  : find  ? all keys";
 
@@ -2345,7 +2299,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         ));
         spans.push(Span::raw(" "));
     }
-    // Mode chips, always in this order; one that is off leaves no gap.
+
     let mut chip_hits: Vec<(u16, u16, crate::hits::UiAction, &'static str)> = vec![];
     for c in status_chips(app) {
         let at: u16 = spans.iter().map(|s| s.width() as u16).sum();
@@ -2378,8 +2332,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         ));
         spans.push(Span::raw(" "));
     }
-    // Per pane summaries, as detailed as fits next to the chips and the
-    // hint on the right: full, compact, then "A1 wk 0% ▼".
+
     let hint_w = {
         let h = app
             .hover_hint()
@@ -2503,7 +2456,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let right_text = match (&app.config_error, &hover, &app.flash) {
         (Some(e), _, _) => e.clone(),
         (None, Some(h), _) => h.clone(),
-        // Just pressed Ctrl-a: the keys matter more than the last news.
+
         (None, None, _) if app.prefix => PREFIX_HINT.into(),
         (None, None, Some((m, _))) => m.clone(),
         (None, None, None) => match app.view {
@@ -2545,7 +2498,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(left).style(Style::default().bg(BAR_BG)),
         area,
     );
-    // A gap so the hint never runs into the pane list on the left.
+
     let right_text = format!("  {right_text}");
     let w = (right_text.chars().count() as u16 + 1).min(area.width / 2);
     let r = Rect::new(area.x + area.width - w, area.y, w, 1);
@@ -2555,7 +2508,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             .style(Style::default().bg(BAR_BG)),
         r,
     );
-    // The Undo toast after a close: on top of the right side for 10 s.
+
     if let Some(t) = app.toast_text() {
         let label = format!(" {t} · ");
         let lw = label.chars().count() as u16;
@@ -2603,7 +2556,6 @@ fn local_clock(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// Bar of what is LEFT, colored by how much remains.
 fn left_bar(left: f64, width: usize) -> Vec<Span<'static>> {
     let filled = ((left.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
     vec![
@@ -2618,7 +2570,6 @@ fn left_bar(left: f64, width: usize) -> Vec<Span<'static>> {
     ]
 }
 
-/// One footer row: `5 hour ████░░  77% left  resets in 2h 14m at 15:00`.
 fn window_row(label: &str, w: Option<&Window>, width: u16, now: DateTime<Utc>) -> Line<'static> {
     let label_span = Span::styled(format!(" {label:<7}"), Style::default().fg(DIM));
     let Some(w) = w else {
@@ -2661,7 +2612,7 @@ fn window_row(label: &str, w: Option<&Window>, width: u16, now: DateTime<Utc>) -
         pct,
         theme::remaining_style(left).add_modifier(Modifier::BOLD),
     ));
-    // The countdown in the same color, not bold, so it reads as one item.
+
     spans.push(Span::styled(
         reset,
         Style::default().fg(theme::remaining(left)),
@@ -2669,7 +2620,6 @@ fn window_row(label: &str, w: Option<&Window>, width: u16, now: DateTime<Utc>) -
     Line::from(spans)
 }
 
-/// Footer rows for pane `i`: 5 hour, weekly, then every other bucket.
 pub fn footer_lines(
     app: &App,
     i: usize,
@@ -2716,8 +2666,7 @@ pub fn footer_lines(
         }
         return lines;
     };
-    // Only the windows this agent has: grok has its weekly (or monthly)
-    // credits and products, no 5 hour window.
+
     if app.account_cfg(a).harness() == crate::harness::Harness::Grok {
         let w = u.get("seven_day");
         lines.push(window_row(
@@ -2741,8 +2690,6 @@ pub fn footer_lines(
     lines
 }
 
-/// Third footer row: stale data note, then every other bucket as
-/// "Opus 88% left", trimmed with "+N more" when the pane is narrow.
 fn other_buckets_row(
     st: &AccountState,
     u: &crate::usage::Usage,
@@ -2821,7 +2768,6 @@ fn exact_time(t: DateTime<Utc>) -> String {
     local.format("%Y-%m-%d %H:%M %:z").to_string()
 }
 
-/// Full table of every bucket for the dashboard.
 fn usage_breakdown(st: &AccountState, now: DateTime<Utc>) -> Vec<Line<'static>> {
     let mut lines = vec![];
     if st.login.cli_managed {
@@ -2918,7 +2864,6 @@ fn usage_breakdown(st: &AccountState, now: DateTime<Utc>) -> Vec<Line<'static>> 
 }
 
 fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
-    // A tree of every pane's tabs on the left when there is room.
     let area = if area.width >= 100 {
         let w = 28;
         crate::ui_chrome::draw_overview_tree(f, app, Rect::new(area.x, area.y, w, area.height));
@@ -3051,7 +2996,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         1,
         area.y + area.height.saturating_sub(1),
     );
-    // A ✎ at the end of each row renames that tab.
+
     if area.width > 12 {
         let buf = f.buffer_mut();
         let mut hits = app.hits.borrow_mut();
@@ -3071,7 +3016,6 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// The last `max` characters of `s`, with a leading "…" when cut.
 fn tail(s: &str, max: usize) -> String {
     let n = s.chars().count();
     if n <= max {
@@ -3122,7 +3066,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &App, pk: &Picker) {
     let t = |buf: &mut Buffer, x: u16, y: u16, s: &str, st: Style| {
         crate::hits::text(buf, x, y, limit, s, st.bg(bg))
     };
-    // 1. Base path.
+
     let base = tilde(&pk.base.to_string_lossy());
     match &pk.mode {
         Mode::Base(b) => {
@@ -3170,7 +3114,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &App, pk: &Picker) {
         }
     }
     y += 2;
-    // 2. Name, or a typed path for Open existing.
+
     let editing_name = pk.mode == Mode::Name && pk.sel.is_none();
     match &pk.mode {
         Mode::OpenExisting(text) => {
@@ -3267,7 +3211,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &App, pk: &Picker) {
         }
     }
     y += 1;
-    // 3. Options.
+
     let cb = |on: bool| if on { "[x]" } else { "[ ]" };
     let x = button(
         buf,
@@ -3306,7 +3250,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &App, pk: &Picker) {
         theme::SLATE,
     );
     y += 2;
-    // 4. Recent and Resume lists.
+
     let bottom = r.y + r.height - 1;
     let mut last_kind: Option<ItemKind> = None;
     let mut row_i = 0usize;
@@ -3356,7 +3300,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &App, pk: &Picker) {
             Style::default().fg(theme::SAND).bg(rbg),
         );
         let room = (limit.saturating_sub(x) as usize).saturating_sub(it.detail.chars().count() + 6);
-        // Paths keep their end (the folder name) when shortened.
+
         let label = if it.kind == ItemKind::Recent {
             tail(&it.label, room.max(8))
         } else {
@@ -3648,7 +3592,7 @@ fn draw_onboard_banner(f: &mut Frame, app: &App, area: Rect) {
             "Skip logging in this account for now (Ctrl-a S)",
             theme::STONE,
         );
-        // claude's one time bypass warning: the user accepts it here, once.
+
         if let Some(a) = cur {
             let p = app.pane_for_account(a);
             let t = &app.panes[p].tabs[app.panes[p].active];
@@ -3679,7 +3623,6 @@ fn draw_onboard_banner(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// First free column after the last non blank cell of row `y`.
 fn text_after(buf: &Buffer, y: u16, x0: u16, limit: u16) -> u16 {
     let mut last = x0;
     for x in x0..limit {
@@ -3695,7 +3638,7 @@ fn draw_wake_train(f: &mut Frame, area: Rect, app: &App) {
     use crate::hits::{TrainUi, UiAction};
     let Some(t) = &app.voice.training else { return };
     let mut body = t.lines();
-    // The live meter while listening, as text.
+
     if matches!(t.phase, Phase::Wake(_) | Phase::Normal(_)) {
         let m: String = meter_spans(app)
             .iter()
@@ -3766,7 +3709,6 @@ fn draw_wake_train(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// `‹ Back  ◆ GodTerm › Settings › Voice and Audio            ×`
 fn draw_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
     use crate::hits::UiAction;
     let buf = f.buffer_mut();
@@ -3831,7 +3773,6 @@ fn draw_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// `‹ page 1/3 ›` under the panes, with the panes of other pages listed.
 fn draw_pager(f: &mut Frame, app: &App, area: Rect, a: &crate::layout::Arranged) {
     use crate::hits::UiAction;
     let vis = app.visible_panes();
@@ -3878,7 +3819,7 @@ fn draw_pager(f: &mut Frame, app: &App, area: Rect, a: &crate::layout::Arranged)
         "Next page (Ctrl-a ])",
         theme::SLATE,
     );
-    // Every pane by number, those on this page highlighted.
+
     for (k, &p) in vis.iter().enumerate() {
         let on = k / a.per_page.max(1) == page;
         let name = app.panes[p]
@@ -3909,8 +3850,6 @@ fn draw_pager(f: &mut Frame, app: &App, area: Rect, a: &crate::layout::Arranged)
     }
 }
 
-/// A tab's right click menu: app_tabopts::tab_actions, the same list
-/// the double click panel shows.
 fn draw_tab_menu(f: &mut Frame, area: Rect, app: &App, s: usize, t: usize, sel: usize) {
     use crate::hits::UiAction;
     let Some(tab) = app.panes.get(s).and_then(|p| p.tabs.get(t)) else {
@@ -3981,7 +3920,6 @@ fn draw_tab_menu(f: &mut Frame, area: Rect, app: &App, s: usize, t: usize, sel: 
     crate::ui_chrome::modal_chrome(buf, app, r, &[]);
 }
 
-/// One line of the tab panel.
 #[derive(Clone, Copy, PartialEq)]
 enum PanelLine {
     Head(bool),
@@ -3992,9 +3930,6 @@ enum PanelLine {
     Opt(usize),
 }
 
-/// The tab panel (double click on a tab): Move to another account on
-/// top, the tab's options below. When both do not fit, the two sections
-/// become tabs; a section taller than its room scrolls to the focus.
 fn draw_move_picker(f: &mut Frame, area: Rect, app: &App, p: &crate::app_tabmove::MovePicker) {
     use crate::hits::UiAction;
     let targets = app.move_targets(p.slot);
@@ -4027,7 +3962,6 @@ fn draw_move_picker(f: &mut Frame, area: Rect, app: &App, p: &crate::app_tabmove
         None => PanelLine::Target(p.sel.min(targets.len() - 1)),
     };
     let lines: Vec<PanelLine> = if compact {
-        // The section tabs take the first line; each section drops its head.
         if p.opt.is_some() {
             opt_lines[1..].to_vec()
         } else {
@@ -4297,7 +4231,6 @@ fn draw_move_picker(f: &mut Frame, area: Rect, app: &App, p: &crate::app_tabmove
     crate::ui_chrome::modal_chrome(buf, app, r, &buttons);
 }
 
-/// The right side of an option row: a field, swatches, choices or a note.
 #[allow(clippy::too_many_arguments)]
 fn draw_opt_detail(
     buf: &mut Buffer,
@@ -4340,7 +4273,7 @@ fn draw_opt_detail(
             }
         }
         let shown = format!(" {text}{} ", if editing { "▏" } else { "" });
-        // While typing, the end of a long text stays in view.
+
         let n = shown.chars().count();
         let room = fw as usize;
         let shown: String = if editing && n > room {
@@ -4452,7 +4385,6 @@ fn draw_opt_detail(
     }
 }
 
-/// One account row of the Move section.
 #[allow(clippy::too_many_arguments)]
 fn draw_target_row(
     buf: &mut Buffer,
@@ -4599,7 +4531,6 @@ fn draw_target_row(
     }
 }
 
-/// Loops in running tabs.
 fn draw_loops(f: &mut Frame, app: &App, area: Rect) {
     use crate::hits::UiAction;
     let now = Utc::now();
@@ -4818,8 +4749,6 @@ fn draw_loops(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// The assistant panel's History tab: a searchable list of saved
-/// conversations, or one of them to read, resume or delete.
 pub(crate) fn draw_history(
     f: &mut Frame,
     app: &App,
@@ -4881,7 +4810,7 @@ pub(crate) fn draw_history(
         let mut lines: Vec<Line> = vec![];
         for e in crate::assistant_history::read(&path) {
             let text = e["text"].as_str().unwrap_or("").to_string();
-            // A reply: its markdown laid out as in the conversation.
+
             if e["kind"] == "reply" {
                 let pad = "      ";
                 let w = (area.width as usize).saturating_sub(pad.len());
@@ -4922,7 +4851,7 @@ pub(crate) fn draw_history(
         }
         let body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
         let w = body.width.max(1) as usize;
-        // A long conversation in a narrow panel can wrap past u16 rows.
+
         let total = lines
             .iter()
             .map(|l| l.width().max(1).div_ceil(w))
@@ -4955,7 +4884,7 @@ pub(crate) fn draw_history(
                 .bg(BAR_BG),
         );
     }
-    // The conversation going on, pinned on top: a click opens it live.
+
     {
         let buf = f.buffer_mut();
         let mut hits = app.hits.borrow_mut();
@@ -5028,7 +4957,6 @@ pub(crate) fn draw_history(
     }
 }
 
-/// An open menu bar menu (and its submenu).
 fn draw_menus(f: &mut Frame, area: Rect, app: &App, o: &crate::menus::Open) {
     use crate::menus::{entries, place, width};
     let anchor = o.anchor.unwrap_or((area.x + 2, area.y));
@@ -5038,7 +4966,7 @@ fn draw_menus(f: &mut Frame, area: Rect, app: &App, o: &crate::menus::Open) {
         let row = o.sel.unwrap_or(0) as u16;
         let ses = entries(app, sid);
         let w = width(&ses) + 2;
-        // To the right of the row, or to the left when there is no room.
+
         let x = if r.x + r.width + w <= area.x + area.width {
             (r.x + r.width).saturating_sub(1)
         } else {
@@ -5081,7 +5009,7 @@ fn draw_menu_box(
     let buf = f.buffer_mut();
     let mut hits = app.hits.borrow_mut();
     let inner_w = r.width.saturating_sub(2);
-    // The info column starts after the longest name.
+
     let label_w = es
         .iter()
         .filter(|e| !e.sep)
@@ -5175,9 +5103,6 @@ fn draw_menu_box(
     r
 }
 
-/// Parts cut to `w` cells, the last one ending in … when cut (whole
-/// parts first: a part that does not fit is dropped or cut, never the
-/// row's name before it).
 pub fn fit_parts(parts: &[(String, u8)], w: usize) -> Vec<(String, u8)> {
     use unicode_width::UnicodeWidthChar;
     let total: usize = parts
@@ -5208,8 +5133,6 @@ pub fn fit_parts(parts: &[(String, u8)], w: usize) -> Vec<(String, u8)> {
     out
 }
 
-/// A small menu under the button that opened it (or under the status
-/// bar chip, when that was clicked).
 fn draw_dropdown(
     f: &mut Frame,
     area: Rect,
@@ -5276,7 +5199,6 @@ fn draw_dropdown(
     }
 }
 
-/// One cell of the level meter.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MeterCell {
     Fill,
@@ -5286,10 +5208,8 @@ pub enum MeterCell {
     Threshold,
 }
 
-/// Meter range in dBFS.
 pub const METER_MIN_DB: f32 = -66.0;
 
-/// Lay out a level meter of `w` cells from the levels in dBFS.
 pub fn meter_cells(level: f32, peak: f32, floor: f32, thr: f32, w: usize) -> Vec<MeterCell> {
     if w == 0 {
         return Vec::new();
@@ -5472,7 +5392,7 @@ fn draw_voice_hud(f: &mut Frame, app: &App, area: Rect) {
             format!("\"{}\"", snippet(h, 60)),
             Style::default().fg(FG),
         ));
-        // How sure whisper was; amber when it was guessing.
+
         if let Some(c) = v.cur_stats.conf {
             let st = if c < 0.6 { theme::SAND } else { FAINT };
             spans.push(Span::styled(
@@ -5494,7 +5414,7 @@ fn draw_voice_hud(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(FAINT),
         ));
     }
-    // Speaker lock: a shield while it is on, and what it dropped.
+
     let lock = crate::voice::speaker::Lock::parse(&app.cfg.voice.speaker_lock);
     if let Some(s) = crate::app_speaker::strip_text(
         lock != crate::voice::speaker::Lock::Off,
@@ -5745,7 +5665,6 @@ pub const VOICE_HELP: &[(&str, &str)] = &[
 ];
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
-    // Wide terminals get keys and voice side by side.
     let wide = area.width >= 150;
     let (w, h) = if wide {
         (
@@ -5763,7 +5682,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(v.to_string(), Style::default().fg(FG)),
         ])
     };
-    // Taller than the screen: the key rows scroll (arrows, pages).
+
     let total = 5 + HELP.len() + if wide { 0 } else { VOICE_HELP.len() + 1 };
     let rows = r.height.saturating_sub(2) as usize;
     let overflow = total > rows;
@@ -5828,7 +5747,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
             r,
         );
     }
-    // Each key row runs its command when clicked.
+
     {
         let mut hits = app.hits.borrow_mut();
         for (i, (k, v)) in HELP.iter().enumerate().skip(skip) {
@@ -5886,7 +5805,7 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App, pl: &crate::palette::Palet
         ]),
         Line::raw(""),
     ];
-    // Each row: the action, and its shortcut on the right where it has one.
+
     let inner_w = r.width.saturating_sub(5) as usize;
     for (i, (name, action)) in items.iter().enumerate().take(h as usize - 5) {
         let sel = i == pl.sel;
@@ -5924,7 +5843,6 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App, pl: &crate::palette::Palet
             Style::default().fg(DIM),
         ));
     } else if pl.input.is_empty() {
-        // In place of the blank line, so the rows stay where clicks land.
         lines[1] = Line::styled(
             "  Type plain words: \"new tab\", \"sign in\", \"rename\", \"move tab\"",
             Style::default().fg(FAINT),
@@ -6255,7 +6173,6 @@ mod tests {
         out
     }
 
-    /// Tests that build an App share GODTERM_HOME, so they take turns.
     use crate::config::testing::LOCK as ENV_LOCK;
 
     fn test_app(tag: &str) -> (crate::app::App, std::path::PathBuf) {
@@ -6264,11 +6181,11 @@ mod tests {
         crate::config::testing::set_home(&home);
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::app::App::new(crate::config::Config::default(), tx);
-        // Never create test folders in the real home directory.
+
         let base = home.join("newtabs");
         std::fs::create_dir_all(&base).unwrap();
         app.cfg.new_tab_base = base.to_string_lossy().into_owned();
-        // Never start the real claude from unit tests.
+
         app.cfg.claude_bin = Some(crate::test_stub::true_bin());
         app.accounts[0].login.source = Some(CredSource::Keychain);
         app.accounts[0].profile.email = Some("one@example.com".into());
@@ -6305,7 +6222,7 @@ mod tests {
         app.view = View::Dashboard;
         term.draw(|f| draw(f, &mut app)).unwrap();
         let dash = buffer_text(term.backend().buffer());
-        // used and left columns plus the exact reset timestamp
+
         assert!(dash.contains("23.0%"));
         assert!(dash.contains("77.0%"));
         assert!(dash.contains("Weekly Opus"));
@@ -6348,7 +6265,6 @@ mod tests {
         let text = buffer_text(&buf);
         let rows: Vec<&str> = text.lines().collect();
 
-        // Pane 1 (top left) footer sits on the three rows above its bottom border.
         let r = app.pane_rects[0];
         let bottom = (r.y + r.height - 1) as usize;
         let footer: Vec<String> = rows[bottom - 3..bottom]
@@ -6359,7 +6275,7 @@ mod tests {
             footer[0].contains("5 hour") && footer[0].contains("77% left"),
             "{footer:?}"
         );
-        // Fixture reset times are fixed dates, so they may be past already.
+
         assert!(footer[0].contains("resets in") || footer[0].contains("reset due"));
         assert!(footer[1].contains("Weekly") && footer[1].contains("39% left"));
         assert!(footer[2].contains("Opus 88% left"));
@@ -6367,7 +6283,6 @@ mod tests {
         assert!(footer[2].contains("Extra usage off"));
         assert!(!footer[2].contains("more"));
 
-        // Pane 2 (top right): low 5 hour left, every other bucket, stale data note.
         let r2 = app.pane_rects[1];
         let seg = |row: usize| -> String {
             rows[row]
@@ -6385,22 +6300,20 @@ mod tests {
             third.contains("more (C-a d)"),
             "narrow panes trim with a hint: {third}"
         );
-        // The 5 hour bar of pane 2 is red because only 8% is left.
+
         let bar_x = app.term_rects[1].x + 8;
         assert_eq!(buf[(bar_x, (b2 - 3) as u16)].fg, theme::remaining(8.0));
-        // Pane 1's weekly bar is in the 39% left color.
+
         assert_eq!(
             buf[(app.term_rects[0].x + 8, (bottom - 2) as u16)].fg,
             theme::remaining(39.0)
         );
 
-        // Pane 3 is not logged in.
         let r3 = app.pane_rects[2];
         let b3 = (r3.y + r3.height - 1) as usize;
         let s3: String = rows[b3 - 3].chars().take(r3.width as usize).collect();
         assert!(s3.contains("not logged in, press Enter to log in"), "{s3}");
 
-        // The PTY screen is the pane interior minus the 3 footer rows.
         let (prow, pcol) = app.panes[0]
             .cur()
             .parser
@@ -6408,8 +6321,7 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner())
             .screen()
             .size();
-        // The PTY is the terminal area: minus the footer rows, the model
-        // bar and the tab list.
+
         let t = app.term_rects[0];
         assert_eq!((prow, pcol), (t.height, t.width));
         assert_eq!(
@@ -6435,7 +6347,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(200, 50)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(term.backend().buffer());
-        // The tab list sits on the left of the pane, one row per tab.
+
         let lines: Vec<&str> = text.lines().collect();
         let row_of = |a: &crate::hits::UiAction| {
             let r = app
@@ -6455,7 +6367,7 @@ mod tests {
         assert!(alpha.contains("!") && alpha.contains("alpha"), "{alpha}");
         assert!(row_of(&crate::hits::UiAction::NewTab(0)).contains("+ New tab"));
         assert!(row_of(&crate::hits::UiAction::SidebarToggle(0)).contains("«"));
-        // The active tab (beta) has its close mark; the header names it.
+
         assert_eq!(row_of(&crate::hits::UiAction::CloseTab(0, 1)), "×");
         let hy = app.pane_rects[0].y as usize;
         assert!(
@@ -6465,7 +6377,7 @@ mod tests {
         );
         assert!(text.contains("[2/2]"), "status bar shows tab position");
         assert!(text.contains("1 need approval"));
-        // Both tabs got the same PTY size.
+
         let a = app.panes[0].tabs[0]
             .parser
             .lock()
@@ -6532,10 +6444,10 @@ mod tests {
                 stats: Default::default(),
             })
         };
-        // Nothing waiting: "approve" is the assistant's to interpret.
+
         heard(&mut app, "approve");
         assert_eq!(app.assistant_turn, 1, "to the assistant");
-        // A background tab asks: plain "yes" approves it at once.
+
         app.panes[1].tabs[0].activity = Activity::Permission;
         heard(&mut app, "yes");
         assert_eq!(
@@ -6549,22 +6461,22 @@ mod tests {
             app.voice.action.as_deref(),
             Some("denied a fresh tab on Account 2")
         );
-        // Two waiting: which one is for the assistant to sort out.
+
         app.panes[0].tabs[0].activity = Activity::Permission;
         app.panes[1].tabs[0].activity = Activity::Permission;
         app.focus = 1;
         app.panes[1].add_tab(std::env::temp_dir());
         heard(&mut app, "approve");
         assert_eq!(app.assistant_turn, 2);
-        // Next and previous tab.
+
         heard(&mut app, "previous tab");
         assert_eq!(app.panes[1].active, 0);
         heard(&mut app, "next tab");
         assert_eq!(app.panes[1].active, 1);
-        // More words than the command: the assistant.
+
         heard(&mut app, "next tab on account one");
         assert_eq!(app.assistant_turn, 3);
-        // Sleep ignores everything but wake up.
+
         heard(&mut app, "sleep");
         assert!(app.voice.asleep);
         heard(&mut app, "show the dashboard");
@@ -6573,13 +6485,13 @@ mod tests {
         assert!(!app.voice.asleep);
         heard(&mut app, "stop talking");
         assert_eq!(app.voice.action.as_deref(), Some("stopped talking"));
-        // Off in Settings: even "yes" goes to the assistant.
+
         app.cfg.voice.instant_commands = false;
         app.panes[0].tabs[0].activity = Activity::Permission;
         app.focus = 0;
         heard(&mut app, "yes");
         assert_eq!(app.assistant_turn, 4);
-        // A configured synonym.
+
         app.cfg.voice.instant_commands = true;
         app.cfg.voice.instant = vec!["yep=approve".into()];
         heard(&mut app, "yep");
@@ -6587,7 +6499,7 @@ mod tests {
             app.voice.action.as_deref(),
             Some("approved a fresh tab on Account 1")
         );
-        // Usage aware hint: account 1 has 77% left, account 2 has 8%.
+
         app.focus = 1;
         assert!(
             app.low_quota_hint().unwrap().contains("Account 1 has 39%"),
@@ -6602,12 +6514,11 @@ mod tests {
         use crate::app::Modal;
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = test_app("palette");
-        // Nothing running: broadcast has no targets and is harmless.
+
         assert!(app.broadcast_targets().is_empty());
         app.broadcast("hello");
         assert_eq!(app.flash.as_ref().unwrap().0, "Sent to 0 session(s)");
 
-        // A tab with a known session restarts by resuming it.
         app.panes[0].cur_mut().session_id = Some("abc".into());
         assert_eq!(
             app.panes[0].cur().relaunch_kind(),
@@ -6615,7 +6526,6 @@ mod tests {
         );
         assert!(!app.panes[0].cur().crashed());
 
-        // Palette and broadcast render.
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let mut term = Terminal::new(TestBackend::new(160, 45)).unwrap();
@@ -6649,7 +6559,7 @@ mod tests {
             kind,
             state: KeyEventState::NONE,
         };
-        // Not holding: nothing consumed.
+
         assert!(!app.hold_to_talk_key(&ev(KeyCode::Char(' '), KeyEventKind::Repeat)));
         app.voice.hold_supported = true;
         app.voice.holding = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
@@ -6657,14 +6567,13 @@ mod tests {
         assert!(app.hold_to_talk_key(&ev(KeyCode::Char(' '), KeyEventKind::Release)));
         assert!(app.voice.holding.is_none());
         assert_eq!(app.voice.action.as_deref(), Some("released: transcribing"));
-        // Another key cancels the hold and passes through.
+
         app.voice.holding = Some(std::time::Instant::now());
         assert!(!app.hold_to_talk_key(&ev(KeyCode::Char('x'), KeyEventKind::Press)));
         assert!(app.voice.holding.is_none());
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// The single keys Help documents as "Ctrl-a X" (and "Ctrl-a X / Y").
     fn documented_keys() -> Vec<char> {
         let mut v = vec![];
         for (k, _) in HELP {
@@ -6692,7 +6601,7 @@ mod tests {
         for c in ['t', 'w', 'W', 'P', 'g', 'R', 'm', 'U', ':', '?', 'F'] {
             assert!(keys.contains(&c), "Help documents Ctrl-a {c}");
         }
-        // Keys that restart, quit or start audio are left out here.
+
         for c in keys.into_iter().filter(|c| !"NQqKBXOvV+-iDE".contains(*c)) {
             app.modal = Modal::None;
             app.view = View::Grid;
@@ -6705,7 +6614,7 @@ mod tests {
                 "Ctrl-a {c} is documented"
             );
         }
-        // A key that is no shortcut says where the keys are.
+
         app.modal = Modal::None;
         app.on_command(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::NONE));
         let fl = app.flash.as_ref().map(|f| f.0.clone()).unwrap_or_default();
@@ -6756,14 +6665,14 @@ mod tests {
         term.draw(|f| draw(f, &mut app)).unwrap();
         let t = buffer_text(term.backend().buffer());
         assert!(t.contains("C-a : find any action"), "{t}");
-        // After Ctrl-a: the most used keys, over the last flash.
+
         app.flash("some tab finished");
         app.prefix = true;
         term.draw(|f| draw(f, &mut app)).unwrap();
         let t = buffer_text(term.backend().buffer());
         assert!(t.contains("then a key: t new tab"), "{t}");
         app.prefix = false;
-        // The palette lists shortcuts next to actions and takes plain words.
+
         app.modal = Modal::Palette(Default::default());
         term.draw(|f| draw(f, &mut app)).unwrap();
         let t = buffer_text(term.backend().buffer());
@@ -6792,10 +6701,10 @@ mod tests {
         use ratatui::Terminal;
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = test_app("onboard");
-        // Use a binary that exists but exits at once, so nothing real runs.
+
         app.cfg.claude_bin = Some(crate::test_stub::true_bin());
         app.start_onboarding();
-        // Accounts 1 and 2 are logged in already: it starts at account 3.
+
         let ob = app.onboard.clone().unwrap();
         assert_eq!(ob.pos, 2);
         assert_eq!(app.focus, 2);
@@ -6810,7 +6719,7 @@ mod tests {
         assert!(
             t.contains("✓ Account 1") && t.contains("› Account 3") && t.contains("○ Account 4")
         );
-        // Logging in account 3 moves on; skipping 4 finishes on the dashboard.
+
         app.accounts[2].login.source = Some(CredSource::File);
         app.tick();
         assert_eq!(app.onboard.as_ref().unwrap().pos, 3);
@@ -6831,8 +6740,8 @@ mod tests {
             include_str!("../tests/fixtures/screens/permission_bash.txt").replace('\n', "\r\n");
         let edit =
             include_str!("../tests/fixtures/screens/permission_edit.txt").replace('\n', "\r\n");
-        let mut term = Terminal::new(TestBackend::new(220, 50)).unwrap(); // the fixtures are 80 wide
-        term.draw(|f| draw(f, &mut app)).unwrap(); // size the panes
+        let mut term = Terminal::new(TestBackend::new(220, 50)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
         app.panes[1].tabs[0]
             .parser
             .lock()
@@ -6858,12 +6767,11 @@ mod tests {
         );
         assert!(t.contains("Edit file") && t.contains("src/main.rs"));
 
-        // The parsed option is used, by number.
         assert_eq!(
             app.answer_tab(1, 0, crate::prompt::Choice::Approve),
             "approved a fresh tab on Account 2 (Yes)"
         );
-        // What each waiting tab wants is in the assistant's state.
+
         app.panes[1].tabs[0].activity = Activity::Permission;
         let st = app.control_call("get_state", &serde_json::json!({}));
         let w: Vec<String> = st["result"]["tabs"]
@@ -6897,7 +6805,6 @@ mod tests {
         assert_eq!(app.cfg.voice.wake_words, vec!["jarvis".to_string()]);
         assert!(app.flash.as_ref().unwrap().0.contains("account1 updated"));
 
-        // A broken file keeps the old config and says why.
         std::thread::sleep(std::time::Duration::from_millis(1100));
         std::fs::write(crate::config::Config::path(), "this is [not toml").unwrap();
         app.check_config_reload();
@@ -6910,7 +6817,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Every view and modal at tiny and odd sizes, resized rapidly.
     #[test]
     fn tiny_and_rapid_resizes_do_not_panic() {
         use crate::app::Modal;
@@ -6973,7 +6879,7 @@ mod tests {
                 }
             }
         }
-        // Rapid resizes of one terminal, like dragging a window edge.
+
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
         app.view = View::Grid;
         app.modal = Modal::None;
@@ -7066,7 +6972,7 @@ mod tests {
     fn deleted_dirs_and_corrupt_files() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = test_app("corrupt");
-        // Config dir removed while running: status, sessions and launch cope.
+
         let dir = app.cfg.accounts[0].config_dir();
         let _ = std::fs::remove_dir_all(&dir);
         let snap = crate::app::snapshot(&dir, false);
@@ -7077,11 +6983,11 @@ mod tests {
         app.cfg.claude_bin = Some(crate::test_stub::true_bin());
         app.launch(0, crate::pane::LaunchKind::Normal);
         assert!(dir.is_dir(), "launch recreates the config dir");
-        // Corrupt state.json is ignored.
+
         std::fs::write(crate::state::AppState::path(), "{not json").unwrap();
         assert!(crate::state::AppState::load().is_none());
         app.autostart();
-        // Corrupt or empty usage replies are errors, not panics.
+
         for body in [
             "<html><body>502 Bad Gateway</body></html>",
             "",
@@ -7093,7 +6999,7 @@ mod tests {
         }
         assert!(crate::usage::parse_usage("<html>").is_err());
         assert!(crate::usage::parse_usage("").is_err());
-        // Corrupt config text is an error with a message.
+
         assert!(crate::config::Config::parse("[[account]\nname=").is_err());
         app.shutdown();
         let _ = std::fs::remove_dir_all(&home);
@@ -7121,8 +7027,7 @@ mod tests {
         let (mut app, home) = test_app("addacct");
         let mut term = Terminal::new(TestBackend::new(160, 44)).unwrap();
         let n0 = app.cfg.accounts.len();
-        // Every entry point sends Key('A') (palette, menus, settings, the
-        // empty slot), which opens this dialog.
+
         app.handle(crate::app::AppEvent::Input(crossterm::event::Event::Key(
             crossterm::event::KeyEvent::new(
                 KeyCode::Char('a'),
@@ -7156,7 +7061,7 @@ mod tests {
             assert!(t.contains(name), "{t}");
         }
         assert!(t.contains("Add & log in") && t.contains("Cancel") && t.contains("bypass"));
-        // Grok is missing: its card picks it and says how to install it.
+
         click_on(&mut app, &mut term, &UiAction::AddAcct(AddUi::Agent(1)));
         let Modal::AddAccount(f) = &mut app.modal else {
             panic!()
@@ -7175,7 +7080,7 @@ mod tests {
         assert_eq!(f.agent, 1);
         assert!(f.error.is_none());
         click_on(&mut app, &mut term, &UiAction::AddAcct(AddUi::Agent(0)));
-        // A click inside (on the title) keeps it open; outside closes it.
+
         term.draw(|f| draw(f, &mut app)).unwrap();
         let inside = app
             .last_hits
@@ -7196,7 +7101,7 @@ mod tests {
             inside.y + 2,
         ));
         assert_eq!(app.modal, Modal::None);
-        // Keyboard: name, color, folder, then Enter adds and logs in.
+
         app.open_add_account();
         key(&mut app, KeyCode::Up);
         for c in "Work Two".chars() {
@@ -7239,7 +7144,7 @@ mod tests {
         let p = app.focus;
         assert_eq!(app.panes[p].account, Some(n0));
         assert_eq!(app.panes[p].cur().kind, crate::pane::LaunchKind::Login);
-        // A bad folder shows inline and keeps the dialog.
+
         app.open_add_account();
         let Modal::AddAccount(f) = &mut app.modal else {
             panic!()
@@ -7253,15 +7158,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Draw, then click the middle of the region registered for `action`.
     fn click_on(
         app: &mut crate::app::App,
         term: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
         action: &crate::hits::UiAction,
     ) {
         term.draw(|f| draw(f, app)).unwrap();
-        // Not on screen but in a menu bar menu: open that menu first, as
-        // a user would.
+
         if !app.last_hits.regions.iter().any(|r| &r.action == action) {
             if let Some(id) = crate::menus::MenuId::TOP.iter().copied().find(|id| {
                 crate::menus::entries(app, *id)
@@ -7279,7 +7182,7 @@ mod tests {
                 return;
             }
         }
-        // The topmost (last registered) region, as the user sees it.
+
         let r = app
             .last_hits
             .regions
@@ -7299,7 +7202,7 @@ mod tests {
             c,
             y,
         ));
-        app.last_click = None; // no accidental double clicks between steps
+        app.last_click = None;
     }
 
     #[test]
@@ -7314,12 +7217,11 @@ mod tests {
         app.cfg.claude_bin = Some(crate::test_stub::true_bin());
         let mut term = Terminal::new(TestBackend::new(200, 50)).unwrap();
 
-        // Menu bar.
         click_on(&mut app, &mut term, &UiAction::Key('o'));
         assert_eq!(app.view, View::Overview);
         click_on(&mut app, &mut term, &UiAction::Key('d'));
         assert_eq!(app.view, View::Dashboard);
-        // Dashboard cards: double click opens the account's pane.
+
         term.draw(|f| draw(f, &mut app)).unwrap();
         let r = app
             .last_hits
@@ -7336,7 +7238,6 @@ mod tests {
         assert_eq!((app.view, app.focus), (View::Grid, 1));
         app.last_click = None;
 
-        // Tabs: new, select, close.
         app.panes[0].add_tab("/tmp".into());
         click_on(&mut app, &mut term, &UiAction::SelectTab(0, 0));
         assert_eq!((app.focus, app.panes[0].active), (0, 0));
@@ -7349,7 +7250,7 @@ mod tests {
         assert_eq!(app.modal, Modal::None);
         click_on(&mut app, &mut term, &UiAction::Key('t'));
         assert!(matches!(app.modal, Modal::NewTab(_)));
-        // Create & open makes the dated folder under the base and opens it.
+
         click_on(
             &mut app,
             &mut term,
@@ -7364,7 +7265,6 @@ mod tests {
         assert_eq!(app.modal, Modal::None);
         app.last_click = None;
 
-        // Account menu: switch pane 1 to account 3.
         click_on(&mut app, &mut term, &UiAction::AccountMenu(0));
         assert!(matches!(app.modal, Modal::AccountMenu(0, _)));
         click_on(&mut app, &mut term, &UiAction::Row(List::AccountMenu, 2));
@@ -7373,13 +7273,11 @@ mod tests {
             (Modal::None, Some(2))
         );
 
-        // Usage footer opens the dashboard on that account.
         click_on(&mut app, &mut term, &UiAction::UsageOf(1));
         assert_eq!((app.view, app.sel_account), (View::Dashboard, 1));
         click_on(&mut app, &mut term, &UiAction::FocusPane(1));
         assert_eq!(app.view, View::Grid);
 
-        // A permission prompt gets answer buttons under the pane.
         let screen =
             include_str!("../tests/fixtures/screens/permission_bash.txt").replace('\n', "\r\n");
         app.panes[1].tabs[0]
@@ -7411,7 +7309,6 @@ mod tests {
             .0
             .starts_with("approved a fresh tab on Account 2"));
 
-        // Approvals popup with inline buttons.
         click_on(&mut app, &mut term, &UiAction::Key('y'));
         assert!(matches!(app.modal, Modal::Approvals(_)));
         click_on(&mut app, &mut term, &UiAction::Answer(1, 0, Choice::Deny));
@@ -7419,7 +7316,6 @@ mod tests {
         click_on(&mut app, &mut term, &UiAction::Jump(1, 0));
         assert_eq!((app.modal.clone(), app.focus), (Modal::None, 1));
 
-        // Help rows run their command; a click outside closes help.
         click_on(&mut app, &mut term, &UiAction::Key('?'));
         assert_eq!(app.modal, Modal::Help);
         click_on(&mut app, &mut term, &UiAction::Key('o'));
@@ -7434,12 +7330,10 @@ mod tests {
         ));
         assert_eq!(app.modal, Modal::None);
 
-        // Dialog buttons.
         app.modal = Modal::ConfirmQuit;
         click_on(&mut app, &mut term, &UiAction::ModalCancel);
         assert!(!app.quit && app.modal == Modal::None);
 
-        // Hover shows a hint in the status bar and highlights the button.
         term.draw(|f| draw(f, &mut app)).unwrap();
         let r = app
             .last_hits
@@ -7452,7 +7346,6 @@ mod tests {
         assert!(t.lines().last().unwrap().contains("broadcast"), "hint");
         assert_eq!(term.backend().buffer()[(r.x + 1, r.y)].bg, theme::SLATE);
 
-        // The tour walks through and can be skipped.
         click_on(&mut app, &mut term, &UiAction::Key('?'));
         click_on(&mut app, &mut term, &UiAction::TourStart);
         assert_eq!(app.modal, Modal::Tour(0));
@@ -7462,7 +7355,6 @@ mod tests {
         assert_eq!(app.modal, Modal::None);
         assert!(crate::config::app_home().join("tour_done").exists());
 
-        // Voice button cycles modes; quit through the menu asks first.
         click_on(&mut app, &mut term, &UiAction::Key('q'));
         assert_eq!(app.modal, Modal::ConfirmQuit);
         click_on(&mut app, &mut term, &UiAction::ModalOk);
@@ -7534,7 +7426,7 @@ mod tests {
                 }
             }
         }
-        // The status chips: fixed order, only the ones that are on.
+
         let last = states.last().unwrap();
         let (v, m, p, z) = (
             last.find("MIC OFF"),
@@ -7597,7 +7489,7 @@ mod tests {
         let size =
             |app: &crate::app::App| app.panes[0].cur().parser.lock().unwrap().screen().size();
         let inner_w = app_pane_inner_w(&mut app, &mut term);
-        // Left (default): 22% of the pane, at least 22 columns.
+
         let sw = sidebar_width(inner_w, app.side(0));
         assert_eq!(sw, (inner_w * 22 / 100).clamp(22, 40));
         assert_eq!(size(&app).1, inner_w - sw);
@@ -7609,18 +7501,18 @@ mod tests {
                 .x
                 < app.term_rects[0].x
         );
-        // Collapsed: a 3 column strip, the PTY grows back.
+
         app.toggle_sidebar(0);
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(size(&app).1, inner_w - 3);
         app.toggle_sidebar(0);
-        // Right: mirrored.
+
         app.set_tab_pos(0, Some(TabPos::Right));
         term.draw(|f| draw(f, &mut app)).unwrap();
         let r = app.last_hits.find(&UiAction::SelectTab(0, 2)).unwrap().rect;
         assert!(r.x > app.term_rects[0].x + app.term_rects[0].width - 1);
         assert_eq!(size(&app).1, inner_w - sw);
-        // Top: one row, full width terminal, one row shorter.
+
         app.set_tab_pos(0, Some(TabPos::Top));
         term.draw(|f| draw(f, &mut app)).unwrap();
         let t = app.term_rects[0];
@@ -7628,12 +7520,12 @@ mod tests {
         assert_eq!(t.width, inner_w);
         let strip = app.last_hits.find(&UiAction::SelectTab(0, 1)).unwrap().rect;
         assert_eq!(strip.y, app.pane_rects[0].y + 1);
-        // The global default comes from config, a pane override wins.
+
         app.set_tab_pos(0, None);
         app.cfg.tab_position = "right".into();
         assert_eq!(app.tab_pos(0), TabPos::Right);
         app.cfg.tab_position = "left".into();
-        // Narrow panes auto collapse to the strip.
+
         let mut small = Terminal::new(TestBackend::new(120, 40)).unwrap();
         small.draw(|f| draw(f, &mut app)).unwrap();
         let w = app.term_rects[0].width;
@@ -7642,8 +7534,7 @@ mod tests {
             .inner(app.pane_rects[0])
             .width;
         assert_eq!(w, inner - 3, "60 column panes get the 3 column strip");
-        // Double click opens "Move tab to..."; right click gives the tab
-        // menu, whose Rename renames. The name and layout persist.
+
         term.draw(|f| draw(f, &mut app)).unwrap();
         let r = app.last_hits.find(&UiAction::SelectTab(0, 2)).unwrap().rect;
         for _ in 0..2 {
@@ -7698,7 +7589,7 @@ mod tests {
         use serde_json::json;
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = test_app("sesssort");
-        // Three sessions in account 1: two by hand, one claude -p run.
+
         let proj = app.cfg.accounts[0]
             .config_dir()
             .join("projects")
@@ -7768,7 +7659,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(",")
         };
-        // Headless hidden by default, and counted.
+
         assert_eq!(ids(&app), "bbbb,aaaa");
         assert_eq!(app.headless_hidden(), 1);
         let mut term = Terminal::new(TestBackend::new(200, 40)).unwrap();
@@ -7782,7 +7673,7 @@ mod tests {
         );
         click_on(&mut app, &mut term, &UiAction::SessHeadless);
         assert_eq!(ids(&app), "bbbb,cccc,aaaa");
-        // s cycles the column (modified -> created), S reverses.
+
         app.on_key(crossterm::event::KeyEvent::new(
             KeyCode::Char('s'),
             crossterm::event::KeyModifiers::NONE,
@@ -7794,7 +7685,7 @@ mod tests {
             crossterm::event::KeyModifiers::SHIFT,
         ));
         assert_eq!(ids(&app), "aaaa,cccc,bbbb");
-        // Click a header: sort by it; again: reversed.
+
         click_on(&mut app, &mut term, &UiAction::SessSort(2));
         assert_eq!(
             (app.sess_sort, app.sess_sort_rev),
@@ -7805,7 +7696,7 @@ mod tests {
         assert!(buffer_text(term.backend().buffer()).contains("msgs ▼"));
         click_on(&mut app, &mut term, &UiAction::SessSort(2));
         assert_eq!(ids(&app), "bbbb,aaaa,cccc");
-        // The Sort ▾ menu: Project, grouped by project.
+
         click_on(
             &mut app,
             &mut term,
@@ -7822,9 +7713,9 @@ mod tests {
         assert_eq!(app.sess_sort, SortKey::Project);
         app.menu_cmd(crate::menus::Cmd::SessGroup(2));
         assert_eq!(app.sess_group, Group::Project);
-        // Same project: newest first.
+
         assert_eq!(ids(&app), "cccc,aaaa,bbbb");
-        // The tool: same keys, headless hidden with a count.
+
         let v = app.control_call("sessions", &json!({"sort": "messages"}));
         let got: Vec<&str> = v["result"]["sessions"]
             .as_array()
@@ -7855,7 +7746,7 @@ mod tests {
                 .unwrap()
                 .contains("sort")
         );
-        // Persisted in state.json and read back.
+
         let st = app.snapshot_state();
         assert_eq!(
             st.sessions_view,
@@ -7894,7 +7785,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(accts(&app), vec![0, 1, 2, 3]);
-        // Drag pane 1's header onto pane 4 (bottom right): they swap.
+
         let h = app
             .last_hits
             .regions
@@ -7902,7 +7793,7 @@ mod tests {
             .find(|r| r.action == UiAction::PaneHeader(0))
             .unwrap()
             .rect;
-        // A bare stretch of the header (not one of its buttons).
+
         let hx = (h.x..h.x + h.width)
             .find(|&x| app.region_at(x, h.y).map(|r| r.action) == Some(UiAction::PaneHeader(0)))
             .unwrap();
@@ -7920,13 +7811,13 @@ mod tests {
         ));
         assert_eq!(accts(&app), vec![3, 1, 2, 0]);
         assert_eq!(app.focus, 3, "focus follows the dragged pane");
-        // Ctrl-a Shift+Up moves it back up (geometric neighbour).
+
         term.draw(|f| draw(f, &mut app)).unwrap();
         app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
         app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
         assert_eq!(accts(&app), vec![3, 0, 2, 1]);
         assert_eq!(app.panes[app.focus].account, Some(0));
-        // The account menu: Move pane to slot 1.
+
         term.draw(|f| draw(f, &mut app)).unwrap();
         let p = app.focus;
         assert!(app
@@ -7944,7 +7835,7 @@ mod tests {
             },
         );
         assert_eq!(accts(&app), vec![0, 3, 2, 1]);
-        // The tool, by account and slot; persisted order.
+
         let v = app.control_call(
             "move_pane",
             &serde_json::json!({"pane": "Account 2", "to": 3}),
@@ -7966,8 +7857,7 @@ mod tests {
                 .map(|p| app.cfg.accounts[p.account.unwrap()].name.clone())
                 .collect::<Vec<_>>()
         );
-        // Paging: a pane alone on its page moves to the next or previous
-        // one in order; at the start it cannot go further.
+
         let before = accts(&app);
         for (i, r) in app.pane_rects.iter_mut().enumerate() {
             if i != 0 {
@@ -7990,7 +7880,7 @@ mod tests {
         use ratatui::Terminal;
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = test_app("emptycell");
-        // A fixed 3x2 grid with 4 panes: two free cells.
+
         app.cfg.grid = "3x2".into();
         app.rt_layout = Some("grid".into());
         let mut term = Terminal::new(TestBackend::new(200, 50)).unwrap();
@@ -8001,7 +7891,7 @@ mod tests {
             t.contains("New session") && t.contains("New tab on") && t.contains("Resume a session"),
             "{t}"
         );
-        // The menu lists accounts by what is left, most first.
+
         click_on(&mut app, &mut term, &UiAction::EmptySlotMenu(0));
         assert_eq!(app.modal, crate::app::Modal::EmptySlotMenu(0));
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -8024,7 +7914,7 @@ mod tests {
             1,
             "the new pane took a cell"
         );
-        // Auto layouts never leave a hole for three panes (2+1).
+
         let a = crate::layout::arrange(
             3,
             ratatui::layout::Rect::new(0, 0, 200, 50),
@@ -8046,12 +7936,12 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = test_app("closed");
         let mut term = Terminal::new(TestBackend::new(200, 50)).unwrap();
-        // Two tabs on account 1 with sessions (as if they had run).
+
         app.panes[0].tabs[0].session_id = Some("s-one".into());
         app.panes[0].add_tab(home.clone());
         app.panes[0].tabs[1].session_id = Some("s-two".into());
         app.panes[0].tabs[1].custom_name = Some("api".into());
-        // Close one tab: remembered, Undo toast, reopen resumes it.
+
         app.close_tab_at(0, 1);
         assert_eq!(app.closed.len(), 1);
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -8064,7 +7954,7 @@ mod tests {
             .find(|t| t.custom_name.as_deref() == Some("api"))
             .expect("reopened");
         assert_eq!(t.kind, LaunchKind::Resume("s-two".into()));
-        // The pane's × asks, naming the tabs; confirming closes all and hides it.
+
         click_on(&mut app, &mut term, &UiAction::CloseWindow(0));
         assert_eq!(app.modal, Modal::ConfirmCloseWindow(0));
         assert!(app.close_window_lines(0)[0].contains("2 tabs"));
@@ -8076,7 +7966,7 @@ mod tests {
             "one window, one group"
         );
         assert_eq!(app.snapshot_state().closed_tabs.len(), 2, "persisted");
-        // One reopen brings the whole window back.
+
         let v = app.control_call("reopen_closed", &serde_json::json!({}));
         assert_eq!(v["ok"], serde_json::json!(true), "{v}");
         assert!(!app.panes[0].hidden);
@@ -8092,10 +7982,10 @@ mod tests {
             sids.contains(&"s-one".to_string()) && sids.contains(&"s-two".to_string()),
             "{sids:?}"
         );
-        // Confirm rules: an idle tab closes at once by default.
+
         app.request_close(0, 0);
         assert_eq!(app.modal, Modal::None);
-        // The stack keeps 20.
+
         for i in 0..25 {
             app.panes[0].add_tab(home.clone());
             let n = app.panes[0].tabs.len() - 1;
@@ -8121,7 +8011,7 @@ mod tests {
         let (mut app, home) = test_app("colors");
         app.cfg.save().unwrap();
         let mut term = Terminal::new(TestBackend::new(200, 50)).unwrap();
-        // Account menu > Color…: pick teal (8th swatch, choice 8).
+
         assert!(app
             .account_menu_entries(0)
             .iter()
@@ -8134,11 +8024,11 @@ mod tests {
         assert_eq!(app.cfg.accounts[0].color, "teal");
         let saved = std::fs::read_to_string(crate::config::Config::path()).unwrap();
         assert!(saved.contains("color = \"teal\""), "{saved}");
-        // Keys: Default with d goes back to the rotation color.
+
         app.open_color_pick(Target::Account(0));
         app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         assert_eq!(app.cfg.accounts[0].color, crate::theme::ROTATION[0]);
-        // A click outside closes it unchanged.
+
         app.open_color_pick(Target::Account(0));
         term.draw(|f| draw(f, &mut app)).unwrap();
         app.handle(mouse(
@@ -8147,7 +8037,7 @@ mod tests {
             49,
         ));
         assert_eq!(app.modal, crate::app::Modal::None);
-        // Tab menu > Accent color…: arrows and Enter; shown and persisted.
+
         let uid = app.panes[0].tabs[0].uid;
         app.open_tab_menu(0, 0);
         app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
@@ -8165,7 +8055,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// QA-7: twenty tabs with alike names stay distinguishable.
     #[test]
     fn twenty_similar_tabs_read_apart() {
         use ratatui::backend::TestBackend;
@@ -8173,7 +8062,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = test_app("twenty");
         app.panes[0].tabs.clear();
-        // The QA repro: open_tab name "bulk1" count 10, twice.
+
         for _batch in 0..2 {
             for k in 1..=10 {
                 app.panes[0].add_tab(home.clone());
@@ -8198,7 +8087,7 @@ mod tests {
             )
             .0;
             let buf = term.backend().buffer();
-            // Under the title and the search row.
+
             let rows: Vec<String> = (0..(bar.height - 3) / 2)
                 .map(|k| {
                     (bar.x..bar.x + bar.width - 1)
@@ -8223,7 +8112,7 @@ mod tests {
         use ratatui::Terminal;
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = test_app("sidebar2");
-        // Six similar names, two of them the same folder basename.
+
         let base = home.join("newtabs");
         let dirs = [
             "godterm-feature-auth-login",
@@ -8264,7 +8153,7 @@ mod tests {
             .collect();
         let uniq: std::collections::HashSet<_> = names.iter().collect();
         assert_eq!(uniq.len(), 6, "{names:#?}");
-        // Middle truncation keeps the distinguishing end.
+
         assert!(
             names[0].contains("…") && names[0].ends_with("login") || names[0].contains("✎"),
             "{names:#?}"
@@ -8274,9 +8163,9 @@ mod tests {
             names[4].contains("a/") && names[5].contains("b/"),
             "{names:#?}"
         );
-        // The second line is the folder, dim.
+
         assert!(row(bar.y + 4).contains("…"), "{}", row(bar.y + 4));
-        // ✎ and × only on the active (or hovered) row.
+
         let pencils = app
             .last_hits
             .regions
@@ -8284,7 +8173,7 @@ mod tests {
             .filter(|r| matches!(r.action, UiAction::RenameTab(0, _)))
             .count();
         assert_eq!(pencils, 1);
-        // Hover shows the full name and folder.
+
         let hint = app
             .last_hits
             .find(&UiAction::SelectTab(0, 1))
@@ -8297,7 +8186,7 @@ mod tests {
                 && hint.contains(&format!("newtabs{sep}godterm-feature-auth-logout")),
             "{hint}"
         );
-        // Drag the edge wider; it sticks and persists; double click resets.
+
         let edge = app.last_hits.find(&UiAction::SidebarEdge(0)).unwrap().rect;
         app.handle(mouse(
             MouseEventKind::Down(MouseButton::Left),
@@ -8315,7 +8204,7 @@ mod tests {
             edge.y + 3,
         ));
         assert_eq!(app.panes[0].sidebar_w, Some(32));
-        app.last_click = None; // not a double click
+        app.last_click = None;
         app.handle(mouse(
             MouseEventKind::Down(MouseButton::Left),
             edge.x,
@@ -8347,14 +8236,14 @@ mod tests {
                 .width
                 - 40
         );
-        // The Narrow / Normal / Wide preset resets dragged widths.
+
         app.set_tab_list_width("wide");
         assert_eq!(app.panes[0].sidebar_w, None);
         assert_eq!(app.snapshot_state().tab_list_width.as_deref(), Some("wide"));
         assert_eq!(sidebar_width(98, app.side(0)), 29);
         app.set_tab_list_width("normal");
         assert_eq!(app.snapshot_state().tab_list_width, None);
-        // Under 60 columns: the number strip.
+
         assert_eq!(sidebar_width(59, app.side(0)), 3);
         assert_eq!(sidebar_width(60, app.side(0)), 22);
         let _ = std::fs::remove_dir_all(&home);
@@ -8387,7 +8276,7 @@ mod tests {
                 .unwrap()
                 .to_string()
         };
-        // Default is bypass, shown in the header.
+
         assert_eq!(app.cfg.mode_for(0), "bypass");
         assert!(header(&term, &app).contains(" bypass "));
         app.set_permission_mode(0, 0, "plan", false);
@@ -8399,7 +8288,7 @@ mod tests {
         );
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(header(&term, &app).contains(" plan "));
-        // Back to bypass needs a confirmation.
+
         app.set_permission_mode(0, 0, "bypass", false);
         assert_eq!(app.modal, Modal::ConfirmBypass(0, 0));
         assert_eq!(app.cfg.mode_for(0), "plan");
@@ -8407,10 +8296,10 @@ mod tests {
         assert!(buffer_text(term.backend().buffer()).contains("--dangerously-skip-permissions"));
         click_on(&mut app, &mut term, &crate::hits::UiAction::ModalOk);
         assert_eq!(app.cfg.mode_for(0), "bypass");
-        // Saved to config.toml.
+
         let saved = crate::config::Config::load_or_init().unwrap();
         assert_eq!(saved.accounts[0].permission_mode.as_deref(), Some("bypass"));
-        // The account menu lists the modes.
+
         app.modal = Modal::AccountMenu(0, 0);
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(buffer_text(term.backend().buffer()).contains("● Permissions: bypass"));
@@ -8430,16 +8319,16 @@ mod tests {
             .unwrap()
             .process(screen.as_bytes());
         app.panes[0].tabs[0].activity = Activity::Permission;
-        // Off for this account: left for the user.
+
         app.cfg.accounts[0].auto_trust = Some(false);
         app.tick();
         assert!(!app.panes[0].tabs[0].trust_answered);
-        // On (the default): answered once, with a toast.
+
         app.cfg.accounts[0].auto_trust = None;
         app.tick();
         assert!(app.panes[0].tabs[0].trust_answered);
         assert!(app.flash.as_ref().unwrap().0.starts_with("trusted "));
-        // A permission prompt is never auto answered.
+
         let perm =
             include_str!("../tests/fixtures/screens/permission_bash.txt").replace('\n', "\r\n");
         app.panes[1].tabs[0]
@@ -8450,7 +8339,7 @@ mod tests {
         app.panes[1].tabs[0].activity = Activity::Permission;
         app.tick();
         assert!(!app.panes[1].tabs[0].trust_answered);
-        // Seeding before launch writes the flag into the slot's .claude.json.
+
         app.cfg.claude_bin = Some(crate::test_stub::true_bin());
         let dir = std::env::temp_dir();
         app.panes[2].cur_mut().cwd = dir.clone();
@@ -8481,7 +8370,7 @@ mod tests {
         .unwrap();
         app.reload_config_now();
         let mut term = Terminal::new(TestBackend::new(180, 46)).unwrap();
-        // Menu bar button opens it.
+
         click_on(&mut app, &mut term, &UiAction::Key(','));
         assert_eq!(app.view, View::Settings);
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -8491,7 +8380,7 @@ mod tests {
                 && t.contains("bypass")
                 && t.contains("Auto trust folders")
         );
-        // Choice: next value.
+
         click_on(&mut app, &mut term, &UiAction::SettingStep(0, 1));
         assert_eq!(app.cfg.permission_mode, "default");
         let file = std::fs::read_to_string(crate::config::Config::path()).unwrap();
@@ -8499,13 +8388,13 @@ mod tests {
             file.contains("# keep me") && file.contains("permission_mode = \"default\""),
             "{file}"
         );
-        // Reset brings back the default.
+
         click_on(&mut app, &mut term, &UiAction::SettingReset(0));
         assert_eq!(app.cfg.permission_mode, "bypass");
-        // Toggle.
+
         click_on(&mut app, &mut term, &UiAction::SettingStep(1, 1));
         assert!(!app.cfg.auto_trust);
-        // Sections: Memory has a stepper, the saver and Free now.
+
         click_on(
             &mut app,
             &mut term,
@@ -8519,10 +8408,10 @@ mod tests {
                 && t.contains("Now: godterm")
                 && t.contains("Free now")
         );
-        // Row 2 is the history stepper (0: saver toggle, 1: pause after).
+
         click_on(&mut app, &mut term, &UiAction::SettingStep(2, -1));
         assert_eq!(app.cfg.scrollback_lines, 1500);
-        // Accounts: per account override and text editing.
+
         click_on(
             &mut app,
             &mut term,
@@ -8533,7 +8422,7 @@ mod tests {
         app.modal = crate::app::Modal::EditSetting(0, "Work".into());
         click_on(&mut app, &mut term, &UiAction::ModalOk);
         assert_eq!(app.cfg.accounts[0].label, "Work");
-        // Voice text list (wake words show in wake mode).
+
         app.cfg.voice.mode = "wake".into();
         click_on(
             &mut app,
@@ -8550,7 +8439,7 @@ mod tests {
             app.cfg.voice.wake_words,
             vec!["jarvis".to_string(), "computer".to_string()]
         );
-        // Keys and About render.
+
         for sec in [8, 9] {
             click_on(
                 &mut app,
@@ -8591,16 +8480,14 @@ mod tests {
                 "{w}\n{t}"
             );
             assert!(t.contains("recent-proj"));
-            // The bottom edge holds only border and buttons: no clipped hint.
+
             let r = app
                 .last_hits
                 .find(&UiAction::Picker(PickerUi::Create))
                 .unwrap()
                 .rect;
             let row: String = t.lines().nth(r.y as usize).unwrap().to_string();
-            // Only the dialog's own bottom edge, from ╰ to ╯: what the panes
-            // behind show beside it (e.g. "not logged in" on Linux, where
-            // there is no keychain) is not the dialog's.
+
             let cs: Vec<char> = row.chars().collect();
             let bx = r.x as usize;
             let (a, b) = (
@@ -8617,7 +8504,7 @@ mod tests {
         }
         let mut term = Terminal::new(TestBackend::new(160, 44)).unwrap();
         app.new_tab_prompt(0);
-        // Options toggle; base edit mode; a recent row selects then opens.
+
         click_on(&mut app, &mut term, &UiAction::Picker(PickerUi::GitInit));
         assert!(matches!(&app.modal, crate::app::Modal::NewTab(p) if p.git_init));
         click_on(&mut app, &mut term, &UiAction::Picker(PickerUi::EditBase));
@@ -8627,14 +8514,14 @@ mod tests {
         click_on(&mut app, &mut term, &UiAction::Picker(PickerUi::NameField));
         click_on(&mut app, &mut term, &UiAction::Row(List::Picker, 0));
         assert!(matches!(&app.modal, crate::app::Modal::NewTab(p) if p.sel == Some(0)));
-        // Removing a recent drops it from state too.
+
         click_on(
             &mut app,
             &mut term,
             &UiAction::Picker(PickerUi::RemoveRecent(0)),
         );
         assert!(app.recents.is_empty());
-        // Create & open: the dated folder appears under the base and is remembered.
+
         click_on(&mut app, &mut term, &UiAction::Picker(PickerUi::Create));
         let cwd = app.panes[0].cur().cwd.clone();
         assert!(cwd.starts_with(&base) && cwd.is_dir());
@@ -8667,18 +8554,18 @@ mod tests {
     #[test]
     fn meter_layout() {
         use super::MeterCell::*;
-        // Silence: nothing filled, markers visible.
+
         let c = super::meter_cells(-90.0, -90.0, -55.0, -44.0, 12);
         assert_eq!(c.iter().filter(|x| **x == Fill).count(), 0);
         assert!(c.contains(&Floor) && c.contains(&Threshold));
-        // Full scale fills every cell.
+
         let c = super::meter_cells(0.0, 0.0, -55.0, -44.0, 12);
         assert!(c.iter().all(|x| *x == Fill));
-        // Mid level with a held peak above it.
+
         let c = super::meter_cells(-33.0, -11.0, -55.0, -44.0, 12);
         assert_eq!(c.iter().filter(|x| **x == Fill).count(), 6);
         assert_eq!(c.iter().position(|x| *x == Peak), Some(9));
-        // Markers under the fill are hidden by it.
+
         let c = super::meter_cells(-20.0, -20.0, -55.0, -44.0, 12);
         assert!(!c.contains(&Floor) && !c.contains(&Threshold));
         assert_eq!(super::meter_cells(-10.0, -10.0, -90.0, -90.0, 0).len(), 0);
@@ -8695,7 +8582,7 @@ mod tests {
         app.on_voice(VoiceEvent::Partial("show the dashboard".into(), 190));
         assert_eq!(app.voice.partial.as_deref(), Some("show the dashboard"));
         app.on_voice(VoiceEvent::Status(VoiceStatus::Transcribing));
-        // A partial that lands after speech ended is dropped.
+
         app.on_voice(VoiceEvent::Partial("show".into(), 400));
         assert_eq!(app.voice.partial.as_deref(), Some("show the dashboard"));
         app.on_voice(VoiceEvent::Heard {
@@ -8711,7 +8598,7 @@ mod tests {
         let e = app.voice.log.back().unwrap();
         assert_eq!(e.heard, "show the dashboard");
         assert_eq!(e.partial_ms, Some(190));
-        // The log keeps the last five.
+
         for i in 0..7 {
             app.on_voice(VoiceEvent::Heard {
                 text: format!("help {i}"),
@@ -8736,8 +8623,8 @@ mod tests {
             ptt: true,
             stats: Default::default(),
         });
-        app.modal = crate::app::Modal::None; // "help" opened the help popup
-        app.cfg.assistant.mode = "off".into(); // the strip opens the log, not the assistant
+        app.modal = crate::app::Modal::None;
+        app.cfg.assistant.mode = "off".into();
         let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
         term.draw(|f| super::draw(f, &mut app)).unwrap();
         assert_eq!(app.voice_hud_rows(), 1);
@@ -8771,7 +8658,7 @@ mod tests {
             say_voices: vec!["Samantha".into()],
             grok_voices: vec![],
         });
-        // Every row, the ones the current choices hide too.
+
         let rows = settings::all_settings(Section::Voice, &app.cfg);
         let find = |k: &str| {
             rows.iter()
@@ -8801,7 +8688,7 @@ mod tests {
             settings::stepped(&app.cfg, &v, 1).unwrap().as_str(),
             Some("am_michael")
         );
-        // Everything the spec lists is there.
+
         for k in [
             "voice.gain_db",
             "voice.noise_floor",
@@ -8826,7 +8713,7 @@ mod tests {
         ] {
             let _ = find(k);
         }
-        // Without lists, pickers fall back to free text.
+
         *settings::AUDIO_LISTS.lock().unwrap() = None;
         let rows = settings::settings_for(Section::Voice, &app.cfg);
         assert!(rows
@@ -8848,7 +8735,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(120, 36)).unwrap();
         term.draw(|f| super::draw(f, &mut app)).unwrap();
         assert!(buffer_text(term.backend().buffer()).contains("train wake word"));
-        // Start (without opening the mic in tests) and feed transcripts.
+
         app.train_begin();
         assert_eq!(app.voice.training.as_ref().unwrap().phase, Phase::Wake(0));
         let heard = |app: &mut crate::app::App, t: &str| {
@@ -8864,14 +8751,14 @@ mod tests {
         for t in crate::voice::wake_profile::NORMAL_SENTENCES {
             heard(&mut app, t);
         }
-        // Training swallowed them: no command ran.
+
         assert_eq!(app.modal, crate::app::Modal::WakeTrain);
         assert!(app.voice.log.is_empty());
         term.draw(|f| super::draw(f, &mut app)).unwrap();
         let text = buffer_text(term.backend().buffer());
         assert!(text.contains("Detected 5/5, false triggers 0/5"), "{text}");
         assert!(text.contains("\"travis\" x2"));
-        // Escape discards; nothing saved.
+
         app.on_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Esc,
             crossterm::event::KeyModifiers::NONE,
@@ -8932,7 +8819,7 @@ mod tests {
             header.contains(" · ") && header.contains("@example.com"),
             "{header}"
         );
-        // Ctrl-a e hides it, again shows it.
+
         app.on_command(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('e'),
             crossterm::event::KeyModifiers::NONE,
@@ -8943,12 +8830,12 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert!(screen(&mut app, &mut term).contains("@example.com"));
-        // A per account override hides only that account.
+
         app.rt_show_email = None;
         app.cfg.accounts[0].show_email = Some(false);
         assert!(!app.show_email_for(0) && app.show_email_for(1));
         app.cfg.accounts[0].show_email = None;
-        // Privacy hides emails everywhere, the dashboard included.
+
         app.on_command(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('E'),
             crossterm::event::KeyModifiers::NONE,
@@ -8961,15 +8848,14 @@ mod tests {
             !d.contains("@example") && d.contains("(email hidden)"),
             "{d}"
         );
-        // The toggles survive a restart through state.json.
+
         let st = app.snapshot_state();
         assert_eq!(st.privacy, Some(true));
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut again = crate::app::App::new(crate::config::Config::default(), tx);
         again.restore(st);
         assert!(again.privacy());
-        // Voice commands.
-        // The assistant's set_mode tool.
+
         app.control_call("set_mode", &serde_json::json!({"privacy": false}));
         assert!(!app.privacy());
         app.control_call("set_mode", &serde_json::json!({"show_emails": false}));
@@ -9014,15 +8900,15 @@ mod tests {
         let text = buffer_text(term.backend().buffer());
         assert!(text.contains("page 1/2"), "pager shown");
         assert_eq!(app.pane_rects.iter().filter(|r| r.width > 0).count(), 9);
-        // Every pane, even off page, has a sane PTY size.
+
         assert!(app.panes[11].size.1 >= 30, "{:?}", app.panes[11].size);
-        // Ctrl-a ] goes to page 2, focusing pane 10.
+
         app.on_command(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
         assert_eq!(app.focus, 9);
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(buffer_text(term.backend().buffer()).contains("page 2/2"));
         assert_eq!(app.last_arranged.as_ref().unwrap().shape, "2+1");
-        // Ctrl-a 3 and Ctrl-a ' 1 2 Enter.
+
         app.on_command(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
         assert_eq!(app.focus, 2);
         app.on_command(KeyEvent::new(KeyCode::Char('\''), KeyModifiers::NONE));
@@ -9031,7 +8917,7 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         assert_eq!(app.focus, 11);
         assert!(app.num_entry.is_none());
-        // The assistant's show tool reaches account twelve.
+
         app.focus = 0;
         app.control_call("show", &serde_json::json!({"account": 12}));
         assert_eq!(app.focus, 11);
@@ -9047,19 +8933,19 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(160, 44)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(app.last_arranged.as_ref().unwrap().shape, "2+1");
-        // Cycle: auto -> grid -> columns.
+
         app.on_command(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE));
         assert_eq!(app.layout_name(), "grid");
         app.on_command(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE));
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(app.last_arranged.as_ref().unwrap().shape, "3x1");
-        // Split pane 1: four panes, two for account 1.
+
         app.focus = 0;
         app.split_pane(0);
         assert_eq!(app.panes.len(), 4);
         assert_eq!(app.panes[1].account, Some(0));
         assert_eq!(app.focus, 1);
-        // Hide pane 3: it keeps existing but is not laid out.
+
         app.hide_pane(2);
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(app.pane_rects[2].width, 0);
@@ -9070,10 +8956,10 @@ mod tests {
                 .any(|e| e.label == "Hidden panes (1)" && e.disabled.is_none()),
             "Hidden panes in the Tabs menu"
         );
-        // The only pane of an account cannot be closed, a split one can.
+
         app.close_pane(3);
         assert_eq!(app.panes.len(), 4);
-        // Saved and restored: layout, split, hidden.
+
         app.set_layout("focus");
         let st = app.snapshot_state();
         assert_eq!(st.slots.len(), 4);
@@ -9108,7 +8994,7 @@ mod tests {
         assert!(app.dragging.is_none());
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(app.pane_rects[0].width, 110);
-        // Kept per shape and saved.
+
         assert!(app.snapshot_state().ratios.contains_key("2x1"));
         let _ = std::fs::remove_dir_all(home);
     }
@@ -9129,27 +9015,26 @@ mod tests {
             View::Settings,
         ];
         for v in views {
-            // The logo goes home.
             app.view = v;
             click_on(&mut app, &mut term, &UiAction::Home);
             assert_eq!(app.view, View::Grid, "logo from {v:?}");
-            // Esc goes home.
+
             app.view = v;
             term.draw(|f| draw(f, &mut app)).unwrap();
             app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
             assert_eq!(app.view, View::Grid, "Esc from {v:?}");
-            // The breadcrumb names the view, with Back and x.
+
             app.view = v;
             term.draw(|f| draw(f, &mut app)).unwrap();
             let t = buffer_text(term.backend().buffer());
             assert!(t.contains("‹ Back") && t.contains("◆ GodTerm ›"), "{v:?}");
-            // The view's own menu button toggles back home.
+
             if let Some(c) = app.active_menu_key() {
                 click_on(&mut app, &mut term, &UiAction::Key(c));
                 assert_eq!(app.view, View::Grid, "toggle from {v:?}");
             }
         }
-        // Popups close too, and the logo hint says what it does.
+
         app.modal = crate::app::Modal::Help;
         app.go_home();
         assert_eq!(app.modal, crate::app::Modal::None);
@@ -9162,14 +9047,14 @@ mod tests {
             .unwrap();
         assert!(logo.hint.starts_with("Home: back to all sessions"));
         assert_eq!(logo.rect.x, 0, "the wordmark itself");
-        // Zoom: a chip in the status bar; Home unzooms.
+
         app.zoom = true;
         term.draw(|f| draw(f, &mut app)).unwrap();
         let t = buffer_text(term.backend().buffer());
         assert!(t.contains("ZOOMED: "), "zoom chip");
         click_on(&mut app, &mut term, &UiAction::Home);
         assert!(!app.zoom);
-        // Ctrl-a g and the assistant's show tool.
+
         app.view = View::Dashboard;
         app.on_command(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
         assert_eq!(app.view, View::Grid);
@@ -9187,9 +9072,9 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use ratatui::{backend::TestBackend, Terminal};
         let (mut app, home) = test_app("sessops");
-        // A fake "main ~/.claude" in a temp dir: never the real one.
+
         let main = home.join("main-claude");
-        // Restored when the guard drops, even if an assertion fails.
+
         let _main = crate::config::testing::main_dirs(&main, None);
         let proj = main.join("projects").join("-tmp-proj");
         std::fs::create_dir_all(&proj).unwrap();
@@ -9204,7 +9089,7 @@ mod tests {
         assert_eq!(app.main_sessions.len(), 1);
         app.view = crate::app::View::Sessions;
         app.sess_source = SourceSel::One(Src::Main);
-        // Its folder is under /tmp, which the headless filter hides.
+
         app.sess_headless = true;
         let mut term = Terminal::new(TestBackend::new(200, 40)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -9218,7 +9103,7 @@ mod tests {
         let k = |app: &mut crate::app::App, c: KeyCode| {
             app.on_key(KeyEvent::new(c, KeyModifiers::NONE))
         };
-        // Copy to account 1 ("one"): no confirmation needed for a copy.
+
         k(&mut app, KeyCode::Char('c'));
         assert!(matches!(app.modal, Modal::SessTarget(_)));
         assert_eq!(app.op_targets()[0], Src::Account(0));
@@ -9231,7 +9116,7 @@ mod tests {
             proj.join(format!("{id}.jsonl")).is_file(),
             "the main dir is untouched by a copy"
         );
-        // Copy again: conflict question, new id.
+
         k(&mut app, KeyCode::Char('c'));
         k(&mut app, KeyCode::Char('1'));
         assert!(matches!(app.modal, Modal::SessConflict(_)));
@@ -9247,7 +9132,7 @@ mod tests {
             })
             .count();
         assert_eq!(n, 2);
-        // Move account 1's copy to account 2: confirm names the file.
+
         app.accounts[0].sessions = crate::sessions::SessionCache::default().scan(&a1);
         app.accounts[0].sessions.retain(|s| s.id == id);
         app.sess_source = SourceSel::One(Src::Account(0));
@@ -9264,14 +9149,14 @@ mod tests {
             .is_file());
         assert!(!copied.exists(), "moved out of account 1");
         assert!(app.last_moves.len() == 1);
-        // Undo puts it back.
+
         k(&mut app, KeyCode::Char('u'));
         assert!(copied.exists());
         assert!(!a2
             .join("projects/-tmp-proj")
             .join(format!("{id}.jsonl"))
             .exists());
-        // Search filters; All shows a source column.
+
         app.sess_source = SourceSel::All;
         k(&mut app, KeyCode::Char('/'));
         for c in "nothing like this".chars() {
@@ -9290,7 +9175,7 @@ mod tests {
         use crate::pane::{Activity, PaneState};
         use ratatui::{backend::TestBackend, Terminal};
         let (mut app, home) = test_app("mvtab");
-        // Accounts 3 and 4 are not logged in: listed, disabled, last.
+
         let t = app.move_targets(0);
         assert_eq!(t[0].account, 1);
         assert!(t[0].disabled.is_none());
@@ -9305,7 +9190,7 @@ mod tests {
             text.contains("most left") && text.contains("unavailable: not logged in"),
             "{text}"
         );
-        // A busy tab asks first; "wait" queues the move until it is idle.
+
         app.modal = Modal::None;
         app.panes[0].tabs[0].state = PaneState::Running;
         app.panes[0].tabs[0].activity = Activity::Working;
@@ -9326,7 +9211,7 @@ mod tests {
         );
         assert!(app.panes[1].tabs.len() >= before);
         assert_eq!(app.focus, 1);
-        // Interrupt sends Esc and queues too.
+
         app.pending_moves.clear();
         app.panes[0].tabs[0].activity = Activity::Working;
         app.request_move(0, 0, 1, true, true);
@@ -9334,7 +9219,7 @@ mod tests {
         assert_eq!(app.queued_moves.len(), 1);
         app.queued_moves.clear();
         app.panes[0].tabs[0].state = PaneState::Idle;
-        // The assistant's move_tab tool.
+
         app.focus = 0;
         let v = app.control_call("move_tab", &serde_json::json!({"tab": "current", "to": 2}));
         assert!(v["ok"] == serde_json::json!(true), "{v}");
@@ -9348,13 +9233,13 @@ mod tests {
         use crate::pane::{Activity, LaunchKind, PaneState};
         use ratatui::{backend::TestBackend, Terminal};
         let (mut app, home) = test_app("memsaver");
-        // Three tabs in pane 1: the active one is on screen.
+
         app.panes[0].add_tab(home.clone());
         app.panes[0].add_tab(home.clone());
         app.panes[0].active = 0;
         let mut term = Terminal::new(TestBackend::new(160, 40)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
-        // Normal: background tabs keep at most background_scrollback_lines.
+
         app.mem_ticked = std::time::Instant::now() - std::time::Duration::from_secs(2);
         app.memory_tick();
         assert_eq!(app.panes[0].tabs[0].history(), app.cfg.scrollback_lines);
@@ -9364,7 +9249,7 @@ mod tests {
                 .background_scrollback_lines
                 .min(app.cfg.scrollback_lines)
         );
-        // Trimming keeps what is on the screen.
+
         app.panes[0].tabs[2]
             .parser
             .lock()
@@ -9378,7 +9263,7 @@ mod tests {
             .screen()
             .contents()
             .contains("hello from tab three"));
-        // Memory saver: 200 on screen, none behind, lazy restore.
+
         app.set_memory_saver(true);
         assert_eq!(
             app.panes[0].tabs[0].history(),
@@ -9390,7 +9275,7 @@ mod tests {
             crate::pane::buffers().0,
             crate::app_memory::SAVER_WRITER_QUEUE
         );
-        // An idle background tab with a known session gets paused...
+
         for t in 1..3 {
             let tab = &mut app.panes[0].tabs[t];
             tab.state = PaneState::Running;
@@ -9398,7 +9283,7 @@ mod tests {
             tab.activity_since = std::time::Instant::now() - std::time::Duration::from_secs(3600);
             tab.session_id = Some(format!("sess-{t}"));
         }
-        // ...but not one waiting for approval.
+
         app.panes[0].tabs[2].activity = Activity::Permission;
         app.mem_ticked = std::time::Instant::now() - std::time::Duration::from_secs(2);
         app.memory_tick();
@@ -9414,13 +9299,13 @@ mod tests {
         assert_eq!(app.suspended_count(), 1);
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(buffer_text(term.backend().buffer()).contains("zz"));
-        // The on screen tab is never paused, even by Free now.
+
         app.panes[0].tabs[0].state = PaneState::Running;
         app.panes[0].tabs[0].activity = Activity::Ready;
         app.panes[0].tabs[0].session_id = Some("sess-0".into());
         app.free_now();
         assert!(!app.panes[0].tabs[0].suspended);
-        // Saved across restarts; turning it off restores buffers.
+
         assert_eq!(app.snapshot_state().memory_saver, Some(true));
         app.set_memory_saver(false);
         assert_eq!(app.restore_mode(), app.cfg.restore);
@@ -9449,7 +9334,7 @@ mod tests {
             app.on_key(KeyEvent::new(c, KeyModifiers::NONE))
         };
         term.draw(|f| draw(f, &mut app)).unwrap();
-        // The active row has a ✎ with a hint; hovering a tab says what it can do.
+
         let pencil = app
             .last_hits
             .find(&UiAction::RenameTab(0, 1))
@@ -9465,7 +9350,7 @@ mod tests {
             "{}",
             row.hint
         );
-        // Click ✎: the name is edited in the sidebar row, no popup.
+
         click_on(&mut app, &mut term, &UiAction::RenameTab(0, 1));
         assert!(matches!(app.modal, Modal::Rename(0, 1, _)));
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -9474,7 +9359,7 @@ mod tests {
             !buffer_text(term.backend().buffer()).contains("rename tab 2 of pane 1"),
             "no popup"
         );
-        // Typing replaces nothing until Backspace; type a name and Enter.
+
         if let Modal::Rename(_, _, b) = &mut app.modal {
             b.clear();
         }
@@ -9485,7 +9370,7 @@ mod tests {
         assert!(buffer_text(term.backend().buffer()).contains("api▏"));
         k(&mut app, KeyCode::Enter);
         assert_eq!(app.panes[0].tabs[1].name(), "api");
-        // Esc cancels; an empty name goes back to the folder name.
+
         app.start_rename(0, 1);
         k(&mut app, KeyCode::Char('x'));
         k(&mut app, KeyCode::Esc);
@@ -9496,7 +9381,7 @@ mod tests {
         }
         k(&mut app, KeyCode::Enter);
         assert!(app.panes[0].tabs[1].custom_name.is_none());
-        // Overview rows have a ✎ too.
+
         app.view = View::Overview;
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(app
@@ -9505,7 +9390,7 @@ mod tests {
             .iter()
             .any(|r| matches!(r.action, UiAction::RenameTab(..))));
         app.view = View::Grid;
-        // The move dialog: edit the name (n), Enter saves it at once.
+
         app.open_move_picker(0, 1, false);
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(buffer_text(term.backend().buffer()).contains("Name"));
@@ -9521,7 +9406,7 @@ mod tests {
         assert_eq!(app.panes[0].tabs[1].name(), "web");
         k(&mut app, KeyCode::Esc);
         assert_eq!(app.modal, Modal::None);
-        // A name edit sticks even when the move is cancelled.
+
         app.open_move_picker(0, 1, false);
         k(&mut app, KeyCode::Char('n'));
         k(&mut app, KeyCode::Char('2'));
@@ -9537,7 +9422,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use serde_json::json;
         let (mut app, home) = test_app("control");
-        // Tab folders live in the workspace base (GodTerm's home is private).
+
         let work = home.join("newtabs/proj");
         std::fs::create_dir_all(work.join("src")).unwrap();
         std::fs::write(work.join("README.md"), "line one\nline two\nline three\n").unwrap();
@@ -9559,7 +9444,7 @@ mod tests {
                     .starts_with('t'),
             "{v}"
         );
-        // One stable id per tab, used everywhere.
+
         let t2 = id(&app, 0, 1);
         let v = app.control_call("show", &json!({"tab": t2}));
         assert!(ok(&v) && app.focus == 0 && app.panes[0].active == 1, "{v}");
@@ -9592,7 +9477,7 @@ mod tests {
             "read_tab",
             &json!({"tab": t2, "what": "screen"})
         )));
-        // Local, free inspection, inside the tab's folder only.
+
         let v = app.control_call("list_dir", &json!({"tab": "last"}));
         let entries = v["result"]["entries"].to_string();
         assert!(
@@ -9620,7 +9505,7 @@ mod tests {
         );
         assert!(v["ok"] == json!(false), "{v}");
         assert!(ok(&app.control_call("speak", &json!({"text": "hello"}))));
-        // Errors and failures are plain, with the reason.
+
         app.assistant_calls = 0;
         let v = app.control_call("send_prompt", &json!({"tab": t2, "text": "hi"}));
         assert!(
@@ -9657,7 +9542,7 @@ mod tests {
             .unwrap()
             .contains("unknown tool"));
         app.assistant_calls = 0;
-        // A batch: one question for the whole set, one token runs all of it.
+
         let before: usize = app.panes.iter().map(|p| p.tabs.len()).sum();
         let v = app.control_call("close_tabs", &json!({"tab": "all"}));
         assert_eq!(v["needs_confirmation"], json!(true), "{v}");
@@ -9675,14 +9560,13 @@ mod tests {
                 .contains("not answered"),
             "no yes yet: {same_turn}"
         );
-        // A question is not a yes: nothing happens, it asks again, and the
-        // token stays good for the next answer.
+
         app.assistant_turn += 1;
         app.assistant.last_user = "Do you close them?".into();
         let unclear = app.control_call("close_tabs", &json!({"confirm_token": tok}));
         assert_eq!(unclear["not_confirmed"], json!(true), "{unclear}");
         assert!(app.panes.iter().map(|p| p.tabs.len()).sum::<usize>() == before);
-        app.assistant_turn += 1; // the user said yes
+        app.assistant_turn += 1;
         app.assistant.last_user = "yes".into();
         let wider = app.control_call("close_tabs", &json!({"account": 1, "confirm_token": tok}));
         assert!(
@@ -9700,10 +9584,10 @@ mod tests {
             again["error"].as_str().unwrap().contains("unknown"),
             "used once"
         );
-        // A token is good for the user's next turn only.
+
         let v = app.control_call("close_tabs", &json!({"account": 2}));
         let tok = v["token"].as_str().unwrap().to_string();
-        // Later turns (a question in between) do not use it up; two minutes do.
+
         app.assistant_turn += 2;
         app.assistant.last_user = "did you do it?".into();
         assert_eq!(
@@ -9719,42 +9603,41 @@ mod tests {
                 && exp["error"].as_str().unwrap().contains("reissue_token"),
             "{exp}"
         );
-        // Asked again unchanged: same question, a new token.
+
         let re = app.control_call("close_tabs", &json!({"reissue_token": tok}));
         assert_eq!(re["question"], v["question"]);
         let tok2 = re["token"].as_str().unwrap().to_string();
         assert_ne!(tok2, tok);
-        // Never redeemed in the turn that asked.
+
         let same = app.control_call("close_tabs", &json!({"confirm_token": tok2}));
         assert!(
             same["error"].as_str().unwrap().contains("same turn"),
             "{same}"
         );
-        // A clear no drops it.
+
         app.assistant_turn += 1;
         app.assistant.last_user = "no, leave them".into();
         let no = app.control_call("close_tabs", &json!({"confirm_token": tok2}));
         assert_eq!(no["result"]["cancelled"], json!(true), "{no}");
         assert!(app.pending_confirms.is_empty());
-        // The ignore tool: nothing is said for that turn.
+
         assert!(ok(
             &app.control_call("ignore", &json!({"reason": "background talk"}))
         ));
         assert!(app.assistant.ignored_turn);
-        // One prompt to several tabs asks first; nothing touches permissions.
+
         assert_eq!(
             app.control_call("send_prompt", &json!({"tab": "all", "text": "hi"}))
                 ["needs_confirmation"],
             json!(true)
         );
-        // Settings change only through the planned admin tools (a yes
-        // each, two for risky ones); reading them is read only.
+
         assert!(crate::control::TOOLS
             .iter()
             .filter(|t| t.name.contains("permission") || t.name.contains("setting"))
             .all(|t| crate::app_admin::WRITE_TOOLS.contains(&t.name)
                 || crate::control::READ_ONLY.contains(&t.name)));
-        // A runaway turn is cut off (actions count; looking does not).
+
         app.assistant_calls = 0;
         for _ in 0..app.cfg.assistant.max_tool_calls {
             app.control_call("show", &json!({"view": "grid"}));
@@ -9767,8 +9650,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// Misheard names: "vod mesh", "code slash vod mesh" and the like find
-    /// code/fotmesh; near ties come back as candidates.
     #[test]
     fn spoken_names_resolve_to_what_exists() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -9830,7 +9711,7 @@ mod tests {
                 .contains("code/fotmesh"),
             "{v}"
         );
-        // Ambiguous: candidates, no guess.
+
         add("/Users/x/code/votmash", "Vot mash");
         add("/Users/x/code/fodmish", "Fod mish");
         app.kick_index(true);
@@ -9841,7 +9722,7 @@ mod tests {
                 .is_some_and(|c| c.len() >= 2),
             "{v}"
         );
-        // Tabs and accounts by a misheard name.
+
         app.panes[0].add_tab(home.clone());
         let last = app.panes[0].tabs.len() - 1;
         app.panes[0].tabs[last].custom_name = Some("fotmesh".into());
@@ -9856,7 +9737,7 @@ mod tests {
         app.cfg.accounts[1].label = "Bravo".into();
         let v = app.control_call("show", &json!({"account": "brahvo"}));
         assert_eq!(v["ok"], json!(true), "{v}");
-        // A path said aloud inside a tab's folder.
+
         let proj = home.join("newtabs").join("site");
         std::fs::create_dir_all(proj.join("components")).unwrap();
         std::fs::write(proj.join("components").join("Header.tsx"), "x").unwrap();
@@ -9867,7 +9748,7 @@ mod tests {
             &json!({"tab": tab, "path": "componance slash header dot tsx"}),
         );
         assert_eq!(v["result"]["lines"], "x", "{v}");
-        // The vocabulary carries project names for the recognizer.
+
         let vocab = app.vocabulary();
         assert!(
             vocab.contains("fotmesh") && vocab.contains("trading room"),
@@ -9884,7 +9765,7 @@ mod tests {
         let (mut app, home) = test_app("tabhist");
         let proj = home.join("newtabs").join("fotmesh");
         std::fs::create_dir_all(&proj).unwrap();
-        // open, restart, rename, move, close (user), close (assistant)
+
         let t = app.panes[0].add_tab(proj.clone());
         app.panes[0].tabs[t].session_id = Some("1111aaaa-0000-4000-8000-000000000001".into());
         app.launch_tab(0, t, LaunchKind::Normal);
@@ -9923,14 +9804,14 @@ mod tests {
         if cfg!(unix) {
             assert_eq!(mode, 0o600);
         }
-        // The tool: closed today, a misheard name.
+
         let v = app.control_call(
             "tab_history",
             &json!({"event": "close", "since": "today", "text": "vod mesh"}),
         );
         let recs = v["result"]["records"].as_array().unwrap();
         assert!(!recs.is_empty() && recs[0]["name"] == "fotmesh", "{v}");
-        // Reopen from the record: it resumes the session.
+
         let rid = recs[0]["record"].as_str().unwrap().to_string();
         let v = app.control_call("reopen_tab", &json!({"id": rid}));
         assert_eq!(v["ok"], json!(true), "{v}");
@@ -9939,7 +9820,7 @@ mod tests {
             .iter()
             .flat_map(|p| p.tabs.iter())
             .any(|x| x.kind == LaunchKind::Resume("1111aaaa-0000-4000-8000-000000000001".into())));
-        // find: a session, the tab record and a chat, from a misheard name.
+
         let sp = app.cfg.accounts[0]
             .config_dir()
             .join("projects")
@@ -9985,7 +9866,7 @@ mod tests {
             text.contains("Tab history") && text.contains("fotmesh") && text.contains("close"),
             "{text}"
         );
-        // Search with a misheard name, then Enter reopens it.
+
         k(&mut app, KeyCode::Char('/'));
         for c in "vod mesh".chars() {
             k(&mut app, KeyCode::Char(c));
@@ -10007,7 +9888,7 @@ mod tests {
         use ratatui::Terminal;
         use serde_json::json;
         let (mut app, home) = test_app("learned");
-        // A brain stub that records its command line (the system prompt).
+
         let args_file = home.join("brain-args.txt");
         let stub = crate::test_stub::claude(
             &home.join("brain"),
@@ -10019,7 +9900,7 @@ mod tests {
             v["_client"] = json!("brain");
             v
         };
-        // The correction: the brain learns a rule.
+
         app.ask_assistant_from(
             "no, next time always check weekly usage before opening a tab",
             Some("no next time always check weekly usage before opening a tab"),
@@ -10031,7 +9912,7 @@ mod tests {
             .unwrap()
             .contains("(rule 1, rev 1)"));
         assert!(app.flash.as_ref().unwrap().0.contains("Assistant learned"));
-        // Unsafe rules are refused.
+
         let bad = app.control_call(
             "learn",
             &brain(
@@ -10047,11 +9928,10 @@ mod tests {
             cost: None,
             error: false,
         });
-        // The next turn: the brain restarts with the rule in its prompt.
+
         app.ask_assistant("open a tab for the api");
         std::thread::sleep(std::time::Duration::from_millis(300));
-        // The prompt goes to claude by file (--append-system-prompt-file): read
-        // it with the arguments.
+
         let argv = std::fs::read_to_string(&args_file).unwrap_or_default()
             + &std::fs::read_to_string(crate::providers::claude::prompt_file_path())
                 .unwrap_or_default();
@@ -10065,7 +9945,7 @@ mod tests {
             cost: None,
             error: false,
         });
-        // Not from the user's words: a turn that only read a file.
+
         app.ask_assistant("what does that readme say");
         let v = app.control_call(
             "learn",
@@ -10091,7 +9971,7 @@ mod tests {
                 .contains("read tab or file contents"),
             "{v}"
         );
-        // Forget, history, revert.
+
         app.assistant.turn_reads = 0;
         app.assistant.last_user = "forget that rule, don't do that".into();
         let v = app.control_call(
@@ -10105,7 +9985,7 @@ mod tests {
         app.assistant.last_user = "no wait, undo the last change".into();
         app.control_call("revert_learning", &brain(json!({"rev": 2})));
         assert!(crate::learned::load().rules[0].enabled);
-        // The view renders and toggles.
+
         app.open_learned_view();
         let mut term = Terminal::new(TestBackend::new(160, 30)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -10157,7 +10037,7 @@ mod tests {
             d.to_string().contains("Two sessions in code/fotmesh"),
             "{d}"
         );
-        // The memory block a new brain gets carries it.
+
         let b = crate::assistant_memory::block(2).unwrap();
         assert!(
             b.contains("Looked at code/fotmesh sessions.")
@@ -10167,8 +10047,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// After a pause ends the brain is told so, never refuses because of
-    /// it, and a restart does not carry the pause talk over.
     #[test]
     fn brain_never_stays_paused() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -10184,7 +10062,7 @@ mod tests {
             ],
         );
         app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
-        // "Hold on for five minutes": paused, the brain confirms.
+
         app.ask_assistant_from("hold on for five minutes", Some("hold on for five minutes"));
         app.control_call("pause_listening", &json!({"seconds": 300}));
         app.on_brain(B::Done {
@@ -10192,7 +10070,7 @@ mod tests {
             cost: None,
             error: false,
         });
-        // While paused the state says so; ignore with a pause reason is fine.
+
         assert!(
             app.state_preamble()
                 .contains("listening_paused: 300 s left")
@@ -10200,12 +10078,12 @@ mod tests {
                     .state_preamble()
                     .contains("listening_paused: 299 s left")
         );
-        // Time is up.
+
         app.voice.paused.as_mut().unwrap().until =
             std::time::Instant::now() - std::time::Duration::from_secs(1);
         app.voice_tick();
         assert!(!app.paused());
-        // ignore with a pause reason is refused now.
+
         let v = app.control_call("ignore", &json!({"reason": "fragment spoken during pause"}));
         assert!(
             v["error"].as_str().unwrap().contains("listening is active"),
@@ -10216,7 +10094,7 @@ mod tests {
             app.control_call("ignore", &json!({"reason": "background TV"}))["ok"],
             json!(true)
         );
-        // The next request says listening resumed, and the state agrees.
+
         app.ask_assistant_from(
             "okay what's running in fotmesh",
             Some("okay what's running in fotmesh"),
@@ -10233,7 +10111,7 @@ mod tests {
             cost: None,
             error: false,
         });
-        // A restart: the carried context and memory drop the pause talk.
+
         app.assistant.brain = None;
         let _ = std::fs::remove_file(&rec);
         app.ask_assistant_from("and the other one", Some("and the other one"));
@@ -10251,7 +10129,7 @@ mod tests {
             carry.contains("pause has ended") && !carry.contains("I'll wait"),
             "{carry}"
         );
-        // "pause" counts only as the whole utterance.
+
         let table = crate::instant::table(&app.cfg.voice.instant);
         assert_eq!(
             crate::instant::match_instant("pause", &table),
@@ -10284,12 +10162,12 @@ mod tests {
                 stats: Default::default(),
             })
         };
-        // The tool with no duration: the default from Settings.
+
         let v = app.control_call("pause_listening", &json!({}));
         assert_eq!(v["result"]["paused_s"], json!(120), "{v}");
         assert!(v["result"]["say"].as_str().unwrap().contains("2 minutes"));
         assert!(app.pause_left().unwrap() > 115);
-        // With one (the model read "ten seconds"), capped by Settings.
+
         assert_eq!(
             app.control_call("pause_listening", &json!({"seconds": 10}))["result"]["paused_s"],
             json!(10)
@@ -10298,13 +10176,13 @@ mod tests {
             app.control_call("pause_listening", &json!({"seconds": 99999}))["result"]["paused_s"],
             json!(3600)
         );
-        // Anything without the wake word is ignored.
+
         let turns = app.assistant_turn;
         heard(&mut app, "delete everything in that folder");
         assert_eq!(app.assistant_turn, turns);
         assert_eq!(app.voice.action.as_deref(), Some("(paused, ignored)"));
         assert!(app.paused());
-        // Announcements wait.
+
         app.panes[1].tabs[0].activity = crate::pane::Activity::Permission;
         app.attention.push(crate::app::Attention {
             slot: 1,
@@ -10314,25 +10192,25 @@ mod tests {
             from: crate::pane::Activity::Working,
         });
         app.voice_tick();
-        // An approval is an event for the assistant; it waits while paused.
+
         let pending_approval = |app: &crate::app::App| {
             app.assistant.events.events.iter().any(|e| {
                 matches!(e.kind, crate::app_events::EventKind::Approval(_)) && !e.delivered
             })
         };
         assert!(pending_approval(&app));
-        // The wake word resumes and the rest runs ("next tab" is instant).
+
         app.panes[0].add_tab(home.clone());
         app.panes[0].active = 0;
         heard(&mut app, "hey god next tab");
         assert!(!app.paused());
         assert_eq!(app.panes[0].active, 1);
-        // Still for the assistant to tell, now that listening is back.
+
         assert!(pending_approval(&app));
-        // "hold on" alone (after the wake word) is instant, default length.
+
         heard(&mut app, "hey god hold on");
         assert!(app.paused() && app.pause_left().unwrap() > 115);
-        // Expiry brings back open mic.
+
         app.resume_listening("test");
         app.voice.open_mic = true;
         app.pause_listening(Some(5), None);
@@ -10341,7 +10219,7 @@ mod tests {
             std::time::Instant::now() - std::time::Duration::from_secs(1);
         app.voice_tick();
         assert!(!app.paused() && app.voice.open_mic);
-        // Barge-in is ignored while paused; the chip resumes.
+
         app.pause_listening(Some(60), None);
         app.on_voice(VoiceEvent::BargeIn {
             speech_ms: 300,
@@ -10366,10 +10244,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// The reply from the bug report ("in a table"): spoken as its summary
-    /// line with no markup, kept with its line breaks, drawn in the panel
-    /// as an aligned grid below "more ›" in normal text, and drawn by the
-    /// same renderer in History.
     #[test]
     fn markdown_reply_in_panel_and_history() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -10407,7 +10281,7 @@ mod tests {
             .text
             .clone();
         assert_eq!(reply, usage.trim(), "line breaks kept");
-        // The panel, docked at two widths: a grid, aligned.
+
         app.assistant.show = true;
         app.assistant.focused = true;
         for width in [120u16, 160] {
@@ -10437,7 +10311,7 @@ mod tests {
                 at(lines[h + 6], "not reported")
             );
             assert!(!t.contains("||") && !t.contains("|---"), "{t}");
-            // Normal text, not dim: a table cell is drawn in FG.
+
             let buf = term.backend().buffer();
             let y = (h + 3) as u16;
             let x = (0..width)
@@ -10445,7 +10319,7 @@ mod tests {
                 .unwrap();
             assert_eq!(buf[(x, y)].fg, FG);
         }
-        // History: the same renderer.
+
         let id = "mdreply-test";
         let dir = crate::assistant_history::dir();
         std::fs::create_dir_all(&dir).unwrap();
@@ -10480,8 +10354,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// Narration is never spoken, even inside the answer's own block; a
-    /// long answer is cut to two spoken sentences and "more" says the rest.
     #[test]
     fn narration_is_never_spoken_and_speech_is_brief() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -10489,9 +10361,9 @@ mod tests {
         use crate::assistant::BrainEvent as B;
         let (mut app, home) = test_app("narration");
         app.cfg.assistant.spoken_sentences = 2;
-        // A spoken request: its answer is said.
+
         app.assistant.turn_spoken = true;
-        // The live log of 14:38: text between tool calls was read aloud.
+
         app.assistant.busy = true;
         app.on_brain(B::Tool("read_tab".into(), serde_json::json!({})));
         app.on_brain(B::Delta("The trading room tab shows no new requests, it's idle and running its loops. Let me check what's in the folder to see what's been built out so far.".into()));
@@ -10515,7 +10387,7 @@ mod tests {
         assert!(app.assistant.log.iter().any(
             |e| e.who == Who::Preamble && e.text.contains("Let me check what's in the folder")
         ));
-        // The same reply block: narration first, then the answer.
+
         app.assistant.spoken.clear();
         app.ask_assistant_from("what about the pauses", Some("what about the pauses"));
         let said = "Let me check\u{2026} Let me get the session detail\u{2026} Let me look at the PLAN\u{2026} The pause fix landed on Tuesday. Marcus now answers within a second. He also talks a bit faster.";
@@ -10547,7 +10419,7 @@ mod tests {
             .log
             .iter()
             .any(|e| e.who == Who::Preamble && e.text.contains("Let me look at the PLAN")));
-        // "more": the rest, without a turn.
+
         app.ask_assistant_from("tell me more", Some("tell me more"));
         assert!(!app.assistant.busy);
         assert_eq!(
@@ -10559,7 +10431,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// A tab with a transcript, waiting to start (a prompt to it queues).
     fn tab_with_transcript(
         app: &mut crate::app::App,
         home: &std::path::Path,
@@ -10583,7 +10454,6 @@ mod tests {
         (uid, dir.join(format!("{sid}.jsonl")))
     }
 
-    /// The tab's agent got `question` and (with `reply`) answered it.
     fn write_turn(path: &std::path::Path, question: &str, reply: Option<&str>) {
         use serde_json::json;
         let mut lines = vec![
@@ -10600,8 +10470,6 @@ mod tests {
         std::fs::write(path, body.join("\n") + "\n").unwrap();
     }
 
-    /// "Ask the agent": one send_prompt, nothing read; the tab's answer
-    /// comes back as a turn of our own and is spoken.
     #[test]
     fn ask_the_agent_then_its_answer_is_told() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -10627,8 +10495,7 @@ mod tests {
             "no I'm talking about the pauses, just ask the agent about the latest status on that";
         app.ask_assistant_from(said, Some(said));
         std::thread::sleep(std::time::Duration::from_millis(300));
-        // The prompt goes to claude by file (--append-system-prompt-file): read
-        // it with the arguments.
+
         let argv = std::fs::read_to_string(&args_file).unwrap_or_default()
             + &std::fs::read_to_string(crate::providers::claude::prompt_file_path())
                 .unwrap_or_default();
@@ -10639,7 +10506,7 @@ mod tests {
                 && argv.contains("work_status"),
             "the prompt carries both rules"
         );
-        // The brain's turn: one send_prompt, nothing else.
+
         let q = "What is the latest status on Marcus's long pauses while talking? Are they fixed?";
         let v = app.control_call(
             "send_prompt",
@@ -10673,7 +10540,7 @@ mod tests {
             app.state_preamble().contains("pending_answers: ")
                 && app.state_preamble().contains("waiting 0 min")
         );
-        // The prompt went in; the tab works on it.
+
         app.deliveries.clear();
         if let Some((s, t)) = app.find_tab(uid) {
             app.panes[s].tabs[t].activity = crate::pane::Activity::Working;
@@ -10681,16 +10548,16 @@ mod tests {
         write_turn(&transcript, q, None);
         app.follow_ups_tick();
         assert!(!app.assistant.busy);
-        // Ready, but nothing written yet after the tool call: still waiting.
+
         if let Some((s, t)) = app.find_tab(uid) {
             app.panes[s].tabs[t].activity = crate::pane::Activity::Ready;
         }
         app.follow_ups_tick();
         assert!(!app.assistant.busy, "no answer yet");
-        // The answer arrives.
+
         write_turn(&transcript, q, Some("The long pauses are fixed: synthesis now streams per sentence, so Marcus starts talking within 400 ms. Commit abc landed it."));
         app.assistant.follow_ups[0].checked = None;
-        // The user spoke just now: the report waits for a quiet moment.
+
         app.follow_ups_tick();
         assert!(!app.assistant.busy, "not right after the user spoke");
         app.assistant.quiet.spoke_at =
@@ -10721,14 +10588,14 @@ mod tests {
             vec!["The trading room says the long pauses are fixed; Marcus starts talking within 400 milliseconds now. Want the details?"]
         );
         assert!(!app.assistant.system_turn);
-        // "Did it answer?": the snapshot and get_state say so.
+
         let st = app.control_call("get_state", &json!({}));
         assert_eq!(
             st["result"]["pending_answers"][0]["state"], "answered and told",
             "{st}"
         );
         assert!(app.state_preamble().contains("(told; read_tab has it)"));
-        // recent_turns: the conversation, not the code.
+
         let v = app.control_call("recent_turns", &json!({"tab": tid, "n": 2}));
         let turns = v["result"]["turns"].as_array().unwrap();
         assert_eq!(turns.len(), 2, "{v}");
@@ -10741,18 +10608,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Answers wait for a pause or the user's own speech, a silent tab
-    /// times out, and "never mind" stops the wait.
     #[test]
     fn delegated_answers_wait_time_out_and_cancel() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = test_app("followwait");
         let (uid, transcript) =
             tab_with_transcript(&mut app, &home, "6666ffff-0000-4000-8000-000000000006");
-        // No brain can start yet (no claude): the report must wait, not be lost.
+
         app.cfg.claude_bin = Some(home.join("no-such-claude").display().to_string());
         let q = "Did the deploy finish?";
-        // Paused: held, named in the summary, told after the pause.
+
         app.register_follow_up(uid, q);
         app.assistant.follow_ups[0].seen_working = true;
         app.pause_listening(Some(60), None);
@@ -10774,7 +10639,7 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("trading room answered"));
-        // Mid utterance: still waits.
+
         app.voice.partial = Some("hey god".into());
         app.follow_ups_tick();
         assert!(!app.assistant.busy, "not while the user talks");
@@ -10788,7 +10653,7 @@ mod tests {
             ),
             "the answer is kept for later"
         );
-        // A brain (the stub) can start now; the retry time has come.
+
         let stub = crate::test_stub::claude(
             &home.join("brain"),
             &[("stdin_to", home.join("brain-in.txt").display().to_string())],
@@ -10802,7 +10667,7 @@ mod tests {
             app.assistant.log
         );
         app.reset_hung_turn("test over");
-        // Timed out with nothing found: said plainly, no turn.
+
         app.cfg.assistant.answer_wait_min = 1;
         app.register_follow_up(uid, "Is the build green?");
         let n = app.assistant.follow_ups.len();
@@ -10819,7 +10684,7 @@ mod tests {
             .log
             .iter()
             .any(|e| e.text == "trading room finished but I couldn't find its answer; read_tab has its last reply."));
-        // "never mind": stop waiting, said locally.
+
         app.register_follow_up(uid, "Which tests fail?");
         app.ask_assistant_from("never mind", Some("never mind"));
         let n = app.assistant.follow_ups.len();
@@ -10836,9 +10701,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// A verified update: the toast once, the chip, Settings > About, the
-    /// assistant's line; Ctrl-a N asks first while a tab works, then
-    /// installs, saves the tabs and asks main() to restart into it.
     #[test]
     fn update_ready_chip_about_and_restart_keeps_tabs() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -10867,7 +10729,7 @@ mod tests {
         let cfg = app.cfg.update.clone();
         crate::app_update::run_once(&app.update.shared, &cfg, &src, &l, method);
         assert_eq!(app.update.ready().as_deref(), Some("9.9.9"));
-        // The toast, once.
+
         app.update_tick();
         assert!(app
             .flash
@@ -10878,7 +10740,7 @@ mod tests {
         app.flash = None;
         app.update_tick();
         assert!(app.flash.is_none());
-        // The chip and Settings > About.
+
         let mut term = Terminal::new(TestBackend::new(200, 50)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(buffer_text(term.backend().buffer()).contains("↑ Update ready"));
@@ -10898,7 +10760,7 @@ mod tests {
             "{t}"
         );
         assert!(app.state_preamble().contains("update_ready: v9.9.9"));
-        // A working tab: asked first, nothing installed yet.
+
         app.panes[0].tabs[0].activity = crate::pane::Activity::Working;
         app.restart_to_update(false);
         assert!(!app.quit);
@@ -10909,7 +10771,7 @@ mod tests {
             .0
             .contains("Not yet: 1 tab is working"));
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "old build");
-        // Again within 10 s: installed, tabs saved, restart requested.
+
         app.panes[0].tabs[0].session_id = Some("7777aaaa-0000-4000-8000-000000000007".into());
         app.restart_to_update(false);
         assert!(app.quit, "{:?}", app.flash);
@@ -10922,15 +10784,13 @@ mod tests {
         assert!(serde_json::to_string(&saved)
             .unwrap()
             .contains("7777aaaa-0000-4000-8000-000000000007"));
-        // The new process restores every tab at once.
+
         app.force_eager = true;
         app.cfg.memory_saver = true;
         assert_eq!(app.restore_mode(), "eager");
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// A reply over the output token limit is sent again once with twice
-    /// the limit; the raw API error is never shown or spoken.
     #[test]
     fn token_limit_error_retries_with_a_higher_cap() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -10997,7 +10857,7 @@ mod tests {
             app.assistant.spoken,
             vec!["Added it to the engineering memory."]
         );
-        // Too long again after the retry: a plain message, not the API error.
+
         app.ask_assistant("summarize everything");
         for _ in 0..2 {
             app.on_brain(B::Done {
@@ -11016,7 +10876,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Run admin ticks until `done` or 20 s.
     fn admin_until(app: &mut crate::app::App, done: impl Fn(&crate::app::App) -> bool) {
         let t0 = std::time::Instant::now();
         while !done(app) && t0.elapsed() < std::time::Duration::from_secs(20) {
@@ -11038,8 +10897,6 @@ mod tests {
         app.assistant.turn_reads = 0;
     }
 
-    /// One confirmation installs a remote MCP server on two accounts, checks
-    /// it with mcp list, opens each sign in, waits, and says it connected.
     #[test]
     fn admin_installs_an_mcp_on_two_accounts_and_signs_in() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -11081,7 +10938,7 @@ mod tests {
                 && said.contains("Done: Linear on Account 1, Account 2."),
             "{said}"
         );
-        // Exactly one browser open per sign in: claude's own (GodTerm opens none).
+
         assert_eq!(
             crate::admin::OPENED
                 .lock()
@@ -11097,7 +10954,7 @@ mod tests {
                     .unwrap_or_default();
             assert_eq!(opens.lines().count(), 1, "account {}: {opens}", a + 1);
         }
-        // The inventory knows, per account.
+
         let c = app.control_call("account_capabilities", &json!({"account": 2}));
         let servers = c["result"]["accounts"][0]["mcp_servers"].to_string();
         assert!(
@@ -11115,7 +10972,7 @@ mod tests {
             .history
             .iter()
             .any(|h| h.contains("install Linear on Account 1, Account 2")));
-        // claude could not open a browser: GodTerm opens the page, once.
+
         let stub = crate::test_stub::claude(
             &home.join("bin3"),
             &[
@@ -11147,7 +11004,7 @@ mod tests {
             .config_dir()
             .join("browser-opens.txt")
             .exists());
-        // A failed sign in says so.
+
         let stub = crate::test_stub::claude(
             &home.join("bin2"),
             &[("fake_admin", "1".into()), ("login_fail", "1".into())],
@@ -11171,7 +11028,7 @@ mod tests {
             "{:?}",
             app.admin.said
         );
-        // Remove verifies it is gone.
+
         user_says(&mut app, "remove linear from account one");
         let v = app.control_call(
             "remove_mcp",
@@ -11197,7 +11054,7 @@ mod tests {
             "{:?}",
             app.admin.said
         );
-        // A plugin from the catalog brings its server (Slack).
+
         user_says(&mut app, "add the slack connector to account two");
         let v = app.control_call(
             "install_mcp",
@@ -11208,8 +11065,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// set_setting validates, applies, and asks twice for a risky change;
-    /// secrets only from the user's words.
     #[test]
     fn admin_settings_validate_and_risky_ones_ask_twice() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -11254,7 +11109,7 @@ mod tests {
             "{r}"
         );
         assert_eq!(app.cfg.assistant.follow_up_s, 20);
-        // Risky: update checks off needs a second yes.
+
         user_says(&mut app, "turn off update checks");
         let v = app.control_call(
             "set_setting",
@@ -11275,10 +11130,10 @@ mod tests {
         user_says(&mut app, "yes");
         app.control_call("set_setting", &brain_args(json!({"confirm_token": tok2})));
         assert!(!app.cfg.update.enabled);
-        // Discoverable by words.
+
         let l = app.control_call("list_settings", &json!({"query": "follow up"}));
         assert!(l.to_string().contains("assistant.follow_up_s"));
-        // A secret: never from anything but the user's words, never shown.
+
         user_says(&mut app, "save my xai key");
         let s = app.control_call(
             "set_setting",
@@ -11290,8 +11145,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Text from a tab or file is never an admin instruction, and a turn
-    /// GodTerm started itself cannot change anything.
     #[test]
     fn admin_refuses_injected_requests() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -11307,14 +11160,14 @@ mod tests {
         );
         assert!(v["error"].as_str().unwrap().starts_with("refused"), "{v}");
         assert!(app.pending_confirms.is_empty());
-        // A system turn (no user words).
+
         user_says(&mut app, "");
         let v = app.control_call("add_account", &brain_args(json!({"label": "Evil"})));
         assert!(
             v["error"].as_str().unwrap().contains("user's own request"),
             "{v}"
         );
-        // Named by the user, after reading: allowed (asks).
+
         user_says(&mut app, "install the helper server from that readme");
         app.assistant.turn_reads = 1;
         let v = app.control_call(
@@ -11333,7 +11186,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Per account inventory from each config dir.
     #[test]
     fn admin_capabilities_per_account() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -11371,15 +11223,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// add_account guides the login: opens the (wrapped) URL, asks for the
-    /// code, pastes the clipboard only on "paste it", reports a bad code
-    /// and then success.
     #[test]
     fn admin_add_account_hand_holds_the_login() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use serde_json::json;
         let (mut app, home) = test_app("adminlogin");
-        // Pane output flows only while someone listens for its events.
+
         let (tx, _events) = std::sync::mpsc::channel();
         app.tx = tx;
         let stub = crate::test_stub::claude(
@@ -11436,11 +11285,11 @@ mod tests {
             crate::admin::OPENED.lock().unwrap().last().unwrap(),
             "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&state=abc123"
         );
-        // Not without the user's words.
+
         user_says(&mut app, "what now");
         let v = app.control_call("login_paste_code", &brain_args(json!({})));
         assert!(v["error"].as_str().unwrap().starts_with("refused"), "{v}");
-        // A wrong code: the failure is said.
+
         *crate::admin::TEST_CLIPBOARD.lock().unwrap() = Some("WRONG-9".into());
         user_says(&mut app, "paste it");
         let v = app.control_call("login_paste_code", &brain_args(json!({})));
@@ -11470,7 +11319,7 @@ mod tests {
             app.admin.said,
             screens.join("\n----\n")
         );
-        // Retry with the right one.
+
         app.admin.logins[0].stage = crate::app_admin::LoginStage::Code;
         *crate::admin::TEST_CLIPBOARD.lock().unwrap() = Some("CODE-1234".into());
         user_says(&mut app, "ok paste it again");
@@ -11489,7 +11338,7 @@ mod tests {
             "{:?}",
             app.admin.said
         );
-        // The code never reached the log.
+
         let log = std::fs::read_to_string(crate::log::path()).unwrap_or_default();
         assert!(!log.contains("CODE-1234") && !log.contains("WRONG-9"));
         *crate::admin::TEST_CLIPBOARD.lock().unwrap() = None;
@@ -11499,9 +11348,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// The panel at 60, 90 and 140 columns: the toolbar never clips (⋯
-    /// holds the rest), tool calls are chips (no JSON unless opened), a
-    /// delivery joins its chip, and a waiting answer resolves in place.
     #[test]
     fn assistant_panel_fits_and_shows_chips() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -11530,7 +11376,7 @@ mod tests {
                 .lines()
                 .find(|l| l.contains(" ⋯ "))
                 .unwrap_or_else(|| panic!("{width}: no ⋯\n{t}"));
-            // Every toolbar word is whole.
+
             let pw = (width / 2).clamp(44, 76) as usize;
             let panel: String = bar.chars().skip(width as usize - pw).collect();
             for w in panel
@@ -11563,7 +11409,7 @@ mod tests {
                 "{width}: the unspoken part is set apart"
             );
         }
-        // The answer arrives: the chip resolves in place.
+
         app.assistant.follow_ups[0].state = crate::app_followup::FuState::Answered {
             text: "yes".into(),
             at: chrono::Local::now(),
@@ -11575,7 +11421,7 @@ mod tests {
             t.contains("✓ answered") && !t.contains("⧗ waiting for hyper"),
             "{t}"
         );
-        // A click opens the raw call; ⋯ opens the menu.
+
         click_on(
             &mut app,
             &mut term,
@@ -11596,7 +11442,7 @@ mod tests {
                 && t.contains("Admin actions"),
             "{t}"
         );
-        // ↑ brings back what was typed.
+
         app.assistant.input = "what is running".into();
         app.send_assistant_input();
         app.on_brain(crate::assistant::BrainEvent::Done {
@@ -11613,10 +11459,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Pasting into the assistant panel's input: a bracketed paste goes
-    /// there (not to the pane) with its lines, a key burst with an Enter
-    /// in it does not send, a huge paste is capped and said, the box
-    /// grows; with the panel closed the pane gets it as before.
     #[test]
     fn assistant_input_takes_pastes() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -11639,7 +11481,7 @@ mod tests {
         app.launch_tab(0, 0, crate::pane::LaunchKind::Normal);
         app.assistant.show = true;
         app.assistant.focused = true;
-        // Bracketed paste: CRLF kept as lines, control characters gone.
+
         app.handle(AppEvent::Input(Event::Paste(
             "first line\r\nsecond\x07 line\rthird".into(),
         )));
@@ -11652,13 +11494,13 @@ mod tests {
             t.contains("› first line") && t.contains("second line") && t.contains("third"),
             "{t}"
         );
-        // Typed keys that panes would take go to the box; Enter sends.
+
         app.assistant.input.clear();
         for c in "q z".chars() {
             app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         assert_eq!(app.assistant.input, "q z");
-        // Cmd-V typed out as a burst of keys: the Enter inside it is a new line.
+
         app.assistant.input.clear();
         for c in "ab".chars() {
             app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
@@ -11667,7 +11509,7 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
         assert_eq!(app.assistant.input, "ab\nc");
         assert!(!app.assistant.busy);
-        // A huge paste: capped, and said.
+
         app.assistant.input.clear();
         app.handle(AppEvent::Input(Event::Paste("x".repeat(40_000))));
         assert_eq!(app.assistant.input.chars().count(), 16_000);
@@ -11678,7 +11520,7 @@ mod tests {
             .0
             .contains("Pasted the first 16 KB of 40 KB"));
         term.draw(|f| draw(f, &mut app)).unwrap();
-        // A pause, then Enter: it sends.
+
         app.assistant.input = "what is running".into();
         app.assistant.last_key_at = None;
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -11688,7 +11530,7 @@ mod tests {
         );
         app.assistant.brain = None;
         app.assistant.busy = false;
-        // Panel closed: the pane gets the paste.
+
         app.assistant.show = false;
         app.handle(AppEvent::Input(Event::Paste("to the pane\n".into())));
         assert!(app.assistant.input.is_empty());
@@ -11709,10 +11551,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// One terminal cursor at most: at the focused input. Hidden in the
-    /// Dashboard and for unfocused panes, at the assistant's caret while it
-    /// has the keys (its border then the accent, the panes' dim), back to
-    /// the pane after Esc; hover highlights never cross the panel.
     #[test]
     fn one_cursor_at_the_focused_input() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -11727,16 +11565,16 @@ mod tests {
         app.launch_tab(0, 0, crate::pane::LaunchKind::Normal);
         app.focus = 0;
         let mut term = Terminal::new(TestBackend::new(160, 44)).unwrap();
-        // The grid, a running focused pane: its cursor, inside it.
+
         term.draw(|f| draw(f, &mut app)).unwrap();
         let (x, y) = app.want_cursor.get().expect("the pane's cursor");
         let r = app.pane_rects[0];
         assert!(x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
-        // The Dashboard: none.
+
         app.view = crate::app::View::Dashboard;
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(app.want_cursor.get(), None);
-        // The assistant with the keys: only at its caret, its border blue.
+
         app.view = crate::app::View::Grid;
         app.toggle_assistant_panel();
         assert!(app.assistant_has_focus());
@@ -11745,7 +11583,7 @@ mod tests {
         let w = (160u16 / 2).clamp(44, 76);
         let px = 160 - w;
         let (cx, cy) = app.want_cursor.get().expect("the input's caret");
-        // In the composer's field (its first row: the caret is at 0).
+
         let g = app.assistant.input_geo.get().expect("the input is drawn");
         assert!(
             cx > px && cy == g.y && g.y + g.h == 44 - 2 - 1,
@@ -11753,7 +11591,7 @@ mod tests {
         );
         let b = term.backend().buffer().clone();
         assert_eq!(b[(px, 2)].fg, theme::SLATE, "accent border while focused");
-        // Esc: the keys go back to the pane, the panel stays and says how.
+
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.assistant.show && !app.assistant.focused);
         app.assistant.input.clear();
@@ -11763,10 +11601,10 @@ mod tests {
         let (x, _) = app.want_cursor.get().expect("the pane's cursor again");
         assert!(x < px);
         assert_ne!(term.backend().buffer()[(px, 2)].fg, theme::SLATE);
-        // A click in the panel gives it the keys back.
+
         click_on(&mut app, &mut term, &crate::hits::UiAction::AssistantFocus);
         assert!(app.assistant_has_focus());
-        // Hover on the Dashboard: no highlight crosses into the panel.
+
         app.view = crate::app::View::Dashboard;
         for row in 3..40u16 {
             app.mouse_pos = Some((10, row));
@@ -11775,12 +11613,9 @@ mod tests {
             for x in px + 1..159 {
                 let bg = b[(x, row)].bg;
                 assert!(
-                    // (The quick bar and the composer at its bottom have
-                    // their own field color.)
                     bg == theme::BAR_BG
                         || bg == Color::Reset
                         || row >= 44 - 10
-                        // (The Loops & schedules title is a band.)
                         || (bg == theme::SEL_BG && app.sched_ui.rect.get().y == row),
                     "row {row} col {x}: {bg:?} crosses the panel"
                 );
@@ -11804,14 +11639,14 @@ mod tests {
                 stats: Default::default(),
             })
         };
-        // Everything but the instant set goes to the assistant.
+
         heard(&mut app, "show the dashboard");
         assert_eq!(
             app.assistant.log.first().map(|e| e.text.as_str()),
             Some("show the dashboard")
         );
         assert_eq!(app.assistant_turn, 1);
-        // A yes while it waits for a confirmation is for the assistant.
+
         app.pending_confirms.push(crate::control::Pending {
             token: "t".into(),
             tool: "close_tabs".into(),
@@ -11822,12 +11657,12 @@ mod tests {
         });
         heard(&mut app, "yes");
         assert_eq!(app.assistant_turn, 2);
-        // Off: only the instant set works.
+
         app.cfg.assistant.mode = "off".into();
         app.pending_confirms.clear();
         heard(&mut app, "something odd here");
         assert_eq!(app.assistant_turn, 2);
-        // The state preamble has accounts, tab ids and usage.
+
         let s = app.state_preamble();
         let first = crate::control::tab_id(app.panes[0].tabs[0].uid);
         assert!(
@@ -11861,7 +11696,7 @@ mod tests {
                 stats: st,
             })
         };
-        // No wake word needed; noise and hallucinations are dropped.
+
         heard(&mut app, "Thank you.", long);
         assert_eq!(app.voice.action.as_deref(), Some("(noise, ignored)"));
         heard(&mut app, "what is everyone working on", long);
@@ -11869,7 +11704,7 @@ mod tests {
             app.assistant.log.first().map(|e| e.text.as_str()),
             Some("what is everyone working on")
         );
-        // A short blip is ignored unless it is an instant command.
+
         heard(&mut app, "banana", UttStats { ms: 400, ..long });
         assert_eq!(app.voice.action.as_deref(), Some("(too short, ignored)"));
         app.panes[0].tabs[0].activity = Activity::Permission;
@@ -11878,7 +11713,7 @@ mod tests {
             app.voice.action.as_deref(),
             Some("approved a fresh tab on Account 1")
         );
-        // The chip is in the status bar; it opens the voice menu.
+
         let mut term = Terminal::new(TestBackend::new(200, 40)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(buffer_text(term.backend().buffer()).contains("● OPEN MIC"));
@@ -11888,12 +11723,12 @@ mod tests {
             !app.voice.open_mic && app.voice.always_on,
             "back to the wake word"
         );
-        // Auto sleep after silence.
+
         app.start_open_mic();
         app.voice.last_heard = std::time::Instant::now() - std::time::Duration::from_secs(11 * 60);
         app.open_mic_tick();
         assert!(!app.voice.open_mic);
-        // "sleep" leaves open mic.
+
         app.start_open_mic();
         heard(&mut app, "sleep", long);
         assert!(!app.voice.open_mic);
@@ -11907,7 +11742,7 @@ mod tests {
         use crate::assistant::BrainEvent as B;
         let (mut app, home) = test_app("replies");
         app.assistant.busy = true;
-        // Narration before a tool: dim in the panel, never the reply.
+
         app.on_brain(B::Delta("Checking tab two on account two.".into()));
         app.on_brain(B::BlockStart("tool_use".into()));
         app.on_brain(B::Tool("read_tab".into(), serde_json::json!({})));
@@ -11940,7 +11775,7 @@ mod tests {
             reply.text, "Tab two is a fresh tab.\nIt is ready.",
             "blocks joined, each on its own line"
         );
-        // No tools: the text is the answer.
+
         app.assistant.busy = true;
         app.on_brain(B::Delta("Account two has 80 percent left.".into()));
         app.on_brain(B::Done {
@@ -11952,7 +11787,7 @@ mod tests {
             app.assistant.log.last().unwrap().text,
             "Account two has 80 percent left."
         );
-        // A question it asked takes the user's yes, even with a tab waiting.
+
         app.assistant.busy = true;
         app.on_brain(B::Done {
             text: "Which one, the api tab or the docs tab?".into(),
@@ -12002,8 +11837,7 @@ mod tests {
         let kinds: Vec<&str> = evs.iter().filter_map(|e| e["kind"].as_str()).collect();
         let kinds: Vec<&str> = kinds.into_iter().filter(|k| *k != "note").collect();
         assert_eq!(kinds, vec!["user", "tool", "reply"], "{evs:?}");
-        // By kind, not position: notes (such as the stub brain exiting,
-        // which a slow machine may log before the reply) can come between.
+
         let of = |k: &str| {
             evs.iter()
                 .find(|e| e["kind"] == k)
@@ -12013,7 +11847,7 @@ mod tests {
         assert_eq!(of("user")["via"], "voice");
         assert_eq!(of("user")["heard"], "What is everyone working on?");
         assert!(of("reply")["timing"].is_string(), "{evs:?}");
-        // History: listed, searchable, resumable, deletable.
+
         app.reset_assistant();
         assert!(app.assistant.conv.is_none());
         app.toggle_assistant_history();
@@ -12048,8 +11882,7 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("Nothing is working."));
-        // The one going on is pinned, not in the list: delete it from a
-        // new conversation.
+
         app.toggle_assistant_history();
         assert!(app
             .assistant
@@ -12088,7 +11921,7 @@ mod tests {
             .lines()
             .find(|l| l.contains("godterm-header-test-folder-x"))
             .expect("folder in the header");
-        // One separator, the platform's: ~/x here, ~\x on Windows.
+
         let shown = format!("~{}godterm-header-test-folder-x", std::path::MAIN_SEPARATOR);
         let (pi, ei) = (
             line.find(&shown)
@@ -12096,12 +11929,12 @@ mod tests {
             line.find("one@example").unwrap_or_else(|| panic!("{line}")),
         );
         assert!(pi < ei, "label · folder · email: {line}");
-        // Privacy hides the email, never the folder.
+
         app.rt_privacy = Some(true);
         term.draw(|f| draw(f, &mut app)).unwrap();
         let t = buffer_text(term.backend().buffer());
         assert!(t.contains(&shown) && !t.contains("one@example.com"));
-        // Click copies, right click opens the folder menu.
+
         click_on(&mut app, &mut term, &crate::hits::UiAction::PathClick(0));
         assert!(
             app.flash
@@ -12110,7 +11943,7 @@ mod tests {
             "{:?}",
             app.flash
         );
-        // Off in Settings.
+
         app.cfg.show_path = false;
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(!buffer_text(term.backend().buffer()).contains("godterm-header-test-folder-x"));
@@ -12121,7 +11954,7 @@ mod tests {
     fn weekly_exhausted_is_never_best() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut app, home) = test_app("weekly");
-        // Account 1: all of its 5 hours, none of its week.
+
         if let Some(u) = app.accounts[0].usage.as_mut() {
             for w in &mut u.windows {
                 w.utilization = if w.key == "five_hour" {
@@ -12143,7 +11976,7 @@ mod tests {
         assert_eq!(st["accounts"][0]["available"], serde_json::json!(false));
         assert_eq!(st["accounts"][0]["limited_by"], serde_json::json!("weekly"));
         assert!(st["accounts"][0]["next_reset_that_unblocks"].is_string());
-        // The move picker puts it below every usable account.
+
         app.accounts[2].login.source = Some(crate::creds::CredSource::Keychain);
         let order: Vec<usize> = app.move_targets(1).iter().map(|t| t.account).collect();
         assert_eq!(
@@ -12166,7 +11999,7 @@ mod tests {
         app.cfg.accounts[2].harness = "grok".into();
         app.accounts[2].login.source = Some(crate::creds::CredSource::File);
         app.accounts[1].login.source = Some(crate::creds::CredSource::Keychain);
-        // A claude tab cannot move to a grok account, nor the other way.
+
         let t = app.move_targets(0);
         assert!(t
             .iter()
@@ -12182,7 +12015,7 @@ mod tests {
             .unwrap()
             .disabled
             .is_none());
-        // Session copies only offer slots of the same harness.
+
         app.sess_op = Some(crate::app_sessions::SessOp {
             items: vec![(
                 crate::app_sessions::Src::Account(0),
@@ -12201,7 +12034,7 @@ mod tests {
                 && !targets.contains(&crate::app_sessions::Src::MainGrok),
             "{targets:?}"
         );
-        // The assistant never runs its claude brain on a grok account.
+
         app.cfg.assistant.account = app.cfg.accounts[2].name.clone();
         assert_eq!(app.assistant_account(), None);
         let _ = std::fs::remove_dir_all(&home);
@@ -12224,7 +12057,7 @@ mod tests {
         assert_eq!(v["result"]["opened"].as_array().unwrap().len(), 3, "{v}");
         assert_eq!(v["result"]["refused"].as_array().unwrap().len(), 2, "{v}");
         assert_eq!(app.opened_paths.len(), 3);
-        // One list_dir for several tabs returns every listing.
+
         let ids: Vec<String> = [(0usize, 1usize), (1, 1)]
             .iter()
             .map(|&(s, t)| crate::control::tab_id(app.panes[s].tabs[t].uid))
@@ -12246,7 +12079,7 @@ mod tests {
         use crate::assistant::BrainEvent as B;
         use crate::voice::VoiceEvent;
         let (mut app, home) = test_app("bargein");
-        // A brain stub that records what it is sent.
+
         let rec = home.join("brain-in.txt");
         let stub = crate::test_stub::claude(
             &home.join("brain"),
@@ -12256,7 +12089,7 @@ mod tests {
         app.ask_assistant("tell me a long story about every tab");
         assert!(app.assistant.busy, "{:?}", app.assistant.log);
         app.on_brain(B::Delta("Once upon a time ".into()));
-        // The user talks over it.
+
         app.on_voice(VoiceEvent::BargeIn {
             speech_ms: 270,
             stop_ms: 8,
@@ -12266,12 +12099,12 @@ mod tests {
             app.voice.wake_until.is_some(),
             "no wake word needed for what they say next"
         );
-        // The rest of that turn is dropped and runs no more tools.
+
         app.on_brain(B::Delta("there was a tab".into()));
         assert!(!app.assistant.current.contains("there was a tab"));
         let v = app.control_call("close_tabs", &serde_json::json!({"tab": "all"}));
         assert!(v["error"].as_str().unwrap().contains("interrupted"), "{v}");
-        // What they said is the next turn, told about the cut.
+
         app.on_voice(VoiceEvent::Heard {
             text: "no, just the api tab".into(),
             ptt: true,
@@ -12300,7 +12133,7 @@ mod tests {
             Some("The api tab is ready.")
         );
         std::thread::sleep(std::time::Duration::from_millis(400));
-        app.assistant.brain = None; // ends the stub
+        app.assistant.brain = None;
         let sent = std::fs::read_to_string(&rec).unwrap_or_default();
         assert!(
             sent.contains("\"subtype\":\"interrupt\""),
@@ -12313,14 +12146,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// QA-18, QA-2, QA-8: a hung brain never locks the control API.
     #[test]
     fn hung_brain_never_locks_the_control_api() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::voice::VoiceEvent;
         use serde_json::json;
         let (mut app, home) = test_app("hungbrain");
-        // A brain that reads and never answers.
+
         let stub = crate::test_stub::claude(&home.join("brain"), &[]);
         app.cfg.claude_bin = Some(stub.to_string_lossy().into_owned());
         app.ask_assistant("how are my tabs");
@@ -12329,7 +12161,7 @@ mod tests {
             stop_ms: 1,
         });
         assert_eq!(app.assistant.stale, 1);
-        // Looking always works; other clients are not the cut off turn.
+
         assert_eq!(app.control_call("get_state", &json!({}))["ok"], json!(true));
         assert_eq!(
             app.control_call("get_state", &json!({"_client": "brain"}))["ok"],
@@ -12345,7 +12177,7 @@ mod tests {
                 .unwrap()
                 .contains("interrupted")
         );
-        // The cut off turn never ends: after 8 s it is reset.
+
         app.assistant.last_event =
             Some(std::time::Instant::now() - std::time::Duration::from_secs(9));
         app.assistant_tick();
@@ -12358,7 +12190,7 @@ mod tests {
             app.control_call("show", &json!({"view": "grid", "_client": "brain"}))["ok"],
             json!(true)
         );
-        // QA-8: a turn with no sign of life for 60 s ends with a message.
+
         app.ask_assistant("again");
         assert!(app.assistant.busy);
         app.assistant.last_event =
@@ -12370,7 +12202,7 @@ mod tests {
             .log
             .iter()
             .any(|e| e.text.contains("did not answer in 60 s")));
-        // QA-2: reads are never counted; other clients have no turn limit.
+
         app.assistant_calls = 0;
         for _ in 0..40 {
             assert_eq!(
@@ -12391,7 +12223,7 @@ mod tests {
                 .unwrap()
                 .contains("too many")
         );
-        // A new user turn (also from a test control client) resets it.
+
         app.handle(crate::app::AppEvent::UserTurn("next".into()));
         assert_eq!(
             app.control_call("show", &json!({"view": "grid", "_client": "brain"}))["ok"],
@@ -12410,7 +12242,7 @@ mod tests {
         app.voice.always_on = true;
         app.voice.open_mic = true;
         assert_eq!(app.voice_mode(), 3);
-        // The instant command "mute" turns it off; nothing is captured.
+
         app.voice.open_mic = false;
         app.run_instant(crate::instant::Instant::Mute);
         assert!(app.voice.muted && app.voice.engine.is_none());
@@ -12423,7 +12255,7 @@ mod tests {
         term.draw(|f| draw(f, &mut app)).unwrap();
         let t = buffer_text(term.backend().buffer());
         assert!(t.contains("● MUTED"), "red button and chip");
-        // Same place and width as the normal mic button.
+
         let muted_at = app
             .last_hits
             .find(&crate::hits::UiAction::MuteToggle)
@@ -12441,7 +12273,7 @@ mod tests {
             .rect;
         assert_eq!((muted_at.x, muted_at.width), (on_at.x, on_at.width));
         assert!(buffer_text(term.backend().buffer()).contains("  Mic  "));
-        // Ctrl-a X toggles too.
+
         app.on_command(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('X'),
             crossterm::event::KeyModifiers::NONE,
@@ -12465,7 +12297,7 @@ mod tests {
             )))
         };
         let is_open = |app: &crate::app::App, id: MenuId| matches!(&app.modal, crate::app::Modal::Menu(o) if o.id == id);
-        // Click a title: open. Esc: closed.
+
         click_on(&mut app, &mut term, &UiAction::MenuOpen(MenuId::View));
         assert!(is_open(&app, MenuId::View));
         term.draw(|f| draw(f, &mut app)).unwrap();
@@ -12479,7 +12311,7 @@ mod tests {
         );
         key(&mut app, crossterm::event::KeyCode::Esc);
         assert_eq!(app.modal, crate::app::Modal::None);
-        // Click outside: closes, and the click does not reach what is under it.
+
         click_on(&mut app, &mut term, &UiAction::MenuOpen(MenuId::Tabs));
         term.draw(|f| draw(f, &mut app)).unwrap();
         let body = app
@@ -12497,7 +12329,7 @@ mod tests {
         ));
         assert_eq!(app.modal, crate::app::Modal::None);
         assert_eq!(app.focus, focus, "the click stopped at the menu");
-        // Hovering another title while one is open switches; so does clicking it.
+
         click_on(&mut app, &mut term, &UiAction::MenuOpen(MenuId::Tabs));
         term.draw(|f| draw(f, &mut app)).unwrap();
         let v = app
@@ -12518,8 +12350,7 @@ mod tests {
             st.y,
         ));
         assert!(is_open(&app, MenuId::Settings), "click switches");
-        // Keyboard: Right goes to the next menu, arrows move, a letter jumps,
-        // Enter runs.
+
         key(&mut app, crossterm::event::KeyCode::Left);
         assert!(is_open(&app, MenuId::Voice));
         key(&mut app, crossterm::event::KeyCode::Left);
@@ -12533,11 +12364,11 @@ mod tests {
         key(&mut app, crossterm::event::KeyCode::Enter);
         assert_eq!(app.view, crate::app::View::Dashboard);
         assert_eq!(app.modal, crate::app::Modal::None);
-        // Submenus: Right opens, Enter picks.
+
         app.go_home();
         app.open_menu(MenuId::View);
-        key(&mut app, crossterm::event::KeyCode::Char('l')); // Loops
-        key(&mut app, crossterm::event::KeyCode::Char('l')); // Layout
+        key(&mut app, crossterm::event::KeyCode::Char('l'));
+        key(&mut app, crossterm::event::KeyCode::Char('l'));
         key(&mut app, crossterm::event::KeyCode::Right);
         assert!(
             matches!(&app.modal, crate::app::Modal::Menu(o) if o.sub.map(|s| s.0) == Some(MenuId::Layout))
@@ -12545,7 +12376,7 @@ mod tests {
         key(&mut app, crossterm::event::KeyCode::Down);
         key(&mut app, crossterm::event::KeyCode::Enter);
         assert_eq!(app.layout_name(), "grid");
-        // Disabled rows say why and do nothing.
+
         let es = crate::menus::entries(&app, MenuId::Tabs);
         let hidden = es
             .iter()
@@ -12559,14 +12390,14 @@ mod tests {
         app.open_menu(MenuId::Tabs);
         app.menu_click(MenuId::Tabs, hidden);
         assert!(is_open(&app, MenuId::Tabs), "a disabled row does not run");
-        // Toggles show their check.
+
         app.rt_privacy = Some(true);
         let es = crate::menus::entries(&app, MenuId::Settings);
         assert_eq!(
             es.iter().find(|e| e.label == "Privacy mode").unwrap().check,
             Some(true)
         );
-        // Context menus and popovers close on a click outside too.
+
         app.modal = crate::app::Modal::PathMenu(0);
         app.handle(mouse(
             crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
@@ -12577,7 +12408,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// QA-27: press_key enter cannot approve a permission prompt.
     #[test]
     fn press_key_never_approves_a_prompt() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -12597,14 +12427,13 @@ mod tests {
             v["error"].as_str().unwrap().contains("answer_prompt"),
             "{v}"
         );
-        // Even when the activity has not caught up, the screen tells.
+
         app.panes[0].tabs[0].activity = crate::pane::Activity::Ready;
         assert!(
             app.control_call("press_key", &json!({"tab": tab, "key": "enter"}))["error"]
                 .is_string()
         );
-        // Escape (it declines) when the user says so, and plain tabs
-        // still work.
+
         app.panes[0].tabs[0].activity = crate::pane::Activity::Permission;
         app.assistant.last_user = "press escape there".into();
         assert_eq!(
@@ -12619,8 +12448,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Escape, Ctrl-C or Ctrl-D on a working tab asks first unless the
-    /// user's own words said to stop it; an idle tab gets it at once.
     #[test]
     fn press_key_never_interrupts_unasked() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -12636,7 +12463,7 @@ mod tests {
                 &json!({"_client": "brain", "tab": tab, "key": key}),
             )
         };
-        // Asked something else entirely: Escape asks first.
+
         app.assistant_turn += 1;
         app.assistant.last_user = "what is claudego doing".into();
         let v = call(&mut app, "escape");
@@ -12646,25 +12473,25 @@ mod tests {
             q.contains("claudego") && q.contains("working") && q.contains("Escape"),
             "{q}"
         );
-        // Ctrl-C and Ctrl-D too.
+
         for k in ["ctrl_c", "ctrl_d"] {
             let v = call(&mut app, k);
             assert_eq!(v["needs_confirmation"], json!(true), "{k}: {v}");
         }
-        // Complaining about a stop is not a stop request.
+
         app.assistant.last_user = "why do you stop it, I didn't ask you that".into();
         assert_eq!(call(&mut app, "escape")["needs_confirmation"], json!(true));
-        // Another tab named: not this one.
+
         app.assistant.last_user = "stop fotmesh".into();
         assert_eq!(call(&mut app, "escape")["needs_confirmation"], json!(true));
-        // The user said to stop it: at once.
+
         app.assistant.last_user = "stop claudego".into();
         let v = call(&mut app, "escape");
         assert_eq!(v["ok"], json!(true), "{v}");
         assert_eq!(v["result"]["pressed"], json!("escape"), "{v}");
         app.assistant.last_user = "interrupt it".into();
         assert_eq!(call(&mut app, "ctrl_c")["ok"], json!(true));
-        // A yes in the next turn runs the asked one.
+
         app.assistant.last_user = "check on it".into();
         let v = call(&mut app, "escape");
         let token = v["token"].as_str().unwrap().to_string();
@@ -12675,11 +12502,11 @@ mod tests {
             &json!({"_client": "brain", "confirm_token": token}),
         );
         assert_eq!(v["ok"], json!(true), "{v}");
-        // An idle tab: at once, whatever was said.
+
         app.assistant.last_user = "what is claudego doing".into();
         app.panes[0].tabs[0].activity = crate::pane::Activity::Ready;
         assert_eq!(call(&mut app, "escape")["ok"], json!(true));
-        // Prompts on their way count as work.
+
         let uid = app.panes[0].tabs[0].uid;
         app.deliver(uid, "Run the tests.");
         let v = call(&mut app, "escape");
@@ -12688,8 +12515,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// The status bar keeps its chips and squeezes the pane summaries:
-    /// full, then compact, then "A1 wk 39%".
     #[test]
     fn status_bar_squeezes_pane_summaries() {
         use ratatui::backend::TestBackend;
@@ -12719,8 +12544,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// QA-12: narrow headers keep the account label and folder; restart
-    /// go first (the window controls stay) and the move chip shortens.
     #[test]
     fn narrow_headers_keep_label_and_folder() {
         use ratatui::backend::TestBackend;
@@ -12766,7 +12589,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// QA-14: a steady stream of output is told from occasional updates.
     #[test]
     fn streaming_is_detected() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -12791,7 +12613,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// QA-13, QA-15, QA-16: small things the QA run found.
     #[test]
     fn qa_lows_usage_error_strip_numbers_search_clear() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -12811,7 +12632,7 @@ mod tests {
             st["result"]["accounts"][0]["available"],
             serde_json::json!(false)
         );
-        // Over 9 tabs the number strip widens to fit 10, 11, ...
+
         let side = crate::ui::Side {
             collapsed: true,
             want: None,
@@ -12819,7 +12640,7 @@ mod tests {
             many: true,
         };
         assert_eq!(sidebar_width(100, side), 4);
-        // Ctrl-U clears the Sessions search.
+
         app.view = View::Sessions;
         app.sess_searching = true;
         app.sess_filter = "abc".into();
@@ -12829,7 +12650,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// QA-24: copy_session takes main install sessions too.
     #[test]
     fn copy_session_from_the_main_install() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -12863,7 +12683,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// QA-9: opening or moving onto an account that is out warns.
     #[test]
     fn moves_onto_an_exhausted_account_warn() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -12895,7 +12714,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// QA-22: approving anything but a clear read, build or test asks.
     #[test]
     fn approvals_ask_unless_clearly_safe() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -12924,8 +12742,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// QA-28: the file tools never reach logins, tokens or keys, and
-    /// tabs are not opened in system, private or home folders unasked.
     #[test]
     fn file_tools_refuse_private_and_system_folders() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -12940,7 +12756,7 @@ mod tests {
         .unwrap();
         std::fs::write(home.join("control.json"), "{\"token\":\"t\"}").unwrap();
         let err = |v: &serde_json::Value| v["error"].as_str().unwrap_or("").to_string();
-        // Opening a tab in GodTerm's home, /, or a system folder: refused.
+
         for d in [
             home.to_string_lossy().into_owned(),
             "/".into(),
@@ -12951,11 +12767,10 @@ mod tests {
             let v = app.control_call("open_tab", &json!({"account": 1, "dir": d}));
             assert!(err(&v).starts_with("refused"), "{d}: {v}");
         }
-        // The home folder itself needs the user's yes.
+
         let v = app.control_call("open_tab", &json!({"account": 1, "dir": "~"}));
         assert_eq!(v["needs_confirmation"], json!(true), "{v}");
-        // Even from a tab sitting in GodTerm's home, credentials and the
-        // control token cannot be read, and are not listed.
+
         app.panes[0].tabs[0].cwd = home.clone();
         let tab = format!("t{}", app.panes[0].tabs[0].uid);
         for path in ["accounts/account1/.credentials.json", "control.json"] {
@@ -12965,7 +12780,7 @@ mod tests {
         }
         let v = app.control_call("list_dir", &json!({"tab": tab}));
         assert!(err(&v).starts_with("refused"), "{v}");
-        // A secret file in an ordinary project folder: refused too.
+
         let proj = std::env::temp_dir().join(format!("godterm-guard-proj-{}", std::process::id()));
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::write(proj.join("auth.json"), "{}").unwrap();
@@ -12992,12 +12807,12 @@ mod tests {
             &json!({"paths": [proj.join("auth.json").to_string_lossy()]}),
         );
         assert_eq!(v["result"]["opened"], json!([]), "{v}");
-        // QA-1: a FIFO is refused at once (it would block forever).
+
         #[cfg(unix)]
         {
             let fifo = proj.join("pipe");
             let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
-            // SAFETY: mkfifo on a path we own.
+
             assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
             let t0 = std::time::Instant::now();
             let v = app.control_call("read_file", &json!({"tab": tab, "path": "pipe"}));
@@ -13007,7 +12822,7 @@ mod tests {
                 "{v}"
             );
         }
-        // QA-3: a big file is streamed: a few lines back, memory flat.
+
         let big = proj.join("big.log");
         {
             use std::io::Write;
@@ -13031,7 +12846,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use serde_json::json;
         let (mut app, home) = test_app("sesstool");
-        // Account 1 (claude): a main session with one subagent; another older one.
+
         let proj = app.cfg.accounts[0]
             .config_dir()
             .join("projects")
@@ -13079,7 +12894,7 @@ mod tests {
             .unwrap()
             .set_modified(t)
             .unwrap();
-        // Account 3 (grok): a main session and a subagent.
+
         app.cfg.accounts[2].harness = "grok".into();
         let g = app.cfg.accounts[2]
             .config_dir()
@@ -13102,7 +12917,7 @@ mod tests {
                 .any(|i| i.contains("sub") || i.starts_with("agent")),
             "{ids:?}"
         );
-        // Grouped: Claude first (newest first), then Grok.
+
         assert_eq!(
             rows.iter()
                 .map(|r| r["harness"].as_str().unwrap())
@@ -13110,14 +12925,14 @@ mod tests {
             vec!["claude", "claude", "grok"]
         );
         assert_eq!(rows[0]["id"], "aaaa1111-0000-4000-8000-000000000001");
-        // The subagent's tokens roll into its parent.
+
         assert_eq!(
             rows[0]["tokens"],
             json!({"new_input": 150, "output": 2, "largest_context": 100})
         );
         assert_eq!(rows[0]["subagents"], json!(1));
         assert_eq!(v["result"]["say"], "2 Claude and 1 Grok sessions.");
-        // Search, filters, time, and the subagent option.
+
         let f = |app: &mut crate::app::App, a: serde_json::Value| {
             app.control_call("sessions", &a)["result"]["sessions"]
                 .as_array()
@@ -13134,7 +12949,7 @@ mod tests {
         assert_eq!(f(&mut app, json!({"since": "2 days"})).len(), 2);
         assert_eq!(f(&mut app, json!({"project": "web"})), vec!["0199-main"]);
         assert_eq!(f(&mut app, json!({"include_subagents": true})).len(), 5);
-        // QA-10: a subagent is found by its own first prompt.
+
         assert_eq!(
             f(
                 &mut app,
@@ -13147,7 +12962,7 @@ mod tests {
             f(&mut app, json!({"text": "search for auth"})).is_empty(),
             "main sessions only by default"
         );
-        // Active: open in a tab, or written in the last minutes.
+
         app.panes[0].cur_mut().session_id = Some("bbbb2222-0000-4000-8000-000000000002".into());
         let act = app.control_call("sessions", &json!({"state": "active"}));
         let a: Vec<&str> = act["result"]["sessions"]
@@ -13168,14 +12983,14 @@ mod tests {
             .find(|r| r["id"] == "bbbb2222-0000-4000-8000-000000000002")
             .unwrap();
         assert!(open["open_in_tab"].as_str().unwrap().starts_with('t'));
-        // Detail: snippets only.
+
         let d = app.control_call("session_detail", &json!({"id": "aaaa1111"}));
         assert_eq!(
             d["result"]["first_prompt"], "fix the login flow in the api",
             "{d}"
         );
         assert_eq!(d["result"]["outcome"], "Fixed the login flow.");
-        // The Sessions view groups and filters the same way.
+
         app.set_source(crate::app_sessions::SourceSel::All);
         app.sess_harness = Some(1);
         let _ = app.session_rows();
@@ -13209,7 +13024,7 @@ mod tests {
             "no 5 hour window for grok: {f:?}"
         );
         assert!(f[1].contains("Build 74% left"), "{f:?}");
-        // Exhausted: never best, flagged unavailable.
+
         assert_eq!(
             app.accounts[0].binding().map(|b| (b.0, b.1)),
             Some((0.0, "weekly"))
@@ -13226,8 +13041,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use serde_json::json;
         let (mut app, home) = test_app("takeover");
-        // An external "claude" (a copy of sleep named claude) on account 2's
-        // config dir, with a transcript that has a loop.
+
         let src = app.cfg.accounts[1].config_dir();
         let cwd = home.join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
@@ -13236,7 +13050,7 @@ mod tests {
             .join(crate::state::encode_project_dir(&cwd));
         std::fs::create_dir_all(&pdir).unwrap();
         let sid = "abcd0001-0000-4000-8000-00000000beef";
-        // A loop made an hour ago: well inside the 7 day expiry of session crons.
+
         let made = chrono::Utc::now() - chrono::Duration::hours(1);
         let t0 = made.format("%Y-%m-%dT%H:%M:%SZ").to_string();
         let t1 = (made + chrono::Duration::seconds(1))
@@ -13256,7 +13070,7 @@ mod tests {
         std::fs::create_dir_all(src.join("sessions")).unwrap();
         let pidfile = src.join("sessions").join(format!("{pid}.json"));
         std::fs::write(&pidfile, json!({"pid": pid, "sessionId": sid, "cwd": cwd, "status": "busy", "kind": "interactive"}).to_string()).unwrap();
-        // Detected, with where it runs; GodTerm's own tabs never are.
+
         let live = app.live_sessions();
         assert_eq!(
             live.iter()
@@ -13264,7 +13078,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![sid]
         );
-        // The tool asks first, naming the process, and cannot answer itself.
+
         app.assistant_turn += 1;
         let v = app.control_call("take_over_session", &json!({"id": sid, "account": 1}));
         assert_eq!(v["needs_confirmation"], json!(true), "{v}");
@@ -13285,7 +13099,7 @@ mod tests {
         app.handle(crate::app::AppEvent::UserTurn("yes".into()));
         let v = app.control_call("take_over_session", &json!({"confirm_token": tok}));
         assert!(v["ok"] == json!(true), "{v}");
-        // Busy: it waits, nothing is signalled.
+
         app.takeover_tick();
         assert!(matches!(
             app.takeovers[0].stage,
@@ -13293,7 +13107,7 @@ mod tests {
         ));
         assert!(crate::takeover::alive(pid));
         assert_eq!(app.takeovers[0].loops.len(), 1, "its loop is known");
-        // Idle: SIGINT stops it, the transcript settles, it resumes here.
+
         std::fs::write(&pidfile, json!({"pid": pid, "sessionId": sid, "cwd": cwd, "status": "idle", "kind": "interactive"}).to_string()).unwrap();
         let t0 = std::time::Instant::now();
         while !matches!(
@@ -13324,7 +13138,7 @@ mod tests {
                 .any(|t| t.session_id.as_deref() == Some(sid) && t.cwd == cwd),
             "resumed here in the same folder"
         );
-        // A copy keeps the original: a second external process stays up.
+
         let mut ext2 = crate::test_stub::own_console(&mut std::process::Command::new(&exe))
             .arg("60")
             .spawn()
@@ -13369,8 +13183,6 @@ mod tests {
 
     #[test]
     fn routing_table() {
-        // Only whole utterances of the instant set stay local; everything
-        // else, however command like, reaches the assistant.
         let table = crate::instant::table(&crate::config::VoiceCfg::default().instant);
         let to_assistant = [
             "start a new tab on Account 3 and create a simple calculator",

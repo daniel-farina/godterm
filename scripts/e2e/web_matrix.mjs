@@ -1,14 +1,3 @@
-// The web matrix's browser half (scripts/e2e/web_matrix.py runs it): one
-// engine (WebKit or Chromium) at one size (a phone, 430x932 at 3x with
-// touch, or a 1440x900 desktop) against one GodTerm, every check for
-// every harness tab, written as JSON lines to the result file.
-//
-//   node scripts/e2e/web_matrix.mjs <config.json>
-//
-// config: {url, engine, device, out, groups: [..], safe, harnesses: [..],
-//          tabs: {"<uid>": {"harness", "typing"}}, soak_s, shots}
-// `safe` (real accounts): only keys that cannot start or change anything
-// (no Esc, no Shift+Tab, no Enter on a real composer).
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
@@ -29,11 +18,9 @@ function rec(group, check, harness, status, detail = '', extra = {}) {
   console.log(`${status === 'pass' ? 'ok  ' : status === 'skip' ? 'skip' : 'FAIL'} ${ENGINE}/${DEVICE} ${group}/${check} ${harness || ''} ${r.detail}`);
 }
 
-// The page side: every frame sent (binary input by tab, JSON) and the
-// frames received, counted; the sockets, to drop them.
 function hooks() {
   const G = (window.__gt = { sent: [], got: [], snaps: {}, resumes: {}, outB: {}, msgs: {}, socks: [], errors: [], fail: {}, mock: {}, clips: [], client: null });
-  // Every clip the page plays: its edges and peak, for the voice checks.
+
   const start0 = window.AudioBufferSourceNode?.prototype.start;
   if (start0) window.AudioBufferSourceNode.prototype.start = function (...a) {
     try {
@@ -65,7 +52,7 @@ function hooks() {
           const b = new Uint8Array(e.data);
           const u = ((b[1] << 24) | (b[2] << 16) | (b[3] << 8) | b[4]) >>> 0;
           if (b[0] === 1) G.outB[u] = (G.outB[u] || 0) + b.length - 5;
-          // A gzipped snapshot (kind 6) counts as the tab's snapshot.
+
           if (b[0] === 6) { G.msgs.snapshot = (G.msgs.snapshot || 0) + 1; G.snaps[u] = (G.snaps[u] || 0) + 1; }
         }
       });
@@ -75,8 +62,7 @@ function hooks() {
         if (typeof d === 'string') {
           const j = JSON.parse(d);
           G.sent.push({ j, at: performance.now() });
-          // A tool whose reply the test writes (G.fail: an error; G.mock:
-          // a control reply): answered here, never sent to GodTerm.
+
           if (j.t === 'tool' && (G.fail[j.name] != null || G.mock[j.name] != null)) {
             const result = G.fail[j.name] != null ? { ok: false, error: G.fail[j.name] } : G.mock[j.name];
             setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ t: 'result', id: j.id, result }) })), 30);
@@ -97,7 +83,6 @@ function hooks() {
   addEventListener('unhandledrejection', (e) => G.errors.push('rejection: ' + String(e.reason?.message || e.reason)));
 }
 
-// Helpers defined in the page once the app is up.
 function pageHelpers() {
   const href = (n) => {
     const l = document.querySelector(`link[rel=modulepreload][href*="js/${n}.js"]`) || document.querySelector('link[rel=modulepreload][href*="js/main.js"]');
@@ -108,7 +93,7 @@ function pageHelpers() {
   window.__h = {
     mod,
     async S() { return (await mod('state')).S; },
-    // Synchronous (waitForFunction takes a promise for a yes).
+
     readyNow(id) { const p = mods.term?.panes.focused(); return !!p && p.id === id && p.ready && (p.msg.hidden || !!p.idleMsg); },
     async allText() {
       const { panes } = await mod('term');
@@ -131,7 +116,7 @@ function pageHelpers() {
     gotSince(since, t) { return window.__gt.got.filter((x) => x.at >= since && (!t || x.t === t)); },
     now() { return performance.now(); },
     ta() { return document.querySelector('.pane:not([hidden]).focus .xterm-helper-textarea') || [...document.querySelectorAll('.pane')].find((p) => !p.hidden)?.querySelector('.xterm-helper-textarea'); },
-    // iOS's text events on xterm's textarea (web/dev/dictation.mjs).
+
     fire(type, init = {}) {
       const ta = this.ta();
       let ev;
@@ -157,8 +142,7 @@ function pageHelpers() {
       if (!d.defaultPrevented && !p.defaultPrevented) { const n = ta.value.length; this.replace(ta.selectionStart ?? n, ta.selectionEnd ?? n, k); }
       this.fire('keyup', { key: k, keyCode: kc });
     },
-    // The soft keyboard's Return: keypress only when keydown was not
-    // taken (a browser fires none after a prevented keydown).
+
     enter() {
       const d = this.fire('keydown', { key: 'Enter', code: 'Enter', keyCode: 13 });
       if (!d.defaultPrevented) this.fire('keypress', { key: 'Enter', code: 'Enter', keyCode: 13 });
@@ -168,14 +152,12 @@ function pageHelpers() {
       const ta = this.ta(); const s = ta.value.length; let prev = '';
       for (const p of parts) { this.replace(s, s + prev.length, p); prev = p; await new Promise((r) => setTimeout(r, 30)); }
     },
-    // A one finger drag on the focused pane's body: dy > 0 moves the
-    // finger down (towards older text).
+
     async drag(dy, steps = 12, x0 = null, y0 = null) {
       const { panes } = await mod('term');
       const b = panes.focused().body, r = b.getBoundingClientRect();
       const x = x0 ?? r.left + r.width / 2, y = y0 ?? r.top + r.height * (dy > 0 ? 0.25 : 0.75);
-      // Plain objects as touches: WebKit has no Touch constructor, and the
-      // app reads only clientX / clientY / identifier.
+
       const T = (yy) => ({ identifier: 7, target: b, clientX: x, clientY: yy, pageX: x, pageY: yy, screenX: x, screenY: yy });
       const ev = (type, yy) => window.__h.touch(b, type, type === 'touchend' ? [] : [T(yy)], [T(yy)]);
       ev('touchstart', y);
@@ -206,7 +188,6 @@ function pageHelpers() {
   };
 }
 
-// Applied as a line editor would (DEL deletes one character).
 function applyLine(s) {
   s = s.replace(/\x1b\[20[01]~/g, '');
   const line = [];
@@ -231,7 +212,7 @@ async function main() {
   const page = await ctx.newPage();
   const pageErrors = [];
   page.on('pageerror', (e) => { const m = (e.stack || e.message).split('\n').slice(0, 4).join(' / '); if (/ResizeObserver loop/.test(m)) return; pageErrors.push(m); console.log(`     (page error, after the checks above) ${m.slice(0, 160)}`); if (process.env.GT_DUMP && !pageErrors.dumped) { pageErrors.dumped = 1; page.evaluate(async () => { const { panes } = await window.__h.mod('term'); const p = panes.focused(); const b = p.term.buffer.active; return { id: p.id, rows: p.term.rows, cols: p.term.cols, len: b.length, ydisp: b.viewportY, ybase: b.baseY, type: b.type, ready: p.ready, clearing: !!p.clearing, gen: p.gen }; }).then((d) => console.log('     DUMP ' + JSON.stringify(d))).catch(() => {}); } });
-  // (The reconnect checks drop the socket on purpose: WebKit logs that.)
+
   page.on('console', (m) => { if (m.type() === 'error' && !/GL Driver|WebGL|favicon|WebSocket connection to .* failed|ResizeObserver loop/.test(m.text())) pageErrors.push('console: ' + m.text()); });
   const t0 = Date.now();
   await page.goto(cfg.url);
@@ -269,14 +250,14 @@ async function main() {
     await H(() => window.__h.ta()?.focus());
     await sleep(150);
   };
-  // The Prompt box (the key bar's Prompt on a phone).
+
   const openPrompt = async () => {
     await closeSheets();
     if (PHONE) await page.locator('#keybar button', { hasText: /^Prompt$/ }).first().click();
     else await H(async () => (await window.__h.mod('keybar')).promptSheet('prompt'));
     await page.waitForSelector('#sheet-body textarea', { timeout: 5000 });
   };
-  // Close a sheet or popover left open.
+
   const closeSheets = async () => {
     for (let i = 0; i < 3; i++) {
       const open = await H(() => document.querySelector('#sheet')?.classList.contains('on') || !!document.querySelector('#pop:not([hidden])'));
@@ -285,8 +266,7 @@ async function main() {
       await sleep(150);
     }
   };
-  // The tab's options away: the sheet on a phone, the docked panel on a
-  // desktop (its popover too).
+
   const closeOptions = async () => {
     await closeSheets();
     if (!PHONE) await H(async () => (await window.__h.mod('manage')).setPanel(false));
@@ -300,7 +280,7 @@ async function main() {
     const h = t.harness, uid = t.uid;
     const R = (g, c, s, d, x) => rec(g, c, h, s, d, { tab: t.id, ...x });
     const tOpen = await now();
-    // Tab list and state.
+
     if (want('tabs')) {
       try {
         await openDrawer(true);
@@ -312,9 +292,9 @@ async function main() {
           const ok = words.every((w) => row.dot.split(/\s+/).includes(w));
           R('tabs', 'listed', ok ? 'pass' : 'fail', `${cur.state}${cur.label ? ' / ' + cur.label : ''} (dot "${row.dot}")`);
         }
-        // Opening it.
+
         const tt = await now();
-        // (A JS click: a banner or toast may float over a long list.)
+
         await H((id) => document.querySelector(`#list .row[data-id="${id}"] .tx`).click(), t.id);
         const ok = await waitReady(t.id);
         const p = await H(() => window.__h.pane());
@@ -325,13 +305,10 @@ async function main() {
         R('tabs', 'open', ok && (snaps > 0 || resumed > 0) && title === t.name ? 'pass' : 'fail', `${(await now() - tt).toFixed(0)} ms, ${snaps} snapshots, ${resumed} resumes, ${p.cols}x${p.rows} ${p.type} buffer, ${p.baseY} history lines, mouse ${p.mouse}, title "${title}"${why}`);
         const text = p.text.trim();
         R('tabs', 'opens at its end', p.viewportY === p.baseY ? 'pass' : 'fail', `at ${p.viewportY} of ${p.baseY}`);
-        // Not running and blank: the pane says so.
+
         if (!text && cur.running === false) R('tabs', 'not running says so', p.idleMsg ? 'pass' : 'fail', p.idleMsg || 'a blank pane');
         else R('tabs', 'snapshot drawn', text.length > 0 ? 'pass' : 'fail', JSON.stringify(text.split('\n').filter((l) => l.trim()).slice(-2).join(' | ')).slice(0, 120));
-        // Shown again after another tab (the scrolled terminal is reset
-        // for the new snapshot): still at its end, and the position a
-        // number (xterm once took the browser's scroll to 0 as the
-        // user's, a frame late: the top, or NaN and WebGL errors).
+
         if (p.baseY > 0 && tabs.length > 1) {
           const o = tabs.find((x) => x.id !== t.id);
           await H((id) => window.__h.show(id), o.id);
@@ -365,14 +342,14 @@ async function main() {
     const canType = t.typing && t.running !== false;
     if (want('typing') && canType) {
       await focusTerm();
-      // Plain text.
+
       let s0 = await now();
       if (PHONE) { for (const k of 'qa1 ') await H((k) => window.__h.key(k), k); } else await page.keyboard.type('qa1 ');
       await sleep(250);
       let got = await sentSince(uid, s0);
       R('typing', 'plain text', applyLine(got) === 'qa1 ' && !got.includes('qa1qa1') ? 'pass' : 'fail', `sent ${show(got)}`);
       if (PHONE) {
-        // iOS dictation: each partial result replaces the phrase so far.
+
         const P = ['the', 'the interaction', 'the interaction of', 'the interaction of the microphone', 'the interaction of the microphone was confusing.'];
         s0 = await now();
         await H((P) => window.__h.dictate(P), P);
@@ -380,20 +357,20 @@ async function main() {
         got = await sentSince(uid, s0);
         const fin = P[P.length - 1];
         R('typing', 'dictation diff', applyLine(got) === fin && Array.from(got).length <= fin.length + 30 ? 'pass' : 'fail', `${Array.from(got).length} chars for ${fin.length}: ${show(applyLine(got))}`);
-        // Autocorrect: the last word replaced.
+
         s0 = await now();
         await H(async () => { for (const k of ' teh') window.__h.key(k); const ta = window.__h.ta(); const n = ta.value.length; window.__h.replace(n - 3, n, 'the', 'insertReplacementText'); });
         await sleep(200);
         got = await sentSince(uid, s0);
         R('typing', 'autocorrect', applyLine(got) === ' the' ? 'pass' : 'fail', `sent ${show(got)}`);
-        // A composition (IME, some dictation) goes once, when it ends.
+
         s0 = await now();
         await H(async () => { const h = window.__h, ta = h.ta(); const s = ta.value.length; h.fire('compositionstart'); let prev = ''; for (const p of [' ni', ' nih', ' 你好']) { h.fire('compositionupdate', { data: p }); h.replace(s, s + prev.length, p, 'insertCompositionText', true); prev = p; } h.fire('compositionend', { data: prev }); });
         await sleep(200);
         got = await sentSince(uid, s0);
         R('typing', 'composition', applyLine(got) === ' 你好' ? 'pass' : 'fail', `sent ${show(Buffer.from(got, 'latin1').toString('utf8'))}`);
       }
-      // Return: a new line (phone, the default) or Enter (desktop).
+
       if (!cfg.safe || PHONE) {
         s0 = await now();
         if (PHONE) await H(() => window.__h.enter()); else if (!cfg.safe) await page.keyboard.press('Enter');
@@ -403,23 +380,23 @@ async function main() {
         R('typing', PHONE ? 'Return = new line' : 'Enter = submit', got === wantB ? 'pass' : 'fail', `sent ${show(got)} want ${show(wantB)}`);
       }
       if (!PHONE) {
-        // Shift+Enter: the harness's new line, as in the terminal UI.
+
         s0 = await now();
         await page.keyboard.press('Shift+Enter');
         await sleep(250);
         got = await sentSince(uid, s0);
         R('typing', 'Shift+Enter = new line', got === nlFor(h) ? 'pass' : 'fail', `sent ${show(got)} want ${show(nlFor(h))}`);
       }
-      // Paste: bracketed when the app turned it on.
+
       const pm = await H(() => window.__h.pane());
       s0 = await now();
       await H(() => window.__h.fire('paste', { text: 'pasted words' }));
-      if (!PHONE) await H(async () => { const { panes } = await window.__h.mod('term'); /* xterm owns paste on desktop */ });
+      if (!PHONE) await H(async () => { const { panes } = await window.__h.mod('term');  });
       await sleep(250);
       got = await sentSince(uid, s0);
       const wantP = pm.bpm ? '\x1b[200~pasted words\x1b[201~' : 'pasted words';
       R('typing', `paste (${pm.bpm ? 'bracketed' : 'plain'})`, got === wantP ? 'pass' : 'fail', `sent ${show(got)}`);
-      // Keys.
+
       const press = async (label) => { if (PHONE) await page.locator('#keybar button', { hasText: new RegExp('^' + label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$') }).first().click(); };
       const keyCase = async (name, act, wantB) => {
         const s = await now();
@@ -452,17 +429,13 @@ async function main() {
           await keyCase('Shift+Tab', () => page.keyboard.press('Shift+Tab'), '\x1b[Z');
         }
       }
-      // The Prompt box with "Press Enter after it": the text, then Enter
-      // as its own frame once the tab shows it (a CR in the same read is
-      // a new line for Claude Code, a paste for Codex).
+
       if (!cfg.safe) {
         await clearLine(uid);
         const s = await now();
         await openPrompt();
         await page.fill('#sheet-body textarea', 'qa prompt box');
-        // The dialog's action row is usable: its buttons are opaque, take
-        // the pointer and sit inside the sheet (a chat rule for message
-        // actions once hid every dialog's buttons under the same class).
+
         const ab = await H(() => { const b = [...document.querySelectorAll('#sheet-body button.btn.pri')].find((x) => /Send/.test(x.textContent)); if (!b) return null; const cs = getComputedStyle(b), rs = getComputedStyle(b.parentElement), r = b.getBoundingClientRect(), sh = document.querySelector('#sheet').getBoundingClientRect(); return { opacity: +cs.opacity * +rs.opacity, pe: cs.pointerEvents === 'none' || rs.pointerEvents === 'none' ? 'none' : 'auto', inside: r.top >= sh.top - 1 && r.bottom <= sh.bottom + 1 && r.height >= 30, h: Math.round(r.height), rowPos: rs.position }; });
         R('typing', 'Prompt box: its buttons are usable', ab && ab.opacity >= 0.99 && ab.pe === 'auto' && ab.inside ? 'pass' : 'fail', JSON.stringify(ab));
         await page.locator('#sheet-body button.btn.pri', { hasText: 'Send' }).first().click({ timeout: 8000 });
@@ -478,8 +451,7 @@ async function main() {
     if (want('scroll')) {
       try {
         const p = await H(() => window.__h.pane());
-        // Wheel notches are input: none to a tab that gets no keys (a
-        // login screen takes any key as "log in").
+
         if (!canType && (p.path === 'app' || p.mouse !== 'none')) R('scroll', 'drag', 'skip', `no wheel to a tab that gets no keys (${p.type}, mouse ${p.mouse})`);
         else if (PHONE) {
           const s = await now();
@@ -533,36 +505,33 @@ async function main() {
           await sleep(1300);
           let rs = await H(([t]) => window.__h.jsonSince(t, 'resize'), [tOpen]);
           const mine = rs.filter((r) => r.tab === uid && !r.release);
-          // Shown already when the page opened: sized then.
+
           const cur = (await S()).tabs.find((x) => x.id === t.id), pq = await H(() => window.__h.pane());
           const held = cur?.size_taken_by != null && cur.cols === pq.cols && cur.rows === pq.rows;
           R('resize', 'fit to screen takes the size', (mine.length >= 1 && mine.every((r) => r.by)) || held ? 'pass' : 'fail', mine.length ? `${mine[mine.length - 1].cols}x${mine[mine.length - 1].rows} by ${mine[0].by}` : held ? `held since the page opened: ${pq.cols}x${pq.rows}` : `no resize (${rs.length} frames), tab ${cur?.cols}x${cur?.rows} taken by ${cur?.size_taken_by}; pane ${JSON.stringify(await H(async () => { const { panes } = await window.__h.mod('term'); const p = panes.focused(); return { id: p.id, ready: p.ready, yielded: p.yielded, take: p.take, sent: p.sent, held: p.held, sizing: p.sizing, size: p.cols + 'x' + p.rows, dims: p.fit.proposeDimensions(), body: [p.body.clientWidth, p.body.clientHeight], hidden: document.hidden, kb: document.body.className, rsT: !!p.rsT, frames: window.__gt.sent.filter((x) => x.j && x.j.t === 'resize').slice(-4).map((x) => x.j) }; }))}`);
-          // Three quick zoom steps: one resize, after they settle.
+
           const s2 = await now();
-          // (A tap on the faded control only wakes it: wake it first.)
+
           await H(() => window.__h.touchPane());
           await sleep(100);
           for (let i = 0; i < 3; i++) { await H(() => document.querySelector('.pane:not([hidden]) .fzoom button[aria-label="Larger text"]')?.click()); await sleep(120); }
           await sleep(1500);
           rs = (await H(([t]) => window.__h.jsonSince(t, 'resize'), [s2])).filter((r) => r.tab === uid && !r.release);
           const pz = await H(() => window.__h.pane());
-          // One resize, and a zoom never leaves the tab scrolled back.
+
           R('resize', 'zoom steps debounced', rs.length === 1 && !pz.jump ? 'pass' : 'fail', `${rs.length} resizes for 3 steps${rs[0] ? ' -> ' + rs[0].cols + 'x' + rs[0].rows : ''}, at ${pz.viewportY} of ${pz.baseY}`);
           await H(() => document.querySelector('.pane:not([hidden]) .fz-fit')?.click());
           await sleep(900);
           const st2 = (await S()).tabs.find((x) => x.id === t.id);
           R('resize', 'server says sized by this browser', st2?.size_taken_by != null ? 'pass' : 'fail', `size_taken_by ${st2?.size_taken_by}`);
         } else {
-          // (A desktop in use sizes the tab once when it is shown, 250 ms
-          // after; then nothing goes out while nothing changes.)
+
           await sleep(1000);
           const s = await now();
           await sleep(800);
           const rs = await H(([t]) => window.__h.jsonSince(t, 'resize'), [s]);
           R('resize', 'no resize while nothing changes', rs.length === 0 ? 'pass' : 'fail', `${rs.length} resize frames in 800 ms`);
-          // Take size: a desktop in use already sizes the tab it shows
-          // (deskfit), so the click sends a size only when none went yet;
-          // either way the state names this browser.
+
           const me = await H(() => window.__gt.client);
           const s2 = await now();
           await page.locator('.pane:not([hidden]) .pane-head button[data-i="max"]').first().click();
@@ -570,8 +539,7 @@ async function main() {
           const take = (await H(([t]) => window.__h.jsonSince(t, 'resize'), [tOpen])).filter((r) => r.tab === uid && r.cols);
           const st1 = (await S()).tabs.find((x) => x.id === t.id);
           R('resize', 'take size', st1?.size_taken_by === me ? 'pass' : 'fail', `${take.map((r) => r.cols + 'x' + r.rows + ' by ' + r.by).join(',') || 'sized before this check'}; taken by ${st1?.size_taken_by} (this browser: ${me})`);
-          // Give it back: a release, and the tab stays at its own size
-          // (deskfit does not take it again until this pane is typed in).
+
           const s3 = await now();
           await page.locator('.pane:not([hidden]) .pane-head button[data-i="max"]').first().click();
           await sleep(1200);
@@ -580,7 +548,7 @@ async function main() {
           const st2 = (await S()).tabs.find((x) => x.id === t.id);
           const hint = await H(() => { const e = document.querySelector('.pane:not([hidden]) .pane-hint'); return e && !e.hidden ? e.textContent : ''; });
           R('resize', 'give the size back', rel.length && !again.length && st2?.size_taken_by == null ? 'pass' : 'fail', `${rel.length} release, ${again.length} sizes after it, taken by ${st2?.size_taken_by}, hint "${hint}"`);
-          // Typing takes it again (the pane is in use).
+
           if (canType && !cfg.safe) {
             const s4 = await now();
             await focusTerm();
@@ -628,7 +596,7 @@ async function main() {
           const fc = await chooser;
           await fc.setFiles({ name: 'qa.png', mimeType: 'image/png', buffer: png });
         } else {
-          // A desktop pastes a copied screenshot into the terminal.
+
           await H((b64) => {
             const bin = atob(b64), u8 = Uint8Array.from(bin, (c) => c.charCodeAt(0));
             const dt = new DataTransfer();
@@ -637,7 +605,7 @@ async function main() {
           }, png.toString('base64'));
         }
         await sleep(400);
-        // The phone opens the image box first: Send (no Enter after it).
+
         if (PHONE) {
           const enter = page.locator('#sheet-body label.bar input[type=checkbox]');
           if (await enter.count()) await enter.first().uncheck().catch(() => {});
@@ -656,10 +624,9 @@ async function main() {
 
     if (want('options')) {
       try {
-        // Switch model: the tab's own list (Fable for Claude), or a note.
+
         await closeSheets();
-        // (On a desktop the Tab button toggles the docked panel: open it
-        // only when it is shut.)
+
         if (PHONE || (await H(() => document.querySelector('#tabpanel').hidden))) await page.click('#b-tabmenu');
         await sleep(350);
         await page.locator('#sheet-body li, .menu li, [role=menu] li, .mbody .li, .mbody button', { hasText: 'Switch model' }).first().click();
@@ -670,27 +637,26 @@ async function main() {
         if (h === 'claude') R('options', 'model list', labels.includes('Fable') && /Fable/.test(txt) ? 'pass' : 'fail', `models [${labels}]`);
         else if (h === 'grok') R('options', 'model list', labels.length >= 2 && labels.every((l) => txt.includes(l)) ? 'pass' : 'fail', `models [${labels}]`);
         else R('options', 'model refused gracefully', /inside the CLI/.test(txt) && !/Sonnet|Opus/.test(txt) ? 'pass' : 'fail', JSON.stringify(txt.split('\n').find((l) => /CLI|model/i.test(l)) || txt.slice(0, 80)));
-        // (Not the Escape key on a phone: a hardware keyboard's Escape
-        // hides the key bar, by design.)
+
         await closeOptions();
         if (h !== 'claude' && h !== 'grok') {
           const r = await H((id) => window.__h.tool('set_tab_model', { tab: id, model: 'opus' }), t.id);
           R('options', 'set_tab_model refused', r.ok === false && /inside the CLI/.test(r.error || '') ? 'pass' : 'fail', r.error || JSON.stringify(r).slice(0, 100));
         }
         if (!cfg.safe) {
-          // Rename and back.
+
           let r = await H((id) => window.__h.tool('rename_tab', { tab: id, name: 'qa-renamed' }, { user_says: 'rename it' }), t.id);
           await sleep(400);
           const nm = (await S()).tabs.find((x) => x.id === t.id)?.name;
           r = await H(([id, n]) => window.__h.tool('rename_tab', { tab: id, name: n }, { user_says: 'rename it' }), [t.id, t.name]);
           R('options', 'rename', nm === 'qa-renamed' ? 'pass' : 'fail', `renamed to ${nm}`);
-          // Pin and unpin.
+
           await H((id) => window.__h.tool('pin_tab', { tab: id }), t.id);
           let pinned = false;
           for (let i = 0; i < 10 && !pinned; i++) { await sleep(200); pinned = (await S()).tabs.find((x) => x.id === t.id)?.pinned; }
           await H((id) => window.__h.tool('unpin_tab', { tab: id }), t.id);
           R('options', 'pin', pinned ? 'pass' : 'fail', `pinned ${pinned}`);
-          // Move: only within the same CLI, refused for the four others.
+
           const other = (await S()).accounts.find((a) => a.account !== t.account);
           if (other) {
             const mv = await H(([id, to]) => window.__h.tool('move_tab', { tab: id, to }), [t.id, other.account]);
@@ -708,9 +674,6 @@ async function main() {
     }
   }
 
-
-  // Approvals: watched for a while (the demo agents ask now and then);
-  // each harness's first one is answered Yes from the approvals sheet.
   if (want('approval')) {
     const asked = new Set(), done = new Set();
     const wantH = new Set(tabs.map((t) => t.harness));
@@ -750,8 +713,6 @@ async function main() {
     for (const h of wantH) if (!done.has(h)) rec('approval', 'answer from the web', h, 'skip', `no approval in ${cfg.approval_s || 90} s`);
   }
 
-  // One tiny real turn per CLI, typed through the Prompt box (the text,
-  // then Enter once it shows) and its reply on the screen.
   if (want('turn')) {
     for (const t of tabs) {
       if (!t.typing) { rec('turn', 'reply with the word ok', t.harness, 'skip', 'no composer (login or start up screen)', { tab: t.id }); continue; }
@@ -768,7 +729,7 @@ async function main() {
           await sleep(300);
           const st = (await S()).tabs.find((x) => x.id === t.id)?.state;
           if (st === 'working' || st === 'background') worked = true;
-          // The whole buffer: the reply after the last copy of the prompt.
+
           txt = await H(() => window.__h.allText());
           const after = txt.split('reply with the word ok').slice(-1)[0] || '';
           const okLine = /^\W{0,6}ok\b/im;
@@ -779,7 +740,6 @@ async function main() {
     }
   }
 
-  // Close with confirm, on a tab opened for it.
   if (want('options') && !cfg.safe && cfg.open_account) {
     try {
       const before = (await S()).tabs.map((x) => x.id);
@@ -798,7 +758,6 @@ async function main() {
     } catch (e) { rec('options', 'close with confirm', '', 'fail', e.message); }
   }
 
-  // The assistant chat, a web turn, and its web_* tools.
   if (want('chat')) {
     try {
       if (PHONE) await page.click('#b-chat'); else await page.click('#b-chat');
@@ -818,7 +777,7 @@ async function main() {
       let ui = null;
       for (let i = 0; i < 60 && !ui; i++) { await sleep(300); ui = (await H(([t]) => window.__h.gotSince(t, 'ui'), [s2]))[0]; }
       rec('chat', 'web_layout reaches this browser', '', ui ? 'pass' : 'skip', ui ? JSON.stringify(ui).slice(0, 120) : 'no ui frame (the assistant did not call web_layout)');
-      // An image into the chat.
+
       const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC', 'base64');
       for (let i = 0; i < 120 && (await H(async () => (await window.__h.S()).assistant?.busy)); i++) await sleep(500);
       const s3 = await now();
@@ -833,7 +792,7 @@ async function main() {
       let um = null;
       for (let i = 0; i < 160 && !um; i++) { await sleep(250); um = (await H(([t]) => window.__h.gotSince(t, 'assistant'), [s3])).find((m) => m.role === 'user' && /\[image \d+: \d+x\d+\]/.test(m.text || '')); }
       rec('chat', 'image into the chat', '', sayImg?.images?.length === 1 && um ? 'pass' : 'fail', `say images ${sayImg?.images?.length}; ${um ? um.text.slice(0, 80) : 'no user message naming it'}`);
-      // Pasted and dropped images become chips (thumbnails with a remove button) before sending.
+
       const chips = async () => page.locator('#att .thumb').count();
       const b64 = png.toString('base64');
       await page.evaluate((b) => { const u8 = Uint8Array.from(atob(b), (c) => c.charCodeAt(0)); const dt = new DataTransfer(); dt.items.add(new File([u8], 'p.png', { type: 'image/png' })); document.querySelector('#say').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); }, b64);
@@ -849,7 +808,6 @@ async function main() {
     } catch (e) { rec('chat', 'web turn', '', 'fail', e.message); }
   }
 
-  // Voice: push to talk with Chromium's fake microphone.
   if (want('voice')) {
     if (ENGINE !== 'chromium') rec('voice', 'push to talk', '', 'skip', 'fake microphone: Chromium only');
     else {
@@ -882,7 +840,6 @@ async function main() {
     }
   }
 
-  // Stress in the page: rapid tab switching, rotation, keyboard loops.
   if (want('stress')) {
     try {
       const ids = tabs.map((t) => t.id);
@@ -915,7 +872,6 @@ async function main() {
     } catch (e) { rec('stress', 'page', '', 'fail', e.message); }
   }
 
-  // A long run: the page's memory and the frames it keeps.
   if (cfg.soak_s) {
     const samples = [];
     const end = Date.now() + cfg.soak_s * 1000;
@@ -941,10 +897,6 @@ async function main() {
     rec('soak', 'page memory', '', !heap0 ? 'skip' : grow < 1.5 && n1 < n0 * 1.5 ? 'pass' : 'fail', heap0 ? `JS heap ${(heap0 / 1e6).toFixed(1)} -> ${(heap1 / 1e6).toFixed(1)} MB (x${grow.toFixed(2)}), DOM nodes ${n0.toFixed(0)} -> ${n1.toFixed(0)}, ${samples.length} samples` : 'no heap numbers in this engine');
   }
 
-  // The sizes: the 760 px breakpoint (an iPad upright is a desktop, a
-  // phone on its side is a phone), the squeeze of a narrow desktop window
-  // (the terminal keeps 520 px), the status bar's "..." item, and a four
-  // way split that the window has no room for.
   if (want('layout') && !PHONE) {
     const vp = async (w, hh) => { await page.setViewportSize({ width: w, height: hh }); await sleep(700); };
     const lay = () => H(() => {
@@ -962,8 +914,7 @@ async function main() {
       await vp(844, 390);
       l = await lay();
       rec('layout', '844x390 (a phone on its side) is the phone layout', '', !l.desk && !l.sbar && !l.head && l.side === 'fixed' ? 'pass' : 'fail', brief(l));
-      // 1000x700 with the tab panel, then the chat: the side list folds,
-      // the one opened last stays, the terminal keeps 520 px.
+
       await vp(1000, 700);
       await H(async () => (await window.__h.mod('manage')).setPanel(true));
       await sleep(400);
@@ -972,8 +923,7 @@ async function main() {
       l = await lay();
       const open = (l.panel ? 1 : 0) + (l.chat ? 1 : 0);
       rec('layout', '1000x700 with the panel and the chat: the terminal keeps 520 px', '', l.desk && l.panes >= 520 && /sq-side/.test(l.cls) && open === 1 && l.chat ? 'pass' : 'fail', brief(l));
-      // The folded side list opens over the terminal from the Tabs
-      // button; the scrim shuts it.
+
       await page.click('#b-menu');
       await sleep(400);
       const o1 = await lay();
@@ -983,8 +933,7 @@ async function main() {
       rec('layout', 'squeezed: the Tabs button opens the list over the terminal, the scrim shuts it', '', o1.sideOpen && o1.side === 'fixed' && o1.panes >= 520 && !o2.sideOpen ? 'pass' : 'fail', `open ${o1.sideOpen} (${o1.side}, terminals ${o1.panes} px), after the scrim ${o2.sideOpen}`);
       await H(async () => (await window.__h.mod('chat')).setChat(false));
       await H(async () => (await window.__h.mod('manage')).setPanel(false));
-      // The status bar at 520 px (900 wide, the chat beside): whole items
-      // drop behind "..." which opens them as a menu above the bar.
+
       await vp(900, 600);
       await H(async () => (await window.__h.mod('chat')).setChat(true));
       await sleep(800);
@@ -1002,8 +951,7 @@ async function main() {
         await H(async () => (await window.__h.mod('manage')).setPanel(false));
       }
       await H(async () => (await window.__h.mod('chat')).setChat(false));
-      // Four panes asked for at 800x600: room for two stacked (and a
-      // message says so); the grid comes with the room.
+
       await vp(800, 600);
       await H(async () => { const { panes } = await window.__h.mod('term'); panes.setN(2); });
       await sleep(300);
@@ -1021,9 +969,6 @@ async function main() {
     await sleep(600);
   }
 
-  // The keyboard on a desktop: out of the terminal with F6 and Shift+Esc
-  // (nothing reaches the tab), "?" for the shortcuts, and a dialog that
-  // Escape and the scrim close.
   if (want('keyboard') && !PHONE && tabs.length) {
     const uid = tabs[0].uid;
     const areaOf = () => H(() => { const a = document.activeElement; const hosts = { '#side': 'tabs', '#panes': 'pane', '#sbar': 'status', '#tabpanel': 'panel', '#chat': 'assistant', '#top': 'toolbar' }; for (const [sel, n] of Object.entries(hosts)) if (document.querySelector(sel)?.contains(a)) return n + (a.classList.contains('xterm-helper-textarea') ? ':term' : ''); return a?.tagName || 'none'; });
@@ -1051,8 +996,7 @@ async function main() {
       const where = await H(() => (document.activeElement?.closest('.pane-head') ? 'pane header: ' + (document.activeElement.title || document.activeElement.dataset.i) : (document.activeElement?.id || document.activeElement?.tagName)));
       const esc = await sentSince(uid, s2);
       rec('keyboard', 'Shift+Esc leaves the terminal for its pane header', '', /^pane header/.test(where) && !esc ? 'pass' : 'fail', `focus on ${where}; sent ${show(esc)}`);
-      // "?" with the focus on a button: the shortcuts sheet, modal, Esc
-      // closes it and the focus goes back.
+
       await page.keyboard.press('?');
       await sleep(350);
       const help = await H(() => { const sh = document.querySelector('#sheet'); return { on: sh.classList.contains('on'), kind: sh.dataset.kind, title: sh.querySelector('.sh-title')?.textContent || '', inside: sh.contains(document.activeElement), rows: sh.querySelectorAll('.kh-r').length }; });
@@ -1061,7 +1005,7 @@ async function main() {
       const closed = await H(() => !document.querySelector('#sheet').classList.contains('on'));
       const backOn = await H(() => !!document.activeElement?.closest('.pane-head'));
       rec('keyboard', '? opens the shortcuts sheet, Esc closes it and gives the focus back', '', help.on && help.kind === 'keys' && /Keyboard shortcuts/.test(help.title) && help.inside && help.rows >= 10 && closed && backOn ? 'pass' : 'fail', `${JSON.stringify(help)}; closed ${closed}, focus back on the pane header ${backOn}`);
-      // "?" in the terminal is a key for the tab.
+
       await focusTerm();
       const s3 = await now();
       await page.keyboard.press('?');
@@ -1070,8 +1014,7 @@ async function main() {
       const open2 = await H(() => document.querySelector('#sheet').classList.contains('on'));
       rec('keyboard', '? in the terminal is typed into the tab', '', q === '?' && !open2 ? 'pass' : 'fail', `sent ${show(q)}, sheet open ${open2}`);
       await clearLine(uid);
-      // A dialog (Settings): centred, no grip, rounded; Escape, then a
-      // click on the scrim, close it.
+
       await page.click('#b-gear');
       await page.waitForFunction(() => document.querySelector('#sheet').classList.contains('on'), null, { timeout: 3000 }).catch(() => {});
       await sleep(400);
@@ -1090,8 +1033,6 @@ async function main() {
     } catch (e) { rec('keyboard', 'keys', '', 'fail', e.message); await closeSheets(); }
   }
 
-  // The phone's key bar: its order by use, the first seven beside Send on
-  // a 390 px phone, 44 px high.
   if (want('keybar') && PHONE) {
     try {
       await closeSheets();
@@ -1107,8 +1048,6 @@ async function main() {
     } catch (e) { rec('keybar', 'order', '', 'fail', e.message); await page.setViewportSize({ width: 430, height: 932 }).catch(() => {}); }
   }
 
-  // The phone's bottom sheet: a message stays under it, a pull down or a
-  // flick closes it, a short pull settles back.
   if (want('sheet') && PHONE && tabs.length) {
     const pull = (steps, gapMs, endDy) => H(async ([steps, gapMs, endDy]) => {
       const sheet = document.querySelector('#sheet'), el = sheet.querySelector('.sh-title') || sheet.querySelector('.sheet-grip');
@@ -1142,9 +1081,6 @@ async function main() {
     } catch (e) { rec('sheet', 'pull down', '', 'fail', e.message); await closeSheets(); }
   }
 
-  // Rows that failed to load: the reason with Retry (the test answers the
-  // tool itself), an older GodTerm named as such, and the Open on Mac
-  // button's reply as a message where messages go on this device.
   if (want('retry')) {
     try {
       await closeSheets();
@@ -1165,7 +1101,7 @@ async function main() {
       await H(() => { delete window.__gt.fail.sessions; });
       rec('retry', 'an older GodTerm is named instead of the raw error', '', /needs a newer GodTerm/.test(f2.text) && !f2.retry ? 'pass' : 'fail', JSON.stringify(f2));
       await closeSheets();
-      // Open on Mac.
+
       await H(() => { window.__gt.mock.open_desktop = { ok: true, result: { say: 'qa: GodTerm is at the front' } }; });
       await page.click('#b-mac');
       await sleep(500);
@@ -1182,9 +1118,6 @@ async function main() {
     } catch (e) { rec('retry', 'rows', '', 'fail', e.message); await H(() => { window.__gt.fail = {}; window.__gt.mock = {}; }).catch(() => {}); await closeSheets(); }
   }
 
-  // Two clients on one tab: when the other takes the size, this pane
-  // yields and says so; scrolling here leaves it alone, typing takes it
-  // back.
   if (want('shared')) {
     const t0 = tabs.find((t) => t.typing && t.running !== false);
     if (!t0 || cfg.safe) rec('shared', 'another client takes the size', '', 'skip', cfg.safe ? 'real accounts: no keys' : 'no tab to type into');
@@ -1202,9 +1135,7 @@ async function main() {
         let mine = false;
         for (let i = 0; i < 20 && !mine; i++) { await sleep(200); mine = (await taken(page)) === me; }
         if (!mine) {
-          // Not sizing it now (gave it back earlier, or a hold the server
-          // dropped): typing takes it, and the pane is asked to send its
-          // size again.
+
           if (PHONE) await H(() => window.__h.key('q')); else await page.keyboard.type('q');
           await H(async () => { const { panes } = await window.__h.mod('term'); const p = panes.focused(); p.sent = false; p.yielded = false; p.layout(); });
           for (let i = 0; i < 20 && !mine; i++) { await sleep(200); mine = (await taken(page)) === me; }
@@ -1230,7 +1161,7 @@ async function main() {
         for (let i = 0; i < 25 && !/^Sized by/.test(hint); i++) { await sleep(200); hint = await hintOf(); }
         const pa = await H(async () => { const { panes } = await window.__h.mod('term'); const p = panes.focused(); return { yielded: p.yielded, sent: p.sent }; });
         rec('shared', 'another client takes the size: this pane yields and says who', '', mine && theirs && /^Sized by .+ · use this window/.test(hint) && pa.yielded ? 'pass' : 'fail', `sized by this client ${mine} (${me}), then by ${other} ${theirs}; hint "${hint}", pane ${JSON.stringify(pa)}`);
-        // Scrolling here leaves the size with the other client.
+
         const s1 = await now();
         if (PHONE) await H(() => window.__h.drag(200));
         else { const box = await page.locator('.pane:not([hidden]) .xterm-screen').first().boundingBox(); await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.wheel(0, -300); }
@@ -1240,7 +1171,7 @@ async function main() {
         rec('shared', 'scrolling the yielded pane leaves the size alone', '', !rs1.length && tk1 === other && /^Sized by/.test(await hintOf()) ? 'pass' : 'fail', `${rs1.length} sizes sent, taken by ${tk1}, hint "${await hintOf()}"`);
         if (PHONE) await H(() => document.querySelector('.pane:not([hidden]) .jump')?.click()); else await page.mouse.wheel(0, 4000);
         await sleep(300);
-        // Typing takes it back.
+
         const s2 = await now();
         if (PHONE) await H(() => window.__h.key('q')); else { await focusTerm(); await page.keyboard.type('q'); }
         mine = false;
@@ -1254,10 +1185,6 @@ async function main() {
     }
   }
 
-  // Moving a busy tab to another account (the mock: /dev/busy keeps a tab
-  // busy): the move is queued and the sheet offers "Move now (stops the
-  // agents)" or "Wait for them"; Move now asks once more, naming what it
-  // stops, and only its Yes moves the tab.
   if (want('move')) {
     const mt = tabs.find((x) => x.account === 1 && x.name !== 'trading room');
     const origin = new URL(cfg.url).origin;
@@ -1265,7 +1192,7 @@ async function main() {
     if (!mt) rec('move', 'busy tab', '', 'skip', 'needs the mock: no tab on its first account');
     else {
       const acct2 = (await S()).accounts.find((a) => a.account !== 1 && a.harness === 'claude' && a.available !== false);
-      const acctOf = async () => (await S()).tabs.find((x) => x.name === mt.name)?.account;  // (a moved tab continues under a new id)
+      const acctOf = async () => (await S()).tabs.find((x) => x.name === mt.name)?.account;  
       const sheetInfo = () => H(() => { const sh = document.querySelector('#sheet'); return { on: sh.classList.contains('on'), kind: sh.dataset.kind, title: sh.querySelector('.sh-title')?.textContent || '', text: sh.querySelector('.appr-q')?.textContent || '', btns: [...sh.querySelectorAll('.appr-btns button')].map((b) => b.textContent.trim()), r: [...sh.querySelectorAll('.appr-btns button')].map((b) => { const q = b.getBoundingClientRect(), cs = getComputedStyle(b); return q.height >= 30 && +cs.opacity >= 0.99 && cs.pointerEvents !== 'none'; }) }; });
       const openMove = async () => {
         await closeSheets();
@@ -1288,14 +1215,14 @@ async function main() {
         const sh = await sheetInfo();
         const mv = (await H(([t]) => window.__h.jsonSince(t, 'tool'), [s0])).filter((j) => j.name === 'move_tab');
         rec('move', 'a busy tab: the move waits and the sheet offers Move now or Wait', '', b0 === 200 && mv.length === 1 && sh.kind === 'confirm' && sh.title.includes(mt.name) && /2 subagents running/.test(sh.text) && sh.btns.join('|') === 'Move now (stops the agents)|Wait for them' && sh.r.every(Boolean) ? 'pass' : 'fail', `${JSON.stringify(sh)}; ${mv.length} move_tab`);
-        // Wait for them: nothing else is sent, the tab stays.
+
         const s1 = await now();
         await page.locator('#sheet-body button', { hasText: 'Wait for them' }).click();
         await sleep(500);
         const sent1 = (await H(([t]) => window.__h.jsonSince(t, 'tool'), [s1])).map((j) => j.name);
         const closed1 = !(await sheetInfo()).on;
         rec('move', 'Wait for them: the sheet closes and nothing moves', '', closed1 && !sent1.length && (await acctOf()) === 1 ? 'pass' : 'fail', `closed ${closed1}, sent [${sent1}], account ${await acctOf()}`);
-        // Move now, then No: asked once more, nothing moves.
+
         await openMove();
         const s2 = await now();
         await page.locator('#sheet-body button', { hasText: 'Move now (stops the agents)' }).click();
@@ -1307,7 +1234,7 @@ async function main() {
         const sent2 = await H(([t]) => window.__h.jsonSince(t, 'tool'), [s2]);
         const no = sent2.find((j) => j.name === 'move_now' && j.args?.confirm_token);
         rec('move', 'Move now asks once more, naming what it stops; No moves nothing', '', cf.kind === 'confirm' && /stops what runs in/.test(cf.text) && cf.btns.join('|') === 'Yes|No' && cf.r.every(Boolean) && no?.user_says === 'no' && (await acctOf()) === 1 ? 'pass' : 'fail', `${JSON.stringify(cf)}; no frame ${JSON.stringify(no)}; account ${await acctOf()}`);
-        // Move now, then Yes: the tab moves, what ran is stopped.
+
         await openMove();
         const s3 = await now();
         await page.locator('#sheet-body button', { hasText: 'Move now (stops the agents)' }).click();
@@ -1330,8 +1257,6 @@ async function main() {
     }
   }
 
-  // Speech clips (the mock's /dev/clip): a clip with non-zero edges is
-  // faded in and out, one at full scale is scaled under it.
   if (want('clip')) {
     if (ENGINE !== 'chromium') rec('clip', 'clip edges faded', '', 'skip', 'audio: Chromium only');
     else {

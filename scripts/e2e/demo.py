@@ -49,7 +49,6 @@ def run(rep, tm, sb, harnesses=False):
     def grid():
         s = tm.screen(S)
         if harnesses:
-            # One account per agent CLI.
             need(s, "1 Work", "2 Grok Lab", "3 Backend", "4 Frontend", "5 Mobile", "6 Local")
             if s.count("CLI-managed") < 4:
                 raise StepFailed("fewer than four CLI-managed accounts in the footer")
@@ -136,7 +135,6 @@ def run(rep, tm, sb, harnesses=False):
         raise StepFailed(f"tab count {after} -> {tab_count(tm.screen(S), label)} after close (want {before})")
 
     def approvals():
-        # The demo agents ask for approval on their own after a few seconds.
         tm.wait(S, "re:\\d+ need approval \\(C-a y\\)", 60)
         tm.cmd(S, "y")
         s = tm.wait(S, "Approve   Always   Deny", 6)
@@ -147,8 +145,6 @@ def run(rep, tm, sb, harnesses=False):
         return f"{n} waiting in the queue"
 
     def approve_one():
-        # Approve the selected row in the queue (y; Enter would jump to the
-        # tab) and see that row leave the queue.
         tm.cmd(S, "y")
         s = tm.wait(S, "re:approvals: \\d+ waiting", 6)
         m = re.search(r"approvals: (\d+) waiting", s)
@@ -178,7 +174,6 @@ def run(rep, tm, sb, harnesses=False):
             s = tm.wait(S, "re:╭ browser for ", 6)
             cap = rep.capture("browser-dialog")
             if harnesses:
-                # Antigravity has no per tab tools; the others list profiles.
                 return f"capture {os.path.basename(cap)}"
             need(s, "Chrome profile for this tab", "Work (alex@example.com)", "QA")
             return f"capture {os.path.basename(cap)}"
@@ -187,14 +182,11 @@ def run(rep, tm, sb, harnesses=False):
             tm.wait(S, "re:╭ browser for ", 5, gone=True)
 
     def update_mode():
-        # The typed path: the palette entry, on then off.
         tm.cmd(S, ":")
         tm.wait(S, "command palette", 5)
         tm.text(S, "update mode")
         tm.wait(S, "voice: update mode on / off", 5)
         tm.keys(S, "Enter")
-        # The "Update mode on." flash is soon replaced by demo events: the
-        # control API is the check.
         on = None
         end = time.time() + 8
         while time.time() < end and on is not True:
@@ -213,7 +205,6 @@ def run(rep, tm, sb, harnesses=False):
         return f"on, then off; the control API agrees (capture {os.path.basename(cap)})"
 
     def mode_now():
-        # The flash is soon replaced by demo events: ask the app instead.
         r = mcp_call(sb["argv"], env_for_mcp(), "update_mode", {"now": True})
         return (r.get("result") or r).get("update_mode")
 
@@ -260,7 +251,6 @@ def run(rep, tm, sb, harnesses=False):
                         raise StepFailed(f"exit status {st}")
                     return "exit 0" + (" (after closing a leftover dialog)" if attempt else "")
                 time.sleep(0.3)
-            # A dialog left open by a failed step swallows the keys.
             rep.capture("quit-blocked")
             tm.keys(S, "Escape")
         tm.kill(S)

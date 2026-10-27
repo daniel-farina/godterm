@@ -1,8 +1,3 @@
-//! BrowserSkill: parsing, the passive status look, the skill copy and the
-//! settings.json merge. Everything runs in temp folders with fake `bsk`
-//! scripts; the real ~/.claude, ~/.godterm, ~/.grok, ~/.bsk and Chrome
-//! folders are never touched.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -20,7 +15,6 @@ fn tmp(tag: &str) -> PathBuf {
     d
 }
 
-/// A fake `bsk` that runs `body` (shell) with the arguments in $1 $2 ...
 #[cfg(unix)]
 fn fake_bsk(dir: &Path, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -65,8 +59,6 @@ fn set_mtime(p: &Path, t: SystemTime) {
         .unwrap();
 }
 
-// ---------- parsing ----------
-
 #[test]
 fn parses_the_browsers_list_and_ignores_what_it_does_not_know() {
     let b = browser::parse_browsers(BROWSERS);
@@ -76,11 +68,11 @@ fn parses_the_browsers_list_and_ignores_what_it_does_not_know() {
     assert_eq!(b[0].session_count, 2);
     assert_eq!(b[0].extension_version, "0.3.3");
     assert!(!b[0].unresponsive && !b[0].version_skew);
-    // Missing fields default; flags are read.
+
     assert_eq!(b[1].browser_version, "");
     assert_eq!(b[1].session_count, 0);
     assert!(b[1].unresponsive && b[1].version_skew);
-    // An object with a `browsers` list works too.
+
     let wrapped = format!("{{\"browsers\": {BROWSERS}}}");
     assert_eq!(browser::parse_browsers(&wrapped).len(), 2);
 }
@@ -193,21 +185,21 @@ fn finds_the_extension_per_chrome_profile_in_a_fixture() {
         r#"{"profile":{"info_cache":{"Default":{"name":"Me"},"Profile 1":{"name":"Work"},"Profile 2":{"name":"Bare"}}}}"#,
     )
     .unwrap();
-    // Default: files and enabled.
+
     fs::create_dir_all(root.join("Default/Extensions").join(id).join("0.3.3_0")).unwrap();
     fs::write(
         root.join("Default/Secure Preferences"),
         json!({"extensions": {"settings": {id: {"state": 1}}}}).to_string(),
     )
     .unwrap();
-    // Profile 1: files, disabled.
+
     fs::create_dir_all(root.join("Profile 1/Extensions").join(id)).unwrap();
     fs::write(
         root.join("Profile 1/Secure Preferences"),
         json!({"extensions": {"settings": {id: {"state": 0}}}}).to_string(),
     )
     .unwrap();
-    // Profile 2: nothing.
+
     fs::create_dir_all(root.join("Profile 2")).unwrap();
     let v = browser::chrome_extensions(&root);
     assert_eq!(v.len(), 3);
@@ -215,11 +207,9 @@ fn finds_the_extension_per_chrome_profile_in_a_fixture() {
     assert_eq!(v[1].word(), "installed, disabled");
     assert_eq!(v[2].word(), "not installed");
     assert!(!v[2].present());
-    // No Local State: no profiles, no error.
+
     assert!(browser::chrome_extensions(&tmp("chrome-none")).is_empty());
 }
-
-// ---------- the look ----------
 
 #[test]
 fn bsk_absent_is_reported_without_running_anything() {
@@ -246,11 +236,11 @@ fn a_hung_bsk_is_killed_at_the_timeout_and_never_auto_starts() {
     let r = browser::run_bsk(&bin, &["status", "--json"], Duration::from_millis(300));
     assert_eq!(r, Err(browser::RunErr::Timeout));
     assert!(t0.elapsed() < Duration::from_secs(5));
-    // The daemon is never auto started.
+
     let bin = fake_bsk(&d.join("bin2"), "echo \"auto=$BSK_AUTO_START\"");
     let (code, out) = browser::run_bsk(&bin, &["status"], Duration::from_secs(5)).unwrap();
     assert_eq!((code, out.trim()), (0, "auto=0"));
-    // A program that cannot start.
+
     assert!(matches!(
         browser::run_bsk(&d.join("missing"), &[], Duration::from_secs(1)),
         Err(browser::RunErr::Spawn(_))
@@ -321,7 +311,7 @@ fn a_stopped_daemon_is_stopped_and_a_slow_one_is_not_answering() {
     );
     let s = browser::collect(&env, &[]);
     assert_eq!(s.daemon, Daemon::Unresponsive);
-    // Garbage from a "running" daemon is unknown, not a crash.
+
     let d = tmp("garbage");
     let env = env_with(&d, "echo 'what'", 3000);
     assert!(matches!(
@@ -329,8 +319,6 @@ fn a_stopped_daemon_is_stopped_and_a_slow_one_is_not_answering() {
         Daemon::Unknown(_)
     ));
 }
-
-// ---------- the skill copy ----------
 
 #[test]
 fn copies_the_skill_fresh_and_recognizes_a_current_copy() {
@@ -347,19 +335,19 @@ fn copies_the_skill_fresh_and_recognizes_a_current_copy() {
         fs::read_to_string(dest.join("references/tabs.md")).unwrap(),
         "tabs\n"
     );
-    // A copy, not a link.
+
     assert!(!fs::symlink_metadata(&dest)
         .unwrap()
         .file_type()
         .is_symlink());
     assert_eq!(skill::plan(&src, &dest, false).unwrap(), Action::Current);
-    // No leftovers beside it.
+
     let names: Vec<_> = fs::read_dir(dest.parent().unwrap())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names, ["browser-skill"]);
-    // No source skill: refused.
+
     assert!(skill::plan(&d.join("nothing"), &dest, false).is_err());
     assert!(skill::install(&d.join("nothing"), &d.join("x/browser-skill")).is_err());
 }
@@ -370,7 +358,7 @@ fn a_newer_copy_is_kept_unless_forced_and_an_older_one_is_updated() {
     let src = skill_src(&d);
     let dest = d.join("acct/skills/browser-skill");
     skill::install(&src, &dest).unwrap();
-    // The account's copy was edited later than the source.
+
     fs::write(dest.join("SKILL.md"), "# my edit\n").unwrap();
     let old = SystemTime::now() - Duration::from_secs(3600);
     for f in ["SKILL.md", "references/tabs.md"] {
@@ -383,7 +371,7 @@ fn a_newer_copy_is_kept_unless_forced_and_an_older_one_is_updated() {
         fs::read_to_string(dest.join("SKILL.md")).unwrap(),
         "# browser skill v1\n"
     );
-    // The other way: the source is newer, so a plain run updates.
+
     fs::write(src.join("SKILL.md"), "# v2\n").unwrap();
     set_mtime(&dest.join("SKILL.md"), old);
     set_mtime(&dest.join("references/tabs.md"), old);
@@ -418,8 +406,6 @@ fn a_failed_copy_leaves_the_old_copy_and_no_temp_folder() {
     assert_eq!(names, ["browser-skill"], "no temp or old folder left");
 }
 
-// ---------- the settings.json merge ----------
-
 #[test]
 fn adds_the_permission_and_keeps_every_other_key() {
     let d = tmp("merge");
@@ -442,7 +428,7 @@ fn adds_the_permission_and_keeps_every_other_key() {
     assert_eq!(v["permissions"]["defaultMode"], "plan");
     assert_eq!(v["model"], "opus");
     assert_eq!(v["hooks"]["Stop"][0]["x"], 1);
-    // The backup is the file as it was.
+
     let old: Value = serde_json::from_str(&fs::read_to_string(&b).unwrap()).unwrap();
     assert_eq!(old["permissions"]["allow"], json!(["Bash(git:*)"]));
     assert!(b
@@ -456,14 +442,14 @@ fn adds_the_permission_and_keeps_every_other_key() {
 fn the_merge_is_idempotent_and_makes_a_missing_file() {
     let d = tmp("idem");
     let p = d.join("sub/settings.json");
-    // Missing: created, no backup.
+
     assert_eq!(
         skill::allow_rule(&p, BSK_RULE).unwrap(),
         Merge::Added { backup: None }
     );
     let v: Value = serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
     assert_eq!(v["permissions"]["allow"], json!(["Bash(bsk:*)"]));
-    // Again: nothing changes, no new backup.
+
     let before = fs::read_to_string(&p).unwrap();
     assert_eq!(
         skill::allow_rule(&p, BSK_RULE).unwrap(),
@@ -472,7 +458,7 @@ fn the_merge_is_idempotent_and_makes_a_missing_file() {
     assert_eq!(fs::read_to_string(&p).unwrap(), before);
     let n = fs::read_dir(p.parent().unwrap()).unwrap().count();
     assert_eq!(n, 1, "only settings.json");
-    // An empty file counts as {}.
+
     let e = d.join("empty.json");
     fs::write(&e, "").unwrap();
     assert!(matches!(
@@ -496,11 +482,9 @@ fn invalid_json_or_the_wrong_shape_is_refused_and_left_alone() {
         assert!(r.is_err(), "{name}: {r:?}");
         assert_eq!(fs::read_to_string(&p).unwrap(), text, "{name} untouched");
     }
-    // And no backup or temp file was left for them.
+
     assert_eq!(fs::read_dir(&d).unwrap().count(), 4);
 }
-
-// ---------- the assistant's tools ----------
 
 fn test_app(tag: &str) -> (crate::app::App, PathBuf) {
     let home =
@@ -541,7 +525,7 @@ fn acct(home: &Path, n: usize) -> PathBuf {
 fn installing_the_skill_needs_a_yes_and_reports_each_account() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("install");
-    // Account 1 already has a settings.json with other keys.
+
     fs::write(acct(&home, 1).join("settings.json"), r#"{"model":"opus"}"#).unwrap();
     user_says(&mut app, "install the browser skill everywhere");
     let v = app.control_call("install_browser_skill", &json!({"_client": "brain"}));
@@ -551,7 +535,7 @@ fn installing_the_skill_needs_a_yes_and_reports_each_account() {
         q.contains("Bash(bsk:*)") && q.contains("browser skill"),
         "{q}"
     );
-    // Nothing before the yes.
+
     for n in 1..=3 {
         assert!(!acct(&home, n).join("skills").exists(), "account {n}");
     }
@@ -559,7 +543,7 @@ fn installing_the_skill_needs_a_yes_and_reports_each_account() {
         fs::read_to_string(acct(&home, 1).join("settings.json")).unwrap(),
         r#"{"model":"opus"}"#
     );
-    // A yes in the same turn is refused; a clear yes later runs it.
+
     let tok = v["token"].as_str().unwrap().to_string();
     let same = app.control_call(
         "install_browser_skill",
@@ -579,7 +563,7 @@ fn installing_the_skill_needs_a_yes_and_reports_each_account() {
         .as_str()
         .unwrap()
         .starts_with("added (backup"));
-    // The Grok account gets the skill only.
+
     assert_eq!(rows[2]["skill"], "installed");
     assert_eq!(rows[2]["permission"], "not requested");
     for n in 1..=3 {
@@ -596,7 +580,7 @@ fn installing_the_skill_needs_a_yes_and_reports_each_account() {
     assert_eq!(s1["model"], "opus");
     assert_eq!(s1["permissions"]["allow"], json!(["Bash(bsk:*)"]));
     assert!(!acct(&home, 3).join("settings.json").exists());
-    // Run again: nothing to change, no question.
+
     user_says(&mut app, "install the browser skill again");
     let again = app.control_call("install_browser_skill", &json!({"_client": "brain"}));
     assert!(again["needs_confirmation"].is_null(), "{again}");
@@ -621,7 +605,7 @@ fn a_declined_or_unsourced_install_changes_nothing() {
     );
     assert_eq!(r["result"]["cancelled"], true, "{r}");
     assert!(!acct(&home, 2).join("skills").exists());
-    // No source skill on this machine: an error that says bsk is not installed by GodTerm.
+
     app.browser.env.as_mut().unwrap().skill_sources = vec![home.join("nope")];
     user_says(&mut app, "install the browser skill");
     let e = app.control_call("install_browser_skill", &json!({"_client": "brain"}));
@@ -640,7 +624,7 @@ fn a_declined_or_unsourced_install_changes_nothing() {
 fn list_browsers_answers_from_the_last_look_and_checks_in_the_background() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("list");
-    // No look yet: "checking", and a look starts (no bsk here: not installed).
+
     let v = app.control_call("list_browsers", &json!({"_client": "brain"}));
     assert_eq!(v["result"]["state"], "checking", "{v}");
     let t0 = std::time::Instant::now();
@@ -650,7 +634,7 @@ fn list_browsers_answers_from_the_last_look_and_checks_in_the_background() {
     let v = app.control_call("browser_status", &json!({"_client": "brain"}));
     assert_eq!(v["result"]["daemon"]["state"], "bsk not installed", "{v}");
     assert_eq!(v["result"]["godterm_accounts"].as_array().unwrap().len(), 3);
-    // A given look is what list_browsers reports.
+
     let mut s = app.browser.snapshot().unwrap();
     s.daemon = Daemon::Stopped;
     s.browsers = browser::parse_browsers(BROWSERS);
@@ -704,7 +688,7 @@ fn tabs_get_the_two_reads_and_never_the_install() {
     use crate::tab_jobs::{self, HINT, TAB_TOOLS};
     assert!(TAB_TOOLS.contains(&"list_browsers") && TAB_TOOLS.contains(&"browser_status"));
     assert!(!TAB_TOOLS.contains(&"install_browser_skill"));
-    // The five job tools are unchanged.
+
     for t in [
         "create_job",
         "list_jobs",

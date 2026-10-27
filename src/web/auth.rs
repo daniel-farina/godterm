@@ -1,9 +1,3 @@
-//! Who may use the web app: whoever holds the token in
-//! `<app home>/web-token` (made on first start, owner only). A visit with
-//! `?t=<token>` trades it for a session cookie; every other request needs
-//! that cookie. Wrong tokens are rate limited, and the WebSocket must come
-//! from a page of the same origin.
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -13,7 +7,6 @@ pub fn token_path() -> PathBuf {
     crate::config::app_home().join("web-token")
 }
 
-/// The token, made (64 hex chars, mode 0600) when there is none.
 pub fn load_or_create() -> std::io::Result<String> {
     use crate::platform::OpenOptionsExt;
     use std::io::Write;
@@ -44,20 +37,16 @@ pub fn load_or_create() -> std::io::Result<String> {
     Ok(tok)
 }
 
-/// Equal, in time that depends only on the lengths.
 pub fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// The cookie value for a token: derived, so the token itself is never
-/// stored in the browser's cookie jar.
 pub fn cookie_value(token: &str) -> String {
     use sha2::Digest;
     let h = sha2::Sha256::digest(format!("godterm-web-session:{token}").as_bytes());
     h.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// The value of cookie `name` in a Cookie header.
 pub fn cookie_in<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     header.split(';').find_map(|kv| {
         let (k, v) = kv.trim().split_once('=')?;
@@ -65,8 +54,6 @@ pub fn cookie_in<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// Set-Cookie for a good login; Secure when the page came over https
-/// (Tailscale serve), which a plain http://127.0.0.1 visit cannot use.
 pub fn set_cookie(token: &str, https: bool) -> String {
     format!(
         "{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000{}",
@@ -75,9 +62,6 @@ pub fn set_cookie(token: &str, https: bool) -> String {
     )
 }
 
-/// Failed logins: at most `MAX_FAILS` in a `WINDOW`; after that every
-/// login is refused until the window passes (even a right token, so
-/// guessing gains nothing from going on).
 #[derive(Default)]
 pub struct Limiter {
     fails: std::collections::VecDeque<Instant>,
@@ -108,14 +92,12 @@ impl Limiter {
     }
 }
 
-/// The host part of a Host header or an origin ("http://h:1/" -> "h:1").
 fn authority(s: &str) -> &str {
     let s = s.trim();
     let s = s.split_once("://").map_or(s, |(_, r)| r);
     s.split('/').next().unwrap_or("").trim_end_matches('.')
 }
 
-/// The name without a port ("[::1]:7878" -> "[::1]").
 fn hostname(a: &str) -> &str {
     if a.starts_with('[') {
         return a
@@ -132,9 +114,6 @@ fn hostname(a: &str) -> &str {
     })
 }
 
-/// A Host this server answers to: loopback names, the Mac's tailnet name
-/// (*.ts.net, through `tailscale serve`), or one set in `[web] hosts`.
-/// Anything else is a DNS rebinding attempt or a mistake.
 pub fn host_ok(host: &str, extra: &[String]) -> bool {
     let h = hostname(authority(host)).to_ascii_lowercase();
     matches!(h.as_str(), "127.0.0.1" | "localhost" | "::1")
@@ -142,15 +121,11 @@ pub fn host_ok(host: &str, extra: &[String]) -> bool {
         || extra.iter().any(|e| e.eq_ignore_ascii_case(&h))
 }
 
-/// A Host on the Mac's tailnet name (*.ts.net): what `tailscale serve`
-/// answers for.
 pub fn ts_net_host(host: &str) -> bool {
     let h = hostname(authority(host)).to_ascii_lowercase();
     h.ends_with(".ts.net") && h.len() > 7
 }
 
-/// The WebSocket's Origin is this server's own (as the browser reached
-/// it: the Host, or the name a proxy forwarded).
 pub fn origin_ok(origin: Option<&str>, host: &str, forwarded: Option<&str>) -> bool {
     let Some(o) = origin else {
         return false;
@@ -159,16 +134,11 @@ pub fn origin_ok(origin: Option<&str>, host: &str, forwarded: Option<&str>) -> b
     if o.is_empty() {
         return false;
     }
-    // Exactly, port included: cookies are per site, not per port, so a
-    // page on another local port must not get in with ours.
+
     let same = |h: &str| authority(h).to_ascii_lowercase() == o;
     same(host) || forwarded.is_some_and(same)
 }
 
-/// The other processes on a TCP connection whose client side is
-/// `ip`:`port` (lsof; `netstat -ano` on Windows). None when that cannot
-/// be told: the listing must show this process (the server end), or it
-/// saw nothing at all.
 fn conn_peers(ip: std::net::IpAddr, port: u16) -> Option<Vec<u32>> {
     let addr = match ip {
         std::net::IpAddr::V4(v) => v.to_string(),
@@ -202,15 +172,12 @@ fn conn_peers(ip: std::net::IpAddr, port: u16) -> Option<Vec<u32>> {
         .then(|| pids.into_iter().filter(|p| *p != me).collect())
 }
 
-/// The pids on the established connections of `netstat -ano` output that
-/// have `addr`:`port` as either end (a loopback connection is two lines:
-/// the client's and the server's), each once.
 pub(crate) fn parse_netstat_conn(text: &str, addr: &str, port: u16) -> Vec<u32> {
     let end = format!("{addr}:{port}");
     let mut out = vec![];
     for l in text.lines() {
         let w: Vec<&str> = l.split_whitespace().collect();
-        // Proto, local, foreign, state, pid.
+
         if w.len() < 5 || !w[0].eq_ignore_ascii_case("tcp") {
             continue;
         }
@@ -226,13 +193,6 @@ pub(crate) fn parse_netstat_conn(text: &str, addr: &str, port: u16) -> Vec<u32> 
     out
 }
 
-/// The connection comes from inside GodTerm: a tab's agent (or anything
-/// else it started) holding the token, being the same user that can read
-/// the token file. Those get the read-only control socket, never the
-/// user's own access. A browser is never GodTerm's child; a process that
-/// detached itself is not caught (this is a second wall, not the first).
-/// `local`: the peer is on this machine (loopback, or this Mac's own
-/// tailnet address).
 pub fn from_inside(peer: std::net::SocketAddr, local: bool) -> bool {
     if !local {
         return false;
@@ -248,12 +208,10 @@ pub fn from_inside(peer: std::net::SocketAddr, local: bool) -> bool {
         .any(|p| crate::peer::descends_from(p, &[me], &parent))
 }
 
-/// The executable a process runs (the kernel's answer, not its argv[0]).
 #[cfg(target_os = "macos")]
 fn exe_of(pid: u32) -> Option<std::path::PathBuf> {
     let mut buf = vec![0u8; 4096];
-    // SAFETY: the buffer is valid for its length; proc_pidpath writes at
-    // most that many bytes and returns how many.
+
     let n = unsafe {
         libc::proc_pidpath(
             pid as libc::c_int,
@@ -273,12 +231,8 @@ fn exe_of(pid: u32) -> Option<std::path::PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/exe")).ok()
 }
 
-/// Tailscale's own program: owned by root (so not something this user
-/// made) and named for it.
 #[cfg(windows)]
 fn is_tailscale(pid: u32) -> bool {
-    // tailscaled is a service under Program Files, where this user cannot
-    // write: a program of this user's own that takes its name is not it.
     let Some(exe) = crate::procs::process(pid).and_then(|p| p.exe) else {
         return false;
     };
@@ -307,11 +261,6 @@ fn is_tailscale(pid: u32) -> bool {
     named && std::fs::metadata(&exe).is_ok_and(|m| m.uid() == 0)
 }
 
-/// A loopback connection whose client end only Tailscale could hold: no
-/// process this user can see holds it, except Tailscale's own (tailscaled
-/// runs as root, so lsof shows nothing for it). A local process that
-/// sends serve's identity headers itself is seen here and refused. False
-/// when it cannot be told.
 pub fn via_tailscale(peer: std::net::SocketAddr) -> bool {
     if !peer.ip().is_loopback() {
         return false;

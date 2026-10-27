@@ -1,10 +1,3 @@
-//! The status picture: a tab at its prompt whose Agent tool subagents
-//! still run (their transcripts mid call, written long ago; the screen's
-//! "Waiting for N background agents" rows) is working, in get_state, in
-//! the assistant's snapshot and in work_status; work_status groups
-//! needs_you, working, finished and idle, says what each tab is doing,
-//! and since "last" marks what changed.
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -15,7 +8,6 @@ use crate::config::testing::LOCK as ENV_LOCK;
 use crate::confirm_click_tests::test_app;
 use crate::pane::{Activity, PaneState};
 
-/// A running tab at its prompt with a session: (index, transcript path).
 fn ready_tab(app: &mut App, name: &str) -> (usize, PathBuf) {
     let a = app.panes[0].account.unwrap();
     let proj = app.cfg.accounts[a].work_dir().join(name);
@@ -53,7 +45,6 @@ fn set_mtime(p: &std::path::Path, ago: Duration) {
         .unwrap();
 }
 
-/// A finished turn: the prompt, a tool call, its result, the reply.
 fn finished_turn(path: &std::path::Path, prompt: &str, reply: &str, secs_ago: i64) {
     write(
         path,
@@ -67,7 +58,6 @@ fn finished_turn(path: &std::path::Path, prompt: &str, reply: &str, secs_ago: i6
     set_mtime(path, Duration::from_secs(secs_ago.max(0) as u64));
 }
 
-/// A subagent transcript mid tool call, last written `ago`.
 fn subagent(transcript: &std::path::Path, id: &str, task: &str, ago: Duration) {
     let dir = transcript.with_extension("").join("subagents");
     std::fs::create_dir_all(&dir).unwrap();
@@ -102,9 +92,7 @@ fn names(v: &Value, group: &str) -> Vec<String> {
 fn a_tab_with_running_subagents_is_working_everywhere() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("workstatus");
-    // godterm: its turn ended with "Waiting for the agents", one subagent
-    // transcript mid call written 20 minutes ago, and the screen shows
-    // three running agents.
+
     let (g, gp) = ready_tab(&mut app, "godterm");
     finished_turn(
         &gp,
@@ -123,11 +111,11 @@ fn a_tab_with_running_subagents_is_working_everywhere() {
         .lock()
         .unwrap()
         .process(AGENTS_SCREEN.as_bytes());
-    // hyper: hit its usage limit.
+
     let (h, _) = ready_tab(&mut app, "hyper");
     let hu = app.panes[0].tabs[h].uid;
     app.limit_hit.insert(hu);
-    // scout: finished five minutes ago with a question.
+
     let (x, xp) = ready_tab(&mut app, "scout");
     finished_turn(
         &xp,
@@ -135,12 +123,10 @@ fn a_tab_with_running_subagents_is_working_everywhere() {
         "Done: the cache is clean. Should I also drop the old builds?",
         5 * 60,
     );
-    // notes: nothing for two hours.
+
     let (n, _) = ready_tab(&mut app, "notes");
     app.panes[0].tabs[n].activity_since = Instant::now() - Duration::from_secs(2 * 3600);
-    // The first tabs of the test app are not running: off.
 
-    // The activity sees the agents, named from the screen rows.
     let a = app.tab_activity(0, g);
     assert_eq!(a.subagents_running, 3, "{a:?}");
     assert!(
@@ -154,7 +140,7 @@ fn a_tab_with_running_subagents_is_working_everywhere() {
     );
     assert_eq!(app.state_word(0, g), "background");
     assert!(app.tab_busy(0, g));
-    // get_state (the web and TUI state) and the snapshot say so.
+
     let st = app.control_call("get_state", &json!({}));
     let gu = app.panes[0].tabs[g].uid;
     let row = st["result"]["tabs"]
@@ -172,7 +158,6 @@ fn a_tab_with_running_subagents_is_working_everywhere() {
         "{pre}"
     );
 
-    // work_status: the groups, in order, with what each is doing.
     let v = app.control_call("work_status", &json!({}));
     assert_eq!(v["ok"], true, "{v}");
     assert_eq!(names(&v, "needs_you"), ["hyper", "scout"]);
@@ -215,7 +200,6 @@ fn a_tab_with_running_subagents_is_working_everywhere() {
     assert!(!v["result"]["off"].as_array().unwrap().is_empty());
     assert!(v["result"].get("since").is_none());
 
-    // The digest a voice answer is built from.
     let (lines, rest) = App::work_digest(&v["result"], 0, 3);
     assert_eq!(lines.len(), 3);
     assert!(
@@ -228,7 +212,6 @@ fn a_tab_with_running_subagents_is_working_everywhere() {
     );
     assert_eq!(rest, 0);
 
-    // since "last": nothing changed, then scout moves on.
     let v2 = app.control_call("work_status", &json!({"since": "last"}));
     assert_eq!(
         v2["result"]["since"]["changed"],
@@ -255,16 +238,13 @@ fn a_tab_with_running_subagents_is_working_everywhere() {
     assert_eq!(xs["changed"], true);
     assert_eq!(xs["was"], "needs_you");
     assert_eq!(names(&v3, "needs_you"), ["hyper"]);
-    // One tab only.
+
     let one = app.control_call("work_status", &json!({"tab": "godterm"}));
     assert_eq!(names(&one, "working"), ["godterm"]);
     assert!(entries(&one, "needs_you").is_empty());
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// A subagent transcript mid call written 3 minutes ago counts without
-/// screen rows; one silent for 25 minutes does not (a stopped agent),
-/// and the screen alone counts too.
 #[test]
 fn agents_count_from_transcripts_or_the_screen_alone() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -291,12 +271,8 @@ fn agents_count_from_transcripts_or_the_screen_alone() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-// ---- moving busy tabs ----
-
 const LIMIT_SCREEN: &str = "⏺ Waiting for 3 background agents to finish\r\n  ⎿  ○ general-purpose 52m 3s\r\n     ○ general-purpose 52m 3s\r\n     ○ Explore 50m 1s\r\n\r\n  Claude usage limit reached. Your limit will reset at 7pm.\r\n\r\n────────────────────────────\r\n❯ \r\n────────────────────────────\r\n";
 
-/// Stopped agents the way a dead session leaves them: the last real
-/// message a tool call, then an attachment and an api-request record.
 fn stopped_agent(transcript: &std::path::Path, id: &str, age: Duration) {
     let dir = transcript.with_extension("").join("subagents");
     std::fs::create_dir_all(&dir).unwrap();
@@ -324,9 +300,6 @@ fn tab_row(app: &mut App, uid: u64) -> Value {
         .unwrap()
 }
 
-/// A tab stopped at its usage limit whose agents are stale transcripts
-/// (and rows still drawn on its screen) is not working through agents:
-/// it reads ready, and a move to another account happens at once.
 #[test]
 fn a_tab_stopped_at_its_limit_moves_at_once() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -336,11 +309,11 @@ fn a_tab_stopped_at_its_limit_moves_at_once() {
     for id in ["agent-a02c", "agent-a8de", "agent-a5a8"] {
         stopped_agent(&p, id, Duration::from_secs(50 * 60));
     }
-    // Stale transcripts alone: not running, with or without a limit.
+
     let a = app.tab_activity(0, t);
     assert_eq!(a.subagents_running, 0, "{a:?}");
     assert_eq!(app.state_word(0, t), "ready");
-    // The screen still draws the rows and says the limit: limit wins.
+
     app.panes[0].tabs[t]
         .parser
         .lock()
@@ -358,7 +331,7 @@ fn a_tab_stopped_at_its_limit_moves_at_once() {
         !names(&w, "working").contains(&"hyper".to_string()),
         "never working through agents: {w}"
     );
-    // The move happens now, not queued.
+
     let id = crate::control::tab_id(uid);
     let v = app.control_call("move_tab", &json!({"tab": id, "to": 2}));
     assert_eq!(v["ok"], true, "{v}");
@@ -371,9 +344,6 @@ fn a_tab_stopped_at_its_limit_moves_at_once() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The same stale transcripts on a tab that is not at a limit: the screen
-/// shows nothing running either, so it is not busy and moves at once; and
-/// the limit marked by GodTerm's scan counts like the screen's words.
 #[test]
 fn stale_agents_do_not_hold_a_move_and_the_limit_mark_counts() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -388,7 +358,7 @@ fn stale_agents_do_not_hold_a_move_and_the_limit_mark_counts() {
         &json!({"tab": crate::control::tab_id(uid), "to": 2}),
     );
     assert_eq!(v["result"]["moved"].as_array().unwrap().len(), 1, "{v}");
-    // A recent agent plus the scan's limit mark: not busy either.
+
     let (t2, p2) = ready_tab(&mut app, "marked");
     finished_turn(&p2, "Go", "Waiting.", 60);
     subagent(&p2, "agent-r", "Run it", Duration::from_secs(60));
@@ -400,9 +370,6 @@ fn stale_agents_do_not_hold_a_move_and_the_limit_mark_counts() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// A busy tab (2 agents running) is queued, once, with the reason in the
-/// answer; the tab list carries the pending move; "move now" asks once and
-/// then moves it, dropping the queued move.
 #[test]
 fn a_queued_move_says_why_shows_in_the_list_and_can_be_forced() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -439,10 +406,10 @@ fn a_queued_move_says_why_shows_in_the_list_and_can_be_forced() {
         .as_str()
         .unwrap()
         .contains("2 subagents"));
-    // Asking again does not stack a second move.
+
     app.control_call("move_tab", &json!({"tab": id, "to": 2}));
     assert_eq!(app.queued_moves.len(), 1);
-    // The tab list marks it.
+
     let row = tab_row(&mut app, uid);
     assert!(
         row["move_pending"]["waiting_for"]
@@ -456,11 +423,11 @@ fn a_queued_move_says_why_shows_in_the_list_and_can_be_forced() {
         json!(app.cfg.accounts[1].display().to_string())
     );
     assert!(app.move_pending(uid).is_some());
-    // The busy tab stays where it is while it works.
+
     app.tabmove_tick();
     assert_eq!(app.queued_moves.len(), 1);
     assert!(app.find_tab(uid).is_some());
-    // Move now asks first, naming what it stops.
+
     let before = app.pending_moves.len();
     let v = app.control_call("move_now", &json!({"tab": id, "to": 2}));
     assert_eq!(v["needs_confirmation"], json!(true), "{v}");

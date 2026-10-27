@@ -1,15 +1,3 @@
-//! `work_status`: everything being worked on, in one cheap call that
-//! spends no quota. Every tab with its state, what runs under it in the
-//! background (subagents with names and ages, shells, tasks), what it is
-//! doing now (the last line its agent wrote and the tool it is in, from
-//! its transcript; the screen's last line for a CLI without one), what
-//! it needs from the user, minutes since its last activity, and the jobs
-//! and loops that belong to it; grouped needs_you, working, finished
-//! (the last 30 minutes) and idle. A tab at its prompt with subagents
-//! still running is working, never idle. `since: "last"` marks what
-//! changed since the previous call, so "what else" and "anything new"
-//! are answered from a diff, not from memory.
-
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -19,18 +7,15 @@ use crate::app::App;
 use crate::control::{plural, tab_id};
 use crate::pane::Activity;
 
-/// A turn that ended this recently is "finished", older ones are idle.
 pub const FINISHED_WINDOW_MIN: u64 = 30;
 
-/// What the previous call saw, for `since: "last"`.
 #[derive(Debug, Clone, Default)]
 pub struct WorkSeen {
     pub at: Option<Instant>,
-    /// Per tab uid: its group and a fingerprint of what it was doing.
+
     pub tabs: HashMap<u64, (String, String)>,
 }
 
-/// The group a tab belongs to, in the order they are told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Group {
     NeedsYou,
@@ -52,8 +37,6 @@ impl Group {
     }
 }
 
-/// The last line of a screen worth saying: not the prompt box, its
-/// borders, the shortcuts hint or a footer count.
 pub fn screen_last_line(screen: &str) -> Option<String> {
     screen
         .lines()
@@ -80,15 +63,12 @@ pub fn screen_last_line(screen: &str) -> Option<String> {
         .map(|l| crate::sessions::snippet(l, 160))
 }
 
-/// "yes/no" questions the agent asked the user in its last text: the
-/// text ends with a question mark (after any trailing markup).
 fn asks_user(text: &str) -> bool {
     text.trim()
         .trim_end_matches(['*', '`', ')', '"', '\u{201d}', ' '])
         .ends_with('?')
 }
 
-/// Ended with a full stop unless it already ends a sentence.
 fn sentence(s: String) -> String {
     if s.ends_with(['.', '!', '?']) {
         s
@@ -104,7 +84,6 @@ fn hm(at: &str) -> Option<String> {
 }
 
 impl App {
-    /// The `work_status` tool (None for any other tool).
     pub fn work_status_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         if tool != "work_status" {
             return None;
@@ -114,7 +93,6 @@ impl App {
         ))
     }
 
-    /// One tab's entry: see the module doc.
     pub(crate) fn work_entry(&self, s: usize, t: usize) -> (Group, Value) {
         let slot = &self.panes[s];
         let tab = &slot.tabs[t];
@@ -131,7 +109,6 @@ impl App {
         let bg = act.background() > 0;
         let running = tab.is_running();
 
-        // What it needs from the user.
         let mut needs: Option<String> = None;
         if tab.activity == Activity::Permission {
             let what = self
@@ -172,7 +149,6 @@ impl App {
             needs = Some("an answer: its last message is a question to you".into());
         }
 
-        // What it is doing now.
         let claude_like = transcript.is_some();
         let (doing, in_tool, doing_at) = match &tail {
             Some(x) => (
@@ -306,7 +282,6 @@ impl App {
         (group, v)
     }
 
-    /// A short fingerprint of an entry: what would make it "changed".
     fn work_fingerprint(v: &Value) -> String {
         format!(
             "{}|{}|{}|{}|{}",
@@ -318,7 +293,6 @@ impl App {
         )
     }
 
-    /// The whole picture (the tool's result).
     pub fn work_status_json(&mut self, args: &Value) -> Value {
         let since_last = args.get("since").and_then(Value::as_str) == Some("last");
         let since_min: Option<u64> = match args.get("since") {
@@ -341,8 +315,7 @@ impl App {
         for (s, t) in tabs {
             groups.push(self.work_entry(s, t));
         }
-        // Within a group: the ones needing you first by wait, working
-        // by most recent activity, finished and idle by recency.
+
         groups.sort_by(|a, b| {
             a.0.cmp(&b.0).then_with(|| {
                 let m = |v: &Value| v["minutes_since_activity"].as_u64().unwrap_or(0);
@@ -350,7 +323,6 @@ impl App {
             })
         });
 
-        // What changed since the previous call (or the last N minutes).
         let prev = std::mem::take(&mut self.assistant.work_seen);
         let mut seen = WorkSeen {
             at: Some(Instant::now()),
@@ -436,8 +408,7 @@ impl App {
             counts.push(format!("{} off", off.len()));
             out["off"] = json!(off);
         }
-        // Background sessions GodTerm itself runs for busy tabs: the
-        // assistant's own hands on this Mac.
+
         let runs: Vec<Value> = self
             .busy
             .runs
@@ -469,10 +440,6 @@ impl App {
         out
     }
 
-    /// The status digest, spoken: needs_you, then working, then
-    /// finished, one sentence per tab; `skip` sentences already said
-    /// ("what else" continues), at most `max` now. Returns the sentences
-    /// and how many remain.
     pub fn work_digest(status: &Value, skip: usize, max: usize) -> (Vec<String>, usize) {
         let mut all: Vec<String> = vec![];
         let name = |v: &Value| {

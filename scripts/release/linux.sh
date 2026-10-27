@@ -1,19 +1,4 @@
 #!/usr/bin/env bash
-# Linux release: x86_64 and aarch64 (glibc) builds, packaged as tar.gz, .deb
-# .rpm and AppImage. Each target builds natively inside the packaging/linux/Dockerfile
-# image (Ubuntu 22.04), so the result is the same from a Mac or from CI.
-# Idempotent.
-#
-#   scripts/release/linux.sh                 both architectures (Docker)
-#   LINUX_TARGETS=aarch64-unknown-linux-gnu scripts/release/linux.sh
-#   NATIVE=1 scripts/release/linux.sh        no Docker: build for this Linux
-#                                            host's arch with the tools installed
-#
-# Why not zig cross linking: ort links a prebuilt onnxruntime built against
-# GNU libstdc++, which zig's libc++ cannot satisfy. Why not musl: onnxruntime
-# has no prebuilt static library for musl. See packaging/PORTING.md.
-#
-# Runtime needs: glibc 2.34+, libstdc++6, libasound2 (ALSA).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 read -r -a TARGETS <<< "${LINUX_TARGETS:-x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu}"
@@ -27,7 +12,6 @@ arch_of() {
   esac
 }
 
-# Build and package one target on this (Linux) machine.
 inside() { # inside <target>
   local t="$1" arch rpmarch bin name d j
   read -r arch rpmarch _ <<< "$(arch_of "$t")"
@@ -51,17 +35,11 @@ inside() { # inside <target>
   cargo deb --no-build --profile "$PROFILE" --target "$t" \
     --deb-version "$VERSION" -o "$DIST/godterm_${VERSION}_${arch}.deb"
   log "cargo generate-rpm ($rpmarch)"
-  # Requires by soname (distro neutral: Fedora, RHEL, openSUSE). The
-  # automatic scan emits "libc.so.6(GLIBC_2.x)[WEAK]" on x86_64, which no
-  # distro provides, so it is off.
   cargo generate-rpm --profile "$PROFILE" --target "$t" --target-dir "$CARGO_TARGET_DIR" \
     --arch "$rpmarch" --auto-req disabled \
     -s 'requires = { "libasound.so.2()(64bit)" = "*", "libstdc++.so.6()(64bit)" = "*", "libc.so.6(GLIBC_2.34)(64bit)" = "*" }' \
     -o "$DIST/godterm-$VERSION-1.$rpmarch.rpm"
 
-  # AppImage: one file, chmod +x and run, on most distros. Bundles
-  # libasound (absent on minimal systems); glibc and libstdc++ come from
-  # the host, as usual for AppImages.
   if command -v appimagetool >/dev/null; then
     log "appimagetool ($rpmarch)"
     local appdir; appdir="$(mktemp -d)/GodTerm.AppDir"
@@ -87,7 +65,6 @@ APPRUN
 
 if [[ "${1:-}" == --inside ]]; then
   inside "$2"
-  # The container runs as root: give the packages back to the caller.
   [[ -n "${HOST_UID:-}" ]] && chown "$HOST_UID:${HOST_GID:-$HOST_UID}" "$DIST"/godterm* "$DIST"/GodTerm-*.AppImage 2>/dev/null || true
   exit 0
 fi

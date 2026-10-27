@@ -1,16 +1,7 @@
-//! Renaming a coding session the way its harness does, so the name also
-//! shows in `claude --resume` and Grok's own picker. Claude Code's
-//! /rename appends a `custom-title` and an `agent-name` record to the
-//! transcript; Grok's sets `generated_title` with `title_is_manual` in
-//! the session's summary.json. A session running in a tab gets the
-//! harness's own `/rename` command instead (see app_projects.rs).
-
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::Path;
 
-/// A session name as given: one line, no control characters, at most
-/// 100 characters.
 pub fn clean_name(s: &str) -> Result<String, String> {
     let n: String = s
         .chars()
@@ -24,15 +15,13 @@ pub fn clean_name(s: &str) -> Result<String, String> {
     Ok(n)
 }
 
-/// Append Claude Code's title records to a transcript in one write (an
-/// O_APPEND write this small lands whole, even while claude appends).
 pub fn append_claude_title(path: &Path, id: &str, name: &str) -> Result<(), String> {
     use std::io::{Read, Seek, SeekFrom};
     if !path.is_file() {
         return Err("transcript gone".into());
     }
     let mut buf = String::new();
-    // A transcript that does not end in a newline gets one first.
+
     let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     if len > 0 {
@@ -58,8 +47,6 @@ pub fn append_claude_title(path: &Path, id: &str, name: &str) -> Result<(), Stri
     f.write_all(buf.as_bytes()).map_err(|e| e.to_string())
 }
 
-/// Set a Grok session's manual title in its summary.json (written to a
-/// temp file and renamed over it, permissions kept).
 pub fn set_grok_title(dir: &Path, name: &str) -> Result<(), String> {
     let p = dir.join("summary.json");
     let text = std::fs::read_to_string(&p).map_err(|e| format!("summary.json: {e}"))?;

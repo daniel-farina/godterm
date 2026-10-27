@@ -1,12 +1,8 @@
-//! `godterm mcp`: an MCP server on stdio (JSON-RPC 2.0, one message per
-//! line) exposing the control API tools of the running godterm.
-
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
 pub const PROTOCOL: &str = "2025-06-18";
 
-/// Answer one request; None for notifications.
 #[cfg(test)]
 pub fn handle(
     req: &Value,
@@ -15,8 +11,6 @@ pub fn handle(
     handle_as(req, call, false)
 }
 
-/// `tab`: the server of a tab's agent, which has only the job tools (see
-/// tab_jobs); a call to any other tool is refused here, before the socket.
 pub fn handle_as(
     req: &Value,
     call: &mut dyn FnMut(&str, &Value) -> anyhow::Result<Value>,
@@ -82,7 +76,6 @@ pub fn handle_as(
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
 
-/// The stdio loop.
 pub fn run() -> anyhow::Result<()> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();

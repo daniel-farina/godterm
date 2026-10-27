@@ -1,25 +1,3 @@
-//! Conversation ownership in the app (docs/SYNC.md 4, Phase 3).
-//!
-//! With sync on, a tab resumes a session only once this machine holds its
-//! lease: the resume waits for the lease worker (its own thread: fetch,
-//! compare and swap, push), which also pulls the transcript first. A
-//! session another live machine owns opens read only, with its transcript
-//! and "Owned by MacBook, active 1 min ago", and two ways on: Request take
-//! over (the owner lets go once idle) and Take over now (an explicit yes).
-//!
-//! When this machine loses a lease (taken over, or found taken after an
-//! offline spell) input to the tab is blocked at once, the running turn
-//! may end, then the CLI is stopped gracefully (SIGINT, a second SIGINT,
-//! SIGTERM; never SIGKILL, as takeover.rs does) and whatever it wrote that
-//! was never pushed becomes a forked session: "Moved to MacBook; your
-//! unsent part is fork 1a2b3c4d". A request for one of ours is the same
-//! stop, then a release with the final bytes pushed.
-//!
-//! Jobs fire only on the machine that owns their session. A tab moved to
-//! another account keeps its session id and so its lease; a new session
-//! id seen in a tab (a copy, a duplicate, a fresh start) takes a new one.
-//! Nothing here touches a project repo.
-
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,67 +10,59 @@ use crate::pane::{Activity, LaunchKind};
 use crate::sync::lease::{Board, Status};
 use crate::sync::takeover::{Cmd, Event};
 
-/// Why a tab's CLI is being stopped.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StopWhy {
-    /// Another machine has it now (`conflict`: the synced copy moved on
-    /// while this machine worked offline, and the lease is still ours).
     Lost { conflict: bool },
-    /// Another machine asked for it.
+
     Release,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StopStage {
-    /// The turn may finish.
     WaitIdle(Instant),
-    /// Interrupts sent so far (two SIGINTs, then SIGTERM).
+
     Signal { at: Instant, sent: u8 },
 }
 
-/// A tab whose session someone else holds (or this machine let go of).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ReadOnly {
     pub sid: String,
-    /// Who has it, in words ("MacBook").
+
     pub label: String,
-    /// Its heartbeat (ms since 1970), 0 when unknown.
+
     pub beat_ms: i64,
-    /// We asked for it and wait for the owner to let go.
+
     pub requested: bool,
-    /// What happened ("Moved to MacBook; your unsent part is fork ...").
+
     pub note: Option<String>,
-    /// The fork holding what this machine never pushed.
+
     pub fork: Option<String>,
-    /// Decided offline (from the last board seen).
+
     pub offline: bool,
-    /// Nobody live holds it: Enter resumes it here.
+
     pub resumable: bool,
-    /// "Take over now?" is asked; y says yes.
+
     pub confirm: bool,
-    /// A request or take over is on its way.
+
     pub busy: Option<String>,
-    /// The transcript's last exchanges (user, reply), and when read.
+
     pub turns: Vec<(String, String)>,
     pub turns_stamp: Option<(u64, std::time::SystemTime)>,
 }
 
-/// A tab's lease state (None: sync off, or not a synced session).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TabLease {
-    /// The resume waits for the lease (and the pull before it).
     Waiting {
         sid: String,
         kind: LaunchKind,
     },
-    /// Ours. `offline`: resumed from the last board seen ("offline: will
-    /// fork if someone else took over").
+
     Owned {
         sid: String,
         offline: bool,
     },
     ReadOnly(ReadOnly),
-    /// Input blocked; the CLI stops once the turn ends.
+
     Stopping {
         sid: String,
         why: StopWhy,
@@ -111,12 +81,10 @@ impl TabLease {
         }
     }
 
-    /// Typing into the tab goes nowhere (only Owned takes input).
     pub fn blocks_input(&self) -> bool {
         !matches!(self, TabLease::Owned { .. })
     }
 
-    /// The banner over a tab's screen, if any.
     pub fn banner(&self) -> Option<String> {
         match self {
             TabLease::Owned { offline: true, .. } => {
@@ -138,34 +106,30 @@ impl TabLease {
     }
 }
 
-/// The app's side of the leases.
 #[derive(Default)]
 pub struct LeaseApp {
     pub cmd: Option<Sender<Cmd>>,
-    /// Sessions run here as their owner (sid -> account), read by the
-    /// lease worker on every poll.
+
     pub held: Arc<Mutex<BTreeMap<String, String>>>,
-    /// The lease worker said ours.
+
     pub granted: BTreeSet<String>,
-    /// Resumed offline.
+
     pub offline: BTreeSet<String>,
     pub board: Option<Board>,
     pub online: bool,
     pub board_at: Option<Instant>,
-    /// This machine's id.
+
     pub me: String,
-    /// Commands made when no worker runs (tests read them).
+
     pub sent: Vec<Cmd>,
-    /// The sync's view of the app: which sessions' CLIs run here (never
-    /// extended or forked under them).
+
     pub link: Option<crate::sync::Link>,
-    /// Set by tests: leases on without the worker threads.
+
     pub test_on: bool,
-    /// Asked for from here (sid -> account).
+
     pub requested: BTreeMap<String, String>,
 }
 
-/// "active 3 min ago".
 pub fn active_words(beat_ms: i64, now_ms: i64) -> String {
     if beat_ms <= 0 {
         return "no heartbeat seen".into();
@@ -179,7 +143,6 @@ pub fn active_words(beat_ms: i64, now_ms: i64) -> String {
     }
 }
 
-/// The lease worker: one thread, never the UI's.
 pub fn spawn(
     make: Arc<dyn Fn() -> anyhow::Result<crate::sync::Ctx> + Send + Sync>,
     tx: Sender<AppEvent>,
@@ -190,7 +153,7 @@ pub fn spawn(
         .name("sync-lease".into())
         .spawn(move || {
             let mut eng = crate::sync::takeover::Engine::new(held);
-            // The first look at once: resumes at startup wait on it.
+
             let mut next = Instant::now();
             loop {
                 let wait = next.saturating_duration_since(Instant::now());
@@ -231,14 +194,11 @@ pub fn spawn(
 }
 
 impl App {
-    /// Leases apply: sync is on (and this is not a demo).
     pub fn lease_on(&self) -> bool {
         (self.cfg.sync.enabled || self.lease.test_on) && !crate::demo::active()
     }
 
     pub(crate) fn lease_send(&mut self, c: Cmd) {
-        // A resume at startup can come before the first tick started the
-        // worker.
         if self.lease.cmd.is_none() {
             self.lease_start();
         }
@@ -248,7 +208,6 @@ impl App {
         }
     }
 
-    /// The account name of a slot, for a synced harness (Claude, Grok).
     fn lease_acct(&self, pane: usize) -> Option<String> {
         let a = self.panes.get(pane)?.account?;
         let acct = &self.cfg.accounts[a];
@@ -259,8 +218,6 @@ impl App {
         .then(|| acct.name.clone())
     }
 
-    /// Before a resume in the active tab of `pane`: true when it must
-    /// wait (the lease is asked for; the launch comes with the answer).
     pub(crate) fn lease_gate(&mut self, pane: usize, kind: &LaunchKind) -> bool {
         let LaunchKind::Resume(sid) = kind else {
             return false;
@@ -299,8 +256,6 @@ impl App {
         true
     }
 
-    /// A session id just seen in a running tab (a new conversation, a
-    /// copy, a duplicate): its own lease.
     pub(crate) fn lease_claim(&mut self, s: usize, t: usize, sid: &str) {
         if !self.lease_on() || !crate::sync::lease::valid_id(sid) {
             return;
@@ -325,7 +280,6 @@ impl App {
         }
     }
 
-    /// Tabs whose lease names `sid`.
     fn lease_tabs(&self, sid: &str) -> Vec<(usize, usize)> {
         let mut v = vec![];
         for (s, p) in self.panes.iter().enumerate() {
@@ -354,7 +308,6 @@ impl App {
         }
     }
 
-    /// Something from the lease worker.
     pub fn lease_event(&mut self, e: Event) {
         match e {
             Event::Acquired {
@@ -370,8 +323,7 @@ impl App {
                 } else {
                     self.lease.offline.remove(&sid);
                 }
-                // Asked for from a tab that was closed since: let it go
-                // again rather than hold it with nothing open.
+
                 let tabs = self.lease_tabs(&sid);
                 if tabs.is_empty() && !offline {
                     self.lease.granted.remove(&sid);
@@ -586,8 +538,6 @@ impl App {
         }
     }
 
-    /// Not ours any more: block input, let the turn end, stop the CLI,
-    /// keep what it never pushed as a fork.
     fn lease_lost(&mut self, sid: &str, label: &str, conflict: bool) {
         self.lease.granted.remove(sid);
         self.lease.offline.remove(sid);
@@ -638,7 +588,6 @@ impl App {
         self.lease_acct(s)
     }
 
-    /// Input to the tab stops now; the CLI stops when the turn ends.
     fn lease_block(&mut self, s: usize, t: usize, why: StopWhy, label: &str) {
         let tab = &mut self.panes[s].tabs[t];
         let sid = tab
@@ -656,8 +605,6 @@ impl App {
         tab.web.stop_input();
     }
 
-    /// Every tick: share what runs here, move stopping tabs along, keep
-    /// read only transcripts fresh.
     pub fn lease_tick(&mut self) {
         if !self.lease_on() {
             return;
@@ -682,7 +629,7 @@ impl App {
         if let Some(l) = &self.lease.link {
             *l.0.running.lock().unwrap_or_else(|e| e.into_inner()) = running;
         }
-        // Stopping tabs.
+
         let mut done = vec![];
         for s in 0..self.panes.len() {
             for t in 0..self.panes[s].tabs.len() {
@@ -728,7 +675,7 @@ impl App {
                 ..Default::default()
             }));
         }
-        // Read only views: the transcript's last exchanges.
+
         for s in 0..self.panes.len() {
             let acct = self.lease_acct(s);
             for t in 0..self.panes[s].tabs.len() {
@@ -779,7 +726,6 @@ impl App {
             .find(|p| p.is_file())
     }
 
-    /// One step of a graceful stop; true once the CLI is gone.
     fn lease_stop_step(&mut self, s: usize, t: usize) -> bool {
         let tab = &mut self.panes[s].tabs[t];
         if !tab.is_running() {
@@ -792,8 +738,6 @@ impl App {
         };
         match stage.clone() {
             StopStage::WaitIdle(since) => {
-                // A permission prompt waits for the user, who can no longer
-                // answer here: that counts as the turn's end.
                 if !working || crate::clock::age(since) > Duration::from_secs(1800) {
                     *stage = StopStage::Signal {
                         at: crate::clock::ago(Duration::from_secs(10)),
@@ -825,7 +769,6 @@ impl App {
                         sent: crate::takeover::after_interrupt(sent, ok),
                     };
                 } else {
-                    // SIGTERM, it can still clean up; never SIGKILL.
                     crate::log::info(&format!("lease: SIGTERM to pid {pid}"));
                     crate::procs::terminate(pid);
                     *stage = StopStage::Signal {
@@ -838,7 +781,6 @@ impl App {
         false
     }
 
-    /// A key in a tab with a lease that blocks input. True when handled.
     pub(crate) fn lease_key(&mut self, s: usize, t: usize, k: KeyEvent) -> bool {
         let Some(l) = self.panes[s].tabs[t].lease.clone() else {
             return false;
@@ -892,9 +834,6 @@ impl App {
         true
     }
 
-    /// The read only tab's actions (keys, the web's buttons): request,
-    /// take_over (the caller made sure the user said yes), offline,
-    /// open_fork, resume.
     pub fn lease_act(&mut self, s: usize, t: usize, op: &str) -> Result<String, String> {
         let Some(TabLease::ReadOnly(r)) = self.panes[s].tabs[t].lease.clone() else {
             return Err("this tab is not read only".into());
@@ -963,8 +902,6 @@ impl App {
         }
     }
 
-    /// Why a job may not fire here (its session is owned elsewhere, or it
-    /// belongs to another machine), if so.
     pub fn lease_job_block(&self, j: &crate::jobs::Job) -> Option<String> {
         if !self.lease_on() || self.lease.me.is_empty() {
             return None;
@@ -998,7 +935,6 @@ impl App {
         }
     }
 
-    /// The Sync screen's ownership lines.
     pub fn lease_lines(&self) -> Vec<String> {
         let Some(b) = &self.lease.board else {
             return vec!["Leases: not fetched yet".into()];
@@ -1082,7 +1018,6 @@ impl App {
         v
     }
 
-    /// A session's name for lists: an open tab's, else its short id.
     fn lease_title(&self, sid: &str) -> String {
         for p in &self.panes {
             for t in &p.tabs {
@@ -1094,7 +1029,6 @@ impl App {
         crate::paths::head(sid, 8).to_string()
     }
 
-    /// The web's view of a tab's lease (None: nothing to show).
     pub fn lease_json(&self, s: usize, t: usize) -> Option<Value> {
         let l = self.panes[s].tabs[t].lease.as_ref()?;
         let now = chrono::Utc::now().timestamp_millis();
@@ -1116,9 +1050,6 @@ impl App {
         })
     }
 
-    /// `sync_lease`: the user's own press on a read only tab (the web's
-    /// buttons; its confirm dialog is the yes for take_over). Never the
-    /// assistant's: it has take_over and release_session, which ask.
     pub fn sync_lease_tool(&mut self, args: &Value, from_user: bool) -> Result<Value, String> {
         if !from_user {
             return Err(
@@ -1139,8 +1070,6 @@ impl App {
         Ok(json!({"ok": true, "result": {"say": say}}))
     }
 
-    /// A store the app holds, changed on another machine: applied here and
-    /// saved by the app itself (a sync never writes it under the app).
     pub fn sync_apply(&mut self, a: crate::sync::StoreApply, reply: Sender<bool>) {
         let ok = match a.store {
             "archive" => serde_json::to_value(&self.archive)
@@ -1169,7 +1098,6 @@ impl App {
 }
 
 impl App {
-    /// The tab here ("t12") that holds a conversation, if one does.
     fn lease_tab_of(&self, sid: &str) -> Option<String> {
         self.panes.iter().flat_map(|p| p.tabs.iter()).find_map(|t| {
             let same = t.session_id.as_deref() == Some(sid)
@@ -1178,7 +1106,6 @@ impl App {
         })
     }
 
-    /// The ownership part of sync_status (the web's Settings > Sync).
     pub fn lease_status_json(&self) -> Value {
         let Some(b) = &self.lease.board else {
             return json!({"fetched": false});
@@ -1245,9 +1172,6 @@ impl App {
                "paused_jobs": paused})
     }
 
-    /// take_over / release_session for the assistant: the session and
-    /// its tab, and the question (always asked: a later turn's yes runs
-    /// it).
     pub(crate) fn lease_plan_for(
         &mut self,
         tool: &str,

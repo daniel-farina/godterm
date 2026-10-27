@@ -1,8 +1,3 @@
-//! `godterm stt-eval`: compare speech recognition engines on synthetic
-//! recordings (macOS `say` voices and Kokoro), clean and with noise mixed
-//! in, for word error rate and latency. Files only: nothing is played and
-//! no microphone is used.
-
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,7 +5,6 @@ use std::time::Instant;
 
 use super::stt::{self, Whisper};
 
-/// What people say to GodTerm.
 pub const PHRASES: &[&str] = &[
     "close all tabs in all accounts",
     "open a new tab on account two and create a calculator",
@@ -38,7 +32,6 @@ pub const PHRASES: &[&str] = &[
     "continue the conversation about the clock page",
 ];
 
-/// Lower case words, digits spelled out, punctuation gone.
 pub fn norm_words(s: &str) -> Vec<String> {
     let digits = [
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
@@ -64,7 +57,6 @@ pub fn norm_words(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Word level edit distance.
 pub fn word_errors(reference: &[String], hyp: &[String]) -> usize {
     let mut prev: Vec<usize> = (0..=hyp.len()).collect();
     for (i, r) in reference.iter().enumerate() {
@@ -97,8 +89,6 @@ fn run(cmd: &mut Command) -> Result<()> {
     Ok(())
 }
 
-/// Clean 16 kHz mono WAVs, then the same with pink noise at 15 and 5 dB SNR
-/// (plus a little room reverb on the noisy ones).
 fn build(dir: &Path, ffmpeg: &str) -> Result<Vec<Sample>> {
     std::fs::create_dir_all(dir)?;
     let say_voices = ["Samantha", "Daniel", "Karen"];
@@ -118,7 +108,7 @@ fn build(dir: &Path, ffmpeg: &str) -> Result<Vec<Sample>> {
             clean.push((i, v.to_string(), wav));
         }
     }
-    // Kokoro voices, when the model is here.
+
     let cfg = crate::config::Config::load_or_init()
         .map(|c| c.voice)
         .unwrap_or_default();
@@ -152,8 +142,6 @@ fn build(dir: &Path, ffmpeg: &str) -> Result<Vec<Sample>> {
         for (label, snr) in [("snr15", 15.0f32), ("snr5", 5.0)] {
             let noisy = dir.join(format!("{i:02}-{v}-{label}.wav"));
             if !noisy.is_file() {
-                // Speech level is about -20 dBFS after leveling; noise at
-                // -20 - SNR, half a second of lead in and out.
                 let amp = 10f32.powf((-20.0 - snr) / 20.0) * 3.0;
                 let filter = format!(
                     "[0:a]volume=1,apad=pad_dur=0.5,adelay=500|500,aecho=0.8:0.5:20:0.2[s];anoisesrc=color=pink:amplitude={amp}:sample_rate=16000[n];[s][n]amix=inputs=2:duration=first:normalize=0"
@@ -188,20 +176,11 @@ fn read_wav(p: &Path) -> Result<Vec<i16>> {
         .collect())
 }
 
-/// One engine under test.
 enum Engine {
-    Whisper {
-        w: Whisper,
-        level: bool,
-    },
-    Apple {
-        bin: PathBuf,
-        context: Vec<String>,
-    },
-    /// xAI's recognizer (the configured login), with the vocabulary.
-    Grok {
-        g: Box<super::grok_stt::GrokStt>,
-    },
+    Whisper { w: Whisper, level: bool },
+    Apple { bin: PathBuf, context: Vec<String> },
+
+    Grok { g: Box<super::grok_stt::GrokStt> },
 }
 
 impl Engine {
@@ -241,8 +220,6 @@ fn vocab() -> String {
     "GodTerm, hey god, Claude, account one, account two, account three, account four, tab, approve, deny, dashboard, loops, quota, readme, cargo".into()
 }
 
-/// `grok`: also Grok, on only the first that many recordings (each is a
-/// paid request), and the local engines on the same ones.
 pub fn command(out: Option<PathBuf>, grok: Option<usize>) -> Result<()> {
     let cfg = crate::config::Config::load_or_init()?.voice;
     let dir = out.unwrap_or_else(|| crate::config::app_home().join("voice").join("eval"));
@@ -252,7 +229,6 @@ pub fn command(out: Option<PathBuf>, grok: Option<usize>) -> Result<()> {
     );
     let mut samples = build(&dir, &cfg.ffmpeg)?;
     if let Some(n) = grok {
-        // A spread over phrases, voices and noise levels.
         let step = (samples.len() / n.max(1)).max(1);
         samples = samples
             .into_iter()

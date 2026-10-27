@@ -1,7 +1,3 @@
-//! Remote Control's honest outcome, its retry and self heal, keeping it
-//! on, and the assistant's kept session (resume), with a stub claude that
-//! answers remote_control requests and fails resumes on demand.
-
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -60,7 +56,6 @@ fn setup(tag: &str, opts: &[(&str, &str)], prep: impl FnOnce(&mut crate::config:
 }
 
 impl T {
-    /// Brain events in, ticks run, until `done` (or `secs`).
     fn pump(&mut self, secs: u64, mut done: impl FnMut(&mut App) -> bool) -> bool {
         let t0 = Instant::now();
         loop {
@@ -90,7 +85,6 @@ impl T {
         self.app.assistant.turn_reads = 0;
     }
 
-    /// "turn on remote control", yes: the confirmed call's waiting reply.
     fn enable_by_tool(&mut self) -> Receiver<Value> {
         self.app.ensure_brain().unwrap();
         self.said("turn on remote control");
@@ -128,7 +122,7 @@ fn honest_failure_then_restart_and_say_so() {
     let rx = t.enable_by_tool();
     let gen0 = t.app.assistant.brain.as_ref().unwrap().gen;
     let v = wait_reply(&mut t, &rx, 30);
-    // Two attempts failed: an error, marked pending, that says the truth.
+
     let e = v["error"].as_str().unwrap();
     assert!(
         e.contains("did not turn on") && e.contains("initialization failed"),
@@ -143,7 +137,7 @@ fn honest_failure_then_restart_and_say_so() {
     assert!(v.get("session_url").is_none() && t.app.assistant.remote.is_none());
     assert!(t.app.remote_state_line().contains("NOT on yet"));
     assert_eq!(t.app.remote_indicator().as_deref(), Some("Remote…"));
-    // The turn ends: the brain restarts, the last try fails, it is said.
+
     t.app.assistant.busy = false;
     assert!(t.pump(30, |a| a.assistant.remote_flow.is_none()));
     assert_ne!(
@@ -182,7 +176,7 @@ fn retry_then_success_gives_the_link() {
         say.contains("second try") && say.contains("https://claude.ai/code/session_stub1"),
         "{say}"
     );
-    // bridge_state connected follows: the indicator says Remote.
+
     assert!(t.pump(5, |a| a
         .assistant
         .remote
@@ -193,7 +187,7 @@ fn retry_then_success_gives_the_link() {
         t.app.control_call("get_state", &json!({}))["result"]["remote_control"]["url"],
         json!("https://claude.ai/code/session_stub1")
     );
-    // The indicator opens the link.
+
     crate::admin::OPENED.lock().unwrap().clear();
     t.app.open_remote_link();
     assert!(crate::admin::OPENED
@@ -201,7 +195,7 @@ fn retry_then_success_gives_the_link() {
         .unwrap()
         .iter()
         .any(|u| u == "https://claude.ai/code/session_stub1"));
-    // Reconnecting shows as such.
+
     t.app.on_bridge_state("reconnecting");
     assert_eq!(t.app.remote_indicator().as_deref(), Some("Remote…"));
 }
@@ -229,7 +223,7 @@ fn restart_heals_a_replaced_claude() {
 #[test]
 fn kept_on_turns_on_at_start_and_not_when_off() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Off: a tick starts nothing.
+
     {
         let mut t = setup("keepoff", &[("rc_answers", "ok")], |_| {});
         for _ in 0..5 {
@@ -245,7 +239,7 @@ fn kept_on_turns_on_at_start_and_not_when_off() {
     let mut t = setup("keepon", &[("rc_answers", "ok")], |c| {
         c.assistant.remote_control = true
     });
-    // Launch: the brain comes up and Remote Control turns on by itself.
+
     t.app.assistant_tick();
     assert!(t.app.assistant.brain.is_some());
     assert!(t.pump(10, |a| a
@@ -254,9 +248,9 @@ fn kept_on_turns_on_at_start_and_not_when_off() {
         .as_ref()
         .is_some_and(|r| r.connected())));
     assert_eq!(t.app.remote_indicator().as_deref(), Some("Remote"));
-    // Quiet: shown, not spoken.
+
     assert!(t.app.admin.said.is_empty(), "{:?}", t.app.admin.said);
-    // New: a new brain, and it is back on with a new link.
+
     t.app.reset_assistant();
     t.app.remote_tick();
     assert!(t.pump(10, |a| a
@@ -289,7 +283,7 @@ fn kept_on_comes_back_after_a_drop_and_rests_on_grok() {
         .is_some_and(
             |r| r.url.as_deref() == Some("https://claude.ai/code/session_stub1")
         )));
-    // On Grok it rests.
+
     t.app.assistant.remote = None;
     t.app.cfg.assistant.provider = "grok".into();
     assert!(!t.app.remote_kept_on());
@@ -324,7 +318,7 @@ fn keeping_it_on_needs_two_yeses() {
         &json!({"_client": "brain", "confirm_token": tok}),
     );
     assert!(t.app.cfg.assistant.remote_control);
-    // Turning it off is not risky: one yes.
+
     t.said("keep remote control off");
     let v = t.app.control_call(
         "set_setting",
@@ -338,8 +332,6 @@ fn keeping_it_on_needs_two_yeses() {
     );
     assert!(!t.app.cfg.assistant.remote_control);
 }
-
-// ---------- the kept session ----------
 
 fn transcript(t: &T, id: &str, bytes: usize) -> PathBuf {
     let d = t.app.cfg.accounts[0]
@@ -377,12 +369,12 @@ fn resume_uses_the_kept_id_and_new_starts_another() {
     );
     assert!(!t.args().contains("--no-session-persistence"));
     assert!(t.app.assistant.brain_fresh, "a new session gets the memory");
-    // A restart (a crash, an update) continues it.
+
     let p = transcript(&t, &id, 100);
     restart(&mut t);
     assert!(t.args().contains(&format!("--resume {id}")), "{}", t.args());
     assert!(!t.app.assistant.brain_fresh, "no memory block on a resume");
-    // Kept out of the account's sessions.
+
     let mut cache = crate::sessions::SessionCache::default();
     std::fs::write(
         &p,
@@ -390,14 +382,14 @@ fn resume_uses_the_kept_id_and_new_starts_another() {
     )
     .unwrap();
     assert!(cache.scan(&t.app.cfg.accounts[0].config_dir()).is_empty());
-    // New: a new session, recorded; the old transcript goes.
+
     t.app.reset_assistant();
     restart(&mut t);
     let id2 = kept_id();
     assert_ne!(id, id2);
     assert!(t.args().contains(&format!("--session-id {id2}")));
     assert!(!p.exists());
-    // Too large: fresh.
+
     transcript(&t, &id2, (crate::app_resume::MAX_RESUME_BYTES + 1) as usize);
     restart(&mut t);
     assert_ne!(kept_id(), id2);
@@ -416,7 +408,7 @@ fn a_failed_resume_starts_fresh() {
     });
     transcript(&t, "11111111-2222-4333-8444-555555555555", 10);
     t.app.ensure_brain().unwrap();
-    // claude exits: the next start is a fresh session with the memory.
+
     assert!(t.pump(10, |a| a.assistant.brain.is_none()));
     assert!(t.args().contains("--resume 11111111"));
     assert!(t.app.assistant.fresh_session);
@@ -424,7 +416,7 @@ fn a_failed_resume_starts_fresh() {
     assert!(t.args().contains("--session-id"), "{}", t.args());
     assert_ne!(kept_id(), "11111111-2222-4333-8444-555555555555");
     assert!(t.app.assistant.brain_fresh);
-    // Another account's session is not resumed.
+
     let id = kept_id();
     let mut k = crate::app_resume::load().unwrap();
     k.account = "someone-else".into();
@@ -440,7 +432,7 @@ fn after_a_crash_it_resumes_and_remote_control_returns() {
     let mut t = setup("crash", &[("rc_answers", "ok")], |c| {
         c.assistant.remote_control = true
     });
-    // The last run left its session live (no clean exit).
+
     let id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     crate::app_resume::save(&crate::app_resume::Kept {
         id: id.into(),
@@ -466,7 +458,7 @@ fn after_a_crash_it_resumes_and_remote_control_returns() {
         .as_str()
         .unwrap()
         .starts_with("https://claude.ai/code/session_stub"));
-    // A clean exit is not a crash.
+
     crate::app_resume::mark_clean_exit();
     assert!(!crate::app_resume::load().unwrap().live);
 }

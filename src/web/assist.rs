@@ -1,14 +1,9 @@
-//! The assistant and the web app: a turn typed in a browser says so in its
-//! <state> (which browser, phone or desktop, its panes and open sheet),
-//! and the web_* tools change that browser's view with a `ui` frame.
-
 use crate::app::App;
 use serde_json::{json, Value};
 
 const TOOLS: &[&str] = &["web_layout", "web_show", "web_view", "web_font"];
 
 impl App {
-    /// The <state> line for a turn typed in the web app (empty otherwise).
     pub fn web_turn_line(&self) -> String {
         let Some(id) = self.assistant.web_client else {
             return String::new();
@@ -25,7 +20,6 @@ impl App {
         )
     }
 
-    /// web_layout, web_show, web_view, web_font.
     pub fn web_tool(&mut self, tool: &str, args: &Value) -> Option<Result<Value, String>> {
         if !TOOLS.contains(&tool) {
             return None;
@@ -167,7 +161,6 @@ impl App {
     }
 }
 
-/// "phone, 1 pane: t3; sheet sessions".
 fn describe(v: &Value) -> String {
     if v.is_null() {
         return String::new();

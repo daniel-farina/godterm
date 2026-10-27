@@ -1,17 +1,3 @@
-//! Self update, like Claude Code's native installer and Grok Build: check
-//! GitHub Releases, download the platform's archive in the background,
-//! verify it (SHA256SUMS, its minisign signature, and on macOS the Developer
-//! ID signature), and install it as a new version in ~/.godterm/versions
-//! with one atomic rename of the active link, keeping the previous version
-//! for `godterm update --rollback`. Installs owned by a package manager
-//! (Homebrew, apt, dnf) are never touched: the user gets the command.
-//!
-//! Layout:
-//!   ~/.godterm/updates/state.json      the check cache (ETag, last release, back off, skipped)
-//!   ~/.godterm/updates/<v>/            a download being verified (resumable .part)
-//!   ~/.godterm/versions/<v>/godterm    installed versions
-//!   ~/.godterm/versions/state.json     what is active, what was before (rollback)
-
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -23,13 +9,11 @@ use sha2::{Digest, Sha256};
 
 pub const REPO: &str = "daniel-farina/godterm";
 pub const API: &str = "https://api.github.com";
-/// The minisign public key whose secret signs each release's SHA256SUMS
-/// (scripts/update-signing/minisign.py; the secret key never leaves the
-/// release machine).
+
 pub const UPDATE_PUBKEY: &str = "RWTNzCFSrTk4Erhp4n8mN0kO3VgXNUYQliJVGM6jC0jaVe07tPVATFcT";
-/// The Developer ID team that signs the macOS builds.
+
 pub const TEAM_ID: &str = "ST6RKUS2KP";
-/// Hosts a download may come from (each redirect is checked too).
+
 const HOSTS: &[&str] = &[
     "github.com",
     "api.github.com",
@@ -37,8 +21,6 @@ const HOSTS: &[&str] = &[
     "release-assets.githubusercontent.com",
     "github-releases.githubusercontent.com",
 ];
-
-// ---------- versions ----------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Version {
@@ -49,7 +31,6 @@ pub struct Version {
 }
 
 impl Version {
-    /// "v0.2.2", "0.2.2-beta.1", "0.3" (patch 0); build metadata ignored.
     pub fn parse(s: &str) -> Option<Version> {
         let s = s.trim().trim_start_matches(['v', 'V']);
         let s = s.split('+').next()?;
@@ -132,8 +113,6 @@ impl PartialOrd for Version {
     }
 }
 
-// ---------- releases ----------
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Asset {
     pub name: String,
@@ -194,8 +173,6 @@ impl Release {
         self.assets.iter().find(|a| a.name == name)
     }
 
-    /// The version-less alias, or the same file with the version in its
-    /// name (releases before the aliases).
     pub fn pick(&self, alias: &str) -> Option<&Asset> {
         let v = self.version().to_string();
         let candidates = [
@@ -206,7 +183,6 @@ impl Release {
         candidates.iter().find_map(|c| self.asset(c))
     }
 
-    /// The release notes as plain lines (markdown marks dropped).
     pub fn notes(&self, max: usize) -> Vec<String> {
         self.body
             .lines()
@@ -226,8 +202,6 @@ impl Release {
     }
 }
 
-// ---------- where things go ----------
-
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub updates: PathBuf,
@@ -244,19 +218,18 @@ impl Default for Layout {
     }
 }
 
-/// Where releases come from and what a download must pass.
 #[derive(Debug, Clone)]
 pub struct Source {
     pub api: String,
     pub repo: String,
-    /// Tests: a mock server on http://127.0.0.1 is allowed.
+
     pub local_ok: bool,
-    /// Check the Developer ID signature of macOS downloads.
+
     pub codesign: bool,
-    /// A release without SHA256SUMS.minisig is refused.
+
     pub require_sig: bool,
     pub pubkey: String,
-    /// Tests: take this release file instead of the platform's.
+
     pub asset: Option<String>,
 }
 
@@ -276,7 +249,6 @@ impl Source {
     }
 }
 
-/// HTTPS to GitHub only (or the test server).
 pub fn url_allowed(url: &str, local_ok: bool) -> bool {
     if local_ok && url.starts_with("http://127.0.0.1:") {
         return true;
@@ -305,7 +277,6 @@ fn agent(timeout: Duration) -> ureq::Agent {
 
 type Resp = ureq::http::Response<ureq::Body>;
 
-/// GET, following redirects by hand so every hop is checked.
 fn get(src: &Source, url: &str, headers: &[(&str, String)], timeout: Duration) -> Result<Resp> {
     let a = agent(timeout);
     let mut url = url.to_string();
@@ -345,20 +316,16 @@ fn header(r: &Resp, k: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-// ---------- checking ----------
-
-/// The check cache.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Cache {
     pub etag: Option<String>,
     pub release: Option<Release>,
-    /// Unix seconds.
+
     pub checked_at: Option<i64>,
     pub backoff_until: Option<i64>,
     pub skipped: Option<String>,
     pub last_error: Option<String>,
-    /// The releases newer than this build, newest first, with their notes
-    /// (fetched once per new latest release: `notes_for`).
+
     #[serde(default)]
     pub between: Vec<Release>,
     #[serde(default)]
@@ -389,8 +356,6 @@ fn now_s() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-/// The latest release on `channel` ("stable", or "prerelease" to include
-/// pre-releases). A 304 answers from the cache; 403 or 429 backs off.
 pub fn check(src: &Source, cache: &mut Cache, channel: &str) -> Result<Option<Release>> {
     if let Some(t) = cache.backoff_until.filter(|t| *t > now_s()) {
         bail!(
@@ -459,10 +424,6 @@ pub fn check(src: &Source, cache: &mut Cache, channel: &str) -> Result<Option<Re
     }
 }
 
-/// Every release newer than `cur` up to `latest`, newest first, each with
-/// its notes: one request for the release list, made once per new latest
-/// release (cached in `cache.between`), not on every check. An empty body
-/// falls back to that version's section of the release's CHANGELOG.md.
 pub fn notes_between(
     src: &Source,
     cache: &mut Cache,
@@ -504,7 +465,7 @@ pub fn notes_between(
     }
     v.sort_by_key(|b| std::cmp::Reverse(b.version()));
     v.dedup_by(|a, b| a.tag == b.tag);
-    // Empty notes: the release's CHANGELOG.md, one download for all.
+
     if v.iter().any(|r| r.body.trim().is_empty()) {
         let log = v
             .iter()
@@ -524,8 +485,6 @@ pub fn notes_between(
     v
 }
 
-/// One version's section of a CHANGELOG.md ("## [0.2.8] ...", "## v0.2.8",
-/// "## 0.2.8 (date)"), without its heading.
 pub fn changelog_section(log: &str, v: &Version) -> Option<String> {
     let mut out: Vec<&str> = vec![];
     let mut inside = false;
@@ -551,46 +510,26 @@ pub fn changelog_section(log: &str, v: &Version) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-// ---------- install methods ----------
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Method {
-    /// A link into ~/.godterm/versions (an earlier update made it).
-    Managed {
-        link: PathBuf,
-    },
-    /// A plain binary GodTerm may replace (install.sh's ~/.local/bin, a zip).
-    Standalone {
-        path: PathBuf,
-    },
-    /// The notarized GodTerm.app from the DMG: the whole bundle is swapped.
-    AppBundle {
-        app: PathBuf,
-    },
-    AppImage {
-        path: PathBuf,
-    },
-    /// The per-user Windows installer: the new installer runs on restart.
-    WindowsInstaller {
-        exe: PathBuf,
-    },
+    Managed { link: PathBuf },
+
+    Standalone { path: PathBuf },
+
+    AppBundle { app: PathBuf },
+    AppImage { path: PathBuf },
+
+    WindowsInstaller { exe: PathBuf },
     Homebrew,
-    /// /usr from a .deb or .rpm.
-    System {
-        command: String,
-    },
-    /// A cargo build: never replaced.
-    Dev {
-        path: PathBuf,
-    },
-    /// Somewhere it cannot write.
-    ReadOnly {
-        path: PathBuf,
-    },
+
+    System { command: String },
+
+    Dev { path: PathBuf },
+
+    ReadOnly { path: PathBuf },
 }
 
 impl Method {
-    /// What the user should run instead, when GodTerm must not update itself.
     pub fn hint(&self) -> Option<String> {
         match self {
             Method::Homebrew => Some("brew upgrade godterm".into()),
@@ -618,7 +557,6 @@ impl Method {
         }
     }
 
-    /// The release file this install takes.
     pub fn asset(&self, os: &str, arch: &str) -> Option<String> {
         let arch = match arch {
             "aarch64" | "arm64" => "aarch64",
@@ -638,8 +576,6 @@ impl Method {
     }
 }
 
-/// How this copy was installed. `exe` is the running binary as invoked
-/// (`invoked`, a link maybe) and resolved (`real`).
 pub fn detect(invoked: &Path, real: &Path, appimage: Option<&Path>, l: &Layout) -> Method {
     let r = real.to_string_lossy().replace('\\', "/");
     if let Some(a) = appimage {
@@ -702,7 +638,6 @@ pub fn detect(invoked: &Path, real: &Path, appimage: Option<&Path>, l: &Layout) 
     }
 }
 
-/// This process's install method.
 pub fn detect_self(l: &Layout) -> Method {
     let invoked = std::env::current_exe().unwrap_or_default();
     let real = std::fs::canonicalize(&invoked).unwrap_or_else(|_| invoked.clone());
@@ -720,8 +655,6 @@ pub fn os_name() -> &'static str {
     }
 }
 
-// ---------- download and verify ----------
-
 pub fn sha256_file(p: &Path) -> Result<String> {
     let mut f = std::fs::File::open(p)?;
     let mut h = Sha256::new();
@@ -736,7 +669,6 @@ pub fn sha256_file(p: &Path) -> Result<String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// "hash  name" lines (also "hash *name").
 pub fn parse_sums(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter_map(|l| {
@@ -748,14 +680,11 @@ pub fn parse_sums(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// SHA256SUMS against its minisign signature.
 #[cfg(test)]
 pub fn verify_sig(sums: &[u8], sig: &str, pubkey: &str) -> Result<()> {
     signed_comment(sums, sig, pubkey).map(|_| ())
 }
 
-/// The signature's trusted comment, once the signature (over SHA256SUMS
-/// and over that comment) checks out.
 fn signed_comment(sums: &[u8], sig: &str, pubkey: &str) -> Result<String> {
     let pk = minisign_verify::PublicKey::from_base64(pubkey.trim())
         .map_err(|e| anyhow!("bad public key: {e}"))?;
@@ -766,10 +695,6 @@ fn signed_comment(sums: &[u8], sig: &str, pubkey: &str) -> Result<String> {
     Ok(s.trusted_comment().to_string())
 }
 
-/// The signature checks out and was made for `version`: its signed
-/// comment says `version:<it>` (scripts/release/all.sh puts it there).
-/// The tag on GitHub is not signed, so without this an old signed build
-/// could be offered under a newer tag and installed as an "update".
 pub fn verify_release_sig(sums: &[u8], sig: &str, pubkey: &str, version: &str) -> Result<()> {
     let c = signed_comment(sums, sig, pubkey)?;
     let signed = c
@@ -793,7 +718,6 @@ fn small(src: &Source, url: &str) -> Result<Vec<u8>> {
     Ok(r.body_mut().with_config().limit(1 << 20).read_to_vec()?)
 }
 
-/// Download `url` to `dest`, resuming a `.part` left by an interrupted try.
 pub fn download(src: &Source, url: &str, dest: &Path, progress: &dyn Fn(u64, u64)) -> Result<()> {
     let part = PathBuf::from(format!("{}.part", dest.display()));
     if let Some(d) = dest.parent() {
@@ -847,7 +771,6 @@ pub fn download(src: &Source, url: &str, dest: &Path, progress: &dyn Fn(u64, u64
     bail!("could not download {url}")
 }
 
-/// A verified download, ready to install.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Staged {
     pub version: String,
@@ -870,8 +793,6 @@ fn run(cmd: &mut std::process::Command, secs: u64) -> Result<std::process::Outpu
     crate::procs::output_timeout(cmd, Duration::from_secs(secs)).map_err(|e| anyhow!(e))
 }
 
-/// The Developer ID signature of a macOS binary or bundle: valid, by our
-/// team, and (for a bundle) accepted by Gatekeeper.
 pub fn verify_codesign(p: &Path, bundle: bool) -> Result<()> {
     let mut c = std::process::Command::new("codesign");
     c.args(["--verify", "--strict"]);
@@ -952,7 +873,6 @@ fn extract(archive: &Path, into: &Path) -> Result<()> {
         c.args(["-x", "-k"]).arg(archive).arg(into);
         c
     } else {
-        // bsdtar (Windows 10+, macOS) reads zips; Linux has unzip.
         let mut c = std::process::Command::new(if cfg!(windows) { "tar" } else { "unzip" });
         if cfg!(windows) {
             c.arg("-xf").arg(archive).arg("-C").arg(into);
@@ -972,8 +892,6 @@ fn extract(archive: &Path, into: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Download and verify `rel` for `method` into `l.updates/<v>`. Nothing is
-/// installed; a failed check leaves nothing behind.
 pub fn stage(
     src: &Source,
     rel: &Release,
@@ -1072,18 +990,14 @@ fn chmod_x(p: &Path) -> Result<()> {
     Ok(())
 }
 
-// ---------- installing ----------
-
-/// What is active and what came before (for rollback).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Installed {
-    /// The path that was replaced (the link, the AppImage, the bundle).
     pub target: Option<PathBuf>,
     pub active: Option<String>,
     pub previous: Option<String>,
-    /// The previous version's copy.
+
     pub previous_path: Option<PathBuf>,
-    /// The new version's copy.
+
     pub active_path: Option<PathBuf>,
     pub kind: String,
 }
@@ -1109,15 +1023,12 @@ impl Installed {
     }
 }
 
-/// What runs after the install: the program, and (Windows installer) a
-/// command to run first.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Next {
     pub program: PathBuf,
     pub before: Option<(PathBuf, Vec<String>)>,
 }
 
-/// A file copied in place atomically: written beside, then renamed.
 fn place(from: &Path, to: &Path) -> Result<()> {
     if let Some(d) = to.parent() {
         std::fs::create_dir_all(d)?;
@@ -1129,7 +1040,6 @@ fn place(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Point `link` at `target` in one rename (no moment without a program).
 fn swap_link(link: &Path, target: &Path) -> Result<()> {
     let tmp = link.with_file_name(format!(
         ".{}.link-new",
@@ -1151,9 +1061,6 @@ fn exe_name() -> &'static str {
     }
 }
 
-/// Install `staged` for `method`. A downgrade (or the same version) is
-/// refused unless `force`. Verified before, so nothing half done is left:
-/// each step is a copy beside the target and one rename.
 pub fn install(
     staged: &Staged,
     method: &Method,
@@ -1184,7 +1091,7 @@ pub fn install(
             if let Some(s) = speech {
                 place(s, &vdir.join("godterm-speech"))?;
             }
-            // The running copy, kept for rollback.
+
             let old_dir = l.versions.join(cur.to_string());
             let old_bin = old_dir.join(exe_name());
             let is_link = path.is_symlink();
@@ -1198,7 +1105,6 @@ pub fn install(
                 }
             }
             if cfg!(windows) {
-                // A running exe cannot be overwritten, but it can be renamed.
                 let old = path.with_extension("exe.old");
                 let _ = std::fs::remove_file(&old);
                 if path.exists() {
@@ -1263,7 +1169,6 @@ pub fn install(
             }
         }
         (Method::WindowsInstaller { exe }, Payload::Installer(setup)) => {
-            // The installer writes a fresh exe; this one moves aside first.
             let old = exe.with_extension("exe.old");
             let _ = std::fs::remove_file(&old);
             std::fs::rename(exe, &old)?;
@@ -1294,7 +1199,6 @@ pub fn install(
     Ok(next)
 }
 
-/// Copy GodTerm.app out of the DMG next to `app` and check its signature.
 fn bundle_from_dmg(dmg: &Path, app: &Path, v: &Version, work: &Path) -> Result<PathBuf> {
     let mnt = work.join("mnt");
     std::fs::create_dir_all(&mnt)?;
@@ -1347,8 +1251,6 @@ fn bundle_from_dmg(dmg: &Path, app: &Path, v: &Version, work: &Path) -> Result<P
     Ok(out)
 }
 
-/// Whole bundles only (a signed bundle is never edited in place): the old
-/// one moves to `keep`, the new one takes its name.
 fn swap_bundle(app: &Path, new_app: &Path, keep: &Path) -> Result<()> {
     if let Some(d) = keep.parent() {
         std::fs::create_dir_all(d)?;
@@ -1361,14 +1263,13 @@ fn swap_bundle(app: &Path, new_app: &Path, keep: &Path) -> Result<()> {
         let _ = std::fs::rename(&aside, app);
         return Err(e.into());
     }
-    // Across volumes the old copy stays beside the app.
+
     if std::fs::rename(&aside, keep).is_err() {
         crate::log::info(&format!("update: previous app kept at {}", aside.display()));
     }
     Ok(())
 }
 
-/// Back to the version before the last update.
 pub fn rollback(l: &Layout) -> Result<String> {
     let mut rec = Installed::load(l);
     let (Some(target), Some(prev), Some(prev_path)) = (
@@ -1424,7 +1325,6 @@ pub fn rollback(l: &Layout) -> Result<String> {
     Ok(prev)
 }
 
-/// Drop installed versions other than `keep` (and the running one).
 fn prune(l: &Layout, keep: &[String]) {
     let running = std::env::current_exe()
         .ok()
@@ -1445,16 +1345,12 @@ fn prune(l: &Layout, keep: &[String]) {
     }
 }
 
-// ---------- restart ----------
-
 static RESTART: std::sync::Mutex<Option<Next>> = std::sync::Mutex::new(None);
 
-/// A restart into a new version is waiting for the TUI to end.
 pub fn restart_pending() -> bool {
     RESTART.lock().unwrap_or_else(|e| e.into_inner()).is_some()
 }
 
-/// Ask main() to run `next` once the TUI has shut down.
 pub fn request_restart(next: Next) {
     *RESTART.lock().unwrap_or_else(|e| e.into_inner()) = Some(next);
 }
@@ -1464,11 +1360,8 @@ pub fn take_restart() -> Option<Next> {
     RESTART.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
-/// The environment mark that makes the next start restore every tab at
-/// once (`--resume`), as after a restart to update.
 pub const EAGER_ENV: &str = "GODTERM_RESTORE_EAGER";
 
-/// After the TUI is down: become the new version, same arguments.
 pub fn relaunch_if_requested() {
     let Some(next) = RESTART.lock().unwrap_or_else(|e| e.into_inner()).take() else {
         return;
@@ -1490,9 +1383,6 @@ pub fn relaunch_if_requested() {
     );
 }
 
-// ---------- the command ----------
-
-/// `godterm update [--check] [--rollback] [--force]`.
 pub fn command(args: &[String]) -> Result<()> {
     let has = |f: &str| args.iter().any(|a| a == f);
     let l = Layout::default();
@@ -1573,7 +1463,7 @@ pub mod tests {
     pub const TEST_PUB: &str = include_str!("../tests/fixtures/update/test.pub");
     pub const SUMS: &[u8] = include_bytes!("../tests/fixtures/update/SHA256SUMS");
     pub const SIG: &str = include_str!("../tests/fixtures/update/SHA256SUMS.minisig");
-    /// The same SHA256SUMS signed the old way, without a version.
+
     pub const UNVERSIONED_SIG: &str =
         include_str!("../tests/fixtures/update/SHA256SUMS.unversioned.minisig");
     pub const ARCHIVE: &[u8] = include_bytes!("../tests/fixtures/update/godterm-test.tar.gz");
@@ -1582,8 +1472,6 @@ pub mod tests {
         TEST_PUB.lines().nth(1).unwrap().to_string()
     }
 
-    /// A release server on 127.0.0.1: routes to bodies; `cut` closes the
-    /// first full download of the archive halfway.
     pub struct Mock {
         pub base: String,
         pub hits: Arc<Mutex<Vec<String>>>,
@@ -1687,8 +1575,6 @@ pub mod tests {
         }
     }
 
-    /// A tar.gz release in the layout tests use (the platform's real
-    /// archive name differs; the method maps to it).
     pub fn test_method(path: PathBuf) -> Method {
         Method::Standalone { path }
     }
@@ -1802,7 +1688,7 @@ pub mod tests {
                 Method::System { .. }
             ));
         }
-        // install.sh: a plain file in a writable bin folder.
+
         let bin = d.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join("godterm"), "old").unwrap();
@@ -1812,11 +1698,11 @@ pub mod tests {
                 path: bin.join("godterm")
             }
         );
-        // After an update: a link into the versions folder.
+
         let v = l.versions.join("0.2.2");
         std::fs::create_dir_all(&v).unwrap();
         std::fs::write(v.join("godterm"), "new").unwrap();
-        // (Windows needs a privilege for symlinks.)
+
         if !cfg!(windows) {
             let link = d.join("link-godterm");
             crate::platform::symlink(&v.join("godterm"), &link).unwrap();
@@ -1838,7 +1724,7 @@ pub mod tests {
         std::fs::write(&target, "old build").unwrap();
         let method = test_method(target.clone());
         let alias = "godterm-test.tar.gz".to_string();
-        // Newer, signed; the first archive download is cut off.
+
         let srv = mock_routes(|base| routes(base, "v9.9.9", true, &sums_for(&alias)), true);
         let src = test_source(&srv.base);
         let mut cache = Cache::default();
@@ -1846,10 +1732,10 @@ pub mod tests {
         assert_eq!(rel.version().to_string(), "9.9.9");
         assert_eq!(cache.etag.as_deref(), Some("\"e1\""));
         assert_eq!(rel.notes(5), vec!["What's new", "Faster restarts", "Fixes"]);
-        // The ETag: a 304 answers from the cache.
+
         let again = check(&src, &mut cache, "stable").unwrap().unwrap();
         assert_eq!(again.tag, "v9.9.9");
-        // The first download is cut off halfway; the second resumes.
+
         assert!(stage(&src, &rel, &method, &l, &|_, _| {}).is_err());
         let staged = stage(&src, &rel, &method, &l, &|_, _| {}).unwrap();
         assert!(
@@ -1866,7 +1752,7 @@ pub mod tests {
         assert!(std::fs::read_to_string(bin)
             .unwrap()
             .contains("godterm 9.9.9"));
-        // Install: the target now runs 9.9.9, the old build is kept.
+
         let cur = Version::parse("0.2.1").unwrap();
         let next = install(&staged, &method, &cur, false, &l).unwrap();
         assert_eq!(next.program, target);
@@ -1881,12 +1767,12 @@ pub mod tests {
             "old build"
         );
         assert!(!staged.dir.exists(), "the download is cleaned up");
-        // Rollback.
+
         assert_eq!(rollback(&l).unwrap(), "0.2.1");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "old build");
         let rec = Installed::load(&l);
         assert_eq!(rec.active.as_deref(), Some("0.2.1"));
-        // A downgrade is refused unless forced.
+
         let staged2 = stage(&src, &rel, &method, &l, &|_, _| {}).unwrap();
         let newer = Version::parse("10.0.0").unwrap();
         assert!(install(&staged2, &method, &newer, false, &l)
@@ -1901,7 +1787,7 @@ pub mod tests {
         let (d, l) = tmp("refuse");
         let method = test_method(d.join("godterm"));
         let alias = "godterm-test.tar.gz".to_string();
-        // Wrong hash in SHA256SUMS (unsigned, so only the checksum stops it).
+
         let bad_sums = format!("{}  {alias}\n", "ab".repeat(32)).into_bytes();
         let srv = mock_routes(|b| routes(b, "v9.9.9", false, &bad_sums), false);
         let src = test_source(&srv.base);
@@ -1916,7 +1802,7 @@ pub mod tests {
             !l.updates.join("9.9.9").join(&alias).exists(),
             "nothing left behind"
         );
-        // A signature that does not match the (edited) SHA256SUMS.
+
         let mut edited = sums_for(&alias);
         edited.extend_from_slice(format!("{}  evil.zip\n", "cd".repeat(32)).as_bytes());
         let srv = mock_routes(|b| routes(b, "v9.9.9", true, &edited), false);
@@ -1929,7 +1815,7 @@ pub mod tests {
             stage(&src, &rel, &method, &l, &|_, _| {}).unwrap_err()
         );
         assert!(e.contains("refused") && e.contains("signature"), "{e}");
-        // Unsigned while signatures are required.
+
         let srv = mock_routes(|b| routes(b, "v9.9.9", false, &sums_for(&alias)), false);
         let mut src = test_source(&srv.base);
         src.require_sig = true;
@@ -1940,14 +1826,14 @@ pub mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("not signed"), "{e}");
-        // The signature itself verifies over the original file.
+
         verify_sig(SUMS, SIG, &test_pubkey()).unwrap();
         assert!(verify_sig(b"tampered", SIG, &test_pubkey()).is_err());
-        // It names the version it was made for: only that one passes.
+
         verify_release_sig(SUMS, SIG, &test_pubkey(), "9.9.9").unwrap();
         let e = verify_release_sig(SUMS, SIG, &test_pubkey(), "99.0.0").unwrap_err();
         assert!(e.to_string().contains("for version 9.9.9"), "{e}");
-        // An old style signature (no version) is refused for any release.
+
         verify_sig(SUMS, UNVERSIONED_SIG, &test_pubkey()).unwrap();
         let e = verify_release_sig(SUMS, UNVERSIONED_SIG, &test_pubkey(), "9.9.9").unwrap_err();
         assert!(e.to_string().contains("does not name the version"), "{e}");
@@ -1960,9 +1846,6 @@ pub mod tests {
         assert!(Source::github(true).require_sig);
     }
 
-    /// An unsigned release while signatures are required: the check still
-    /// reports it, staging refuses before any download with a message that
-    /// names the override, and nothing is left on disk.
     #[test]
     fn unsigned_release_is_reported_but_never_installed() {
         let (d, l) = tmp("unsigned");
@@ -1988,8 +1871,7 @@ pub mod tests {
             "nothing downloaded or left behind"
         );
         assert!(!l.versions.join("9.9.9").exists(), "nothing installed");
-        // --force only lifts the downgrade guard in install(); staging (where
-        // the signature is checked) takes no force flag, so it cannot skip it.
+
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -2010,13 +1892,13 @@ pub mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(rel.version(), cur, "up to date");
-        // No release yet: 404 is "none".
+
         let mut none = test_source(&srv.base);
         none.repo = "other/repo".into();
         assert!(check(&none, &mut Cache::default(), "stable")
             .unwrap()
             .is_none());
-        // 429: back off, and do not ask again before it is over.
+
         let mut lim = test_source(&srv.base);
         lim.repo = "x/limited".into();
         let mut cache = Cache::default();

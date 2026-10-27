@@ -37,7 +37,6 @@ H = os.path.expanduser("~")
 REAL_HOME = os.path.join(H, ".godterm")
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
-# Never readable from inside the sandbox.
 SECRET_DIRS = [
     "~/.ssh", "/Volumes/Private", "~/.gnupg", "~/.aws", "~/.azure", "~/.kube",
     "~/.docker", "~/.config/gh", "~/.config/godterm", "~/.config/godterm-release",
@@ -45,8 +44,6 @@ SECRET_DIRS = [
     "~/Library/Mobile Documents", "~/Documents", "~/Desktop", "~/Downloads",
 ]
 
-# State dirs the agent CLIs write to (sessions, logs, caches, token
-# refreshes). Writable; their settings files below are not.
 CLI_STATE = {
     "claude": ["~/.local/share/claude", "~/.local/state/claude", "~/.cache/claude",
                "~/.cache/claude-cli-nodejs", "~/Library/Caches/claude-cli-nodejs"],
@@ -60,10 +57,6 @@ CLI_STATE = {
                  "~/.config/opencode"],
 }
 
-# Settings files that must not change, even where their dir is writable.
-# (Cursor's ~/.cursor/cli-config.json is not here: it mixes settings with
-# its auth info and caches, which it rewrites; the suite compares its
-# settings keys instead.)
 PROTECTED = [
     "~/.godterm/config.toml",
     "~/.codex/config.toml",
@@ -172,10 +165,8 @@ def write_config(home, slots, projects, extra=""):
             lines.append(f"config_dir = {toml_str(s['config_dir'])}")
         args = list(s.get("args", []))
         if s["harness"] == "codex":
-            # Trust the test folder for this launch only (-c is not saved).
             args += ["-c", f'projects."{proj}".trust_level="trusted"']
         if s["harness"] == "cursor":
-            # Trust the test folder without the prompt.
             args += ["--trust"]
         if args:
             lines.append("args = [" + ", ".join(toml_str(a) for a in args) + "]")
@@ -183,14 +174,12 @@ def write_config(home, slots, projects, extra=""):
     lines += [
         "[voice]", "tts = false", "chime = false", 'wake_model = "off"', "",
         "[tabs]", "jobs_tools = false", "",
-        # No assistant turns (they would spend model quota).
         "[assistant]", 'mode = "off"', "prewarm = false", "",
         "[update]", "enabled = false", "auto_download = false", "",
         "[supervisor]", "enabled = false", "hang_restart = false", "",
     ]
     with open(os.path.join(home, "config.toml"), "w") as f:
         f.write("\n".join(lines) + extra)
-    # The first launch tour has its own e2e step (demo).
     with open(os.path.join(home, "tour_done"), "w") as f:
         f.write("1")
 
@@ -211,12 +200,8 @@ def profile(root, slots, extra_write=()):
             write.append(s["config_dir"])
         if s.get("project"):
             write.append(s["project"])
-    # Reads: the account dirs in use stay readable inside the denied
-    # ~/.godterm; nothing else of the real GodTerm home.
     read_ok = [s["config_dir"] for s in slots.values() if s.get("config_dir", "") and
                s["config_dir"].startswith(REAL_HOME + os.sep)]
-    # The repo and the binary must stay readable even if they live under a
-    # denied folder (e.g. ~/Documents).
     read_ok.append(REPO)
     rules = [
         "(version 1)",
@@ -270,11 +255,6 @@ def prepare(root=None, keys=None, bin_path=None, extra_cfg="", slots=None):
     outside = []
     for k, s in slots.items():
         if s["harness"] == "codex" and not s.get("project"):
-            # Codex asks to trust any folder not under a trusted one and
-            # saves the answer in ~/.codex/config.toml (write protected
-            # here), ignoring a -c override for that prompt. A folder in
-            # ~/.cache sits under the home folder, which this user trusts;
-            # it is deleted with the sandbox root.
             s["project"] = os.path.join(H, ".cache", "godterm-e2e", os.path.basename(root), k)
             outside.append(os.path.dirname(s["project"]))
     write_config(home, slots, projects, extra_cfg)
@@ -292,7 +272,6 @@ def prepare(root=None, keys=None, bin_path=None, extra_cfg="", slots=None):
         "TERM": "xterm-256color",
         "TMPDIR": tmp + "/",
         "GODTERM_HOME": home,
-        # The main installs: an empty dir (GodTerm never adopts ~/.claude).
         "GODTERM_MAIN_DIR": os.path.join(root, "no-main-claude"),
         "GODTERM_MAIN_GROK_DIR": os.path.join(root, "no-main-grok"),
         "GODTERM_NO_AUDIO": "1",
@@ -300,7 +279,6 @@ def prepare(root=None, keys=None, bin_path=None, extra_cfg="", slots=None):
         "GODTERM_NO_OPEN": "1",
         "GODTERM_NO_SPLASH": "1",
     }
-    # Usage meters: a fixture, so the sandbox makes no usage API calls.
     fx = os.path.join(REPO, "tests", "fixtures", "usage.json")
     if os.path.exists(fx):
         env["GODTERM_USAGE_FIXTURE"] = fx
@@ -308,7 +286,6 @@ def prepare(root=None, keys=None, bin_path=None, extra_cfg="", slots=None):
         "root": root, "home": home, "projects": projects, "profile": prof,
         "argv": ["/usr/bin/sandbox-exec", "-f", prof, bin_path],
         "bin": bin_path, "env": env, "slots": slots,
-        # Project folders outside the root (delete them with it).
         "outside": outside,
         "project": {k: s.get("project") or os.path.join(projects, k) for k, s in slots.items()},
     }

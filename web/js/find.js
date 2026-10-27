@@ -1,12 +1,8 @@
-// The tab filter's other sections: archived tabs (list_archived) and every
-// other session on the Mac (the server's session index, through the
-// `sessions` tool), below the open tabs that match. Queried 150 ms after
-// the last key, each section capped with a "show more".
 import { esc, toast, debounce, idOf, emit } from './util.js';
 import { tool } from './conn.js';
 import { S } from './state.js';
 import { panes } from './term.js';
-// manage.js (the control tool runner) loads when a found row is used, not with the first screen.
+
 const run = (...a) => import('./manage.js').then((m) => m.run(...a));
 
 const FIRST = { arch: 5, other: 8 };
@@ -23,7 +19,7 @@ async function query() {
   if (!text) { res.arch = res.other = null; redraw(); return; }
   const [a, o] = await Promise.all([
     tool('list_archived', { text, limit: lim.arch }),
-    // A few more than shown: those open in a tab or archived drop out.
+
     tool('sessions', { text, limit: lim.other + 10, include_headless: false }),
   ]);
   if (my !== seq) return;
@@ -32,7 +28,7 @@ async function query() {
   const ov = o.result || o;
   if (o.ok === false && !ov.sessions) res.other = { rows: [], total: 0, err: o.error || 'Sessions are not available' };
   else {
-    // Sessions already listed above (open in a tab, or archived) are left out.
+
     const known = new Set([...S.tabs.map((t) => t.session_id || t.session).filter(Boolean),
       ...(res.arch.rows || []).map((r) => r.session).filter(Boolean)]);
     const all = ov.sessions || [];
@@ -44,7 +40,6 @@ async function query() {
 }
 const later = debounce(query, 150);
 
-// The filter text changed: reset the caps and ask again shortly.
 export function findText(text) {
   if (text === q) return;
   q = text;
@@ -72,13 +67,8 @@ function otherRow(s, i) {
     `<span class="s">${esc(sub)}</span></span><span class="fgo">Resume</span></div>`;
 }
 
-// Both answers are in and neither found anything (the tab list then
-// says so in one line, with the open tabs).
 export const foundNone = () => !!q && !!res.arch && !!res.other && !res.arch.total && !res.other.rows.length && !res.other.err && !res.other.indexing;
 
-// The sections' HTML, for the tab list to append (empty without a
-// filter). A section still loading shows its head with "..."; one that
-// found nothing is left out.
 export function foundHtml() {
   if (!q) return '';
   let html = '';
@@ -100,7 +90,6 @@ export function foundHtml() {
 
 const showTab = (id) => { if (!id) return; setTimeout(() => { panes.show(idOf(id)); emit('picked', idOf(id)); }, 300); };
 
-// A click in the tab list on one of these rows; true when it was one.
 export function foundClick(e) {
   const m = e.target.closest('[data-more]');
   if (m) { lim[m.dataset.more] += MORE; query(); return true; }

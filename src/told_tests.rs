@@ -1,8 +1,3 @@
-//! The "told the user" log: every channel records into it, the next
-//! brain turn's state carries it once, UI hints stay out, the ring is
-//! bounded, and "finished" notices come only from a real Working to
-//! Ready transition. No speaker ever starts; a stub brain and a temp home.
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -56,11 +51,11 @@ fn each_channel_records_into_told_user() {
     );
     assert!(has("Remote Control dropped", Channel::Panel), "{t:?}");
     assert!(has("An update is ready", Channel::Panel), "{t:?}");
-    // A muted speaker says nothing, so nothing is recorded as spoken.
+
     app.cfg.voice.speaker_muted = true;
     app.speak("denied");
     assert!(!texts(&app).iter().any(|(x, _)| x == "denied"));
-    // The same line on two channels is one message.
+
     app.cfg.voice.speaker_muted = false;
     app.tell_user_from(
         "attention",
@@ -82,7 +77,7 @@ fn held_speech_is_recorded_with_its_source_when_said() {
     let (mut app, home) = test_app("quiet");
     app.told.borrow_mut().fake_speaker = true;
     app.cfg.voice.announce = true;
-    // The user just spoke: the update waits.
+
     app.quiet_user_spoke();
     let src = Source {
         tab: Some(42),
@@ -138,7 +133,7 @@ fn told_user_reaches_the_next_brain_turn_once() {
         snap.contains("t2079") && snap.contains("working to"),
         "{snap}"
     );
-    // get_state has it too.
+
     let st = app.control_call("get_state", &serde_json::json!({}));
     assert_eq!(
         st["result"]["told_user"][0]["text"],
@@ -152,7 +147,7 @@ fn told_user_reaches_the_next_brain_turn_once() {
         sent.contains("the hyper demo finished") && sent.contains("t2079"),
         "{sent}"
     );
-    // Sent once: the next turn's state starts after it.
+
     let snap = app.state_preamble();
     assert!(!snap.contains("told_user"), "{snap}");
     let st = app.control_call("get_state", &serde_json::json!({}));
@@ -170,10 +165,10 @@ fn ui_hints_stay_out_of_the_brain_context() {
     let (mut app, home) = test_app("hints");
     app.flash("Copied 40 characters");
     app.flash("Layout: grid (Ctrl-a L for the next one)");
-    // Recorded...
+
     assert_eq!(app.told.borrow().ring.len(), 2);
     assert!(app.told.borrow().ring.iter().all(|e| e.low));
-    // ...but never sent.
+
     let snap = app.state_preamble();
     assert!(
         !snap.contains("Copied") && !snap.contains("told_user"),
@@ -195,7 +190,7 @@ fn the_ring_is_bounded() {
     assert_eq!(log.ring.len(), crate::told::RING);
     assert_eq!(log.ring.back().unwrap().text, "message 199");
     drop(log);
-    // One turn's state carries only the newest few.
+
     let snap = app.state_preamble();
     assert!(snap.contains("message 199") && !snap.contains("message 160\""));
     assert!(snap.contains("earlier (get_state told_user)"), "{snap}");
@@ -207,11 +202,11 @@ fn finished_needs_a_real_working_to_ready_transition() {
     use crate::app::attention_worthy;
     let long = Duration::from_secs(5);
     assert!(attention_worthy(Activity::Working, Activity::Ready, long));
-    // A launch or a restore: Starting first, never a finish.
+
     assert!(!attention_worthy(Activity::Starting, Activity::Ready, long));
     assert!(!attention_worthy(Activity::Idle, Activity::Ready, long));
     assert!(!attention_worthy(Activity::Exited, Activity::Ready, long));
-    // A one tick flicker of the spinner is not a turn.
+
     assert!(!attention_worthy(
         Activity::Working,
         Activity::Ready,
@@ -242,20 +237,20 @@ fn attention_fires_only_on_the_tabs_real_transition() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut app, home) = test_app("attention");
     app.cfg.notifications = false;
-    // A background tab (pane 2), running, just launched or restored.
+
     let slot = 1;
     let t = &mut app.panes[slot].tabs[0];
     t.state = PaneState::Running;
     t.set_activity(Activity::Starting);
     let uid = t.uid;
     app.focus = 0;
-    // Starting to Ready (a restore coming up): nothing.
+
     show(&mut app, slot, 0, "? for shortcuts");
     app.tick();
     app.voice_tick();
     assert!(app.attention.is_empty());
     assert!(!texts(&app).iter().any(|(x, _)| x.contains("finished")));
-    // A flicker of the spinner: nothing.
+
     show(&mut app, slot, 0, "esc to interrupt");
     app.tick();
     assert_eq!(app.panes[slot].tabs[0].activity, Activity::Working);
@@ -263,13 +258,12 @@ fn attention_fires_only_on_the_tabs_real_transition() {
     app.tick();
     app.voice_tick();
     assert!(!texts(&app).iter().any(|(x, _)| x.contains("finished")));
-    // A real turn: Working held, then Ready.
+
     show(&mut app, slot, 0, "esc to interrupt");
     app.tick();
     app.panes[slot].tabs[0].activity_since = Instant::now() - Duration::from_secs(5);
     show(&mut app, slot, 0, "? for shortcuts");
-    // The tick sees the transition; voice_tick makes it an event for the
-    // assistant (nothing said or flashed by GodTerm itself).
+
     app.tick();
     app.voice_tick();
     assert!(!texts(&app).iter().any(|(x, _)| x.contains("finished")));
@@ -281,7 +275,7 @@ fn attention_fires_only_on_the_tabs_real_transition() {
         .find(|e| e.kind == crate::app_events::EventKind::Finished)
         .expect("finished event");
     assert_eq!(e.uid, uid);
-    // A notice for approval that is no longer asked is stale: dropped.
+
     app.attention.push(crate::app::Attention {
         slot,
         tab: 0,

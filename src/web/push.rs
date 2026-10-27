@@ -1,19 +1,3 @@
-//! Web Push (docs/WEB_APP.md, "Push notifications"): a phone with the app
-//! on its Home Screen gets a notification when a tab waits for approval,
-//! finishes a turn or ends with an error, also while the page is closed.
-//!
-//! - VAPID (RFC 8292): one P-256 key pair, made once and kept in
-//!   `<app home>/web-push-vapid.pk8` (0600); every push carries an ES256
-//!   JWT for the push service's origin.
-//! - Encryption (RFC 8291): aes128gcm, one record of 4096, an ephemeral
-//!   ECDH key and a random salt per message.
-//! - Subscriptions: `<app home>/web-push-subs.json` (0600), one per device.
-//!   A push service answering 404 or 410 has dropped it: so do we.
-//! - The UI thread only notices what happened (`Watch`, cheap, no I/O);
-//!   a thread of its own reads the files, encrypts and posts.
-//!
-//! Only the tab's name and the kind ever leave this Mac.
-
 use super::tap::Outbox;
 use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
@@ -26,30 +10,25 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// What a device can opt into.
 pub const KINDS: [&str; 3] = ["approval", "finished", "error"];
-/// At most one push per tab per kind this often.
+
 pub const COALESCE: Duration = Duration::from_secs(30);
-/// How long a push service keeps a message for a device that is offline.
+
 pub const TTL_SECS: u32 = 3600;
-/// The record size in the aes128gcm header.
+
 pub const RECORD_SIZE: u32 = 4096;
-/// A page that said "visible" counts as looking for this long (it says so
-/// again every 15 s while it is).
+
 pub const VISIBLE_FOR: Duration = Duration::from_secs(40);
-/// The JWT's lifetime (RFC 8292 allows 24 h; kept short).
+
 pub const JWT_LIFE_SECS: u64 = 3600;
 const _: () = assert!(JWT_LIFE_SECS <= 12 * 3600);
-/// The JWT's `sub`: the project's page, neutral and the same for everyone.
+
 pub const SUBJECT: &str = "https://godterm.com";
-/// Devices kept (the oldest goes first).
+
 const MAX_SUBS: usize = 20;
-/// Payloads stay well inside one record.
+
 const MAX_PAYLOAD: usize = 3000;
 
-// ---------- base64url ----------
-
-/// base64url without padding (what Web Push uses everywhere).
 pub fn b64u(b: &[u8]) -> String {
     crate::assistant_images::base64(b)
         .trim_end_matches('=')
@@ -57,12 +36,9 @@ pub fn b64u(b: &[u8]) -> String {
         .replace('/', "_")
 }
 
-/// base64url or standard base64, padding optional.
 pub fn unb64u(s: &str) -> Option<Vec<u8>> {
     crate::assistant_images::unbase64(&s.replace('-', "+").replace('_', "/"))
 }
-
-// ---------- VAPID ----------
 
 pub fn vapid_path() -> PathBuf {
     crate::config::app_home().join("web-push-vapid.pk8")
@@ -72,8 +48,6 @@ pub fn subs_path() -> PathBuf {
     crate::config::app_home().join("web-push-subs.json")
 }
 
-/// The VAPID key at `path`, made (PKCS#8, 0600) when there is none or it
-/// does not parse.
 pub fn load_or_create_vapid(path: &Path) -> anyhow::Result<EcdsaKeyPair> {
     let rng = SystemRandom::new();
     if let Ok(b) = std::fs::read(path) {
@@ -93,7 +67,6 @@ pub fn load_or_create_vapid(path: &Path) -> anyhow::Result<EcdsaKeyPair> {
         .map_err(|e| anyhow::anyhow!("the new VAPID key: {e}"))
 }
 
-/// This home's VAPID key (kept in memory once read).
 pub fn vapid() -> anyhow::Result<Arc<EcdsaKeyPair>> {
     static K: Mutex<Option<(PathBuf, Arc<EcdsaKeyPair>)>> = Mutex::new(None);
     let p = vapid_path();
@@ -108,7 +81,6 @@ pub fn vapid() -> anyhow::Result<Arc<EcdsaKeyPair>> {
     Ok(k)
 }
 
-/// The scheme, host and port of a URL ("https://web.push.apple.com").
 pub fn origin(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once("://")?;
     let host = rest.split(['/', '?', '#']).next()?;
@@ -122,7 +94,6 @@ pub fn origin(url: &str) -> Option<String> {
     ))
 }
 
-/// An ES256 JWT for `aud`, valid until `exp` (unix seconds).
 pub fn jwt(key: &EcdsaKeyPair, aud: &str, exp: u64, sub: &str) -> anyhow::Result<String> {
     let head = b64u(br#"{"typ":"JWT","alg":"ES256"}"#);
     let claims = b64u(
@@ -137,7 +108,6 @@ pub fn jwt(key: &EcdsaKeyPair, aud: &str, exp: u64, sub: &str) -> anyhow::Result
     Ok(format!("{input}.{}", b64u(sig.as_ref())))
 }
 
-/// The Authorization header for a push to `endpoint` at `now`.
 pub fn authorization(key: &EcdsaKeyPair, endpoint: &str, now: u64) -> anyhow::Result<String> {
     let aud = origin(endpoint).ok_or_else(|| anyhow::anyhow!("a bad push endpoint"))?;
     let t = jwt(key, &aud, now + JWT_LIFE_SECS, SUBJECT)?;
@@ -146,8 +116,6 @@ pub fn authorization(key: &EcdsaKeyPair, endpoint: &str, now: u64) -> anyhow::Re
         b64u(key.public_key().as_ref())
     ))
 }
-
-// ---------- RFC 8291 ----------
 
 fn hmac256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     let k = hmac::Key::new(hmac::HMAC_SHA256, key);
@@ -160,8 +128,6 @@ fn hmac256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     out
 }
 
-/// The content key and nonce from the ECDH secret (RFC 8291 section 3.4,
-/// RFC 8188 section 2.2; each HKDF expand is one block).
 pub fn derive(
     ecdh: &[u8],
     auth: &[u8],
@@ -181,8 +147,6 @@ pub fn derive(
     (k, n)
 }
 
-/// The message body: the aes128gcm header (salt, record size, the
-/// sender's public key) and one record (plaintext, 0x02, tag).
 pub fn seal(
     ecdh: &[u8],
     auth: &[u8],
@@ -216,8 +180,6 @@ pub fn seal(
     Ok(out)
 }
 
-/// Encrypt `plaintext` for a subscription's keys, with an ephemeral key
-/// and a salt from `rng` (the system's; tests pass fixed ones).
 pub fn encrypt(
     ua_pub: &[u8],
     auth: &[u8],
@@ -239,7 +201,6 @@ pub fn encrypt(
     seal(&ecdh, auth, ua_pub, &as_pub, &salt, plaintext)
 }
 
-/// Decrypt a body given the ECDH secret (the receiver's side; tests).
 #[cfg(test)]
 pub fn open(ecdh: &[u8], auth: &[u8], ua_pub: &[u8], body: &[u8]) -> Option<Vec<u8>> {
     let salt = body.get(..16)?;
@@ -259,29 +220,25 @@ pub fn open(ecdh: &[u8], auth: &[u8], ua_pub: &[u8], body: &[u8]) -> Option<Vec<
     (plain[end] == 2).then(|| plain[..end].to_vec())
 }
 
-// ---------- subscriptions ----------
-
-/// One device's subscription.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Sub {
     pub endpoint: String,
-    /// The browser's P-256 public key (65 bytes, base64url).
+
     pub p256dh: String,
-    /// Its auth secret (16 bytes, base64url).
+
     pub auth: String,
-    /// "iPhone Safari standalone 402x874@3".
+
     #[serde(default)]
     pub device: String,
-    /// When it was first stored (RFC 3339).
+
     #[serde(default)]
     pub created: String,
-    /// What it opted into (of KINDS).
+
     #[serde(default)]
     pub kinds: Vec<String>,
 }
 
 impl Sub {
-    /// A short id for the page (the endpoint itself is a secret).
     pub fn id(&self) -> String {
         sub_id(&self.endpoint)
     }
@@ -299,7 +256,6 @@ struct File {
     subs: Vec<Sub>,
 }
 
-/// The subscriptions in memory, for the file they came from.
 static STORE: Mutex<Option<(PathBuf, Vec<Sub>)>> = Mutex::new(None);
 
 fn with_store<R>(f: impl FnOnce(&mut Vec<Sub>) -> (R, bool)) -> R {
@@ -346,9 +302,6 @@ fn clean_kinds(v: &Value) -> Option<Vec<String>> {
     )
 }
 
-/// Check and store a subscription (the browser's PushSubscription JSON):
-/// a known endpoint keeps its created time and kinds unless new kinds
-/// are given.
 pub fn subscribe(sub: &Value, device: &str, kinds: Option<Vec<String>>) -> Result<Sub, String> {
     let endpoint = sub["endpoint"].as_str().unwrap_or("").trim().to_string();
     if !endpoint.starts_with("https://") || endpoint.len() > 2048 || origin(&endpoint).is_none() {
@@ -397,7 +350,6 @@ pub fn subscribe(sub: &Value, device: &str, kinds: Option<Vec<String>>) -> Resul
     }))
 }
 
-/// Forget a subscription by its endpoint or id. Whether one went.
 pub fn unsubscribe(key: &str) -> bool {
     with_store(|subs| {
         let n = subs.len();
@@ -410,10 +362,6 @@ pub fn unsubscribe(key: &str) -> bool {
     })
 }
 
-// ---------- visibility ----------
-
-/// What each connected page last said: client -> (its subscription id,
-/// visible, when).
 type Looks = HashMap<u64, (String, bool, Instant)>;
 static VISIBLE: Mutex<Option<Looks>> = Mutex::new(None);
 
@@ -423,8 +371,6 @@ pub fn set_visible(client: u64, sub: &str, on: bool) {
         .insert(client, (sub.to_string(), on, Instant::now()));
 }
 
-/// The subscriptions a connected page is looking at now (those devices
-/// are not sent a push). Entries of clients gone are dropped.
 pub fn looking(connected: &[u64], now: Instant) -> HashSet<String> {
     let mut g = VISIBLE.lock().unwrap_or_else(|e| e.into_inner());
     let m = g.get_or_insert_with(HashMap::new);
@@ -435,20 +381,16 @@ pub fn looking(connected: &[u64], now: Instant) -> HashSet<String> {
         .collect()
 }
 
-// ---------- what happened ----------
-
-/// A tab as the watcher last saw it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Seen {
     pub activity: crate::pane::Activity,
-    /// When `activity` began (as the watcher saw it).
+
     pub since: Instant,
     pub bg_wait: bool,
     pub finished: bool,
     pub crashed: bool,
 }
 
-/// The kinds a tab's change from `prev` to `now` is worth a push for.
 pub fn changes(prev: &Seen, now: &Seen, at: Instant) -> Vec<&'static str> {
     use crate::pane::Activity::*;
     let mut v = vec![];
@@ -469,11 +411,10 @@ pub fn changes(prev: &Seen, now: &Seen, at: Instant) -> Vec<&'static str> {
     v
 }
 
-/// A push to send.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Note {
     pub kind: &'static str,
-    /// The tab's uid (0: the assistant).
+
     pub tab: u64,
     pub name: String,
 }
@@ -518,8 +459,6 @@ impl Note {
     }
 }
 
-/// The UI thread's watcher: what each tab was, and when each push last
-/// went (for coalescing).
 #[derive(Default)]
 pub struct Watch {
     seen: Option<HashMap<u64, Seen>>,
@@ -528,8 +467,6 @@ pub struct Watch {
 }
 
 impl Watch {
-    /// Compare with the last look. The first look only records (no push
-    /// for what already waited when GodTerm started).
     pub fn observe(
         &mut self,
         tabs: &[(u64, String, Seen)],
@@ -587,8 +524,6 @@ impl Watch {
 }
 
 impl crate::app::App {
-    /// From web_pump: notice approvals, finished turns and errors, and
-    /// hand any push to the sender thread.
     pub fn web_push_tick(&mut self) {
         let mut tabs = vec![];
         let at = Instant::now();
@@ -623,12 +558,9 @@ impl crate::app::App {
     }
 }
 
-// ---------- sending ----------
-
 pub enum Job {
-    /// To every device that opted into its kind, but the ones looking.
     Note(Note, HashSet<String>),
-    /// A test to one device, answered on its socket.
+
     Test {
         sub: String,
         out: Arc<Outbox>,
@@ -697,7 +629,6 @@ fn send_loop(rx: Receiver<Job>) {
     }
 }
 
-/// Send to one device, logging what happened; a 404 or 410 forgets it.
 fn deliver_logged(s: &Sub, payload: &Value, urgency: &str) -> Result<u16, String> {
     let host = origin(&s.endpoint).unwrap_or_default();
     let key = vapid().map_err(|e| format!("{e:#}"))?;
@@ -734,7 +665,6 @@ fn deliver_logged(s: &Sub, payload: &Value, urgency: &str) -> Result<u16, String
     }
 }
 
-/// Encrypt and POST one push; the status code.
 pub fn deliver(key: &EcdsaKeyPair, s: &Sub, payload: &Value, urgency: &str) -> anyhow::Result<u16> {
     let body = payload.to_string();
     if body.len() > MAX_PAYLOAD {
@@ -768,10 +698,6 @@ pub fn deliver(key: &EcdsaKeyPair, s: &Sub, payload: &Value, urgency: &str) -> a
     Ok(resp.status().as_u16())
 }
 
-// ---------- the page's frames ----------
-
-/// A `push` frame from a page (ws.rs): key, status, subscribe,
-/// unsubscribe, test, visible.
 pub fn on_frame(client: u64, out: &Arc<Outbox>, v: &Value) {
     let id = v["id"].clone();
     let reply = |r: Value| {

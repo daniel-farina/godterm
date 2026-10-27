@@ -1,10 +1,7 @@
-//! A grid slot: one account, several claude sessions as tabs.
-
 use std::path::PathBuf;
 
 use crate::pane::Pane;
 
-/// Where a pane shows its tab list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TabPos {
@@ -40,44 +37,35 @@ impl TabPos {
     }
 }
 
-/// `sidebar_scroll` value meaning "scroll to the active tab".
 pub const FOLLOW: usize = usize::MAX;
 
 pub struct Slot {
     pub account: Option<usize>,
     pub tabs: Vec<Pane>,
     pub active: usize,
-    /// Tab list collapsed to a narrow strip of numbers and markers.
+
     pub sidebar_collapsed: bool,
-    /// First tab shown in the tab list when there are more than fit;
-    /// `FOLLOW` keeps the active tab in view.
+
     pub sidebar_scroll: usize,
-    /// Per pane override of where the tab list goes (None: the global one).
+
     pub tab_pos: Option<TabPos>,
-    /// Tab list width dragged by hand (None: a share of the pane).
+
     pub sidebar_w: Option<u16>,
     pub(crate) size: (u16, u16),
-    /// Hidden from the layout; its tabs keep running in the background.
+
     pub hidden: bool,
-    /// Named groups in this account's tab list, in their order.
+
     pub groups: Vec<crate::tab_groups::TabGroup>,
-    /// How the list is sorted (within pinned, each group, and the rest).
+
     pub sort: crate::tab_groups::TabSort,
-    /// The last order shown, so a sort by activity does not jump around
-    /// under the mouse: (when, tab uids).
+
     pub order_cache: std::cell::RefCell<Option<(std::time::Instant, Vec<u64>)>>,
-    /// What the search field at the top of the tab list filters by
-    /// (empty: every tab). Not saved.
+
     pub filter: String,
-    /// The tab list's window as last drawn: (first row shown, the last
-    /// first row there can be). The wheel moves from what is on screen,
-    /// in the list's own rows (headers, pinned, the sort, the search).
+
     pub list_window: std::cell::Cell<(usize, usize)>,
 }
 
-/// What each tab is called in lists: its name, made unique within the
-/// pane. Tabs named after the same folder basename get the parent folder
-/// ("api/server", "web/server"), and any still alike a number ("x 2").
 pub fn tab_labels(slot: &Slot) -> Vec<String> {
     let names: Vec<String> = slot.tabs.iter().map(|t| t.name()).collect();
     let mut out = names.clone();
@@ -128,7 +116,6 @@ impl Slot {
         &mut self.tabs[self.active]
     }
 
-    /// Append a tab and make it active. Returns its index.
     pub fn add_tab(&mut self, cwd: PathBuf) -> usize {
         let mut p = Pane::new(cwd);
         p.resize(self.size.0, self.size.1);
@@ -138,7 +125,6 @@ impl Slot {
         self.active
     }
 
-    /// Close tab `i` (killing its process). A slot always keeps one tab.
     pub fn close_tab(&mut self, i: usize, fallback_cwd: PathBuf) {
         if i >= self.tabs.len() {
             return;
@@ -177,7 +163,6 @@ impl Slot {
         }
     }
 
-    /// Resize every tab so background tabs are correct when shown.
     pub fn resize(&mut self, rows: u16, cols: u16) {
         self.size = (rows, cols);
         for t in &mut self.tabs {

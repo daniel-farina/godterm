@@ -1,37 +1,25 @@
-//! The web app's files as served, from a web/ folder: shared by build.rs
-//! (`#[path]` include, the files built in) and the running server (a
-//! folder served from disk and reloaded when it changes), so both give
-//! the same bytes and the same build id for the same files. Only std,
-//! sha2 and flate2: build.rs has nothing else.
 #![allow(dead_code)]
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// A folder whose files add up to more than this is refused.
 pub const MAX_TOTAL: u64 = 64 << 20;
 
-/// One file as served.
 pub struct Packed {
-    /// Path under the folder, with `/`.
     pub rel: String,
-    /// Where it was read from (no symlinks).
+
     pub path: PathBuf,
     pub bytes: Vec<u8>,
-    /// A gzipped copy, when it is worth it.
+
     pub gz: Option<Vec<u8>>,
 }
 
 pub struct Pack {
-    /// A short hash of every file (12 hex).
     pub id: String,
-    /// Sorted by `rel`.
+
     pub files: Vec<Packed>,
 }
 
-/// The files under `root` as (path under it, real path), sorted. Dot
-/// entries and `dev` folders (web/dev is the mock server) are skipped,
-/// and so is anything whose real path is outside `root` (a symlink out).
 pub fn walk(root: &Path) -> Vec<(String, PathBuf)> {
     let mut out = vec![];
     let Ok(real_root) = std::fs::canonicalize(root) else {
@@ -66,7 +54,6 @@ fn walk_in(
             continue;
         }
         if real.is_dir() {
-            // web/dev holds the development mock server, not the app.
             if name == "dev" || seen.contains(&real) {
                 continue;
             }
@@ -81,8 +68,6 @@ fn walk_in(
     }
 }
 
-/// Read and pack every file under `root`. An error (a file that cannot be
-/// read, too much) is returned as is: the caller keeps what it had.
 pub fn pack(root: &Path) -> std::io::Result<Pack> {
     let mut all = vec![];
     let mut total = 0u64;
@@ -101,14 +86,9 @@ pub fn pack(root: &Path) -> std::io::Result<Pack> {
     Ok(pack_files(all))
 }
 
-/// Pack files already read: (path under the folder, real path, bytes),
-/// sorted by the first.
 pub fn pack_files(all: Vec<(String, PathBuf, Vec<u8>)>) -> Pack {
     use sha2::Digest;
-    // The build id first (a hash of the files as they are), then each
-    // file as served: the page and the modules name each other with
-    // ?v=<build>, so a browser caches them for good and a new build is a
-    // new URL; sw.js learns the build too.
+
     let mut hash = sha2::Sha256::new();
     for (rel, _, bytes) in &all {
         hash.update(rel.as_bytes());
@@ -133,8 +113,6 @@ pub fn pack_files(all: Vec<(String, PathBuf, Vec<u8>)>) -> Pack {
     Pack { id, files }
 }
 
-/// A gzipped copy of a text file over 512 bytes that shrinks by a tenth
-/// or more (images and fonts are compressed already).
 pub fn gzip(rel: &str, bytes: &[u8]) -> Option<Vec<u8>> {
     let ext = Path::new(rel).extension().and_then(|e| e.to_str());
     let text = matches!(
@@ -150,9 +128,6 @@ pub fn gzip(rel: &str, bytes: &[u8]) -> Option<Vec<u8>> {
     (z.len() < bytes.len() * 9 / 10).then_some(z)
 }
 
-/// A file as served when it names other files: index.html's local src and
-/// href, the modules' './x.js' imports, with `?v=<id>` added; sw.js with
-/// its `__BUILD__` filled in. None: served as it is.
 pub fn versioned(rel: &str, bytes: &[u8], id: &str) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(bytes).ok()?;
     let tag = |path: &str| format!("{path}?v={id}");
@@ -162,7 +137,6 @@ pub fn versioned(rel: &str, bytes: &[u8], id: &str) -> Option<Vec<u8>> {
     let mut out = String::with_capacity(text.len() + 256);
     let mut rest = text;
     if rel == "index.html" {
-        // src="..." and href="..." that name a file of ours.
         while let Some(i) = rest.find(['s', 'h']) {
             let (head, tail) = rest.split_at(i);
             out.push_str(head);
@@ -188,7 +162,6 @@ pub fn versioned(rel: &str, bytes: &[u8], id: &str) -> Option<Vec<u8>> {
         return Some(out.into_bytes());
     }
     if rel.starts_with("js/") && rel.ends_with(".js") {
-        // './x.js' in imports and new URL('./x.js', import.meta.url).
         while let Some(i) = rest.find("'./") {
             let (head, tail) = rest.split_at(i + 1);
             out.push_str(head);

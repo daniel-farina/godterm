@@ -1,27 +1,20 @@
-//! Wake word training, transcript based: you say the wake word a few
-//! times and a few normal sentences, we keep what whisper actually heard
-//! for the wake word (aliases, with how often) and the normal sentences as
-//! negatives. Stored in `~/.godterm/voice/wake_profile.json`.
-
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::grammar::{edit_distance, normalize, strip_wake};
 
-/// What one utterance sounded like.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct UttStats {
     pub ms: u32,
     pub mean_db: f32,
     pub peak_db: f32,
-    /// Time whisper took on it (0 when unknown).
+
     #[serde(default)]
     pub stt_ms: u32,
-    /// Time with speech energy in it (frames within 20 dB of the peak).
+
     #[serde(default)]
     pub speech_ms: u32,
-    /// whisper's mean word probability, no-speech probability and mean
-    /// log probability (None when unknown).
+
     #[serde(default)]
     pub conf: Option<f32>,
     #[serde(default)]
@@ -36,7 +29,7 @@ impl UttStats {
         let ms = (samples.len() as u64 * 1000 / RATE as u64) as u32;
         let frames: Vec<f32> = samples.chunks(FRAME).map(|f| db(rms(f))).collect();
         let peak_db = frames.iter().cloned().fold(-90.0, f32::max);
-        // Mean over the frames that carry speech (within 30 dB of the peak).
+
         let loud: Vec<f32> = frames
             .iter()
             .cloned()
@@ -80,11 +73,11 @@ pub struct Accuracy {
 #[serde(default)]
 pub struct WakeProfile {
     pub wake_word: String,
-    /// What whisper heard when you said the wake word, most frequent first.
+
     pub aliases: Vec<Alias>,
-    /// Normal sentences that must not wake it.
+
     pub negatives: Vec<String>,
-    /// Your wake word takes: average length and loudness.
+
     pub wake_stats: UttStats,
     pub normal_stats: UttStats,
     pub accuracy: Accuracy,
@@ -97,7 +90,6 @@ pub fn path() -> PathBuf {
         .join("wake_profile.json")
 }
 
-/// Similarity 0..1 from edit distance.
 pub fn similarity(a: &str, b: &str) -> f32 {
     let n = a.chars().count().max(b.chars().count());
     if n == 0 {
@@ -157,8 +149,6 @@ impl WakeProfile {
         }
     }
 
-    /// Learn from the wake word takes and the normal sentences, then
-    /// score the result on the same takes.
     pub fn learn(
         wake_word: &str,
         takes: &[(String, UttStats)],
@@ -180,13 +170,12 @@ impl WakeProfile {
             if words.is_empty() {
                 continue;
             }
-            // The wake word is what was said, so the first n words (or all
-            // of them, when whisper merged it into fewer) are its sound.
+
             let cand = words[..n.min(words.len())].join(" ");
             if cand == ww {
                 continue;
             }
-            // Never learn something a normal sentence starts with.
+
             let clash = negatives.iter().any(|neg| {
                 let head: Vec<&str> = neg.split(' ').take(n).collect();
                 similarity(&squash(&head.join(" ")), &squash(&cand)) >= 0.9
@@ -229,8 +218,6 @@ impl WakeProfile {
         p
     }
 
-    /// The command after the wake word, using the built in matching first
-    /// and then the learned aliases. A known normal sentence never wakes.
     pub fn matches<'a>(
         &self,
         norm: &'a str,
@@ -250,8 +237,7 @@ impl WakeProfile {
         let words: Vec<&str> = norm.split(' ').filter(|w| !w.is_empty()).collect();
         for a in &self.aliases {
             let n = a.text.split(' ').count();
-            // Compare squashed, over the same number of words and one more
-            // or less, since whisper splits and joins words freely.
+
             for k in [n, n + 1, n.saturating_sub(1)] {
                 if k == 0 || k > words.len() {
                     continue;
@@ -267,7 +253,6 @@ impl WakeProfile {
     }
 }
 
-/// Wake matching with an optional profile.
 pub fn strip_wake_with<'a>(
     profile: Option<&WakeProfile>,
     norm: &'a str,
@@ -280,8 +265,6 @@ pub fn strip_wake_with<'a>(
     }
 }
 
-/// Normal sentences read during training. One starts with "hey" on
-/// purpose, a near miss for "hey go".
 pub const NORMAL_SENTENCES: &[&str] = &[
     "I think we should get lunch soon.",
     "The build finished a few minutes ago.",
@@ -329,17 +312,17 @@ mod tests {
         assert_eq!(p.accuracy.attempts, 5);
         assert_eq!(p.accuracy.false_triggers, 0);
         assert_eq!(p.wake_stats.ms, 800);
-        // A learned alias now wakes it, with the command after it.
+
         assert_eq!(
             p.matches("travis show the dashboard", &ww, 0.75),
             Some("show the dashboard")
         );
-        // Close variants within the sensitivity also do; far ones do not.
+
         assert_eq!(p.matches("traviss approve", &ww, 0.75), Some("approve"));
         assert_eq!(p.matches("david approve", &ww, 0.75), None);
-        // Without the profile only the built in matching applies.
+
         assert_eq!(strip_wake_with(None, "travis approve", &ww, 0.75), None);
-        // A normal sentence never wakes it.
+
         assert_eq!(
             p.matches("the build finished a few minutes ago", &ww, 0.5),
             None
@@ -349,8 +332,7 @@ mod tests {
     #[test]
     fn never_learns_a_negative() {
         let ww = vec!["hey go".to_string()];
-        // Whisper heard "hey how" for the wake word once, but "hey, how
-        // was your weekend" is a normal sentence: not learned.
+
         let takes = vec![
             ("hey how".to_string(), s()),
             ("a go".to_string(), s()),

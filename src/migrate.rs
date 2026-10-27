@@ -1,28 +1,11 @@
-//! One time migration from claudego (`~/.claudego`) to GodTerm
-//! (`~/.godterm`).
-//!
-//! Logins must survive. claude names each slot's keychain item
-//! `Claude Code-credentials-<sha256(CLAUDE_CONFIG_DIR)[..8]>` from the
-//! exact path string it is given (a symlinked path, or the same path with
-//! a trailing slash, reads as logged out). So account slot folders are NOT
-//! moved: they stay in `~/.claudego/accounts/<name>` and config.toml gets
-//! `config_dir = "<that exact path>"` for each of them. Everything else
-//! (config, state, voice, trash, assistant, logs) moves to `~/.godterm`.
-//! Keychain items are never read, copied, rewritten or deleted.
-//!
-//! Before anything moves, `~/.godterm/migration-backup-<date>.tar.gz` gets
-//! a copy of `~/.claudego` (transcripts left out when they are large).
-//! The run is logged, marked done, and safe to run again.
-
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const MARKER: &str = ".migrated-from-claudego";
-/// Transcripts are left out of the backup above this total size.
+
 const BACKUP_FULL_LIMIT: u64 = 500 * 1024 * 1024;
 
-/// Names in the old home that stay where they are.
 const KEEP: &[&str] = &[
     "accounts",
     "control.sock",
@@ -42,14 +25,14 @@ pub enum Step {
         from: PathBuf,
         to: PathBuf,
     },
-    /// Account `name` keeps its slot at `path` (written as config_dir).
+
     PinSlot {
         name: String,
         path: String,
     },
     Note(PathBuf),
     Marker(PathBuf),
-    /// A file in the way is renamed first.
+
     SetAside {
         path: PathBuf,
         to: PathBuf,
@@ -112,7 +95,6 @@ fn dir_size(p: &Path) -> u64 {
     }
 }
 
-/// Account names in the old config.toml.
 fn old_accounts(old: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(old.join("config.toml")) else {
         return vec![];
@@ -131,8 +113,6 @@ fn old_accounts(old: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// What a migration from `old` to `new` would do; None when there is
-/// nothing to do (no old install, or already done).
 pub fn plan(old: &Path, new: &Path) -> Option<Vec<Step>> {
     if !old.is_dir() || new.join(MARKER).exists() {
         return None;
@@ -163,8 +143,6 @@ pub fn plan(old: &Path, new: &Path) -> Option<Vec<Step>> {
             new.join(&n)
         };
         if to.exists() {
-            // A config written before the migration (a default made by an
-            // early command) must not win over the real one: set it aside.
             if n == "config.toml" {
                 steps.push(Step::SetAside {
                     path: to.clone(),
@@ -175,7 +153,7 @@ pub fn plan(old: &Path, new: &Path) -> Option<Vec<Step>> {
                     to,
                 });
             }
-            continue; // otherwise: already there (a partial earlier run)
+            continue;
         }
         steps.push(Step::Move {
             from: old.join(&n),
@@ -183,7 +161,6 @@ pub fn plan(old: &Path, new: &Path) -> Option<Vec<Step>> {
         });
     }
     for name in old_accounts(old) {
-        // The exact string claudego passed as CLAUDE_CONFIG_DIR.
         let path = old
             .join("accounts")
             .join(&name)
@@ -196,7 +173,6 @@ pub fn plan(old: &Path, new: &Path) -> Option<Vec<Step>> {
     Some(steps)
 }
 
-/// Write config_dir for these accounts into config.toml (keeping comments).
 fn pin_slots(config: &Path, pins: &[(String, String)]) -> Result<()> {
     if pins.is_empty() || !config.exists() {
         return Ok(());
@@ -228,7 +204,6 @@ fn pin_slots(config: &Path, pins: &[(String, String)]) -> Result<()> {
     Ok(())
 }
 
-/// Carry out a plan. `say` gets one line per step.
 pub fn run(old: &Path, new: &Path, steps: &[Step], say: &mut dyn FnMut(String)) -> Result<()> {
     std::fs::create_dir_all(new)?;
     let mut pins = vec![];
@@ -284,9 +259,7 @@ pub fn run(old: &Path, new: &Path, steps: &[Step], say: &mut dyn FnMut(String)) 
     Ok(())
 }
 
-/// A claudego that is still running would keep writing to the old folder.
 pub fn old_running(old: &Path) -> Option<u32> {
-    // Any claudego process (older builds have no control.json).
     if let Ok(o) = Command::new("pgrep").args(["-x", "claudego"]).output() {
         if let Some(pid) = String::from_utf8_lossy(&o.stdout)
             .lines()
@@ -312,14 +285,10 @@ pub fn old_running(old: &Path) -> Option<u32> {
         .then_some(pid as u32)
 }
 
-/// A migration is due (an old install, not migrated yet). Only meaningful
-/// for the default homes (not when GODTERM_HOME is set).
 pub fn pending() -> bool {
     !crate::config::dirs().explicit_home && old_home().is_dir() && !new_home().join(MARKER).exists()
 }
 
-/// An exclusive lock on `<new>/.migrate.lock`, held until dropped, so two
-/// processes starting together migrate once.
 pub struct Lock(std::fs::File);
 
 impl Lock {
@@ -330,7 +299,7 @@ impl Lock {
             .truncate(false)
             .write(true)
             .open(new.join(".migrate.lock"))?;
-        // Blocks until the other run ends.
+
         if !crate::platform::lock(&f) {
             bail!("could not lock {}", new.join(".migrate.lock").display());
         }
@@ -344,7 +313,6 @@ impl Drop for Lock {
     }
 }
 
-/// Plan and run under the lock, re-checking after it is taken.
 pub fn migrate_locked(old: &Path, new: &Path, say: &mut dyn FnMut(String)) -> Result<bool> {
     if plan(old, new).is_none() {
         return Ok(false);
@@ -352,13 +320,11 @@ pub fn migrate_locked(old: &Path, new: &Path, say: &mut dyn FnMut(String)) -> Re
     let _lock = Lock::take(new)?;
     let Some(steps) = plan(old, new) else {
         return Ok(false);
-    }; // the other run did it
+    };
     run(old, new, &steps, say)?;
     Ok(true)
 }
 
-/// On start: migrate once when there is an old install and no new one.
-/// Skipped when a home is given explicitly (GODTERM_HOME / CLAUDEGO_HOME).
 pub fn auto() {
     if crate::config::dirs().explicit_home {
         return;
@@ -390,7 +356,6 @@ pub fn auto() {
     }
 }
 
-/// `godterm migrate [--dry-run]`.
 pub fn command(dry: bool) -> Result<()> {
     let (old, new) = (old_home(), new_home());
     let Some(steps) = plan(&old, &new) else {
@@ -432,7 +397,6 @@ mod tests {
         d
     }
 
-    /// An old install: config with two accounts, state, voice, a log.
     fn old_install(root: &Path) -> PathBuf {
         let old = root.join(".claudego");
         for a in ["account1", "account2"] {
@@ -482,15 +446,15 @@ mod tests {
         );
         let mut log = vec![];
         run(&old, &new, &steps, &mut |l| log.push(l)).unwrap();
-        // Moved: config, state, voice (with the wake profile), the log renamed.
+
         assert!(new.join("config.toml").is_file() && new.join("state.json").is_file());
         assert!(new.join("voice/wake_profile.json").is_file());
         assert!(new.join("godterm.log").is_file());
-        // Kept: account slots, byte for byte the same path, and the socket info.
+
         assert!(old.join("accounts/account1/.claude.json").is_file());
         assert!(old.join("control.json").is_file());
         assert!(old.join("MOVED-TO-GODTERM.txt").is_file());
-        // The config points each account at its old slot, comments intact.
+
         let cfg_text = std::fs::read_to_string(new.join("config.toml")).unwrap();
         assert!(cfg_text.contains("# mine") && cfg_text.contains("# first"));
         let cfg = crate::config::Config::parse(&cfg_text).unwrap();
@@ -500,7 +464,7 @@ mod tests {
             "same string, so the same keychain item"
         );
         assert_eq!(cfg.accounts[1].config_dir(), old.join("accounts/account2"));
-        // The backup is there and lists the old files.
+
         let backup = std::fs::read_dir(&new)
             .unwrap()
             .flatten()
@@ -523,7 +487,7 @@ mod tests {
             "{list}"
         );
         assert!(log.iter().any(|l| l.contains("backup is")));
-        // Running again does nothing.
+
         assert!(plan(&old, &new).is_none());
         let _ = std::fs::remove_dir_all(r);
     }
@@ -544,7 +508,6 @@ mod tests {
 
     #[test]
     fn hash_input_unchanged() {
-        // The keychain service name claude derives from a slot path.
         use sha2::{Digest, Sha256};
         let service = |p: &str| format!("{:x}", Sha256::digest(p.as_bytes()))[..8].to_string();
         let r = tmp("hash");

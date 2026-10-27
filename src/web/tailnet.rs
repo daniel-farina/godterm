@@ -1,52 +1,31 @@
-//! Signing in by tailnet identity, with no token:
-//!
-//! - through `tailscale serve` (https://<mac>.ts.net:<port>/): serve
-//!   proxies to 127.0.0.1 and adds `Tailscale-User-Login` for requests
-//!   from a tailnet user (never for tagged nodes; a copy the client sent
-//!   is stripped). The header is trusted only on loopback, with a
-//!   `*.ts.net` Host, when no other process of this user holds the client
-//!   end of the connection (tailscaled runs as root; a local process
-//!   forging the header is seen with lsof and refused);
-//! - on this Mac's tailnet IPv4 (`[web] tailnet_ip`, port `[web] ip_port`):
-//!   the peer address is asked of `tailscale whois` (cached a few minutes).
-//!
-//! Either way the login must be the owner of this Mac's tailnet node or in
-//! `[web] tailnet_users`; another tailnet user (a device shared in from
-//! another account) is refused with a page that says so.
-
 use serde_json::Value;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// How long a whois answer is kept (a failed one for less).
 pub const WHOIS_TTL: Duration = Duration::from_secs(180);
 const WHOIS_FAIL_TTL: Duration = Duration::from_secs(10);
 
 type StatusFn = Box<dyn Fn() -> Option<Value> + Send + Sync>;
 type WhoisFn = Box<dyn Fn(IpAddr) -> Option<Value> + Send + Sync>;
 
-/// Who a request is, by its tailnet identity.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Who {
-    /// No identity to go by: the token or cookie decides.
     Unknown,
-    /// An allowed login.
+
     Allowed(String),
-    /// A tailnet user that is not allowed (or a tagged node).
+
     Refused(String),
 }
 
 pub struct Tailnet {
-    /// `[web] tailnet_users` (lower case).
     extra: Vec<String>,
-    /// `tailscale status --json` (the whole answer).
+
     status: StatusFn,
-    /// `tailscale whois --json <ip>`.
+
     whois: WhoisFn,
-    /// From the last status: the node owner's login and this node's
-    /// addresses.
+
     known: Mutex<Known>,
     cache: Mutex<HashMap<IpAddr, (Instant, Who)>>,
 }
@@ -74,7 +53,6 @@ impl Tailnet {
         t
     }
 
-    /// With the real `tailscale` CLI.
     pub fn system(extra: &[String]) -> Tailnet {
         Tailnet::new(
             extra,
@@ -83,8 +61,6 @@ impl Tailnet {
         )
     }
 
-    /// Ask tailscale again (the owner and this node's addresses). Kept as
-    /// they were when it does not answer.
     pub fn refresh(&self) {
         let Some(v) = (self.status)() else {
             return;
@@ -94,7 +70,7 @@ impl Tailnet {
             .as_array()
             .map(|a| a.iter().filter_map(|i| i.as_str()?.parse().ok()).collect())
             .unwrap_or_default();
-        // A tagged node has no owner to go by: only tailnet_users.
+
         let tagged = me["Tags"].as_array().is_some_and(|t| !t.is_empty());
         let owner = me["UserID"]
             .as_u64()
@@ -115,7 +91,6 @@ impl Tailnet {
             .clone()
     }
 
-    /// This node's tailnet addresses.
     pub fn own_ips(&self) -> Vec<IpAddr> {
         self.known
             .lock()
@@ -128,7 +103,6 @@ impl Tailnet {
         self.own_ips().into_iter().find(IpAddr::is_ipv4)
     }
 
-    /// The logins that sign in: the node's owner and `tailnet_users`.
     pub fn allowed(&self) -> Vec<String> {
         let mut v: Vec<String> = self.owner().into_iter().collect();
         v.extend(self.extra.iter().cloned());
@@ -147,9 +121,6 @@ impl Tailnet {
         }
     }
 
-    /// A connection to the tailnet IP listener, by its peer address.
-    /// This Mac's own addresses are never signed in this way (a local
-    /// process could reach them); they need the token.
     pub fn by_ip(&self, peer: IpAddr) -> Who {
         if !in_tailnet(peer) || self.own_ips().contains(&peer) {
             return Who::Unknown;
@@ -203,7 +174,6 @@ fn node_name(v: &Value) -> String {
         .to_string()
 }
 
-/// A Tailscale address: 100.64.0.0/10 or fd7a:115c:a1e0::/48.
 pub fn in_tailnet(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v) => {
@@ -217,7 +187,6 @@ pub fn in_tailnet(ip: IpAddr) -> bool {
     }
 }
 
-/// The tailscale CLIs to try, in order.
 pub const BINS: [&str; 4] = [
     "tailscale",
     "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
@@ -225,8 +194,6 @@ pub const BINS: [&str; 4] = [
     "/opt/homebrew/bin/tailscale",
 ];
 
-/// The JSON a tailscale subcommand prints, from the first CLI that
-/// answers.
 pub fn cli(args: &[&str]) -> Option<Value> {
     for b in BINS {
         let Ok(out) = std::process::Command::new(b)
@@ -245,7 +212,6 @@ pub fn cli(args: &[&str]) -> Option<Value> {
     None
 }
 
-/// The page another tailnet user gets.
 pub fn refused_text(login: &str) -> String {
     format!(
         "This GodTerm is not open to {login}.\n\n\

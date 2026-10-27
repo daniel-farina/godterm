@@ -1,13 +1,3 @@
-//! Receipts for the user's requests to tabs: each send_prompt delivery
-//! goes queued, received, started and done, from what the tab's own
-//! transcript shows (receipts.rs), or dropped or interrupted, said out
-//! loud at once so the user can resend. Before this, a request typed into
-//! a busy tab counted as delivered once claude was working; one that
-//! claude's queue then lost (Esc pulled it back into the input box, claude
-//! restarted with it queued, Enter never registered) or whose turn was
-//! interrupted went unnoticed, and GodTerm's own queue died with it on a
-//! restart. Pending requests are saved with the state and come back.
-
 use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{json, Value};
@@ -19,60 +9,53 @@ use crate::control::{tab_id, Delivery, Stage};
 use crate::pane::Activity;
 use crate::receipts::{first_words, Receipt, Seen};
 
-/// The transcript is read at most this often per request.
 const CHECK_EVERY: Duration = Duration::from_millis(700);
-/// Typed in and taken, but not in the transcript after this: dropped.
+
 pub const NOT_SEEN: Duration = Duration::from_secs(30);
-/// A drop the transcript shows counts once it stays (it may be queued again).
+
 const DROP_SETTLE: Duration = Duration::from_secs(3);
-/// Started, the reply has no tool call after it and the tab sits at its
-/// prompt this long: done.
+
 const DONE_QUIET: Duration = Duration::from_secs(3);
-/// Received (in claude's queue), but the tab sits at its prompt this
-/// long without running it: claude let it go.
+
 const QUEUE_IDLE: Duration = Duration::from_secs(15);
-/// After Escape, the tab is looked at once it is back at its prompt.
+
 const ESC_CHECK: Duration = Duration::from_secs(2);
 
-/// The receipt side of a delivery.
 #[derive(Debug, Clone)]
 pub struct Track {
     pub receipt: Receipt,
-    /// When the receipt last changed.
+
     pub receipt_at: Instant,
     pub created_at: chrono::DateTime<chrono::Local>,
-    /// When it was typed in (wall clock ms, for the transcript).
+
     pub sent_ms: Option<i64>,
     pub sent_at: Option<Instant>,
-    /// The tab was busy when it was asked for, or claude queued it.
+
     pub busy: bool,
-    /// A request from the user (send_prompt, open_tab, resend): its
-    /// receipts are said and shown. Internal prompts are only logged.
+
     pub notify: bool,
     pub checked: Option<Instant>,
-    /// A transcript was found for its tab.
+
     pub has_transcript: bool,
-    /// The transcript has shown it dropped since then.
+
     pub drop_seen: Option<Instant>,
-    /// The tab has been at its prompt since then.
+
     pub ready_since: Option<Instant>,
-    /// Escape or Ctrl-C was pressed in its tab then.
+
     pub esc_at: Option<Instant>,
-    /// Sent again as this delivery.
+
     pub resent_as: Option<u64>,
-    /// The tab's process when claude queued it (a restart loses the queue).
+
     pub proc_started: Option<SystemTime>,
-    /// Came back from the saved state after a restart.
+
     pub restored: bool,
-    /// The transcript's length when it was typed in (read from there).
+
     pub from_offset: Option<u64>,
-    /// The tab's model and effort when it was typed in: a slash command
-    /// (`/effort max`, `/model opus`) leaves no transcript record, so a
-    /// change in these says it was applied.
+
     pub before: Option<(Option<String>, Option<String>)>,
-    /// How it went into the tab (direct, queue, side, background).
+
     pub mode: crate::app_busy::Mode,
-    /// Why that mode, when it is not what was asked (a fallback).
+
     pub note: Option<String>,
 }
 
@@ -101,8 +84,6 @@ impl Track {
         }
     }
 
-    /// Worth keeping: not final, or ended a little while ago (a lost one
-    /// waits an hour for a resend).
     pub fn keep(&self) -> bool {
         let keep = if self.receipt.lost() && self.resent_as.is_none() {
             3600
@@ -112,21 +93,16 @@ impl Track {
         !self.receipt.is_final() || self.receipt_at.elapsed() < Duration::from_secs(keep)
     }
 
-    /// Typed in, its transcript can confirm it and has not yet: a tool
-    /// reply waits a moment for that.
     pub fn awaiting_receipt(&self, stage: &Stage) -> bool {
         *stage == Stage::Delivered && self.has_transcript && self.receipt == Receipt::Pending
     }
 
-    /// Lost and not sent again.
     pub fn resendable(&self) -> bool {
         self.receipt.lost() && self.resent_as.is_none()
     }
 }
 
 impl Delivery {
-    /// Its state for the user: queued, sending, sent, received, started,
-    /// done, dropped, interrupted or unconfirmed.
     pub fn state_word(&self) -> &'static str {
         match &self.rc.receipt {
             Receipt::Pending => match self.stage {
@@ -143,8 +119,6 @@ impl Delivery {
         }
     }
 
-    /// Saved with the state: still to be run (queued in GodTerm, typed in
-    /// but not seen, or in claude's queue).
     pub fn pending_for_save(&self) -> bool {
         matches!(self.rc.receipt, Receipt::Pending | Receipt::Received)
             && !matches!(self.stage, Stage::Failed(_))
@@ -152,7 +126,6 @@ impl Delivery {
     }
 }
 
-/// A receipt change to announce.
 struct Change {
     id: u64,
     uid: u64,
@@ -177,11 +150,8 @@ fn word(r: &Receipt) -> &'static str {
     }
 }
 
-/// Slash commands are applied without a turn: a little after Enter, the
-/// screen or the tab's state says whether it took.
 const SLASH_SETTLE: Duration = Duration::from_secs(2);
 
-/// A CLI slash command (`/effort max`, `/model opus`), not a path or text.
 pub fn is_slash(text: &str) -> bool {
     let t = text.trim_start();
     let Some(rest) = t.strip_prefix('/') else {
@@ -195,8 +165,6 @@ pub fn is_slash(text: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | ':'))
 }
 
-/// The screen shows the command run: its line in the conversation with
-/// claude's answer under it (`> /effort max` then `⎿  Set effort ...`).
 pub fn slash_echoed(screen: &str, text: &str) -> bool {
     let want = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -206,7 +174,6 @@ pub fn slash_echoed(screen: &str, text: &str) -> bool {
     })
 }
 
-/// The bottom of a tab's screen (its input box), where unsent text sits.
 fn input_area(screen: &str) -> String {
     let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
     let k = lines.len().saturating_sub(8);
@@ -214,7 +181,6 @@ fn input_area(screen: &str) -> String {
 }
 
 impl App {
-    /// Follow every request's receipt one step, and say what changed.
     pub fn receipts_tick(&mut self) {
         if self.deliveries.is_empty() {
             return;
@@ -250,7 +216,7 @@ impl App {
             d.rc.receipt = to;
             d.rc.receipt_at = Instant::now();
         }
-        // Deliveries made meanwhile (none here, but keep any).
+
         ds.append(&mut self.deliveries);
         self.deliveries = ds;
         if !changes.is_empty() {
@@ -274,7 +240,6 @@ impl App {
         }
     }
 
-    /// The next receipt for one request, from its tab and transcript.
     fn receipt_next(&self, d: &mut Delivery) -> Option<Receipt> {
         if d.rc.mode.external() {
             return self.external_receipt(d);
@@ -289,7 +254,6 @@ impl App {
             });
         };
         let Some(sent_ms) = d.rc.sent_ms else {
-            // Never typed in.
             return match &d.stage {
                 Stage::Failed(why) => Some(Receipt::Dropped(format!("it never went in: {why}"))),
                 _ => None,
@@ -299,13 +263,11 @@ impl App {
         if is_slash(&d.text) && d.stage == Stage::Delivered {
             return self.slash_receipt(d, s, t);
         }
-        // Only Claude's transcript gives queue records; Grok and the other
-        // CLIs: delivered or not.
+
         let grok = self.panes[s]
             .account
             .is_some_and(|a| self.cfg.accounts[a].harness() != crate::harness::Harness::Claude);
         if grok {
-            // Grok's session files give no queue records: delivered or not.
             return match &d.stage {
                 Stage::Delivered => Some(Receipt::Unconfirmed),
                 Stage::Failed(why) => Some(Receipt::Dropped(why.clone())),
@@ -365,8 +327,7 @@ impl App {
                     d.rc.proc_started = Some(tab.started);
                     return Some(Receipt::Received);
                 }
-                // Claude's queue lives in its memory: an exit or a restart
-                // loses it.
+
                 if !tab.is_running() || d.rc.proc_started.is_some_and(|p| p != tab.started) {
                     return Some(Receipt::Dropped(
                         "claude restarted or exited with it still in its queue".into(),
@@ -410,10 +371,6 @@ impl App {
         }
     }
 
-    /// A slash command typed in: done when the screen shows it run or the
-    /// tab's model or effort changed; dropped only when it still sits in
-    /// the input box; otherwise unconfirmed (never a false drop: these
-    /// leave nothing in the transcript).
     fn slash_receipt(&self, d: &Delivery, s: usize, t: usize) -> Option<Receipt> {
         let since = d.rc.sent_at?.elapsed();
         if since < SLASH_SETTLE {
@@ -443,13 +400,9 @@ impl App {
         )
     }
 
-    /// Log a change, and tell the user: received and started briefly
-    /// (only when the tab was busy) at a quiet moment, a lost request at
-    /// once.
     fn announce_receipt(&mut self, c: Change) {
         let tab = tab_id(c.uid);
-        // Every step on the way is logged (a jump from pending to done
-        // went through received and started).
+
         let steps: Vec<&str> = match (&c.from, &c.to) {
             (Receipt::Pending, Receipt::Started) => vec!["received", "started"],
             (Receipt::Pending, Receipt::Done) => vec!["received", "started", "done"],
@@ -466,14 +419,13 @@ impl App {
         if !c.notify {
             if c.to.lost() {
                 self.assistant_note(format!("Prompt #{} to {tab} {}{why}", c.id, word(&c.to)));
-                // Nothing was said: update mode tells it.
+
                 self.updates_note_dropped(c.uid);
             }
             return;
         }
         let words = first_words(&c.text);
         if c.mode == crate::app_busy::Mode::Background && c.to == Receipt::Received {
-            // The user hears what happened plainly; the result follows.
             self.say_update(
                 Voice::Reply,
                 &if c.busy {
@@ -491,7 +443,6 @@ impl App {
             return;
         }
         if c.mode.external() && !c.to.lost() {
-            // Side answers and background results arrive as follow-ups.
             return;
         }
         match &c.to {
@@ -505,7 +456,6 @@ impl App {
                 );
             }
             Receipt::Started if c.busy => {
-                // Received not said yet: started says it all.
                 let rec = format!(
                     "{} got your request; it's queued behind its current work.",
                     c.name
@@ -523,8 +473,7 @@ impl App {
                     "Request #{} to {tab} ({}) {what} ({r}): \"{words}\". resend sends it again.",
                     c.id, c.name
                 ));
-                // Waiting for the answer to a request that never runs
-                // would only end in "no answer found".
+
                 for f in &mut self.assistant.follow_ups {
                     if f.uid == c.uid
                         && f.state == crate::app_followup::FuState::Waiting
@@ -547,8 +496,6 @@ impl App {
         }
     }
 
-    /// Before an interrupt (Escape, Ctrl-C) in a tab: what it may cost,
-    /// and the tab's requests are checked afterwards.
     pub fn interrupt_warning(&mut self, uid: u64) -> Option<String> {
         let mut items = vec![];
         let now = Instant::now();
@@ -587,7 +534,6 @@ impl App {
         ))
     }
 
-    /// Requests for get_state, newest first.
     pub fn deliveries_json(&self) -> Value {
         let now = chrono::Local::now();
         json!(self
@@ -635,8 +581,6 @@ impl App {
             .collect::<Vec<_>>())
     }
 
-    /// The requests line for the state block: open ones, and lost ones not
-    /// yet resent.
     pub fn deliveries_state_lines(&self) -> String {
         let mut s = String::new();
         for d in &self.deliveries {
@@ -675,7 +619,6 @@ impl App {
         s
     }
 
-    /// Send a lost request again, with its exact text, to its tab.
     pub fn resend_one(&mut self, id: u64) -> Result<(u64, String), String> {
         let (uid, text) = self
             .deliveries
@@ -701,7 +644,6 @@ impl App {
         Ok((new, name))
     }
 
-    /// The newest lost request not sent again (of one tab).
     fn latest_lost(&self, uid: Option<u64>) -> Option<u64> {
         self.deliveries
             .iter()
@@ -711,7 +653,6 @@ impl App {
             .map(|d| d.id)
     }
 
-    /// The resend tool.
     pub fn resend_tool(&mut self, args: &Value) -> Result<Value, String> {
         let uid = match args.get("tab") {
             Some(v) if !v.is_null() => {
@@ -748,7 +689,6 @@ impl App {
         }))
     }
 
-    /// "resend" said with a lost request about: sent again right away.
     pub fn resend_said(&mut self, text: &str) -> bool {
         let c: String = text
             .to_lowercase()
@@ -802,7 +742,6 @@ impl App {
         true
     }
 
-    /// Pending requests for the saved state.
     pub fn saved_deliveries(&self) -> Vec<crate::state::SavedDelivery> {
         self.deliveries
             .iter()
@@ -819,9 +758,6 @@ impl App {
             .collect()
     }
 
-    /// After a restart: requests that were still to run are queued again
-    /// (unless the transcript shows they started meanwhile); a tab that
-    /// is gone makes them dropped, said out loud.
     pub fn restore_deliveries(&mut self, saved: &[crate::state::SavedDelivery]) {
         let mut requeued: Vec<String> = vec![];
         for sd in saved {
@@ -876,7 +812,6 @@ impl App {
                     }
                 }
                 (Some(_), Some((Seen::Started { .. } | Seen::Done, ms))) => {
-                    // It ran before the restart: follow it, do not resend.
                     d.stage = Stage::Delivered;
                     d.rc.sent_ms = Some(ms);
                     d.rc.receipt = Receipt::Started;
@@ -919,8 +854,6 @@ impl App {
         }
     }
 
-    /// Tabs with a request queued again after a restart are started (a
-    /// lazy restore would otherwise leave them waiting to be shown).
     pub fn start_tabs_with_requests(&mut self) {
         let uids: Vec<u64> = self
             .deliveries

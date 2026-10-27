@@ -1,7 +1,3 @@
-//! Claude Code as the brain: one long lived `claude -p` with stream-json
-//! in and out, on the account's config dir, with only godterm's MCP tools
-//! (no built in tools), in an empty scratch folder.
-
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
@@ -11,7 +7,6 @@ use super::{Backend, Caps, Provider, StartCtx, TabModel};
 use crate::app::AppEvent;
 use crate::assistant::{allowed_tools, dir, parse_line, write_mcp_config, BrainEvent};
 
-/// Where the assistant's system prompt is written for claude to read.
 pub(crate) fn prompt_file_path() -> std::path::PathBuf {
     dir().join("system-prompt.md")
 }
@@ -28,7 +23,7 @@ pub const PROVIDER: Provider = Provider {
     },
     models: &[
         ("claude-haiku-4-5", "Haiku", "quickest"),
-        ("sonnet", "Sonnet", "balanced"),
+        ("claude-sonnet-5-5", "Sonnet 5.5", "balanced"),
         ("opus", "Opus", "thorough"),
         ("claude-fable-5-1", "Fable", "most capable"),
     ],
@@ -69,7 +64,6 @@ pub const PROVIDER: Provider = Provider {
     start,
 };
 
-/// Switches off Remote Control's start (see `start`): never set for the brain.
 pub const NO_TRAFFIC: &str = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC";
 
 pub struct ClaudeBackend {
@@ -102,7 +96,6 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         "stream-json",
         "--verbose",
         "--include-partial-messages",
-        // Messages from Remote Control show up in the stream.
         "--replay-user-messages",
         "--strict-mcp-config",
         "--tools",
@@ -111,12 +104,8 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         model,
         "--effort",
         &a.effort,
-        // The slot's own hooks and plugins stay out of the assistant.
         "--setting-sources",
         "local",
-        // The prompt (with the user's learned preferences after the built
-        // in rules) goes by file: on Windows a command line is limited to
-        // 32767 characters, and this prompt alone can pass that.
         "--append-system-prompt-file",
     ])
     .arg(&prompt_file)
@@ -129,24 +118,18 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
-    // Same environment hygiene as the tabs.
+
     for (k, _) in std::env::vars() {
         if crate::pane::should_scrub(&k, pass_env) {
             cmd.env_remove(&k);
         }
     }
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
-    // This account's own token (never logged), for this process only.
+
     for (k, v) in &ctx.extra_env {
         cmd.env(k, v);
     }
-    // Quick and quiet: low effort, no thinking at low, short replies,
-    // and nothing at startup that is not needed (no updater, telemetry,
-    // error reports, surveys, auto memory or other background traffic).
-    // (--bare would also skip these but switches off the OAuth login.)
-    // Not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: with it Remote Control
-    // fails ("Remote Control initialization failed", claude 2.1.296), so
-    // it is removed even when GodTerm's own environment has it.
+
     cmd.env_remove(NO_TRAFFIC);
     cmd.env("CLAUDE_EFFORT", &a.effort)
         .env("CLAUDE_CODE_EFFORT_LEVEL", &a.effort)
@@ -165,7 +148,7 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
             .env("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING", "1");
     }
     let mut child = cmd.spawn().with_context(|| format!("starting {claude}"))?;
-    // Its `godterm mcp` may use the read-write control token.
+
     crate::control::trust_brain_pid(child.id());
     let stdin = child.stdin.take().context("no stdin")?;
     let stdout = child.stdout.take().context("no stdout")?;
@@ -197,17 +180,15 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
     Ok(Box::new(ClaudeBackend { child, stdin }))
 }
 
-/// Its session: resumed, a new one with a known id, or none saved.
 pub fn session_args(s: Option<&super::SessionPlan>) -> Vec<String> {
     match s {
         Some(s) if s.resume => vec!["--resume".into(), s.id.clone()],
         Some(s) => vec!["--session-id".into(), s.id.clone()],
-        // Its chatter would otherwise land in the account's projects.
+
         None => vec!["--no-session-persistence".into()],
     }
 }
 
-/// A stream-json user message with image blocks.
 pub fn user_message(
     text: &str,
     images: &[crate::assistant_images::ModelImage],
@@ -231,7 +212,6 @@ impl Backend for ClaudeBackend {
         true
     }
 
-    /// The text first, then each image as a base64 image block.
     fn send_images(
         &mut self,
         text: &str,
@@ -246,8 +226,6 @@ impl Backend for ClaudeBackend {
         Ok(())
     }
 
-    /// claude's stream-json control request; the turn ends with a
-    /// result, in flight tool calls finish.
     fn interrupt(&mut self) -> Result<()> {
         let id = format!("int-{}", std::process::id());
         let msg = json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}});

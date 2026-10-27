@@ -1,8 +1,3 @@
-// Terminal panes: one xterm.js per pane, fed by snapshot + live output.
-// By default a pane keeps the tab's own cols x rows at this device's font
-// size (A- and A+ change it), scaled down only when the tab would not fit,
-// at the pane's top left; "take size" instead resizes the tab's PTY to
-// this pane.
 import { $, h, on, emit, store, toast, uidOf, isDesk, isTouch, DESK, paintIcons, tcPaint, icon } from './util.js';
 import { send, sendInput, KIND, conn, tool, gzOk } from './conn.js';
 import { openSheet, closeSheet } from './sheet.js';
@@ -19,31 +14,22 @@ const THEME = {
 };
 const FONT = 'ui-monospace, "SF Mono", Menlo, "Cascadia Mono", "DejaVu Sans Mono", monospace';
 const MINF = 5, MAXF = 30;
-// A desktop pane never shrinks the text under 9 px (a split pane on a
-// laptop): past that the pane scrolls instead.
+
 const minF = () => (isDesk() ? 9 : MINF);
 let wheelSaid = false;
 let M = null, hinted = false, queuedSaid = false, cleared = 0, clearSaid = 0;
 on('conn', (s) => { if (s === 'live') queuedSaid = false; });
 on('input-lost', () => toast('Not connected for a while: some keys were not sent', 'warn'));
-// "Fit text to this screen" (Settings > This browser; on by default on a
-// phone): this phone sizes the tab it shows to its screen at its own font
-// size, so zooming rewraps the text instead of making it overflow. Off,
-// the tab keeps its size and the font is scaled down to fit it.
+
 export const fitOn = () => !isDesk() && store.get('fitscreen', isTouch());
-// A desktop sizes the tab it shows to its pane while it is in use (on by
-// default): no Fit click, and the Mac's own pane gets it back when typed in.
+
 export const deskFit = () => isDesk() && store.get('deskfit', true);
 const autoOn = () => fitOn() || deskFit();
-// The font size this device prefers (A- / A+; never scaled above it). A
-// phone that fits the tab starts at 14 px: about 50 columns on a 430 px
-// wide iPhone.
+
 export const prefFont = () => store.get('fontpref', null) || (isDesk() ? 14 : fitOn() ? 14 : 13);
-// A short name for this device, for the Mac's pane header ("sized by iPhone").
+
 const DEVICE = /iPhone/.test(navigator.userAgent) ? 'iPhone' : /iPad|Macintosh.*Mobile/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ? 'iPad' : /Android/.test(navigator.userAgent) ? 'Android phone' : 'a browser';
-// This phone is the tab's viewer while it is visible and was touched or
-// typed on in the last 5 minutes; after that the tab's size goes back to
-// the Mac until the next touch.
+
 const IDLE_MS = 5 * 60000;
 let activeAt = Date.now(), idleT = 0, hiddenT = 0, myClient = null;
 const activeNow = () => !document.hidden && Date.now() - activeAt < IDLE_MS;
@@ -56,35 +42,24 @@ function markActive() {
 }
 addEventListener('touchstart', markActive, { capture: true, passive: true });
 addEventListener('keydown', markActive, { capture: true, passive: true });
-// Hidden for a minute: the sizes go back (iOS usually drops the socket
-// sooner, which gives them back too).
+
 document.addEventListener('visibilitychange', () => {
   clearTimeout(hiddenT);
   if (document.hidden) hiddenT = setTimeout(() => panes.list.forEach((p) => p.giveBack()), 60000);
   else markActive();
 });
-// When the on-screen keyboard last came or went (main.js toggles body.kb).
-// The pane's height lags behind it for a few hundred ms (iOS drops the
-// focus, and the class, before the visual viewport grows back), so sizes
-// measured meanwhile are not the screen's: a closing keyboard once sent
-// the tab 17 rows instead of 34, and Claude Code redrew at the bottom.
+
 const KB_SETTLE = 900;
 let kbAt = -1e9, kbWas = false;
 new MutationObserver(() => {
   const k = document.body.classList.contains('kb');
   if (k !== kbWas) { kbWas = k; kbAt = performance.now(); }
 }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
-// A zoom step (A- / A+, a pinch) resizes the tab only once the steps stop.
+
 const ZOOM_SETTLE = 600;
-// Names for the debug log.
+
 const ENC = { DEFAULT: 'x10', SGR: 'sgr', SGR_PIXELS: 'sgr pixels' };
 
-// The font's own advance and line height, per px of font size, measured
-// at 1000 px. WebKit rounds a font's ascent and descent to whole pixels at
-// the size asked for, so measured at 13 px SF Mono reports 17 px of line
-// (1.31 em) instead of its real 1.19 em; xterm measures at the font size,
-// which on iOS spread rows about 10% apart. At 1000 px the rounding is
-// gone (Chrome and Firefox agree with it at any size).
 function metrics() {
   if (M) return M;
   let w = 0, hh = 0;
@@ -107,8 +82,7 @@ function metrics() {
   }
   return (M = { w, h: hh });
 }
-// xterm's cell height comes from the same unrounded line height (its own
-// measure keeps the width, which it does not round).
+
 function trueLineHeight(t) {
   const cs = t._core?._charSizeService, st = cs?._measureStrategy;
   if (!st?.measure || st.gtPatched) return;
@@ -122,10 +96,8 @@ function trueLineHeight(t) {
   st.gtPatched = true;
   cs.measure();
 }
-// Symbols iOS only has as color emoji (no text font there carries them),
-// so Claude Code's "⏺" bullets came out as blue buttons: drawn as the
-// plain shapes the Mac shows. Same UTF-8 length, so bytes swap in place.
-const SYM = { 0xba: [0x97, 0x8f], 0xb8: [0x80, 0x96], 0xb9: [0x96, 0xa0] }; // U+23FA ⏺ -> ●, U+23F8 ⏸ -> ‖, U+23F9 ⏹ -> ■
+
+const SYM = { 0xba: [0x97, 0x8f], 0xb8: [0x80, 0x96], 0xb9: [0x96, 0xa0] }; 
 const SYM_RE = /[\u23fa\u23f8\u23f9]/g, SYM_STR = { '\u23fa': '\u25cf', '\u23f8': '\u2016', '\u23f9': '\u25a0' };
 const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 export function plainSymbols(d) {
@@ -140,8 +112,7 @@ export function plainSymbols(d) {
   }
   return out;
 }
-// Copy text: the async clipboard where allowed (https, localhost), else
-// the old execCommand path (works on http too, inside a tap).
+
 export async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; } catch {}
   const ta = h('textarea', { style: 'position:fixed;top:0;left:0;opacity:0;font-size:16px', readonly: true });
@@ -153,11 +124,7 @@ export async function copyText(text) {
   ta.remove();
   return ok;
 }
-// The phone keyboard's Return (Settings > This browser > Return key): a new
-// line in the prompt by default on phones, as Shift+Enter is on the Mac,
-// with Send (the key bar's right end) to submit. Each agent's own new
-// line: ESC CR for Claude Code (what the terminal UI sends for
-// Shift+Enter), Ctrl+J for Codex and OpenCode, else ESC CR as the Mac.
+
 export const returnNewline = () => !isDesk() && isTouch() && store.get('retkey', 'newline') === 'newline';
 const NEWLINE = { codex: '\n', opencode: '\n' };
 export function newlineFor(id) {
@@ -170,7 +137,7 @@ export const setInputHook = (fn) => (inputHook = fn);
 class Pane {
   constructor(i) {
     this.i = i;
-    this.id = '';      // tab id "t123"
+    this.id = '';      
     this.cols = 0;
     this.rows = 0;
     this.ready = false;
@@ -178,8 +145,7 @@ class Pane {
     this.name = h('span.pn', { draggable: 'true' }, 'Empty pane');
     this.dot = h('span.dot');
     this.sz = h('span.sz');
-    // What the tab is: its folder (click copies it), account, model,
-    // branch and state, cut short on a narrow pane.
+
     this.meta = h('span.pmeta', { onclick: (e) => {
       const f = e.target.closest('.pm-dir')?.dataset.full;
       if (f) { navigator.clipboard?.writeText(f).then(() => toast('Copied ' + f, 'ok'), () => {}); e.stopPropagation(); }
@@ -192,19 +158,17 @@ class Pane {
       this.takeBtn,
       h('button.ib', { title: 'Tab options', 'data-i': 'dots', onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); if (this.id) emit('tabmenu', this.id, { x: r.right - 320, y: r.bottom + 4 }); } }));
     this.host = h('div.xt');
-    // Recent tabs' terminals, kept (hidden) on a phone so going back to
-    // one shows it at once and asks GodTerm only for what it missed.
+
     this.stash = new Map();
     this.msg = h('div.pane-msg', {}, 'Pick a tab to watch it');
-    // A tab much smaller than this pane: one click lets it fill it.
+
     this.hint = h('button.pane-hint', { hidden: true, onclick: (e) => {
       e.stopPropagation();
-      // Yielded while fitting: take the size back (no sticky take).
+
       if (this.yielded && autoOn() && !this.take) { this.yielded = false; this.layout(); return; }
       this.toggleTake();
     } });
-    // Touch: a small zoom control floating at the pane's top right
-    // (fades after a few seconds, back on any touch).
+
     this.fzSize = h('span.fz-n', { 'aria-live': 'polite' });
     this.fz = h('div.fzoom', { role: 'toolbar', 'aria-label': 'Text size' },
       h('button', { type: 'button', 'aria-label': 'Smaller text', onclick: (e) => { e.stopPropagation(); this.step(-1); } }, 'A-'),
@@ -212,23 +176,19 @@ class Pane {
       h('button', { type: 'button', 'aria-label': 'Larger text', onclick: (e) => { e.stopPropagation(); this.step(1); } }, 'A+'),
       this.fzFit = h('button.fz-fit', { type: 'button', 'aria-label': 'Fit the text to the screen', onclick: (e) => { e.stopPropagation(); this.step(0); } }, 'Fit'));
     this.body = h('div.pane-body', {}, this.host, this.msg, this.hint, this.fz);
-    // GodTerm Sync: owned by another machine (read only), or moving there.
+
     this.lease = h('div.lease-bar', { hidden: true });
     this.el.append(this.head, this.lease, this.body);
     paintIcons(this.head);
     this.el.addEventListener('pointerdown', () => panes.focus(this.i), true);
-    // Yielded to another device (the Mac was typed in, a phone or desktop
-    // took the size): scrolling or clicking here does not take it back,
-    // only typing does, or the hint ("Use this window's size"). Two
-    // devices open on one tab then stop fighting over its size.
+
     on('pane-font', (p) => p === this && this.paintZoom());
     this.wake();
-    // The terminal (xterm, a WebGL context) is made when the pane is first
-    // shown: a one pane layout makes one, not four.
+
     this.term = null;
     this.touch();
     this.dnd();
-    // Not while the side list's edge is dragged: one refit when it ends.
+
     new ResizeObserver(() => { if (!document.documentElement.classList.contains('side-drag')) this.layout(); }).observe(this.body);
   }
 
@@ -248,50 +208,34 @@ class Pane {
     try { t.loadAddon(new WebLinksAddon.WebLinksAddon((e, uri) => window.open(uri, '_blank', 'noopener'))); } catch {}
     this.fit = new FitAddon.FitAddon();
     t.loadAddon(this.fit);
-    // xterm's viewport turns a scroll event into rows with a row height it
-    // cached earlier; when that is still 0 (a reset, a resize or a switch
-    // in the same frames) the result is NaN, which became the scroll
-    // position and made the WebGL renderer read rows that do not exist
-    // ("loadCell" errors on every frame after). A scroll by NaN is none.
+
     try {
       const core = t._core, sl = core.scrollLines;
       if (typeof sl === 'function') core.scrollLines = function (n, ...a) { return Number.isFinite(n) ? sl.call(this, n, ...a) : undefined; };
     } catch {}
-    // xterm's viewport sets a flag to skip the scroll event its own scrollTop
-    // write causes; when the write changes nothing (the area is already
-    // there) no event comes and the flag stays, and the next real scroll
-    // (a wheel notch, a scrollbar drag) is taken for that echo and does
-    // nothing. Nothing of its own is pending when the user acts.
+
     const unstick = () => { try { const v = t._core.viewport; if (v?._ignoreNextScrollEvent) v._ignoreNextScrollEvent = false; } catch {} };
     this.host.addEventListener('wheel', unstick, { capture: true, passive: true });
     this.host.addEventListener('pointerdown', unstick, { capture: true, passive: true });
     this.gpu();
     t.onData((d) => this.input(inputHook(d === '\r' && returnNewline() ? newlineFor(this.id) : d, this)));
-    // Shift+Enter: a new line in the prompt, as in the terminal UI (xterm
-    // alone sends CR, which submitted it).
+
     t.attachCustomKeyEventHandler((e) => {
       if (e.key !== 'Enter' || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return true;
       if (e.type === 'keydown') { e.preventDefault(); this.input(inputHook(newlineFor(this.id), this)); }
       return false;
     });
-    // Touch: the phone keyboard's text (typing, dictation, autocorrect,
-    // predictive text, an IME) goes as what changed in the textarea, each
-    // character once (textinput.js).
+
     if (isTouch()) t.gtMirror = ownTextarea(t, this.host, (d, how) => this.typed(d, how));
     t.onBinary((d) => this.input(Uint8Array.from(d, (c) => c.charCodeAt(0) & 255)));
-    // An image pasted into the terminal (the phone's Paste, a Mac's
-    // Cmd-V of a screenshot) goes to the tab as an image.
+
     this.host.addEventListener('paste', (e) => {
       const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
       if (!files.length || !this.id) return;
       e.preventDefault(); e.stopPropagation();
       import('./images.js').then((m) => m.sendImages(files, this));
     }, true);
-    // "Erase saved lines" (CSI 3 J) is ignored, as GodTerm's own screen
-    // (vt100) ignores it: Claude Code sends it with its redraws, and xterm
-    // honoured it, so the history the snapshot brought (and all output
-    // since) was wiped and a phone could not scroll back at all, while the
-    // Mac's terminal UI kept it. The screen itself is still cleared by 2 J.
+
     try {
       t.parser.registerCsiHandler({ final: 'J' }, (params) => {
         if (params[0] !== 3) return false;
@@ -305,15 +249,12 @@ class Pane {
     t.buffer.onBufferChange(() => this.paintJump());
   }
 
-  // The WebGL renderer for the shown terminal (one GL context per pane:
-  // a kept terminal gives its own back).
   gpu() {
     this.gl = null;
     if (store.get('webgl', true) && window.WebglAddon) {
       try {
         const g = new WebglAddon.WebglAddon();
-        // Lost (iOS drops contexts under memory pressure): the DOM
-        // renderer takes over; WebGL is tried again after a moment.
+
         g.onContextLoss(() => { g.dispose(); if (this.gl === g) { this.gl = null; this.renderer = 'dom'; this.glRetry = (this.glRetry || 0) + 1; if (this.glRetry <= 2) setTimeout(() => { if (!this.gl && this.term) { this.gpu(); this.term.refresh(0, this.term.rows - 1); } }, 1500); } });
         this.term.loadAddon(g);
         this.gl = g;
@@ -322,8 +263,6 @@ class Pane {
     } else this.renderer = 'dom';
   }
 
-  // Keep this tab's terminal aside (a phone, a tab whose stream is known)
-  // and bring back `id`'s if it was kept. True when it was.
   swap(id) {
     const keep = !isDesk() && this.id && this.ready && this.sid && this.term;
     if (keep) {
@@ -334,7 +273,7 @@ class Pane {
     }
     const c = id && this.stash.get(id);
     if (c) this.stash.delete(id);
-    // At most three kept: the oldest goes.
+
     while (this.stash.size > 3) {
       const [k, o] = this.stash.entries().next().value;
       this.stash.delete(k);
@@ -354,11 +293,8 @@ class Pane {
     return null;
   }
 
-  // Whether this pane sets the tab's size now: "take size" by hand, or
-  // fitting to this screen while this phone is the one in use.
   get sizing() { return this.take || (autoOn() && !!this.id && !this.yielded && activeNow()); }
 
-  // The size this pane took goes back to the tab's own pane on the Mac.
   giveBack() {
     clearTimeout(this.rsT);
     if (!this.sent || !this.id) { this.sent = false; return; }
@@ -366,34 +302,26 @@ class Pane {
     this.sent = false;
   }
 
-  // Text from the phone keyboard (textinput.js): `how` is text, del,
-  // paste, enter or key.
   typed(d, how) {
     if (how === 'paste') { this.paste(d); return; }
     if (how === 'enter') { this.input(inputHook(returnNewline() ? newlineFor(this.id) : '\r', this)); return; }
     if (how === 'del') { this.input(d, true); return; }
-    // A new line dictated or typed into the text: this tab's new line.
+
     const nl = how === 'text' && /\r?\n/.test(d);
     const txt = nl ? d.replace(/\r?\n/g, newlineFor(this.id)) : d;
     const out = inputHook(txt, this);
     this.input(out, true);
-    // A latched Ctrl or Alt made it a control key: the textarea starts
-    // again (the tab did not get that text).
+
     if (out !== txt) this.term.gtMirror?.reset();
     if (this.term.buffer.active.viewportY < this.term.buffer.active.baseY) this.term.scrollToBottom();
   }
 
-  // `mirrored`: text from the textarea (textinput.js). Anything else (a
-  // key, the key bar, Send, a paste) first sends what a composition holds
-  // and starts the textarea again.
   input(d, mirrored = false) {
     if (!mirrored) this.term?.gtMirror?.commit();
     if (!this.id || d == null || d === '' || !this.term) return;
     if (this.readOnly()) return;
     if (this.yielded) { this.yielded = false; this.layout(); }
-    // Page keys page an app that scrolls itself (counted as a screen of
-    // notches: "jump to the end" may send more than it needs, never
-    // fewer); any other key brings it back to its end (Claude Code does).
+
     const pg = d === '\x1b[5~' ? 1 : d === '\x1b[6~' ? -1 : 0;
     if (pg && this.scrollPath() === 'app') {
       this.appBack = Math.max(0, (this.appBack || 0) + pg * Math.max(1, this.term.rows));
@@ -406,13 +334,8 @@ class Pane {
     else if (r === 'queued' && !queuedSaid) { queuedSaid = true; toast('Reconnecting: your keys go out once it is back', 'info'); }
   }
 
-  // Paste text into the tab (bracketed when the app asked for it).
   paste(text) { if (this.id) this.term.paste(text); }
 
-  // Paste, then Enter as its own write once the tab shows the text (or
-  // after 1.5 s): an agent CLI that reads the paste and the CR together
-  // takes the CR as a new line in the paste (Claude Code), or the whole
-  // as a paste (Codex), and the prompt is not sent.
   async pasteThenEnter(text) {
     const id = this.id;
     if (!id) return;
@@ -428,7 +351,6 @@ class Pane {
     if (this.id === id) this.input('\r');
   }
 
-  // The text on the screen now (the rows shown, not the history).
   screenText() {
     const b = this.term.buffer.active, out = [];
     for (let i = b.baseY; i < b.baseY + this.term.rows; i++) out.push(b.getLine(i)?.translateToString(true) || '');
@@ -456,7 +378,7 @@ class Pane {
     this.msg.hidden = !!kept;
     this.paintHead();
     if (kept) this.layout();
-    // The keyboard stays up across a switch.
+
     if (typing && !this.host.contains(document.activeElement)) this.term.focus();
   }
 
@@ -464,12 +386,11 @@ class Pane {
     const t = tabById(this.id);
     this.name.textContent = t ? t.name : this.id ? this.id : 'Empty pane';
     this.dot.className = 'dot ' + (t ? t.state : '');
-    // An empty pane has nothing to zoom or size: its header keeps the name.
+
     this.el.classList.toggle('empty', !this.id);
     tcPaint(this.el, t);
     this.sz.textContent = this.cols ? `${this.cols}x${this.rows}` : '';
-    // An empty pane (or a closed tab): the header's buttons do nothing
-    // yet, so they are off and say so.
+
     for (const b of this.head.querySelectorAll('button.ib')) {
       if (b.dataset.t0 == null) b.dataset.t0 = b.title;
       b.disabled = !t;
@@ -477,8 +398,7 @@ class Pane {
     }
     this.paintMeta(t);
     if (this.id && !t && S.tabs.length) { this.msg.textContent = 'This tab is closed'; this.msg.hidden = false; }
-    // A tab that is not running (not started: no login yet; ended) has
-    // nothing on screen: say so instead of a blank terminal.
+
     else if (t && this.ready && t.running === false && !this.screenText().trim()) {
       this.msg.textContent = `Not running (${t.state || 'stopped'}): its options can reopen it`;
       this.msg.hidden = false;
@@ -490,9 +410,13 @@ class Pane {
   paintMeta(t) {
     const g = t?.git_facts;
     const git = g?.branch ? [g.branch, g.dirty ? g.dirty + ' changed' : '', g.unpushed ? '↑' + g.unpushed : '', g.behind ? '↓' + g.behind : ''].filter(Boolean).join(' ') : '';
+
+    const email = t && S.accounts.find((x) => x.account === t.account)?.email;
+    const hide = store.get('hideEmail', false);
     const bits = t ? [
       t.folder && ['pm-dir', t.folder, t.folder_full || t.folder],
       t.account_label && ['pm-acct', t.account_label],
+      email && ['pm-email', hide ? '••••••' : email],
       t.model && ['pm-model', t.model + (t.effort ? ' · ' + t.effort : '')],
       git && ['pm-git', git],
       t.state && ['pm-state', t.state],
@@ -500,15 +424,11 @@ class Pane {
     const key = JSON.stringify(bits);
     if (key === this.metaKey) return;
     this.metaKey = key;
-    this.metaEls = bits.map(([c, v, full]) => full ? h('span.' + c, { 'data-full': full, title: 'Copy ' + full }, h('span', {}, v), h('span', { html: icon('copy') })) : h('span.' + c, { title: v }, v));
+    this.metaEls = bits.map(([c, v, full]) => c === 'pm-email' ? h('button.pm-email', { type: 'button', title: hide ? 'Show the account email' : 'Hide the account email', 'aria-label': hide ? 'Show the account email' : 'Hide the account email', onclick: () => { store.set('hideEmail', !hide); for (const q of panes.list) { q.metaKey = ''; q.paintMeta(tabById(q.id)); } } }, v) : full ? h('span.' + c, { 'data-full': full, title: 'Copy ' + full }, h('span', {}, v), h('span', { html: icon('copy') })) : h('span.' + c, { title: v }, v));
     this.meta.replaceChildren(...this.metaEls);
     this.fitHead();
   }
 
-  // A narrow pane (a split, a small window): the header's details go
-  // whole, by priority (account, model, git, then the folder), before
-  // anything is cut to an ellipsis; narrower still, the zoom buttons and
-  // the size go too. The tab's options (the dots) still show it all.
   fitHead() {
     const head = this.head, W = head.clientWidth;
     if (!W || !this.metaEls) return;
@@ -516,7 +436,7 @@ class Pane {
     this.el.classList.remove('tight');
     head.classList.add('measuring');
     const fits = () => head.scrollWidth <= head.clientWidth + 1;
-    for (const c of ['pm-acct', 'pm-model', 'pm-git', 'pm-dir']) {
+    for (const c of ['pm-email', 'pm-acct', 'pm-model', 'pm-git', 'pm-dir']) {
       if (fits()) break;
       this.meta.querySelector('.' + c)?.remove();
     }
@@ -524,7 +444,6 @@ class Pane {
     head.classList.remove('measuring');
   }
 
-  // The lease banner: who owns this conversation and the ways to get it.
   paintLease(t) {
     const l = t?.lease;
     const key = l ? JSON.stringify(l) : '';
@@ -568,7 +487,6 @@ class Pane {
     this.lease.hidden = false;
   }
 
-  // Typing goes nowhere while another machine has the conversation.
   readOnly() {
     const l = tabById(this.id)?.lease;
     if (!l || l.state === 'offline') return false;
@@ -580,15 +498,6 @@ class Pane {
     return true;
   }
 
-  // The terminal emptied for new content, then `fn`. A reset while the
-  // viewport is scrolled down shrinks xterm's scroll area, and the
-  // browser then scrolls the element to 0 and fires a scroll event a
-  // frame later, which xterm takes as the user's: it moved a snapshot
-  // written meanwhile to its top (opened tabs showed their first line),
-  // or to NaN when the reset had cleared the row height first (the WebGL
-  // renderer then read rows past the buffer: "loadCell" errors). So a
-  // scrolled element goes to 0 now, that event passes, and the reset (and
-  // what waits on it: the snapshot, output) runs in the next frame.
   clear(fn) {
     if (this.clearing) { if (fn) this.clearing.push(fn); return; }
     const el = this.term?.element?.querySelector('.xterm-viewport');
@@ -606,8 +515,7 @@ class Pane {
   snapshot(m) {
     this.ensureTerm();
     this.clear(() => {
-      // Where the output after it starts (for a resume after a lost
-      // connection).
+
       this.sid = m.sid || null;
       this.pos = m.pos || 0;
       this.from = null;
@@ -616,12 +524,10 @@ class Pane {
       this.term.resize(this.cols, this.rows);
       this.ready = true;
       this.appBack = 0;
-      // The overlay stays until xterm has drawn it all (a long history is
-      // parsed over several frames).
+
       const gen = (this.gen = (this.gen || 0) + 1);
       this.term.write(plainSymbols(m.data || ''), () => {
-        // A fresh copy starts at its end (a resize while it was drawn could
-        // leave it a line up, which held this phone's resizes).
+
         if (this.gen === gen) this.term.scrollToBottom();
         if (this.gen === gen && this.ready) { this.msg.hidden = true; this.wake(); }
         const b = this.term.buffer.active;
@@ -633,16 +539,13 @@ class Pane {
   }
 
   output(bytes) {
-    // Output behind a snapshot that waits for the reset keeps its order.
+
     if (this.clearing) { this.clearing.push(() => this.output(bytes)); return; }
     if (!this.ready) return;
     this.pos += bytes.length;
     this.term.write(plainSymbols(bytes));
   }
 
-  // Back after a lost connection with the terminal as it was: GodTerm
-  // sends only what this pane missed (no reset, no flash). False when
-  // this pane's copy does not end where the resume starts.
   resume(m) {
     const f = this.from;
     this.from = null;
@@ -651,15 +554,11 @@ class Pane {
     this.pos = m.pos;
     this.ready = true;
     this.msg.hidden = true;
-    // A kept terminal shown again (or back after a drop) was not sized
-    // while it was away: sized now when this pane is the viewer, as a
-    // snapshot would (a layout that finds nothing to change sends nothing).
+
     this.layout();
     return true;
   }
 
-  // The tab was resized (by this phone, the Mac or another browser):
-  // the terminal takes the size and output goes on, no new snapshot.
   resized(m) {
     if (!this.ready) return;
     if (m.sid) { this.sid = m.sid; this.pos = m.pos || 0; }
@@ -669,18 +568,11 @@ class Pane {
     this.layout();
   }
 
-  // How a one finger drag scrolls this tab: "local" (this terminal's own
-  // history) or "app" (wheel notches to the app, which scrolls itself),
-  // as the terminal UI's wheel decides: an alternate screen app, or one
-  // that reports the mouse and has no history here (Claude Code), gets
-  // the wheel; a screen with history scrolls it.
   scrollPath() {
     const buf = this.term.buffer.active, mouse = this.term.modes.mouseTrackingMode !== 'none';
     return buf.type === 'alternate' || (mouse && buf.baseY === 0) ? 'app' : 'local';
   }
 
-  // `lines` wheel notches (positive: up, towards older text) for the app
-  // at viewport point (x, y): added up and sent once a frame.
   wheel(lines, x, y) {
     if (!this.id || !lines || !this.term) return;
     this.wq = (this.wq || 0) + lines;
@@ -698,21 +590,18 @@ class Pane {
       this.ws = this.ws || { up: 0, down: 0, msgs: 0 };
       this.ws[up ? 'up' : 'down'] += Math.abs(q);
       this.ws.msgs++;
-      // How far up the app is (for "jump to the end" and holding resizes).
+
       this.appBack = Math.max(0, (this.appBack || 0) + q);
       this.paintJump();
       if (!this.appBack) this.unhold();
     });
   }
 
-  // While scrolled back (this terminal's history, or the app's own),
-  // nothing resizes the tab: a resize makes the app redraw at the bottom.
   scrolledBack() {
     const buf = this.term.buffer.active;
     return (buf.type === 'normal' && buf.viewportY < buf.baseY) || (this.appBack > 0 && this.scrollPath() === 'app');
   }
 
-  // Back at the end: a resize held meanwhile goes out now.
   unhold() {
     if (!this.held) return;
     this.held = false;
@@ -720,7 +609,6 @@ class Pane {
     this.layout();
   }
 
-  // The debug log: how the last drags scrolled (at most every 2 s).
   saidScroll(force) {
     const now = performance.now();
     if (!force && now - (this.scrollSaid || 0) < 2000) return;
@@ -742,11 +630,7 @@ class Pane {
 
   setFont(f) {
     if (this.term.options.fontSize === f) return;
-    // At the end before: at the end after. xterm keeps the viewport's
-    // pixel offset, so taller rows left a tab with history a few lines
-    // "scrolled back", and the resize the zoom asks for was held.
-    // Put right once xterm has redrawn at the new size (scrolling in
-    // the middle of the change drew rows the buffer did not have).
+
     const b = this.term.buffer.active, atEnd = this.ready && b.baseY > 0 && b.viewportY >= b.baseY;
     this.term.options.fontSize = f;
     if (atEnd) {
@@ -759,16 +643,13 @@ class Pane {
     this.anc = requestAnimationFrame(() => this.anchor());
   }
 
-  // The largest font (quarter px steps) up to `max` whose predicted cells
-  // fit W x H. xterm floors the cell width and ceils its height in device
-  // pixels.
   fitFont(W, H, max = MAXF) {
     const cols = this.cols || 80, rows = this.rows || 24, m = metrics(), dpr = devicePixelRatio || 1;
     const fits = (f) => cols * (Math.floor(m.w * f * dpr) / dpr) <= W && rows * (Math.ceil(m.h * f * dpr) / dpr) <= H;
     let f = Math.min(MAXF, max);
     while (f > minF() && !fits(f)) f -= 0.25;
     this.setFont(f);
-    // Check against xterm's real cell once it has measured.
+
     cancelAnimationFrame(this.chk);
     this.chk = requestAnimationFrame(() => {
       for (let n = 0; n < 8 && !this.take; n++) {
@@ -777,7 +658,7 @@ class Pane {
         if (store.get('font.' + this.id, null)) break;
         this.setFont((this.fitted = this.term.options.fontSize - 0.25));
       }
-      // Still too big at the smallest readable size: the pane scrolls.
+
       const c = this.cell();
       this.body.classList.toggle('pan', isDesk() && (cols * c.w > W + 0.5 || rows * c.h > H + 0.5));
       this.anchor();
@@ -785,7 +666,6 @@ class Pane {
     return f;
   }
 
-  // The terminal's own padding (an even inner margin, wider on touch).
   pad() {
     if (this.pads) return this.pads;
     const cs = this.term.element && getComputedStyle(this.term.element);
@@ -799,50 +679,41 @@ class Pane {
     const W = this.body.clientWidth - P.x;
     let H = this.body.clientHeight - P.y;
     if (W < 20 || H < 20) return;
-    // With the keyboard up the text keeps its size: the pane pans to the
-    // cursor instead of shrinking the font.
+
     const kb = document.body.classList.contains('kb');
-    // (The full height is the one measured at this width: after a
-    // rotation with the keyboard already up, the old one is not used.)
+
     if (!kb) { this.fullH = H; this.fullBH = this.body.clientHeight; this.fullW = W; }
     else if (this.fullW !== W) { this.fullH = this.fullBH = 0; }
     else if (!this.take && this.fullH > H) H = this.fullH;
-    // The keyboard came or went: the renderer paints the whole screen
-    // again once the pane has its new size (a lost WebGL context after
-    // a burst of resizes left it blank until the next full paint).
+
     if (kb !== this.kbLast) { this.kbLast = kb; requestAnimationFrame(() => { if (!this.term) return; this.term.refresh(0, this.term.rows - 1); this.clampPan(); this.showCursor(); }); }
-    // Fitting to this screen, the font is this device's own (A- / A+, a
-    // pinch): never scaled down; the tab is sized to it instead.
+
     const user = this.id && !fitOn() ? store.get('font.' + this.id, null) : null;
     if (this.sizing) {
       this.setFont(user || prefFont());
-      // The fit addon measures the host, so the host spans the pane here.
+
       this.host.style.cssText = 'right:0;bottom:0';
       this.body.classList.remove('roomy', 'pan');
       const d = this.fit.proposeDimensions();
-      // With the keyboard up, and for a moment after it came or went, the
-      // tab keeps the rows it had without it (the pane pans to the
-      // cursor): no resize each time it comes and goes.
+
       const since = performance.now() - kbAt, settling = since < KB_SETTLE;
       if (d && (kb || settling)) {
         if (this.downRows) d.rows = this.downRows;
         else if (kb) {
-          // Shown with the keyboard already up: the rows of the screen
-          // without it (iOS shrinks only the visual viewport).
+
           const vv = window.visualViewport, gap = vv ? Math.max(0, innerHeight - vv.height) : 0;
           d.rows = Math.max(d.rows, Math.floor((H + gap) / Math.max(1, this.cell().h)));
         }
         if (settling && !kb) { clearTimeout(this.kbT); this.kbT = setTimeout(() => this.layout(), KB_SETTLE - since + 50); }
       } else if (d) this.downRows = d.rows;
       if (d && d.cols > 1 && d.rows > 1 && this.ready && (d.cols !== this.cols || d.rows !== this.rows || !this.sent)) {
-        // Settled first (a pinch, a rotation, the keyboard sliding); zoom
-        // steps resize once, after the last one.
+
         const zoomed = performance.now() - (this.zoomAt || -1e9) < ZOOM_SETTLE;
         clearTimeout(this.rsT);
         this.rsT = setTimeout(() => {
           if (!this.sizing || !this.ready) return;
           if (performance.now() - (this.zoomAt || -1e9) < ZOOM_SETTLE - 20) { this.layout(); return; }
-          // Not while scrolled back: the app would redraw at its end.
+
           if ((d.cols !== this.cols || d.rows !== this.rows) && this.scrolledBack()) {
             if (!this.held) dlog('term', `resize of ${this.id} to ${d.cols}x${d.rows} held: scrolled back`);
             this.held = true;
@@ -858,8 +729,7 @@ class Pane {
       }
       this.fitted = this.term.options.fontSize;
     } else if (fitOn()) {
-      // Fitting, but not the tab's viewer now (idle, or the Mac took it
-      // back): the font stays as it is and the pane pans.
+
       this.giveBack();
       this.setFont(prefFont());
       this.fitted = prefFont();
@@ -876,27 +746,22 @@ class Pane {
       hinted = true;
       toast('Small text: pinch or A+ to zoom, or Size to fit the tab to this screen', 'info', { label: 'Size', fn: () => this.toggleTake() });
     }
-    // Zoomed past the fit: the pane pans (touch drag) instead of shrinking.
+
     this.clampPan();
     this.showCursor();
     emit('pane-font', this);
   }
 
-  // On a phone a tab with fewer rows than the screen holds sits at the
-  // bottom, against the key bar, like a chat: its prompt stays where the
-  // thumb is, and the empty part is above the oldest line, not between the
-  // prompt and the keys. Desktop panes keep the top left.
   anchor() {
     if (this.sizing) return;
     const th = this.term.element?.offsetHeight || 0;
     const H = document.body.classList.contains('kb') ? this.fullBH || this.body.clientHeight : this.body.clientHeight;
     const top = !isDesk() && th ? Math.max(0, Math.floor(H - th)) : 0;
     this.host.style.cssText = top ? `top:${top}px` : '';
-    // The size hint goes in that empty top part, and only when there is one.
+
     this.body.classList.toggle('roomy', top >= 60);
   }
 
-  // Keep the cursor row on screen while the keyboard is up.
   showCursor() {
     if (!document.body.classList.contains('kb') || !this.ready) return;
     const b = this.body, c = this.cell(), buf = this.term.buffer.active;
@@ -908,15 +773,12 @@ class Pane {
     else if (top < b.scrollTop) b.scrollTop = Math.max(0, top - 4);
   }
 
-  // "Use this window's size" while the tab, at its natural size, leaves
-  // much of the pane empty; "Give the size back" while this pane sets it.
   paintHint(W, H) {
     let txt = '';
     const t = tabById(this.id);
     if (this.take) txt = this.sent ? 'Give the size back' : '';
     else if (this.ready && this.id && this.yielded && autoOn()) {
-      // Another device sets the size now (or the terminal UI has its
-      // own back): say who, offer it back.
+
       txt = (t?.size_device ? 'Sized by ' + t.size_device : 'Sized by the terminal UI') + ' · use this window\'s';
     } else if (this.ready && this.id && !autoOn()) {
       const f = this.term.options.fontSize, m = metrics(), dpr = devicePixelRatio || 1;
@@ -927,13 +789,10 @@ class Pane {
     this.hint.title = this.take ? 'The tab goes back to the terminal UI\'s size' : 'Resize the tab to fill this pane (the terminal UI gets it back when you release it)';
     this.hint.hidden = !txt;
     this.hint.classList.toggle('on', this.take);
-    // A phone shows the hint only in the empty part above a short tab
-    // (.roomy): with the tab filling the screen, who holds the size is a
-    // toast instead, once per holder, with the way to take it back.
-    // (Once per holder for this pane; not while the chat covers the pane.)
+
     if (!isDesk() && !!txt && this.yielded && !this.take && this.saidYield !== txt && !$('#app').classList.contains('chat-open')) {
       this.saidYield = txt;
-      // (A moment later: .roomy settles once the tab has its height.)
+
       setTimeout(() => { if (!this.term || !this.yielded || this.take || !this.body.offsetParent) return; this.anchor(); if (!this.body.classList.contains('roomy')) toast(txt.replace(/ · .*$/, ''), 'info', { label: 'Use this size', fn: () => this.toggleTake() }, 6000); }, 500);
     }
   }
@@ -944,7 +803,6 @@ class Pane {
     b.scrollTop = Math.min(b.scrollTop, Math.max(0, b.scrollHeight - b.clientHeight));
   }
 
-  // The floating control: shown, then faded after a few quiet seconds.
   wake() {
     this.fz.classList.remove('faded');
     clearTimeout(this.fzT);
@@ -954,25 +812,20 @@ class Pane {
   paintZoom() {
     const f = this.term.options.fontSize, user = fitOn() ? store.get('fontpref', null) : this.id && store.get('font.' + this.id, null);
     const txt = String(Math.round(f * 4) / 4);
-    // Shown while the size changes (a pinch, A- / A+), then it fades.
+
     if (txt !== this.fzSize.textContent) this.wake();
     this.fzSize.textContent = txt;
     this.fz.classList.toggle('user', !!user);
-    // Fitting, the last button puts the default size back; else it fits
-    // the tab's text to the screen.
+
     this.fzFit.textContent = fitOn() ? 'Reset' : 'Fit';
     this.fzFit.setAttribute('aria-label', fitOn() ? 'Back to the default text size' : 'Fit the text to the screen');
   }
 
-  // Touch zoom (the floating A- / A+, the key bar's, a pinch): this tab's
-  // text one px smaller or larger than shown now, kept on this device;
-  // past the fit the pane pans. 0 goes back to the fit.
   step(dir) {
     if (!this.id) return;
     this.wake();
     this.zoomAt = performance.now();
-    // Fitting to this screen: the size is this device's, for every tab,
-    // and the tab rewraps to it. 0 goes back to the default size.
+
     if (fitOn()) {
       const cur = this.term.options.fontSize;
       const f = dir ? Math.max(8, Math.min(MAXF, dir > 0 ? Math.floor(cur) + 1 : Math.ceil(cur) - 1)) : null;
@@ -989,8 +842,6 @@ class Pane {
     this.layout();
   }
 
-  // A- / A+: this device's font size, for every pane (remembered); Fit
-  // drops this tab's own pinch zoom. `abs` sets this tab's own size.
   zoom(dir, abs) {
     if (!this.id) return;
     this.zoomAt = performance.now();
@@ -1009,9 +860,7 @@ class Pane {
     if (!this.id) return;
     this.take = !this.take;
     store.set('take.' + this.id, this.take);
-    // Give the size back: the tab returns to the terminal UI's own size,
-    // and a pane that fits by itself (a desktop in use, a phone fitting
-    // the screen) does not take it again until it is typed in.
+
     if (!this.take) { send({ t: 'resize', tab: uidOf(this.id), release: true }); this.sent = false; this.yielded = autoOn(); }
     this.takeBtn.setAttribute('aria-pressed', this.take);
     emit('take', this);
@@ -1019,7 +868,6 @@ class Pane {
     this.layout();
   }
 
-  // The buffer cell under a viewport point: {col, row} (row in the buffer).
   cellAt(x, y) {
     const r = this.term.element.querySelector('.xterm-screen').getBoundingClientRect();
     const c = this.cell();
@@ -1028,7 +876,6 @@ class Pane {
     return { col, row: row + this.term.buffer.active.viewportY };
   }
 
-  // The link (http, https) under a viewport point, if any.
   linkAt(x, y) {
     const { col, row } = this.cellAt(x, y);
     const line = this.term.buffer.active.getLine(row)?.translateToString(true) || '';
@@ -1038,18 +885,12 @@ class Pane {
     return '';
   }
 
-  // Touch: one finger drags history (or pans when zoomed; an alternate
-  // screen app gets it as wheel input: mouse reports or arrow keys, as the
-  // terminal UI does), a tap focuses the terminal (the keyboard) or opens
-  // a link, a long press selects (drag to extend, then Copy), two fingers
-  // pinch the font size. Handled before xterm sees it, so nothing scrolls
-  // twice and the page never moves.
   touch() {
     const b = this.body;
     let sx, sy, lx, ly, t0, moved, acc = 0, pinch = null, vel = 0, lt = 0, raf = 0, lpT = 0, sel = null;
     const dist = (e) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
     const scrollPx = (dy) => {
-      // Pan a zoomed view first, then scroll history.
+
       const before = b.scrollTop;
       b.scrollTop = before - dy;
       dy -= before - b.scrollTop;
@@ -1059,9 +900,7 @@ class Pane {
       const lines = Math.trunc(acc / ch);
       if (!lines) return true;
       acc -= lines * ch;
-      // The app scrolls itself (Claude Code, less, vim): one wheel notch
-      // per row of drag, at the cell under the finger, as GodTerm's
-      // terminal UI sends a wheel. Else this terminal's own history.
+
       if (this.scrollPath() === 'app') {
         this.wheel(lines, lx, ly);
         return true;
@@ -1091,7 +930,7 @@ class Pane {
       sx = lx = e.touches[0].clientX; sy = ly = e.touches[0].clientY;
       t0 = lt = performance.now(); moved = false; acc = 0; vel = 0;
       if (e.target.closest('button')) return;
-      // A long press without moving: select from here.
+
       lpT = setTimeout(() => {
         if (moved || pinch || !this.id) return;
         const c = this.cellAt(sx, sy);
@@ -1120,7 +959,7 @@ class Pane {
       if (!moved) return;
       b.scrollLeft -= x - lx;
       scrollPx(y - ly);
-      // Velocity, smoothed over the last moves (px per ms).
+
       vel = 0.6 * ((y - ly) / Math.max(1, now - lt)) + 0.4 * vel;
       lx = x; ly = y; lt = now;
     }, opts);
@@ -1143,8 +982,7 @@ class Pane {
         this.term.focus();
         return;
       }
-      // Momentum after a flick, unless the finger rested before lifting;
-      // the debug log says how it scrolled once it stops.
+
       const said = () => moved && this.saidScroll();
       if (performance.now() - lt > 80) { said(); return; }
       let v = vel * 16;
@@ -1156,7 +994,6 @@ class Pane {
     b.addEventListener('touchcancel', (e) => { clearTimeout(lpT); pinch = null; sel = null; e.stopPropagation(); }, opts);
   }
 
-  // A Copy button while text is selected (a long press on a phone).
   copyHint(show = true) {
     if (!this.copyBtn) {
       this.copyBtn = h('button.pane-hint.copy', { type: 'button', onclick: async (e) => {
@@ -1172,8 +1009,6 @@ class Pane {
     this.copyBtn.hidden = !show;
   }
 
-  // "Jump to the end" while scrolled back in history.
-  // In an app that scrolls itself, it takes the notches back down.
   paintJump() {
     if (!this.term) return;
     const buf = this.term.buffer.active;
@@ -1193,11 +1028,18 @@ class Pane {
     this.name.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/gt-pane', String(this.i)));
     this.el.addEventListener('dragover', (e) => {
       const ty = e.dataTransfer.types;
-      if (ty.includes('text/gt-tab') || ty.includes('text/gt-pane')) { e.preventDefault(); this.el.classList.add('drop'); }
+      if (ty.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; this.el.classList.add('drop'); }
+      else if (ty.includes('text/gt-tab') || ty.includes('text/gt-pane')) { e.preventDefault(); this.el.classList.add('drop'); }
     });
-    this.el.addEventListener('dragleave', () => this.el.classList.remove('drop'));
+    this.el.addEventListener('dragleave', (e) => { if (!this.el.contains(e.relatedTarget)) this.el.classList.remove('drop'); });
     this.el.addEventListener('drop', (e) => {
       this.el.classList.remove('drop');
+      if (e.dataTransfer.types.includes('Files')) {
+        e.preventDefault();
+        const files = [...e.dataTransfer.files];
+        import('./drop.js').then((m) => m.dropOnPane(files, this));
+        return;
+      }
       const tab = e.dataTransfer.getData('text/gt-tab');
       const from = e.dataTransfer.getData('text/gt-pane');
       e.preventDefault();
@@ -1207,19 +1049,16 @@ class Pane {
   }
 }
 
-// The smallest pane worth splitting into: under 2 x 360 px of width the
-// two panes stack, under 2 x 220 px of height they sit side by side, and
-// a 4 way split with room for neither falls back to 2, then 1.
 const MINW = 360, MINH = 220;
 export const panes = {
   list: [],
-  n: 1,       // panes shown (what the room allows)
-  want: 1,    // panes asked for (Layout; kept per browser)
+  n: 1,       
+  want: 1,    
   dir: 'row',
   cur: 0,
   subs: new Set(),
   waiting: new Set(),
-  // The layout the window has room for: {n, dir}.
+
   roomFor(want) {
     const W = this.box.clientWidth, H = this.box.clientHeight;
     if (want <= 1 || !W || !H) return { n: Math.max(1, want), dir: want === 4 ? 'grid' : 'row' };
@@ -1251,14 +1090,13 @@ export const panes = {
     this.cur = Math.min(store.get('pfocus', 0), this.n - 1);
     this.apply();
     matchMedia(DESK).addEventListener('change', () => { this.want = isDesk() ? store.get('npanes', 1) : 1; this.n = 0; this.refit(); });
-    // (In the next frame: a refit moves the status bar and the panes,
-    // which would be the observer's own change in the same frame.)
+
     new ResizeObserver(() => { cancelAnimationFrame(this.refitT); this.refitT = requestAnimationFrame(() => this.refit()); }).observe(this.box);
     on('msg:resume', (m) => {
       this.waiting.delete(uidOf(m.tab));
       const id = 't' + uidOf(m.tab);
       const ps = this.visible().filter((p) => p.id === id);
-      // Every pane on that tab must take it; else a fresh snapshot.
+
       if (!ps.map((p) => p.resume(m)).every(Boolean)) { ps.forEach((p) => { p.ready = false; p.from = null; }); this.again(uidOf(m.tab)); }
       else dlog('conn', `resumed ${id}`);
     });
@@ -1267,19 +1105,16 @@ export const panes = {
     on('msg:resized', (m) => { const id = 't' + uidOf(m.tab); for (const p of this.visible()) if (p.id === id) p.resized(m); });
     on('bin:' + KIND.OUTPUT, (uid, b) => { const id = 't' + uid; for (const p of this.visible()) if (p.id === id) p.output(b); });
     on('state', () => {
-      // Nothing picked yet: start on the terminal UI's focused tab.
+
       if (!this.list.some((p) => p.id) && S.focused != null && !this.picked) { this.picked = true; this.show('t' + S.focused, 0); }
-      // A pane that shows a tab that moved to another account follows it
-      // (a move that waited for the tab's work finishes later).
+
       if (S.moved) for (let i = 0; i < this.list.length; i++) {
         const id = this.list[i].id, u = uidOf(id);
         const to = id && S.moved[u];
         if (to && !S.tabs.some((x) => x.id === id) && S.tabs.some((x) => uidOf(x.id) === to)) this.show('t' + to, i);
       }
       for (const p of this.list) p.paintHead();
-      // A size this phone took that the state no longer gives it: the Mac
-      // was typed in (or another browser took it). Not sized again until
-      // this pane is used.
+
       for (const p of this.visible()) {
         const t = p.sent && !p.take && tabById(p.id);
         if (t && Date.now() - (p.sentAt || 0) > 2000 && t.size_taken_by !== myClient) { p.sent = false; p.yielded = true; p.layout(); }
@@ -1292,7 +1127,7 @@ export const panes = {
       this.waiting.delete(u);
       for (const p of this.visible()) if (uidOf(p.id) === u) { p.msg.textContent = m.error === 'no such tab' ? 'This tab is closed' : m.error; p.msg.hidden = false; }
     });
-    // GodTerm's own palette for the terminal background and text.
+
     on('hello', (m) => {
       myClient = m.client;
       const th = m.theme || {};
@@ -1301,13 +1136,13 @@ export const panes = {
       document.documentElement.style.setProperty('--term', th.bg);
       for (const p of this.list) if (p.term) p.term.options.theme = { ...THEME };
     });
-    // Fonts that load late change the cell: measure again.
+
     document.fonts?.ready?.then(() => { M = null; for (const p of this.list) { p.term?._core?._charSizeService?.measure(); p.layout(); } });
     on('conn', (s) => {
-      // A new connection: each pane asks for only what it missed.
+
       if (s === 'live') {
         this.subs.clear(); this.waiting.clear();
-        // GodTerm gave the sizes back when the old connection went.
+
         for (const p of this.list) { p.from = p.ready && p.sid ? { sid: p.sid, pos: p.pos } : null; p.ready = false; p.sent = false; }
         this.sync();
       }
@@ -1345,8 +1180,7 @@ export const panes = {
     this.save(); this.sync();
   },
   save() { store.set('panes', this.list.map((p) => p.id)); },
-  // Subscribe to exactly the tabs that are on screen; a pane that has no
-  // screen yet for an already subscribed tab gets a fresh snapshot.
+
   sync() {
     for (const p of this.list.slice(this.n)) p.ready = false;
     if (!conn.open) return;
@@ -1370,7 +1204,7 @@ export const panes = {
     }
     this.subs = want;
   },
-  // A fresh snapshot for one tab (a resume that did not fit).
+
   again(u) {
     send({ t: 'unsubscribe', tabs: [u] });
     send(gzOk() ? { t: 'subscribe', tabs: [u], gz: true } : { t: 'subscribe', tabs: [u] });

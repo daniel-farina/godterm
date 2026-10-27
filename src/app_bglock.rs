@@ -1,17 +1,3 @@
-//! A tab whose resume Claude Code refused because a background run holds
-//! the session ("That session is running in the background (516d52e6).
-//! Run `claude attach 516d52e6` ..."). The tab stays on its own account
-//! (a session lives in that account's config dir) and offers three ways
-//! on:
-//! - attach (Enter or a): `claude attach <id>` in the tab. The safe
-//!   default: the run keeps going and nothing is lost;
-//! - stop and resume (s, then y): `claude stop <id>`, then a resume here.
-//!   The run may be doing work, so it asks first;
-//! - fork (f): resume with `--fork-session`, a copy under a new id.
-//!
-//! The assistant has the same choices (fix_resume, one yes for stop). A
-//! fresh session is never opened in its place.
-
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -20,10 +6,8 @@ use crate::app::App;
 use crate::pane::LaunchKind;
 use crate::session_ids::{BgLock, NextLaunch};
 
-/// How long `claude stop` may take.
 const STOP_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// What to do with a tab a background run holds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BgChoice {
     Attach,
@@ -50,16 +34,14 @@ impl BgChoice {
     }
 }
 
-/// A `claude stop` on its way, for the tab `uid`.
 pub struct Stopping {
     pub uid: u64,
     pub short: String,
-    /// What to resume once it stopped.
+
     pub resume: String,
     pub rx: Receiver<Result<(), String>>,
 }
 
-/// Run `claude stop <short>` for `config_dir` and wait (bounded).
 pub(crate) fn run_stop(
     bin: &str,
     short: &str,
@@ -109,9 +91,6 @@ pub(crate) fn run_stop(
 }
 
 impl App {
-    /// After a tab's claude exited: was it a resume a background run
-    /// refused? Then the tab offers the three choices (and does not
-    /// restart on its own into the same refusal).
     pub(crate) fn note_bg_lock(&mut self, s: usize, t: usize) {
         let Some(a) = self.panes[s].account else {
             return;
@@ -139,7 +118,6 @@ impl App {
         self.flash(crate::session_ids::lock_choices(&short).trim().to_string());
     }
 
-    /// A key on a tab a background run holds.
     pub(crate) fn bg_lock_key(&mut self, s: usize, t: usize, k: KeyEvent) {
         let Some(lock) = self.panes[s].tabs[t].bg_lock.clone() else {
             return;
@@ -188,8 +166,6 @@ impl App {
         }
     }
 
-    /// Carry out a choice for a held tab, in that tab and on its account.
-    /// Ok says what happened.
     pub fn bg_lock_act(&mut self, s: usize, t: usize, choice: BgChoice) -> Result<String, String> {
         let tab = &self.panes[s].tabs[t];
         let lock = tab
@@ -227,8 +203,7 @@ impl App {
             }
             BgChoice::Stop => {
                 let dir = self.cfg.accounts[a].config_dir();
-                // Resume what the run holds when it has the newer turns
-                // (its own transcript has messages), else the tab's own.
+
                 let held = crate::session_ids::bg_job(&dir, &short)
                     .and_then(|j| j.session_id)
                     .filter(|id| {
@@ -267,7 +242,6 @@ impl App {
         }
     }
 
-    /// Finished `claude stop` runs: resume the tab, or say why not.
     pub(crate) fn bglock_tick(&mut self) {
         if self.bg_stops.is_empty() {
             return;
@@ -311,10 +285,6 @@ impl App {
         }
     }
 
-    /// Every copy of the session `id` names (whole, a prefix, cut short,
-    /// or a background run's job id: the session it continues), one row
-    /// per config dir that holds it. Err when none, or when a prefix fits
-    /// several sessions.
     pub fn session_copies(&self, id: &str) -> Result<Vec<crate::session_index::Row>, String> {
         use crate::session_ids::{bg_jobs, has_messages, id_matches, id_query, transcript};
         let q = id_query(id).unwrap_or_else(|| id.trim().to_lowercase());
@@ -336,8 +306,6 @@ impl App {
             .cloned()
             .collect();
         if rows.is_empty() {
-            // A job id ("516d52e6"): its own session once it has turns,
-            // else the one it continues.
             let mut ids = vec![];
             for a in 0..self.cfg.accounts.len() {
                 let dir = self.cfg.accounts[a].config_dir();
@@ -380,8 +348,6 @@ impl App {
         Ok(rows)
     }
 
-    /// open_tab in the folder (or under the name) of a tab a background
-    /// run holds: the refusal that points at fix_resume instead.
     pub(crate) fn held_tab_for(&self, dir: Option<&str>, name: Option<&str>) -> Option<String> {
         let dir = dir.map(|d| crate::config::expand_tilde(d.trim()));
         let leaf = |p: &std::path::Path| {
@@ -413,7 +379,6 @@ impl App {
         None
     }
 
-    /// fix_resume: (plan, question, needs a yes). Only stop asks.
     pub(crate) fn fix_resume_plan(
         &mut self,
         args: &serde_json::Value,
@@ -442,7 +407,6 @@ impl App {
         ))
     }
 
-    /// fix_resume, planned (and confirmed for stop): do it in that tab.
     pub(crate) fn fix_resume_run(
         &mut self,
         plan: &serde_json::Value,
@@ -474,7 +438,6 @@ impl App {
         }}))
     }
 
-    /// The tab's background lock as the assistant sees it.
     pub fn bg_lock_json(&self, s: usize, t: usize) -> Option<serde_json::Value> {
         let l = self.panes[s].tabs[t].bg_lock.as_ref()?;
         Some(serde_json::json!({

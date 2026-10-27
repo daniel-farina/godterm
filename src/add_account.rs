@@ -1,8 +1,3 @@
-//! The "Add account" modal: one centered dialog for every entry point
-//! (Settings > Accounts, the account menu, the empty slot, the palette,
-//! Ctrl-a A). Label, agent, color, default folder and permission mode,
-//! then the new pane opens focused and starts that agent's login.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -12,7 +7,6 @@ use crate::app::{App, Modal};
 use crate::hits::{AddUi, UiAction};
 use crate::theme::{self, BAR_BG, DIM, FAINT, FG, SEL_BG};
 
-/// Agents in card order (also the numbered keyboard shortcuts).
 pub const AGENTS: [(&str, &str, &str); 6] = [
     ("claude", "Claude Code", "Anthropic subscription login"),
     ("grok", "Grok Build", "xAI Grok Build login"),
@@ -26,7 +20,6 @@ pub const AGENTS: [(&str, &str, &str); 6] = [
     ("opencode", "OpenCode", "Shared login on this machine"),
 ];
 
-/// The form's fields, top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     Label,
@@ -47,25 +40,25 @@ const FIELDS: [Field; 5] = [
 #[derive(Debug, Clone, PartialEq)]
 pub struct AddForm {
     pub label: String,
-    /// The label is still the suggestion: typing replaces it.
+
     pub label_pristine: bool,
-    /// Index into AGENTS.
+
     pub agent: usize,
-    /// Index into theme::SWATCHES.
+
     pub color: usize,
     pub folder: String,
-    /// Index into config::PERMISSION_MODES.
+
     pub mode: usize,
     pub focus: Field,
-    /// Each agent's CLI is installed (AGENTS order).
+
     pub ok: [bool; 6],
-    /// How to get each missing CLI, in one line (empty when installed).
+
     pub how: [String; 6],
-    /// GodTerm can install that CLI itself (i in the form).
+
     pub can_install: [bool; 6],
-    /// The first run's picker: a welcome title and the step it is.
+
     pub first: bool,
-    /// Recent folders to pick from, newest first ("~" style).
+
     pub recents: Vec<String>,
     pub error: Option<String>,
 }
@@ -114,14 +107,13 @@ impl AddForm {
             error: None,
         };
         f.refresh(&app.deps());
-        // Start on an agent that is installed (Claude Code when it is).
+
         if let Some(i) = (0..AGENTS.len()).find(|&i| f.ok[i]) {
             f.agent = i;
         }
         f
     }
 
-    /// Read again which CLIs are installed (after an install, or a key).
     pub fn refresh(&mut self, deps: &[crate::deps::Dep]) {
         for (i, (id, _, _)) in AGENTS.iter().enumerate() {
             match deps.iter().find(|d| d.id == *id) {
@@ -144,8 +136,6 @@ impl AddForm {
         self.focus = FIELDS[(i + d).rem_euclid(FIELDS.len() as isize) as usize];
     }
 
-    /// Pick an agent card. A missing one can be picked too: the form then
-    /// says how to install it, and Enter waits until it is there.
     pub fn pick_agent(&mut self, i: usize) {
         self.agent = i.min(AGENTS.len() - 1);
         self.error = if self.ok[self.agent] {
@@ -155,7 +145,6 @@ impl AddForm {
         };
     }
 
-    /// The selected agent is not installed: what to do, in one line.
     pub fn missing_line(&self) -> String {
         let i = self.agent;
         let name = AGENTS[i].1;
@@ -178,7 +167,6 @@ impl AddForm {
             Field::Color => self.color = wrap(self.color, theme::SWATCHES.len()),
             Field::Mode => self.mode = wrap(self.mode, crate::config::PERMISSION_MODES.len()),
             Field::Folder if !self.recents.is_empty() => {
-                // Step through the recent folders (and back to ~).
                 let mut all = vec!["~".to_string()];
                 all.extend(self.recents.iter().cloned());
                 let i = all
@@ -193,7 +181,6 @@ impl AddForm {
         }
     }
 
-    /// What Enter would add, or why it cannot.
     pub fn check(&self) -> Result<(), String> {
         let l = self.label.trim();
         if l.is_empty() {
@@ -211,7 +198,6 @@ impl AddForm {
         Ok(())
     }
 
-    /// A key in the form. Returns true when Enter asks to add.
     pub fn key(&mut self, k: KeyEvent) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let text = matches!(self.focus, Field::Label | Field::Folder);
@@ -256,7 +242,7 @@ impl AddForm {
             KeyCode::Char(c) if !ctrl && self.focus == Field::Folder => self.folder.push(c),
             _ => {}
         }
-        // A missing agent stays explained while it is the one picked.
+
         self.error =
             (self.focus == Field::Agent && !self.ok[self.agent]).then(|| self.missing_line());
         false
@@ -292,7 +278,7 @@ impl App {
             }
             return;
         }
-        // What is installed may have changed (an install, a new terminal).
+
         let deps = self.deps();
         let Modal::AddAccount(form) = &mut self.modal else {
             return;
@@ -311,8 +297,6 @@ impl App {
         }
     }
 
-    /// i in the form: install the picked agent's CLI (the first press says
-    /// what runs, the second runs it), or say how to get it.
     pub fn add_form_install(&mut self) {
         let Modal::AddAccount(form) = &self.modal else {
             return;
@@ -349,7 +333,6 @@ impl App {
         }
     }
 
-    /// Add the account in the form, or show why not.
     pub fn submit_add_account(&mut self) {
         let Modal::AddAccount(form) = &mut self.modal else {
             return;
@@ -367,7 +350,7 @@ impl App {
             harness: AGENTS[f.agent].0.to_string(),
             color: theme::SWATCHES[f.color].to_string(),
             cwd: f.folder.trim().to_string(),
-            // Only written when it differs from the global default.
+
             permission_mode: (mode != self.cfg.permission_mode).then(|| mode.to_string()),
         };
         self.add_account(spec);
@@ -455,7 +438,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
     fill(buf, r, Style::default().bg(BAR_BG));
     frame(buf, r, Style::default().fg(DIM).bg(BAR_BG));
     let mut hits = app.hits.borrow_mut();
-    // Clicks inside the dialog never fall through and close it.
+
     hits.add(r, UiAction::AddAcct(AddUi::Inside), "");
     let limit = (r.x + r.width).saturating_sub(2);
     let tx = text(
@@ -485,7 +468,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
     }
     let bg = BAR_BG;
     let x0 = r.x + 2;
-    let lx = x0 + 13; // where values start
+    let lx = x0 + 13;
     let label_style = |f: Field| {
         if form.focus == f {
             Style::default()
@@ -544,7 +527,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
         return;
     }
     let mut y = r.y + 2;
-    // Name.
+
     caption(buf, y, Field::Label, "Name");
     field_box(
         buf,
@@ -556,7 +539,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
         "The account's name, shown on its panes",
     );
     y += 2;
-    // Agent cards.
+
     caption(buf, y + 1, Field::Agent, "Agent");
     let cw = (limit.saturating_sub(lx) / 3)
         .saturating_sub(1)
@@ -596,7 +579,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
             &format!("{dot} {}  {name}", i + 1),
             tst,
         );
-        // Installed or not, on the right of the name where it fits.
+
         let (mark, mc) = if disabled {
             ("missing", theme::CLAY)
         } else {
@@ -638,7 +621,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
         hits.add(card, UiAction::AddAcct(AddUi::Agent(i as u8)), hint);
     }
     y += 9;
-    // Color swatches.
+
     caption(buf, y, Field::Color, "Color");
     let mut x = lx;
     for (i, name) in theme::SWATCHES.iter().enumerate() {
@@ -658,7 +641,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
         x += 4;
     }
     y += 2;
-    // Default folder and recents.
+
     caption(buf, y, Field::Folder, "Folder");
     field_box(
         buf,
@@ -708,7 +691,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
         }
     }
     y += 2;
-    // Permission mode.
+
     caption(buf, y, Field::Mode, "Permissions");
     let mode =
         crate::config::PERMISSION_MODES[form.mode.min(crate::config::PERMISSION_MODES.len() - 1)];
@@ -767,7 +750,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
         Style::default().fg(FAINT).bg(bg),
     );
     y += 2;
-    // Error, or what Enter does.
+
     let (msg, c) = match &form.error {
         Some(e) if e.to_lowercase().contains("install") => (e.clone(), theme::SAND),
         Some(e) => (e.clone(), theme::CLAY),
@@ -779,7 +762,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App, form: &AddForm) {
             FAINT,
         ),
     };
-    // Up to two lines (an install command can be long).
+
     let width = limit.saturating_sub(x0) as usize;
     for (k, line) in crate::first_run::wrap(&msg, width, 2).iter().enumerate() {
         let yy = y + k as u16;
@@ -838,7 +821,7 @@ mod tests {
             assert_eq!(f.agent, i + 2);
             assert!(f.error.is_none());
         }
-        // A missing one can be picked, says how to get it, and Enter waits.
+
         f.ok[2] = false;
         f.how[2] = "Install Codex CLI from https://x, or set codex_bin in config.toml.".into();
         f.pick_agent(2);
@@ -848,7 +831,7 @@ mod tests {
             .check()
             .unwrap_err()
             .contains("Codex CLI is not installed"));
-        // Another key on the agent row keeps the explanation up.
+
         f.key(key(KeyCode::Char('3')));
         assert!(f.error.is_some());
         f.key(key(KeyCode::Char('1')));
@@ -864,7 +847,7 @@ mod tests {
         assert_eq!(f.agent, 0);
         f.key(key(KeyCode::Up));
         assert_eq!(f.focus, Field::Label);
-        // Typing replaces the suggestion; digits are text here.
+
         f.key(key(KeyCode::Char('W')));
         f.key(key(KeyCode::Char('2')));
         assert_eq!(f.label, "W2");

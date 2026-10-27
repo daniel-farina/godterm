@@ -1,18 +1,3 @@
-//! The assistant watches its own account. Under assistant.switch_warn_pct
-//! left (the binding limit, 5 hour or weekly) it says so once per window;
-//! at assistant.switch_at_pct or less, or when a turn fails on a usage
-//! limit, it moves itself (assistant.auto_switch: auto, or ask with one
-//! Yes/No) to the account of the same provider with the most left, never
-//! one that is out on either limit, logged out or erroring. The move keeps
-//! the conversation: its claude session is copied into the new account's
-//! config dir and resumed by the same id (a failed resume starts fresh
-//! with the memory and a fuller summary), the account is saved to the
-//! config, a turn the limit refused is sent again, and Remote Control
-//! comes back on the new account with its link said, flashed and
-//! notified. With no account left it says when the soonest limit resets
-//! and tries again now and then. A provider with its own login (Grok)
-//! has nothing to move to.
-
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -24,27 +9,21 @@ use crate::app_provider::reset_word;
 use crate::app_resume::Kept;
 use crate::providers::{self, Bucket, Provider};
 
-/// Hard blocked with no account left: try the current one again this often.
 pub const RETRY_EVERY: Duration = Duration::from_secs(300);
-/// Wait this long for Remote Control to come back after a move.
+
 const REMOTE_FOLLOW: Duration = Duration::from_secs(120);
-/// A test override of an account's binding limit, for a real check:
-/// `GODTERM_FAKE_LEFT=account3:4` (or `account3:4:weekly`), comma
-/// separated; `@PATH` reads that from a file (changed while it runs).
+
 pub const FAKE_ENV: &str = "GODTERM_FAKE_LEFT";
 
-/// When ss_say speaks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SayHow {
-    /// It answers the user: now.
     Now,
-    /// Nobody asked: at the next quiet moment.
+
     Quiet,
-    /// It cannot wait: once the user's sentence ends.
+
     Urgent,
 }
 
-/// A move on offer (auto_switch ask).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ask {
     pub from: usize,
@@ -55,34 +34,30 @@ pub struct Ask {
 
 #[derive(Debug, Default)]
 pub struct SelfSwitch {
-    /// The window last warned about ("account:limit:reset").
     pub warned: Option<String>,
     pub asked: Option<Ask>,
-    /// The window the user said no for.
+
     pub declined: Option<String>,
-    /// The window "no account has room" was said for (while it still
-    /// runs, and once it is stopped).
+
     pub all_out: Option<String>,
     pub all_out_blocked: Option<String>,
-    /// The turn a usage limit refused, sent again after the move.
+
     pub held: Option<(String, Option<String>, Option<String>)>,
-    /// The current account refused a turn on its limit.
+
     pub blocked: bool,
-    /// Hard blocked: try the current account again at this time.
+
     pub retry_at: Option<Instant>,
-    /// Tests: a shorter retry.
+
     pub retry_every: Option<Duration>,
-    /// Remote Control is coming back after a move (since, the old link).
+
     pub remote_follow: Option<(Instant, Option<String>)>,
-    /// The brain started by a move (its gen) and a fuller summary for it,
-    /// should its resume fail.
+
     pub fallback: Option<(u64, String)>,
-    /// The last move, said in get_state.
+
     pub last: Option<String>,
     pub last_remote: Option<String>,
 }
 
-/// Whether claude's error says the account ran into a usage or rate limit.
 pub fn limit_said(text: &str) -> bool {
     let t = text.to_lowercase();
     crate::app_failover::limit_error(text)
@@ -103,7 +78,6 @@ pub fn limit_said(text: &str) -> bool {
         .any(|s| t.contains(s))
 }
 
-/// The fake override for account `name`: (left, limit word).
 fn fake_left(name: &str) -> Option<(f64, String)> {
     let mut v = std::env::var(FAKE_ENV).ok()?;
     if let Some(p) = v.strip_prefix('@') {
@@ -121,7 +95,6 @@ fn fake_left(name: &str) -> Option<(f64, String)> {
     })
 }
 
-/// "4:weekly:2026101012" (the reset to 10 minutes: refetches drift).
 fn window_key(a: usize, k: &Bucket) -> String {
     format!(
         "{a}:{}:{}",
@@ -130,7 +103,6 @@ fn window_key(a: usize, k: &Bucket) -> String {
     )
 }
 
-/// "this week", "in its 5 hour window".
 fn window_words(k: &Bucket) -> String {
     match k.long.as_str() {
         "weekly" => "this week".into(),
@@ -144,7 +116,6 @@ impl App {
         self.assistant.selfswitch.retry_every.unwrap_or(RETRY_EVERY)
     }
 
-    /// Account `a`'s binding limit (the test override applied).
     pub fn self_binding(&self, a: usize) -> Option<Bucket> {
         let real = self
             .account_buckets(a)
@@ -161,9 +132,6 @@ impl App {
         }
     }
 
-    /// The account of the same provider with the most left that can take
-    /// the assistant: logged in, not erroring, over the switch level on
-    /// both limits.
     pub fn self_switch_target(&self, from: usize) -> Option<(usize, f64)> {
         use crate::usage::UsageError;
         let h = self.cfg.accounts.get(from)?.harness();
@@ -188,8 +156,6 @@ impl App {
             .max_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal))
     }
 
-    /// "Account 3, has 12% left this week (resets Fri 13:00)" (after
-    /// "My account, ").
     fn left_words(&self, a: usize, k: &Bucket) -> String {
         let resets = k
             .resets_at
@@ -203,9 +169,6 @@ impl App {
         )
     }
 
-    /// Say something about itself: panel and flash at once, spoken now
-    /// when it answers the user, at the next quiet moment when nobody
-    /// asked, or once the user's sentence ends when it cannot wait.
     fn ss_say(&mut self, msg: &str, notify: bool, how: SayHow) {
         crate::log::info(&format!("assistant account: {msg}"));
         let src = crate::told::Source {
@@ -236,7 +199,6 @@ impl App {
         });
     }
 
-    /// Every tick: warn, ask, move, or say that every account is out.
     pub fn self_switch_tick(&mut self) {
         self.remote_follow_tick();
         let mode = self.cfg.assistant.auto_switch.clone();
@@ -244,7 +206,7 @@ impl App {
             self.assistant.selfswitch.asked = None;
             return;
         }
-        // Its own login (Grok): one login, nothing to move to.
+
         if providers::by_id(&self.cfg.assistant.provider)
             .harness
             .is_none()
@@ -281,7 +243,7 @@ impl App {
             }
             return;
         }
-        // Between turns only.
+
         if self.assistant.busy || self.assistant.stale > 0 {
             return;
         }
@@ -299,7 +261,6 @@ impl App {
                 if mode == "auto" {
                     self.move_assistant(to, &why);
                 } else if self.assistant.selfswitch.declined.as_deref() == Some(&key) {
-                    // The user chose to stay: the held turn waits for a reset.
                     self.retry_blocked();
                 } else if self.assistant.selfswitch.asked.is_none() {
                     self.ask_self_switch(a, to, key, &why);
@@ -314,7 +275,7 @@ impl App {
                 };
                 if said.as_deref() != Some(&key) {
                     *said = Some(key.clone());
-                    // Stopped: the "still running" words would be late.
+
                     ss.all_out = Some(key);
                     self.say_all_out(a, k.as_ref());
                 }
@@ -323,8 +284,6 @@ impl App {
         }
     }
 
-    /// Once per window: "My account, Account 3, has 12% left this week;
-    /// I'll move to Account 1 (80% left) at 5%."
     fn self_warn(&mut self, a: usize, k: &Bucket, mode: &str) {
         let at = self.cfg.assistant.switch_at_pct;
         let plan = match self.self_switch_target(a) {
@@ -344,7 +303,6 @@ impl App {
         self.ss_say(&msg, false, SayHow::Quiet);
     }
 
-    /// Ask once (Yes/No in the panel, or a spoken yes or no).
     fn ask_self_switch(&mut self, from: usize, to: usize, key: String, why: &str) {
         let left = self
             .self_binding(to)
@@ -363,7 +321,6 @@ impl App {
         self.ss_say(&question, true, SayHow::Quiet);
     }
 
-    /// The Yes or No to the question on offer; false when none is.
     pub fn answer_self_switch(&mut self, yes: bool) -> bool {
         let Some(q) = self.assistant.selfswitch.asked.take() else {
             return false;
@@ -378,8 +335,6 @@ impl App {
         true
     }
 
-    /// A typed or spoken answer to the question on offer (a clear yes or
-    /// no only); true when it was one.
     pub fn self_switch_heard(&mut self, text: &str) -> bool {
         if self.assistant.selfswitch.asked.is_none() {
             return false;
@@ -412,7 +367,6 @@ impl App {
         self.answer_self_switch(answer)
     }
 
-    /// No account has room: say so once, with the soonest reset.
     fn say_all_out(&mut self, a: usize, k: Option<&Bucket>) {
         let now = self.cfg.accounts[a].display().to_string();
         let mut msg = match k {
@@ -437,7 +391,7 @@ impl App {
             )),
             None => msg.push_str(" I'll keep trying every few minutes."),
         }
-        // Stopped by the limit: a hard failure, said once the sentence ends.
+
         let how = if self.assistant.selfswitch.blocked {
             SayHow::Urgent
         } else {
@@ -447,8 +401,6 @@ impl App {
         self.ss_say(&msg, true, how);
     }
 
-    /// The account of the same provider that gets room the soonest: (it,
-    /// when, which limit).
     fn soonest_room(&self, a: usize) -> Option<(usize, chrono::DateTime<chrono::Utc>, String)> {
         let h = self.cfg.accounts[a].harness();
         let at = self.cfg.assistant.switch_at_pct.max(2.0);
@@ -456,7 +408,7 @@ impl App {
             .filter(|&b| self.cfg.accounts[b].harness() == h && self.accounts[b].login.logged_in())
             .filter_map(|b| {
                 let bs = self.account_buckets(b)?;
-                // Room comes back when every limit it is out on has reset.
+
                 let out = bs
                     .iter()
                     .filter(|k| k.left_pct <= at)
@@ -472,8 +424,6 @@ impl App {
             .min_by_key(|x| x.1)
     }
 
-    /// Hard blocked: now and then (or once its limit reset) send the held
-    /// turn to the current account again.
     fn retry_blocked(&mut self) {
         let ss = &mut self.assistant.selfswitch;
         if !ss.blocked {
@@ -494,15 +444,12 @@ impl App {
     fn resend(&mut self, text: &str, heard: Option<&str>, system: Option<&str>) {
         let n = self.assistant.log.len();
         self.start_turn(text, heard, system);
-        // The request is shown once.
+
         if self.assistant.log.len() > n && self.assistant.log[n].who == Who::User {
             self.assistant.log.remove(n);
         }
     }
 
-    /// A turn ended with an error: when it says a usage or rate limit,
-    /// hold the turn and move (or ask, or say everyone is out). True when
-    /// handled (the error is not shown as the answer).
     pub fn self_switch_on_limit(&mut self, text: &str) -> bool {
         if self.cfg.assistant.auto_switch == "off" || !limit_said(text) {
             return false;
@@ -539,8 +486,6 @@ impl App {
         true
     }
 
-    /// Everything said in this conversation lately, longer than the usual
-    /// carry: for a move whose resume fails.
     fn fuller_carry(&self) -> Option<String> {
         let lines: Vec<String> = match &self.assistant.conv {
             Some(c) => crate::assistant_history::read(&c.path)
@@ -580,8 +525,6 @@ impl App {
         (!out.is_empty()).then_some(out)
     }
 
-    /// The fuller summary for the brain whose resume failed, when a move
-    /// started it.
     pub(crate) fn take_switch_fallback(&mut self) -> Option<String> {
         let gen = self.assistant.resumed?;
         match self.assistant.selfswitch.fallback.take() {
@@ -590,14 +533,9 @@ impl App {
         }
     }
 
-    /// Move the assistant to account `to`, keeping its conversation (the
-    /// session copied and resumed there), saving the account, bringing
-    /// Remote Control along and sending a held turn again. `why` starts
-    /// the message.
     pub fn move_assistant(&mut self, to: usize, why: &str) -> String {
         let from = self.brain_account();
-        // Asked for ("You said yes", "You asked"): said now. Moving because
-        // the limit is hit: cannot wait for quiet, only for the sentence.
+
         let how = if why.starts_with("You") {
             SayHow::Now
         } else if self.assistant.selfswitch.blocked {
@@ -610,7 +548,7 @@ impl App {
             .self_binding(to)
             .map(|k| format!(" ({:.0}% left)", k.left_pct.floor()))
             .unwrap_or_default();
-        // Remote Control goes with the process: it comes back on the new one.
+
         let rc = self.assistant.remote.take();
         let flow = self.assistant.remote_flow.take();
         if let Some(tx) = flow.as_ref().and_then(|f| f.reply.as_ref()) {
@@ -624,11 +562,9 @@ impl App {
             .or_else(|| self.assistant.remote_last_url.clone());
         let fuller = self.fuller_carry();
         if !self.cfg.assistant.resume {
-            // No session to move: the summary carries it.
             self.assistant.carry = fuller.clone();
         }
-        // Stop the old process (its transcript complete), then point at
-        // the new account; the next start copies the session over.
+
         self.assistant.brain = None;
         if self.cfg.assistant.account != "best" {
             let name = self.cfg.accounts[to].name.clone();
@@ -660,7 +596,6 @@ impl App {
             "{why}, so I moved myself to {to_name}{left}; our conversation continues there."
         );
         let started = if self.cfg.assistant.account == "best" {
-            // "best" chooses by itself: start it on this one.
             self.ensure_brain_on(to)
         } else {
             self.ensure_brain()
@@ -695,7 +630,6 @@ impl App {
         msg
     }
 
-    /// Start the brain on account `to` though "best" would choose (a move).
     fn ensure_brain_on(&mut self, to: usize) -> Result<(), String> {
         let keep = std::mem::replace(
             &mut self.cfg.assistant.account,
@@ -706,8 +640,6 @@ impl App {
         r
     }
 
-    /// After a move: Remote Control is up on the new account; say its link
-    /// everywhere the user may look.
     fn remote_follow_tick(&mut self) {
         let Some((since, old)) = self.assistant.selfswitch.remote_follow.clone() else {
             return;
@@ -739,9 +671,6 @@ impl App {
         }
     }
 
-    /// The kept session belongs to another account of this provider (the
-    /// assistant moved): copy its transcript into `home` under the same
-    /// project folder and adopt it, so it resumes by the same id there.
     pub(crate) fn adopt_kept_session(
         &self,
         k: Kept,
@@ -767,7 +696,7 @@ impl App {
         let Some(jsonl) = crate::app_resume::session_path(provider, &sdir, &k.id) else {
             return k;
         };
-        // The source is the conversation's latest state: it wins.
+
         match crate::session_ops::copy_session(
             &sdir,
             &jsonl,
@@ -797,7 +726,6 @@ impl App {
         }
     }
 
-    /// get_state: its own account and what is left there.
     pub fn self_switch_json(&self) -> Value {
         let p = providers::by_id(&self.cfg.assistant.provider);
         let a = self.brain_account().filter(|_| p.harness.is_some());
@@ -820,7 +748,6 @@ impl App {
         })
     }
 
-    /// The state block's words on its own account: ", 12% left (weekly)".
     pub fn self_left_words(&self) -> String {
         let Some(a) = self.brain_account() else {
             return String::new();

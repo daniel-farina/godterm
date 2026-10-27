@@ -1,11 +1,3 @@
-//! What Codex, Cursor, Antigravity and OpenCode screens look like: their
-//! approval and trust prompts (with the keys each really takes) and
-//! whether a tab is working or waiting for input. Read off the real CLIs
-//! (codex 0.153.4, cursor-agent 2026.10.19, agy 1.4.4, opencode 2.0.32);
-//! the captures are tests/fixtures/screens/{codex,cursor,antigravity,
-//! opencode}_*.txt. OpenCode's permission prompt was not captured (it had
-//! no model to ask), so its prompts are left to the keyboard.
-
 use crate::harness::Harness;
 use crate::pane::Activity;
 use crate::prompt::{Prompt, PromptKind, PromptOption, Request};
@@ -14,7 +6,6 @@ fn lines(screen: &str) -> Vec<&str> {
     screen.lines().map(str::trim_end).collect()
 }
 
-/// "label  description" (two or more spaces between) -> "label".
 fn column_label(s: &str) -> &str {
     match s.find("  ") {
         Some(i) => s[..i].trim_end(),
@@ -22,8 +13,6 @@ fn column_label(s: &str) -> &str {
     }
 }
 
-/// A trailing "(y)", "(esc)", "(esc or n)", "(shift+tab)": the label
-/// without it and the key it names.
 fn split_hotkey(label: &str) -> (String, Option<Vec<u8>>) {
     let t = label.trim_end();
     if let Some(open) = t.rfind(" (") {
@@ -46,7 +35,6 @@ fn split_hotkey(label: &str) -> (String, Option<Vec<u8>>) {
     (t.to_string(), None)
 }
 
-/// "  › 2. label" / "> 1. label" / "    3. label": (selected, number, label).
 fn numbered(line: &str) -> Option<(bool, u32, String)> {
     let t = line.trim_start();
     let (sel, rest) = match t.strip_prefix('›').or_else(|| t.strip_prefix('>')) {
@@ -61,13 +49,8 @@ fn numbered(line: &str) -> Option<(bool, u32, String)> {
     Some((sel, digits.parse().ok()?, label.trim().to_string()))
 }
 
-/// The last run of numbered option lines: (index of its first line,
-/// (selected, number, label) per option). In a narrow tab (a phone) an
-/// option wraps: lines under it indented past its number are the rest of
-/// its label (with the key it names, "(p)").
 #[allow(clippy::type_complexity)]
 fn last_numbered_block(ls: &[&str]) -> Option<(usize, Vec<(bool, u32, String)>)> {
-    // The column an option's number starts at ("› 2." / "  2." -> 2).
     let col = |l: &str| {
         l.chars()
             .take_while(|c| *c == ' ' || *c == '›' || *c == '>')
@@ -110,7 +93,6 @@ fn last_numbered_block(ls: &[&str]) -> Option<(usize, Vec<(bool, u32, String)>)>
     best
 }
 
-/// An option's label, number and the key that picks it.
 type OptKeys = (String, Option<u32>, Option<Vec<u8>>);
 
 fn finish(
@@ -131,7 +113,6 @@ fn finish(
     }
 }
 
-/// Which options approve, always-approve and deny, by wording.
 fn pick_by_label(labels: &[String]) -> [Option<usize>; 3] {
     let low: Vec<String> = labels.iter().map(|l| l.to_lowercase()).collect();
     let find = |f: &dyn Fn(&str) -> bool| low.iter().position(|l| f(l));
@@ -177,7 +158,6 @@ fn codex_prompt(screen: &str) -> Option<Prompt> {
 fn cursor_prompt(screen: &str) -> Option<Prompt> {
     let ls = lines(screen);
     if screen.contains("Workspace Trust Required") {
-        // "▶ [a] Trust this workspace" / "  [q] Quit": the letter is the key.
         let mut opts = vec![];
         let mut selected = 0;
         for l in &ls {
@@ -207,16 +187,12 @@ fn cursor_prompt(screen: &str) -> Option<Prompt> {
         }
         return None;
     }
-    // "Run this command?" / "Run this MCP tool?" then one option per line,
-    // each ending in its key: "→ Run (once) (y)".
+
     let q = ls.iter().rposition(|l| {
         let t = l.trim();
         t.starts_with("Run this") && t.ends_with('?')
     })?;
-    // In a narrow tab (a phone) an option's end, with its key, wraps to
-    // the next line or is cut off: a line that starts an option by its
-    // wording takes the lines under it until its key shows, else the key
-    // Cursor gives that option.
+
     let known = |label: &str| -> Option<Vec<u8>> {
         let l = label.to_lowercase();
         if l.starts_with("run (once)") {
@@ -287,8 +263,6 @@ fn cursor_prompt(screen: &str) -> Option<Prompt> {
     let pick = [
         find(&|l| l.starts_with("run (once)")),
         find(&|l| l.starts_with("add ") || l.starts_with("allowlist")),
-        // "Skip (esc or n)" declines; "Reject & propose changes" asks the
-        // agent for another way and is not what a plain no means.
         find(&|l| l.starts_with("skip")).or_else(|| find(&|l| l.starts_with("reject"))),
     ];
     Some(finish(PromptKind::Permission, opts, selected, pick))
@@ -297,10 +271,6 @@ fn cursor_prompt(screen: &str) -> Option<Prompt> {
 fn antigravity_prompt(screen: &str) -> Option<Prompt> {
     let ls = lines(screen);
     if screen.contains("Do you trust the contents") {
-        // "> Yes, I trust this folder" / "  No, exit": arrows and Enter.
-        // The options are the block of lines around the highlighted one
-        // ("> "): in a narrow tab (a phone) the explanation above them
-        // wraps, and its second line is not an option.
         let q = ls
             .iter()
             .position(|l| l.contains("Do you trust the contents"))?;
@@ -345,8 +315,6 @@ fn antigravity_prompt(screen: &str) -> Option<Prompt> {
     Some(finish(PromptKind::Permission, opts, selected, pick))
 }
 
-/// The prompt a tab of harness `h` shows, with the keys that pick each
-/// option. Claude, Grok and OpenCode use the generic reader.
 pub fn parse_prompt_for(h: Harness, screen: &str) -> Option<Prompt> {
     match h {
         Harness::Codex => codex_prompt(screen),
@@ -356,7 +324,6 @@ pub fn parse_prompt_for(h: Harness, screen: &str) -> Option<Prompt> {
     }
 }
 
-/// What the prompt is about, for the approvals queue and the voice.
 pub fn describe_request_for(h: Harness, screen: &str) -> Option<Request> {
     if !matches!(h, Harness::Codex | Harness::Cursor | Harness::Antigravity) {
         return crate::prompt::describe_request(screen);
@@ -365,8 +332,6 @@ pub fn describe_request_for(h: Harness, screen: &str) -> Option<Request> {
     let ls = lines(screen);
     let clean = |s: &str| s.trim().to_string();
     if p.kind == PromptKind::Trust {
-        // Codex: "> You are in <dir>"; Antigravity: the line under
-        // "Accessing workspace:"; Cursor: the line under the question.
         let after = |marker: &str| {
             ls.iter().position(|l| l.contains(marker)).and_then(|i| {
                 ls[i + 1..]
@@ -475,23 +440,17 @@ pub fn describe_request_for(h: Harness, screen: &str) -> Option<Request> {
     }
 }
 
-/// The session id a CLI prints when the user quits it ("codex resume
-/// <id>", "agent --resume=<id>", "agy --conversation=<id>", "opencode -s
-/// <id>"): GodTerm discovers no other session ids for these CLIs, so this
-/// is how a tab that was quit (not killed) can be resumed later.
 pub fn exit_session_id(h: Harness, screen: &str) -> Option<String> {
     let word = |s: &str| {
         s.split_whitespace()
             .next()
             .map(|w| w.trim_end_matches(|c: char| !c.is_ascii_alphanumeric()))
-            // "codex resume and select ..." names no session: an id is
-            // long and has a digit (UUIDs, "ses_...").
             .filter(|w| Harness::safe_session_id(w) && w.len() >= 8)
             .filter(|w| w.chars().any(|c| c.is_ascii_digit()))
             .map(str::to_string)
     };
     let after = |l: &str, marker: &str| l.find(marker).and_then(|i| word(&l[i + marker.len()..]));
-    // The last one printed: a long session may show several screens.
+
     screen.lines().rev().find_map(|l| match h {
         Harness::Codex => after(l, "codex resume "),
         Harness::Cursor => after(l, "--resume="),
@@ -502,9 +461,6 @@ pub fn exit_session_id(h: Harness, screen: &str) -> Option<String> {
 }
 
 impl crate::app::App {
-    /// A tab of one of these CLIs just exited on its own: keep the session
-    /// id its farewell screen names, so Enter, a restart of GodTerm or
-    /// "reopen closed tab" resume that conversation instead of a new one.
     pub(crate) fn learn_exit_session(&mut self, slot: usize, tab: usize) {
         let t = &mut self.panes[slot].tabs[tab];
         if t.harness.integrated() {
@@ -529,8 +485,6 @@ fn braille(c: char) -> bool {
     ('\u{2800}'..='\u{28ff}').contains(&c)
 }
 
-/// What a tab of harness `h` is doing, read off its screen; None for the
-/// CLIs `pane::detect_activity` already knows (Claude, Grok).
 pub fn activity_for(h: Harness, text: &str) -> Option<Activity> {
     let ls = lines(text);
     let any = |f: &dyn Fn(&str) -> bool| ls.iter().any(|l| f(l.trim_start()));
@@ -564,8 +518,6 @@ pub fn activity_for(h: Harness, text: &str) -> Option<Activity> {
             if parse_prompt_for(h, text).is_some() || text.contains("Do you trust the contents") {
                 Activity::Permission
             } else if text.contains("esc to cancel") {
-                // A spinner line is a turn; the same footer under a menu
-                // (a dialog with nothing running) is the user's to answer.
                 if any(&|l| l.chars().next().is_some_and(braille)) {
                     Activity::Working
                 } else {
@@ -582,8 +534,6 @@ pub fn activity_for(h: Harness, text: &str) -> Option<Activity> {
             Activity::Working
         } else if text.contains("ctrl+p commands")
             || text.contains("Ask anything")
-            // The composer's bottom edge: in a narrow tab (a phone) the
-            // footer hints are left out, and a draft hides the placeholder.
             || any(&|l| l.starts_with("╹▀▀"))
         {
             Activity::Ready
@@ -652,10 +602,10 @@ mod tests {
         for &(h, name, want) in cases {
             assert_eq!(activity_for(h, &screen(name)), Some(want), "{name}");
         }
-        // Claude and Grok keep the generic detector.
+
         assert_eq!(activity_for(Harness::Claude, "x"), None);
         assert_eq!(activity_for(Harness::Grok, "x"), None);
-        // An empty or half drawn screen is just starting.
+
         for h in [
             Harness::Codex,
             Harness::Cursor,
@@ -669,7 +619,7 @@ mod tests {
     #[test]
     fn codex_keys_are_the_ones_its_prompt_shows() {
         let h = Harness::Codex;
-        // "1. Yes, proceed (y)", "2. ... don't ask again ... (p)", "3. No ... (esc)"
+
         assert_eq!(keys(h, "codex_approval", Choice::Approve), b"y");
         assert_eq!(keys(h, "codex_approval", Choice::Always), b"p");
         assert_eq!(keys(h, "codex_approval", Choice::Deny), b"\x1b");
@@ -678,7 +628,7 @@ mod tests {
         assert_eq!(p.kind, PromptKind::Permission);
         assert_eq!(p.selected, 0);
         assert_eq!(p.options.len(), 3);
-        // A narrow tab wraps the options: same keys.
+
         assert_eq!(keys(h, "codex_approval_wrapped", Choice::Approve), b"y");
         assert_eq!(keys(h, "codex_approval_wrapped", Choice::Always), b"p");
         assert_eq!(keys(h, "codex_approval_wrapped", Choice::Deny), b"\x1b");
@@ -689,17 +639,17 @@ mod tests {
                 .len(),
             3
         );
-        // The MCP prompt has no shortcuts: the numbers pick (verified).
+
         assert_eq!(keys(h, "codex_mcp_approval", Choice::Approve), b"1");
         assert_eq!(keys(h, "codex_mcp_approval", Choice::Always), b"3");
         assert_eq!(keys(h, "codex_mcp_approval", Choice::Deny), b"4");
         assert_eq!(label(h, "codex_mcp_approval", Choice::Approve), "Allow");
-        // Folder trust.
+
         let p = parse_prompt_for(h, &screen("codex_trust")).unwrap();
         assert_eq!(p.kind, PromptKind::Trust);
         assert_eq!(keys(h, "codex_trust", Choice::Approve), b"1");
         assert_eq!(keys(h, "codex_trust", Choice::Deny), b"2");
-        // Not prompts: the composer, a running turn, the finished turn.
+
         for n in ["codex_ready", "codex_working", "codex_done"] {
             assert!(parse_prompt_for(h, &screen(n)).is_none(), "{n}");
         }
@@ -712,7 +662,7 @@ mod tests {
         assert_eq!(keys(h, "cursor_approval", Choice::Always), b"\t");
         assert_eq!(keys(h, "cursor_approval", Choice::Deny), b"n");
         assert_eq!(label(h, "cursor_approval", Choice::Approve), "Run (once)");
-        // A narrow tab cuts or wraps the option lines: same keys.
+
         for n in ["cursor_approval_cut", "cursor_approval_wrapped"] {
             assert_eq!(keys(h, n, Choice::Approve), b"y", "{n}");
             assert_eq!(keys(h, n, Choice::Always), b"\t", "{n}");
@@ -720,7 +670,7 @@ mod tests {
             let p = parse_prompt_for(h, &screen(n)).unwrap();
             assert_eq!(p.options.len(), 4, "{n}: {:?}", p.options);
         }
-        // "Run Everything (shift+tab)" is never what a spoken yes means.
+
         let p = parse_prompt_for(h, &screen("cursor_approval")).unwrap();
         let labels: Vec<&str> = p.options.iter().map(|o| o.label.as_str()).collect();
         assert!(labels.iter().any(|l| l.starts_with("Run Everything")));
@@ -736,7 +686,7 @@ mod tests {
             parse_prompt_for(h, &screen("cursor_trust")).unwrap().kind,
             PromptKind::Trust
         );
-        // The "tell the agent" box and the plain screens are not menus.
+
         for n in [
             "cursor_tellinstead",
             "cursor_ready",
@@ -750,11 +700,11 @@ mod tests {
     #[test]
     fn antigravity_keys_are_the_ones_its_prompt_shows() {
         let h = Harness::Antigravity;
-        // Numbers pick at once (verified: 1 ran the command, 4 declined).
+
         assert_eq!(keys(h, "antigravity_approval", Choice::Approve), b"1");
         assert_eq!(keys(h, "antigravity_approval", Choice::Always), b"2");
         assert_eq!(keys(h, "antigravity_approval", Choice::Deny), b"4");
-        // Wrapped in a narrow tab: the same numbers.
+
         assert_eq!(
             keys(h, "antigravity_approval_wrapped", Choice::Approve),
             b"1"
@@ -766,16 +716,15 @@ mod tests {
         assert_eq!(keys(h, "antigravity_approval_wrapped", Choice::Deny), b"4");
         assert!(label(h, "antigravity_approval_wrapped", Choice::Always)
             .contains("in this conversation"));
-        // "Always" is the conversation-wide one, not the persisted rule.
+
         assert!(label(h, "antigravity_approval", Choice::Always).contains("in this conversation"));
-        // Folder trust has no numbers: arrows and Enter from the highlight.
+
         let p = parse_prompt_for(h, &screen("antigravity_trust")).unwrap();
         assert_eq!(p.kind, PromptKind::Trust);
         assert_eq!(p.selected, 0);
         assert_eq!(keys(h, "antigravity_trust", Choice::Approve), b"\r");
         assert_eq!(keys(h, "antigravity_trust", Choice::Deny), b"\x1b[B\r");
-        // In a narrow tab (a phone fits it to about 42 columns) the line
-        // under the question wraps; the options are still the two below.
+
         let p = parse_prompt_for(h, &screen("antigravity_trust_narrow")).unwrap();
         let labels: Vec<&str> = p.options.iter().map(|o| o.label.as_str()).collect();
         assert_eq!(labels, ["Yes, I trust this folder", "No, exit"]);
@@ -784,7 +733,7 @@ mod tests {
             keys(h, "antigravity_trust_narrow", Choice::Deny),
             b"\x1b[B\r"
         );
-        // The highlight on the second option: Enter picks it, Up goes back.
+
         let moved = screen("antigravity_trust_narrow")
             .replace("> Yes, I trust", "  Yes, I trust")
             .replace("  No, exit", "> No, exit");
@@ -852,7 +801,7 @@ mod tests {
             id(Harness::OpenCode, "opencode_exit").as_deref(),
             Some("ses_e9f4fdae3ffe39HU3KgE7Wdrdj")
         );
-        // Another CLI's farewell, a running screen and a hostile one: nothing.
+
         assert_eq!(id(Harness::Cursor, "codex_exit"), None);
         assert_eq!(id(Harness::Codex, "codex_working"), None);
         assert_eq!(id(Harness::Claude, "codex_exit"), None);

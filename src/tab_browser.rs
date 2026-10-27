@@ -1,25 +1,3 @@
-//! A browser per tab. The Browser button on a pane's bottom bar (also
-//! Ctrl-a i and the command palette) opens a small dialog for the tab: it
-//! lists the Chrome profiles (from `Local State`) with the BrowserSkill
-//! extension's state in each. Choosing one
-//!
-//!  - binds that profile to the tab (saved with the tab, it follows a
-//!    move) and makes it the default profile for links (`[browser]
-//!    default_profile`);
-//!  - if the extension is missing, offers to open its Chrome Web Store page
-//!    in THAT profile; Chrome makes the user press Add;
-//!  - if it is installed but off, offers to open chrome://extensions there;
-//!  - then looks every few seconds, only while the dialog or a pending
-//!    enable is open, and marks the tab ready once the extension is on.
-//!
-//! GodTerm only reads Chrome's profile files and only launches Chrome, after
-//! a yes in the dialog. It never writes into a profile and never forces an
-//! install by policy.
-//!
-//! Awareness and scope: the tab's own `godterm mcp` (the tab token) answers
-//! list_browsers and browser_status for the tab's bound profile only, and
-//! the assistant sees the binding in list_tabs. Another tab never gets it.
-
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -30,21 +8,15 @@ use crate::app::{App, Modal};
 use crate::browser::{self, Browser, ChromeProfile, Env, ProfileExt, EXTENSION_ID};
 use crate::hits::UiAction;
 
-/// The extension's page in the Chrome Web Store.
 pub const STORE_URL: &str =
     "https://chromewebstore.google.com/detail/hhcmgoofomhgciiibhipgmgkgnoenaoi";
-/// Chrome's extensions page.
+
 pub const EXTENSIONS_URL: &str = "chrome://extensions";
 
-/// How often the profiles are looked at while a dialog or a pending enable
-/// is open.
 const POLL_EVERY: Duration = Duration::from_secs(3);
-/// A pending enable is given up after this long.
+
 const PENDING_FOR: Duration = Duration::from_secs(600);
 
-// ---------- states ----------
-
-/// The extension in one profile, as the button and the dialog see it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtState {
     Missing,
@@ -60,16 +32,14 @@ pub fn ext_state(p: &ProfileExt) -> ExtState {
     }
 }
 
-/// The state of a tab's Browser button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BtnState {
-    /// No profile chosen for the tab.
     None,
-    /// A profile is chosen, the extension is not in it.
+
     Chosen,
-    /// The extension is in the profile but turned off.
+
     NeedsEnable,
-    /// The extension is on in the tab's profile.
+
     Ready,
 }
 
@@ -84,7 +54,6 @@ impl BtnState {
     }
 }
 
-/// The button state from a tab's bound profile folder and the profiles.
 pub fn button_state(bound: Option<&str>, profiles: &[ProfileExt]) -> BtnState {
     let Some(dir) = bound else {
         return BtnState::None;
@@ -99,7 +68,6 @@ pub fn button_state(bound: Option<&str>, profiles: &[ProfileExt]) -> BtnState {
     }
 }
 
-/// The button's text for a state and the profile's name.
 pub fn button_label(state: BtnState, name: &str) -> String {
     let n = crate::sessions::snippet(name, 14);
     match state {
@@ -110,8 +78,6 @@ pub fn button_label(state: BtnState, name: &str) -> String {
     }
 }
 
-/// The same, shorter, for rows with little room: the full text, then
-/// without the profile name, then just the word (its color keeps the state).
 pub fn button_labels(state: BtnState, name: &str) -> Vec<String> {
     let mid = match state {
         BtnState::None => " browser ",
@@ -129,8 +95,6 @@ pub fn button_labels(state: BtnState, name: &str) -> Vec<String> {
     v
 }
 
-/// The smallest form, for a narrow pane: a short word with the state's
-/// mark, so the button stays rather than vanishing.
 pub fn compact_label(state: BtnState) -> &'static str {
     match state {
         BtnState::Ready => " ✓ web ",
@@ -139,7 +103,6 @@ pub fn compact_label(state: BtnState) -> &'static str {
     }
 }
 
-/// What opening Chrome in the dialog would show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenPlan {
     Store,
@@ -155,7 +118,6 @@ impl OpenPlan {
     }
 }
 
-/// What to open for a profile whose extension is in this state.
 pub fn plan_for(s: ExtState) -> Option<OpenPlan> {
     match s {
         ExtState::Missing => Some(OpenPlan::Store),
@@ -164,12 +126,8 @@ pub fn plan_for(s: ExtState) -> Option<OpenPlan> {
     }
 }
 
-/// Connected browsers the user linked to a profile: the extension's
-/// "Browser name" label to the Chrome profile folder (`[browser] links`).
 pub type Links = std::collections::BTreeMap<String, String>;
 
-/// The profile folder a label is linked to (labels compare trimmed and
-/// without case; an empty label is never linked).
 pub fn linked_dir<'a>(links: &'a Links, label: &str) -> Option<&'a str> {
     let l = label.trim();
     if l.is_empty() {
@@ -181,8 +139,6 @@ pub fn linked_dir<'a>(links: &'a Links, label: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-/// Whether a browser's label names this profile (its name, folder,
-/// email or Google name).
 fn label_names(label: &str, p: &ChromeProfile) -> bool {
     let same = |a: &str, b: &str| !b.trim().is_empty() && a.trim().eq_ignore_ascii_case(b.trim());
     [&p.name, &p.dir, &p.user_name, &p.gaia_name]
@@ -190,12 +146,6 @@ fn label_names(label: &str, p: &ChromeProfile) -> bool {
         .any(|f| same(label, f))
 }
 
-/// Which connected `bsk` browsers are this profile's. `bsk` does not say
-/// which profile an instance is: the label the user typed in the extension
-/// popup is the only hint. A label the user linked to a profile
-/// (`links`) is that profile's and no other's; else a label equal to the
-/// profile's name, folder or email counts. A lone connected browser
-/// counts when this profile is the only one with the extension on.
 pub fn match_browsers(
     all: &[Browser],
     p: &ChromeProfile,
@@ -228,10 +178,6 @@ pub fn match_browsers(
     (vec![], "unknown")
 }
 
-/// Each connected browser with the profile it is (None: unmatched) and
-/// how that was decided: "linked" (the user said so), "label", "only
-/// browser", "ambiguous" (the label names more than one profile) or
-/// "unknown".
 pub fn assign_browsers(
     all: &[Browser],
     profiles: &[ProfileExt],
@@ -264,10 +210,6 @@ pub fn assign_browsers(
         .collect()
 }
 
-// ---------- more than one profile per tab ----------
-
-/// The more profiles of a tab, cleaned: folder names only, no repeats,
-/// never the primary, none without a primary.
 pub fn clean_also(primary: Option<&str>, also: &[String]) -> Vec<String> {
     let Some(primary) = primary else {
         return vec![];
@@ -281,25 +223,20 @@ pub fn clean_also(primary: Option<&str>, also: &[String]) -> Vec<String> {
     out
 }
 
-/// A change to a tab's set of profiles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindOp {
-    /// This profile as the primary one; the old primary is dropped, the
-    /// more profiles stay (what "Use profile" did with one profile).
     Set(String),
-    /// One more profile (the primary when the tab has none).
+
     Add(String),
-    /// Take one out; the next one becomes primary when it was.
+
     Remove(String),
-    /// Make a profile the primary one (added if it was not bound); the
-    /// old primary stays as a more profile.
+
     Primary(String),
-    /// No browser at all.
+
     Clear,
 }
 
 impl BindOp {
-    /// From a tool's op word and profile folder.
     pub fn parse(op: &str, dir: Option<&str>) -> Result<BindOp, String> {
         let need = || -> Result<String, String> {
             let d = dir.map(str::trim).filter(|d| !d.is_empty()).ok_or(format!(
@@ -321,7 +258,6 @@ impl BindOp {
     }
 }
 
-/// Apply a change to (primary, more). Returns whether anything changed.
 pub fn apply_bind(primary: &mut Option<String>, also: &mut Vec<String>, op: &BindOp) -> bool {
     let before = (primary.clone(), also.clone());
     match op {
@@ -362,10 +298,6 @@ pub fn apply_bind(primary: &mut Option<String>, also: &mut Vec<String>, op: &Bin
     before != (primary.clone(), also.clone())
 }
 
-// ---------- what the tab's agent last did in the browser ----------
-
-/// bsk's commands: the first word of a bsk call that is one names what it
-/// did.
 const BSK_CMDS: &[&str] = &[
     "navigate",
     "navigate-back",
@@ -401,18 +333,15 @@ const BSK_CMDS: &[&str] = &[
     "daemon",
     "logs",
 ];
-/// Commands with a sub command of their own ("tab create").
+
 const BSK_GROUPS: &[&str] = &["session", "tab", "window", "debug", "daemon"];
 
-/// A bsk call the tab's agent made: what it did and when.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BskAction {
     pub what: String,
     pub at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Shell words, quotes taken off (enough for reading a command, never for
-/// running one).
 pub(crate) fn shell_words(s: &str) -> Vec<String> {
     let mut out = vec![];
     let mut cur = String::new();
@@ -441,7 +370,6 @@ pub(crate) fn shell_words(s: &str) -> Vec<String> {
     out
 }
 
-/// A link without its scheme and "www.", or a ref or selector, short.
 fn short_arg(a: &str) -> String {
     let low = a.to_lowercase();
     let s = if low.starts_with("https://") || low.starts_with("http://") {
@@ -455,8 +383,6 @@ fn short_arg(a: &str) -> String {
     crate::sessions::snippet(s.trim(), 40)
 }
 
-/// "navigate example.com/login" from a shell command that runs bsk (the
-/// last bsk call in it). None: no bsk call.
 pub fn bsk_summary(cmd: &str) -> Option<String> {
     let mut segs: Vec<&str> = vec![cmd];
     for sep in ["&&", "||", ";", "|", "\n"] {
@@ -464,7 +390,7 @@ pub fn bsk_summary(cmd: &str) -> Option<String> {
     }
     segs.into_iter().rev().find_map(|seg| {
         let words = shell_words(seg);
-        // Leading VAR=value words aside, the program must be bsk.
+
         let mut it = words
             .iter()
             .skip_while(|w| w.contains('=') && !w.starts_with('-') && !w.contains('/'));
@@ -482,7 +408,7 @@ pub fn bsk_summary(cmd: &str) -> Option<String> {
             }
         }
         let args: Vec<&&String> = args.collect();
-        // A link or a ref says the most; else the first argument.
+
         let arg = args
             .iter()
             .find(|a| a.contains("://") || a.starts_with('@'))
@@ -494,8 +420,6 @@ pub fn bsk_summary(cmd: &str) -> Option<String> {
     })
 }
 
-/// The newest bsk call in the tail of a Claude transcript (JSONL): a Bash
-/// tool call whose command runs bsk.
 pub fn last_bsk_action(tail: &str) -> Option<BskAction> {
     tail.lines()
         .rev()
@@ -521,7 +445,6 @@ pub fn last_bsk_action(tail: &str) -> Option<BskAction> {
         })
 }
 
-/// "navigate example.com · 3 min ago".
 pub fn activity_words(a: &BskAction, now: chrono::DateTime<chrono::Utc>) -> String {
     match a.at {
         Some(t) => format!("{} · {} ago", a.what, crate::usage::ago_words(t, now)),
@@ -529,7 +452,6 @@ pub fn activity_words(a: &BskAction, now: chrono::DateTime<chrono::Utc>) -> Stri
     }
 }
 
-/// The last `max` bytes of a file, from a line start.
 pub(crate) fn read_tail(p: &std::path::Path, max: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(p).ok()?;
@@ -547,8 +469,6 @@ pub(crate) fn read_tail(p: &std::path::Path, max: u64) -> Option<String> {
         text
     })
 }
-
-// ---------- opening Chrome ----------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
@@ -569,15 +489,12 @@ impl Os {
     }
 }
 
-/// A command to run: program and arguments.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cmd {
     pub prog: String,
     pub args: Vec<String>,
 }
 
-/// A Chrome profile folder name that is safe to pass on: "Default",
-/// "Profile 3", a name Chrome made. Never a path.
 pub fn valid_profile_dir(d: &str) -> bool {
     !d.is_empty()
         && d.len() <= 64
@@ -587,16 +504,12 @@ pub fn valid_profile_dir(d: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.'))
 }
 
-/// The command that opens `url` in Chrome, in `profile` if given. None
-/// when it cannot be done safely (a bad profile folder, or characters
-/// `cmd` would read as syntax on Windows).
 pub fn chrome_cmd(os: Os, url: &str, profile: Option<&str>) -> Option<Cmd> {
     if profile.is_some_and(|p| !valid_profile_dir(p)) || url.trim().is_empty() {
         return None;
     }
     let flag = profile.map(|p| format!("--profile-directory={p}"));
     let cmd = match os {
-        // -n: a new instance, so the arguments reach a running Chrome too.
         Os::Mac => {
             let mut args = vec!["-na".into(), "Google Chrome".into(), "--args".into()];
             args.extend(flag);
@@ -631,7 +544,6 @@ pub fn chrome_cmd(os: Os, url: &str, profile: Option<&str>) -> Option<Cmd> {
     Some(cmd)
 }
 
-/// Programs tried for Chrome on Linux, in order.
 #[allow(dead_code)]
 const LINUX_CHROME: &[&str] = &[
     "google-chrome",
@@ -640,12 +552,9 @@ const LINUX_CHROME: &[&str] = &[
     "chromium-browser",
 ];
 
-/// Commands run in tests instead of launching Chrome.
 #[cfg(test)]
 pub static LAUNCHED: std::sync::Mutex<Vec<Cmd>> = std::sync::Mutex::new(Vec::new());
 
-/// Open `url` in Chrome (in `profile` if given). True when a command was
-/// started. Tests record the command instead; `GODTERM_NO_OPEN` skips it.
 pub fn open_chrome(url: &str, profile: Option<&str>) -> bool {
     let Some(cmd) = chrome_cmd(Os::current(), url, profile) else {
         return false;
@@ -660,7 +569,7 @@ pub fn open_chrome(url: &str, profile: Option<&str>) -> bool {
         if std::env::var_os("GODTERM_NO_OPEN").is_some() {
             return true;
         }
-        // (Links without their query or login parts: they may hold tokens.)
+
         let shown: Vec<String> = cmd
             .args
             .iter()
@@ -690,14 +599,10 @@ pub fn open_chrome(url: &str, profile: Option<&str>) -> bool {
     }
 }
 
-// ---------- the quick look ----------
-
-/// What the dialog polls: the profiles' extension state (files only) and,
-/// once some extension is on, `bsk browsers`.
 #[derive(Debug, Clone)]
 pub struct Quick {
     pub profiles: Vec<ProfileExt>,
-    /// None: `bsk` is missing, not running or did not answer.
+
     pub browsers: Option<Vec<Browser>>,
 }
 
@@ -716,16 +621,13 @@ pub fn quick(env: &Env, want_bsk: bool) -> Quick {
     Quick { profiles, browsers }
 }
 
-// ---------- the dialog ----------
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     Pick,
-    /// Open Chrome with this? Waits for the user's yes.
+
     Confirm(OpenPlan),
 }
 
-/// The Browser dialog of one tab.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrowserDlg {
     pub uid: u64,
@@ -763,21 +665,15 @@ fn line(text: impl Into<String>, tone: Tone) -> DlgLine {
     }
 }
 
-/// Only the folder name of a stored profile, so a hand edited config or
-/// state cannot smuggle a path into a command.
 fn clean(dir: &str) -> Option<String> {
     valid_profile_dir(dir).then(|| dir.to_string())
 }
 
 impl App {
-    // ----- what is known -----
-
     fn tab_env(&self) -> Option<Env> {
         self.browser_env_pub()
     }
 
-    /// Chrome profiles with the extension's state: the newest quick look,
-    /// else the last full look.
     pub fn browser_profiles(&self) -> Vec<ProfileExt> {
         if let Some(q) = self.browser.quick_last_result() {
             return q.profiles;
@@ -788,7 +684,6 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// The browsers `bsk` reports connected (None: not known).
     pub fn browser_connected(&self) -> Option<Vec<Browser>> {
         if let Some(b) = self.browser.quick_last_result().and_then(|q| q.browsers) {
             return Some(b);
@@ -798,13 +693,11 @@ impl App {
             .and_then(|s| matches!(s.daemon, browser::Daemon::Running(_)).then_some(s.browsers))
     }
 
-    /// The tab's primary profile folder.
     pub fn tab_browser_dir(&self, uid: u64) -> Option<String> {
         let (s, t) = self.find_tab(uid)?;
         self.panes[s].tabs[t].browser.clone()
     }
 
-    /// Every profile folder bound to the tab, the primary first.
     pub fn tab_browser_dirs(&self, uid: u64) -> Vec<String> {
         let Some((s, t)) = self.find_tab(uid) else {
             return vec![];
@@ -817,7 +710,6 @@ impl App {
             .collect()
     }
 
-    /// A profile (from the last look), or just its folder name.
     pub fn profile_of(&self, dir: &str) -> ChromeProfile {
         self.browser_profiles()
             .into_iter()
@@ -830,7 +722,6 @@ impl App {
             })
     }
 
-    /// The tab's profile (from the last look), or just its folder name.
     pub fn tab_browser_profile(&self, uid: u64) -> Option<ChromeProfile> {
         let dir = self.tab_browser_dir(uid)?;
         Some(
@@ -853,8 +744,6 @@ impl App {
         )
     }
 
-    /// The button's states and labels (longest first) for pane `s`'s
-    /// current tab.
     pub fn browser_button(&self, s: usize) -> (BtnState, Vec<String>) {
         let uid = self.panes[s].cur().uid;
         let st = self.tab_browser_state(uid);
@@ -865,7 +754,6 @@ impl App {
         (st, button_labels(st, &name))
     }
 
-    /// What `list_tabs` says about the tab's browser.
     pub fn tab_browser_json(&self, s: usize, t: usize) -> Option<Value> {
         let tab = &self.panes[s].tabs[t];
         tab.browser.as_ref()?;
@@ -892,9 +780,6 @@ impl App {
         Some(v)
     }
 
-    /// What a bound tab's agent last did in the browser (its newest bsk
-    /// call, from the session's transcript; Claude tabs). Looked at no
-    /// more than every few seconds per tab.
     pub fn tab_browser_activity(&self, uid: u64) -> Option<BskAction> {
         let (s, t) = self.find_tab(uid)?;
         self.panes[s].tabs[t].browser.as_ref()?;
@@ -912,8 +797,6 @@ impl App {
         v
     }
 
-    /// Bring up the tab's own Chrome profile (a new tab there). A tab with
-    /// no browser opens its Browser dialog instead.
     pub fn open_tab_chrome(&mut self, uid: u64) {
         let Some(dir) = self.tab_browser_dir(uid) else {
             if let Some((s, _)) = self.find_tab(uid) {
@@ -933,10 +816,6 @@ impl App {
         }
     }
 
-    // ----- binding -----
-
-    /// Bind the tab's primary profile (its more profiles stay), or clear
-    /// them all. Returns whether it changed.
     pub fn bind_tab_browser(&mut self, uid: u64, dir: Option<String>) -> bool {
         let op = match dir {
             Some(d) => match clean(&d) {
@@ -948,7 +827,6 @@ impl App {
         self.bind_tab_browsers(uid, &op)
     }
 
-    /// Change the tab's set of profiles. Returns whether it changed.
     pub fn bind_tab_browsers(&mut self, uid: u64, op: &BindOp) -> bool {
         let Some((s, t)) = self.find_tab(uid) else {
             return false;
@@ -967,8 +845,6 @@ impl App {
         true
     }
 
-    /// Link a connected browser's label to a profile (None: unlink), in
-    /// `[browser] links`. Returns whether it changed.
     pub fn link_browser_label(&mut self, label: &str, dir: Option<&str>) -> Result<bool, String> {
         let label = label.trim();
         if label.is_empty() {
@@ -1009,7 +885,6 @@ impl App {
         Ok(true)
     }
 
-    /// Write `[browser] default_profile` (empty clears it).
     pub fn set_default_profile(&mut self, dir: &str) {
         let dir = clean(dir).unwrap_or_default();
         if self.cfg.browser.default_profile == dir {
@@ -1027,8 +902,6 @@ impl App {
         self.config_mtime = crate::app::config_mtime();
     }
 
-    /// Settings > Browser: the next profile as the default for links (and
-    /// none after the last).
     pub fn browser_default_cycle(&mut self) {
         let mut dirs: Vec<String> = vec![String::new()];
         dirs.extend(self.browser_profiles().into_iter().map(|p| p.profile.dir));
@@ -1043,7 +916,6 @@ impl App {
         self.flash(say);
     }
 
-    /// A profile's display name from its folder.
     pub fn profile_name(&self, dir: &str) -> Option<String> {
         if dir.is_empty() {
             return None;
@@ -1057,11 +929,6 @@ impl App {
         )
     }
 
-    // ----- links -----
-
-    /// The Chrome profile a link opens in: the tab's own, else the
-    /// default. Only a profile Chrome still has (when Chrome's folder can
-    /// be read).
     pub fn link_profile(&self, tab_uid: Option<u64>) -> Option<String> {
         let own = tab_uid.and_then(|u| self.tab_browser_dir(u));
         let dir = own
@@ -1080,8 +947,6 @@ impl App {
         }
     }
 
-    /// Open a link in Chrome in the right profile. False: no profile is
-    /// set (or it is gone), so the caller opens it the usual way.
     pub fn open_link_in_chrome(&self, url: &str, tab_uid: Option<u64>) -> bool {
         match self.link_profile(tab_uid) {
             Some(p) => open_chrome(url, Some(&p)),
@@ -1089,9 +954,6 @@ impl App {
         }
     }
 
-    /// Open a sign in page or a Remote Control link: in the default
-    /// Chrome profile when one is set and `[browser] login_links` is on,
-    /// else the system browser.
     pub fn open_service_link(&self, url: &str) {
         let low = url.trim().to_lowercase();
         let web = low.starts_with("https://") || low.starts_with("http://");
@@ -1101,8 +963,6 @@ impl App {
         crate::admin::open_url(url);
     }
 
-    /// Settings > Browser: sign in and Remote Control links in the default
-    /// profile, or the system browser.
     pub fn toggle_login_links(&mut self) {
         let on = !self.cfg.browser.login_links;
         self.cfg.browser.login_links = on;
@@ -1121,9 +981,6 @@ impl App {
         });
     }
 
-    // ----- the dialog: opening, polling -----
-
-    /// Open the Browser dialog for the tab shown in pane `s`.
     pub fn open_browser_dialog(&mut self, s: usize) {
         let Some(slot) = self.panes.get(s) else {
             return;
@@ -1151,8 +1008,6 @@ impl App {
         self.browser_refresh(false);
     }
 
-    /// Start a quick look in the background (at most one at a time, and
-    /// not more often than every few seconds unless `force`).
     pub fn browser_quick(&mut self, force: bool) {
         let Some(env) = self.tab_env() else {
             return;
@@ -1170,7 +1025,7 @@ impl App {
         }
         self.browser.quick_at = Some(Instant::now());
         self.browser.quick_busy.store(true, Ordering::SeqCst);
-        // `bsk` is asked only once some profile has the extension on.
+
         let want_bsk = self
             .browser_profiles()
             .iter()
@@ -1189,12 +1044,9 @@ impl App {
         matches!(self.modal, Modal::Browser(_))
     }
 
-    /// Per tick: while the dialog is open or an enable is pending, look
-    /// every few seconds; say when a pending tab is ready.
     pub fn browser_poll_tick(&mut self) {
         let waiting = !self.browser.pending.is_empty();
-        // A tab with a browser keeps its button true: a look at start and
-        // then about once a minute (files only, on a background thread).
+
         let bound = self
             .panes
             .iter()
@@ -1241,8 +1093,6 @@ impl App {
         }
     }
 
-    // ----- the dialog: keys and clicks -----
-
     pub fn on_browser_key(&mut self, k: KeyEvent) {
         let Modal::Browser(d) = self.modal.clone() else {
             return;
@@ -1274,8 +1124,6 @@ impl App {
         }
     }
 
-    /// The user picks profile row `i`: bind it, make it the default for
-    /// links, then say or offer what is still missing.
     pub fn browser_choose(&mut self, i: usize) {
         let Modal::Browser(d) = self.modal.clone() else {
             return;
@@ -1315,8 +1163,6 @@ impl App {
         }
     }
 
-    /// The user adds profile row `i` to the tab's set (the primary when it
-    /// has none), or takes it out when it is in.
     pub fn browser_toggle_also(&mut self, i: usize) {
         let Modal::Browser(d) = self.modal.clone() else {
             return;
@@ -1359,7 +1205,6 @@ impl App {
         }
     }
 
-    /// The user said yes: open Chrome in the tab's profile.
     pub fn browser_open_run(&mut self, plan: OpenPlan) {
         let Modal::Browser(d) = self.modal.clone() else {
             return;
@@ -1390,8 +1235,6 @@ impl App {
         });
         self.browser_quick(true);
     }
-
-    // ----- the dialog: what it shows -----
 
     pub fn browser_dialog_view(&self, d: &BrowserDlg) -> Option<DlgView> {
         let (s, t) = self.find_tab(d.uid)?;
@@ -1568,11 +1411,6 @@ impl App {
         })
     }
 
-    // ----- the tab's own tools -----
-
-    /// `list_browsers` and `browser_status` for the agent of tab `uid`:
-    /// the tab's bound profiles (the primary first) and nothing of any
-    /// other tab's.
     pub(crate) fn browser_tool_for(&mut self, uid: u64, tool: &str) -> Result<Value, String> {
         let base = self.browser_tool(tool)?;
         let dirs = self.tab_browser_dirs(uid);
@@ -1645,7 +1483,7 @@ impl App {
             .enumerate()
             .map(|(i, o)| entry(o, i == 0))
             .collect();
-        // Every matched browser once, with whose it is.
+
         let mut browsers: Vec<Value> = vec![];
         let mut seen: Vec<String> = vec![];
         for (i, o) in ones.iter().enumerate() {
@@ -1735,13 +1573,6 @@ impl App {
         Ok(json!({"ok": true, "result": result}))
     }
 
-    // ----- the web app's Browser section (the user's own buttons) -----
-
-    /// `tab_browser`: what the web's Browser section shows for a tab, and
-    /// its buttons (set, add, remove, primary, clear, open). Only the
-    /// user in the web app: an agent never picks its own browser.
-    /// `open_desktop`, the web app's "Open on Mac" button: the GodTerm
-    /// app's own window to the front. The user's press only.
     pub(crate) fn open_desktop_tool(&mut self) -> Result<Value, String> {
         if !self.web_caller {
             return Err("open_desktop is the user's own button in the web app".into());
@@ -1792,8 +1623,7 @@ impl App {
             _ => {
                 let op = BindOp::parse(&op, dir)?;
                 let changed = self.bind_tab_browsers(uid, &op);
-                // The first or primary choice is the default for links, as
-                // the dialog's "Use profile" makes it.
+
                 if let BindOp::Set(d) | BindOp::Primary(d) = &op {
                     self.set_default_profile(d);
                 }
@@ -1817,9 +1647,6 @@ impl App {
         Ok(json!({"ok": true, "result": {"say": say, "view": self.tab_browser_view(uid)}}))
     }
 
-    /// `link_browser`: the user says a connected browser (by its label) is
-    /// a Chrome profile, or unlinks it (no profile). Only the user in the
-    /// web app.
     pub(crate) fn link_browser_tool(&mut self, args: &Value) -> Result<Value, String> {
         if !self.web_caller {
             return Err("link_browser is the user's own button in the web app's Browser section; ask the user which profile a browser is".into());
@@ -1843,10 +1670,6 @@ impl App {
         Ok(json!({"ok": true, "result": r}))
     }
 
-    /// Everything the web's Browser section shows for a tab: its bound
-    /// profiles (the primary first), every Chrome profile with whether it
-    /// is this tab's, every connected browser with the profile it is (or
-    /// none), the links, and BrowserSkill's status.
     pub fn tab_browser_view(&mut self, uid: u64) -> Value {
         let snap = self.browser.snapshot();
         if snap
@@ -1855,9 +1678,7 @@ impl App {
         {
             self.browser_refresh(snap.is_none());
         }
-        // The quick look (files, then `bsk browsers` once a profile has
-        // the extension on) keeps the section fresh while the web polls
-        // it; rate limited.
+
         let first = self.browser.quick_last_result().is_none();
         self.browser_quick(first);
         let mut profiles = self.browser_profiles();
@@ -1949,7 +1770,6 @@ impl App {
     }
 }
 
-/// What a tab with one profile is told.
 fn one_say(state: BtnState, matched: &[Browser], none_connected: bool, name: &str) -> String {
     match (state, matched.first()) {
         (BtnState::Ready, Some(b)) => format!(

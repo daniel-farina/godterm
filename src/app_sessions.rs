@@ -1,6 +1,3 @@
-//! The Sessions view across sources (every account and the main
-//! `~/.claude`), with search, marking, and copy / move between them.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
@@ -8,25 +5,20 @@ use crate::app::{App, AppEvent, Modal, View};
 use crate::session_ops::{self, Conflict, Moved};
 use crate::sessions::SessionInfo;
 
-/// Where sessions come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Src {
-    /// The main Claude Code dir (`~/.claude`), read only unless you move
-    /// out of it.
     Main,
-    /// The main Grok home (`~/.grok`), read only the same way.
+
     MainGrok,
     Account(usize),
 }
 
-/// Source chip in the Sessions view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceSel {
     All,
     One(Src),
 }
 
-/// A pending copy or move, walked through its confirmations.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessOp {
     pub items: Vec<(Src, PathBuf, String)>,
@@ -37,9 +29,8 @@ pub struct SessOp {
     pub confirmed: bool,
 }
 
-/// Sentinel account index for the main dir in AppEvent::Sessions.
 pub const MAIN_IDX: usize = usize::MAX;
-/// And for the main grok home.
+
 pub const MAIN_GROK_IDX: usize = usize::MAX - 1;
 
 impl App {
@@ -51,7 +42,6 @@ impl App {
         }
     }
 
-    /// Which harness a source's sessions belong to (copies stay within one).
     pub fn src_harness(&self, s: Src) -> crate::harness::Harness {
         match s {
             Src::Main => crate::harness::Harness::Claude,
@@ -72,7 +62,6 @@ impl App {
             .any(|a| a.harness() == crate::harness::Harness::Grok)
     }
 
-    /// Read only scan of the main ~/.grok sessions (summaries only).
     pub fn load_main_grok_sessions(&mut self) {
         let dir = crate::harness::Harness::Grok.main_home();
         let tx = self.tx.clone();
@@ -95,7 +84,6 @@ impl App {
         }
     }
 
-    /// The source chips: All, This Mac (main), then every account.
     pub fn source_chips(&self) -> Vec<SourceSel> {
         let mut v = vec![SourceSel::All, SourceSel::One(Src::Main)];
         if self.has_grok() {
@@ -115,7 +103,6 @@ impl App {
         self.load_source();
     }
 
-    /// Scan what the current source needs.
     pub fn load_source(&mut self) {
         match self.sess_source {
             SourceSel::All => {
@@ -130,7 +117,6 @@ impl App {
         }
     }
 
-    /// Read only scan of the main ~/.claude transcripts.
     pub fn load_main_sessions(&mut self) {
         if self.main_loading {
             return;
@@ -145,7 +131,6 @@ impl App {
         });
     }
 
-    /// Rows of the current source, newest first, filtered by the search.
     pub fn session_rows(&self) -> Vec<(Src, &SessionInfo)> {
         let mut v: Vec<(Src, &SessionInfo)> = vec![];
         match self.sess_source {
@@ -193,7 +178,7 @@ impl App {
         if !self.sess_headless {
             v.retain(|(_, s)| !crate::sess_sort::headless(s));
         }
-        // The chosen sort, inside the chosen groups.
+
         let names: std::collections::HashMap<Src, String> =
             v.iter().map(|(s, _)| (*s, self.src_name(*s))).collect();
         let (key, rev, group) = (self.sess_sort, self.sess_sort_rev, self.sess_group);
@@ -225,7 +210,6 @@ impl App {
         v
     }
 
-    /// Sessions the headless filter hides from the current source.
     pub fn headless_hidden(&self) -> usize {
         if self.sess_headless {
             return 0;
@@ -248,7 +232,6 @@ impl App {
         n
     }
 
-    /// Sort by this column; the same one again reverses it.
     pub fn sort_sessions_by(&mut self, k: crate::sess_sort::SortKey) {
         if self.sess_sort == k {
             self.sess_sort_rev = !self.sess_sort_rev;
@@ -260,7 +243,6 @@ impl App {
         self.state_dirty = true;
     }
 
-    /// The session is open in a running tab.
     pub fn session_live(&self, id: &str) -> bool {
         self.panes
             .iter()
@@ -274,7 +256,6 @@ impl App {
             .map(|(src, s)| (*src, s.path.clone(), s.id.clone(), s.cwd.clone()))
     }
 
-    /// Marked rows, or the selected one when nothing is marked.
     fn op_items(&self) -> Vec<(Src, PathBuf, String)> {
         let rows = self.session_rows();
         let marked: Vec<_> = rows
@@ -290,7 +271,6 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Start a copy (or move) of the marked / selected sessions.
     pub fn start_session_op(&mut self, mv: bool, open_after: bool) {
         let items = self.op_items();
         if items.is_empty() {
@@ -308,7 +288,6 @@ impl App {
         self.modal = Modal::SessTarget(0);
     }
 
-    /// Targets for the pending operation: every account, then the main dir.
     pub fn op_targets(&self) -> Vec<Src> {
         let mut v: Vec<Src> = (0..self.cfg.accounts.len()).map(Src::Account).collect();
         v.push(Src::Main);
@@ -316,12 +295,11 @@ impl App {
             v.push(Src::MainGrok);
         }
         if let Some(op) = &self.sess_op {
-            // Only where the same harness can resume it.
             if let Some((s, _, _)) = op.items.first() {
                 let h = self.src_harness(*s);
                 v.retain(|t| self.src_harness(*t) == h);
             }
-            // Not where every item already lives.
+
             v.retain(|t| !op.items.iter().all(|(s, _, _)| s == t));
             if op.open_after {
                 v.retain(|t| !matches!(t, Src::Main | Src::MainGrok));
@@ -339,8 +317,6 @@ impl App {
         self.advance_op();
     }
 
-    /// Next step: confirmation for moves and for writing into the main
-    /// dir, the conflict question, then the work.
     pub fn advance_op(&mut self) {
         let Some(op) = self.sess_op.clone() else {
             self.modal = Modal::None;
@@ -414,7 +390,7 @@ impl App {
         if !moves.is_empty() {
             self.last_moves = moves;
         }
-        // Rescan both ends.
+
         for s in op
             .items
             .iter()
@@ -464,7 +440,6 @@ impl App {
         self.flash(msg);
         if op.open_after {
             if let (Some(id), Src::Account(a)) = (last_id, target) {
-                // Make sure the target knows the copy before resuming it.
                 let path = op.items.first().map(|(s, p, _)| {
                     p.strip_prefix(self.src_dir(*s))
                         .map(|r| tdir.join(r))
@@ -511,7 +486,6 @@ impl App {
         ));
     }
 
-    /// Mark every session of the selected one's project (same folder).
     pub fn mark_project(&mut self) {
         let Some((_, _, _, cwd)) = self.selected_row() else {
             return;
@@ -539,8 +513,6 @@ impl App {
         }
     }
 
-    /// The Bring here choice: 0 take over (wait for its turn), 1 take over
-    /// now, 2 copy a snapshot. Taking over from the UI is the confirmation.
     pub fn bring_here(&mut self, id: &str, k: u8) {
         let args = serde_json::json!({});
         let (live, target) = match self.takeover_target_pub(id, &args) {
@@ -558,8 +530,6 @@ impl App {
         }
     }
 
-    /// Enter / o on a row: resume an account's session; a main session is
-    /// copied to an account first (claude never runs on ~/.claude here).
     pub fn open_selected_session(&mut self) {
         match self.selected_row() {
             Some((Src::Account(a), _, id, _)) => self.resume(a, id),
@@ -629,7 +599,6 @@ impl App {
             KeyCode::Char('o') | KeyCode::Enter => self.open_selected_session(),
             KeyCode::Char('u') => self.undo_last_move(),
             KeyCode::Char('B') => {
-                // Bring a session running elsewhere here.
                 if let Some((_, _, id, _)) = self.selected_row() {
                     if self.sess_live.contains_key(&id) {
                         self.modal = Modal::TakeOver(id);
@@ -652,7 +621,6 @@ impl App {
         true
     }
 
-    /// Keys in the session dialogs.
     pub fn on_sess_modal_key(&mut self, k: KeyEvent) {
         match self.modal.clone() {
             Modal::SessTarget(sel) => {
@@ -711,7 +679,6 @@ impl App {
         self.flash("Cancelled");
     }
 
-    /// Lines for the confirmation dialog.
     pub fn op_confirm_lines(&self) -> Vec<String> {
         let Some(op) = &self.sess_op else {
             return vec![];

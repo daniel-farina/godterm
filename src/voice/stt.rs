@@ -1,6 +1,3 @@
-//! Speech to text with whisper.cpp. A long lived `whisper-server` keeps the
-//! model in memory; `whisper-cli` is the fallback.
-
 use anyhow::{anyhow, bail, Context, Result};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -9,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use super::audio::wav_bytes;
 
-/// Threads for whisper: about half of the idle cores, 2 to 8.
 pub fn whisper_threads() -> usize {
     let ncpu = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -47,38 +43,33 @@ pub struct Whisper {
     threads: usize,
     server: Option<(Child, u16)>,
     server_failed: bool,
-    /// Vocabulary hint (account labels and command words).
+
     pub prompt: String,
-    /// Beam size for finals (1: greedy).
+
     pub beam: u32,
-    /// whisper.cpp's own voice activity detection (silero model path).
+
     pub vad_model: Option<PathBuf>,
-    /// What the server said about the GPU, once it is up.
+
     pub gpu: Option<String>,
 }
 
-/// A transcript and how sure whisper was (mean word probability).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Decoded {
     pub text: String,
     pub conf: Option<f32>,
-    /// whisper's own estimate that the audio holds no speech.
+
     pub no_speech: Option<f32>,
-    /// Mean of the segments' average log probability.
+
     pub logprob: Option<f32>,
 }
 
-/// How a request decodes.
 #[derive(Debug, Clone, Copy)]
 pub struct Opts {
-    /// Partials: greedy, no temperature fallback (never holds the server).
     pub fast: bool,
-    /// Beam size for a final (1 or less: greedy).
+
     pub beam: u32,
 }
 
-/// Mean word probability and no-speech probability from whisper-server's
-/// verbose_json (punctuation-only words left out).
 pub fn confidence(v: &serde_json::Value) -> (Option<f32>, Option<f32>) {
     let mut ps = vec![];
     let mut ns: Option<f32> = None;
@@ -100,14 +91,12 @@ pub fn confidence(v: &serde_json::Value) -> (Option<f32>, Option<f32>) {
     (conf, ns)
 }
 
-/// Where whisper-server writes its log (model load, Metal, errors).
 pub fn server_log() -> PathBuf {
     crate::config::app_home()
         .join("voice")
         .join("whisper-server.log")
 }
 
-/// The GPU line of a whisper-server log ("Metal: Apple M5 Max"), if any.
 pub fn gpu_of_log(log: &str) -> Option<String> {
     if let Some(l) = log.lines().find(|l| l.contains("GPU name:")) {
         return Some(format!(
@@ -120,7 +109,6 @@ pub fn gpu_of_log(log: &str) -> Option<String> {
         .then(|| "Metal".to_string())
 }
 
-/// The silero VAD model for whisper.cpp, in the models folder.
 pub fn vad_model_path() -> PathBuf {
     crate::config::home_dir().join(".cache/whisper-models/ggml-silero-v5.1.2.bin")
 }
@@ -128,7 +116,6 @@ pub fn vad_model_path() -> PathBuf {
 pub const VAD_URL: &str =
     "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
 
-/// Fetch the VAD model (about 1 MB) when it is missing. Returns its path.
 pub fn ensure_vad_model() -> Result<PathBuf> {
     let p = vad_model_path();
     if p.is_file() {
@@ -183,7 +170,6 @@ impl Whisper {
         }
     }
 
-    /// Check that the model and a whisper binary exist.
     pub fn check(&self) -> Result<()> {
         if !self.model.is_file() {
             bail!("whisper model not found at {}", self.model.display());
@@ -203,7 +189,6 @@ impl Whisper {
         self.threads
     }
 
-    /// Start whisper-server and wait for it to load the model.
     pub fn start_server(&mut self) -> Result<()> {
         if self.server.is_some() || self.server_failed {
             return Ok(());
@@ -245,9 +230,7 @@ impl Whisper {
                 self.server_failed = true;
                 bail!("whisper-server exited during startup");
             }
-            // Only our own server: another local user who took the port
-            // first would get every utterance and answer with its own
-            // "transcript" (a spoken yes, say).
+
             if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
                 && listens_as(port, child.id())
             {
@@ -267,13 +250,10 @@ impl Whisper {
         bail!("whisper-server did not come up in 60 s")
     }
 
-    /// Transcribe 16 kHz mono samples.
     pub fn transcribe(&mut self, samples: &[i16]) -> Result<String> {
         self.transcribe_full(samples).map(|d| d.text)
     }
 
-    /// Transcribe with beam search and temperature fallback, with the
-    /// confidence when the server reports it.
     pub fn transcribe_full(&mut self, samples: &[i16]) -> Result<Decoded> {
         let wav = wav_bytes(samples);
         if self.server.is_none() && !self.server_failed {
@@ -292,7 +272,6 @@ impl Whisper {
             ) {
                 Ok(d) => return Ok(d),
                 Err(_) => {
-                    // Server died: drop it and fall back for this utterance.
                     if let Some((mut c, _)) = self.server.take() {
                         let _ = c.kill();
                         let _ = c.wait();
@@ -307,14 +286,11 @@ impl Whisper {
         })
     }
 
-    /// Port of the running whisper-server, for partial transcripts made
-    /// from another thread.
     pub fn port(&self) -> Option<u16> {
         self.server.as_ref().map(|(_, p)| *p)
     }
 }
 
-/// Transcribe a WAV through a whisper-server on `port` (a final).
 pub fn post_inference(port: u16, wav: &[u8], language: &str, prompt: &str) -> Result<String> {
     post_decode(
         port,
@@ -329,9 +305,6 @@ pub fn post_inference(port: u16, wav: &[u8], language: &str, prompt: &str) -> Re
     .map(|d| d.text)
 }
 
-/// `fast`: greedy, no temperature fallback (a partial must never hold the
-/// server for long; re-decoding at higher temperatures is what made long
-/// finals take seconds).
 pub fn post_inference_opts(
     port: u16,
     wav: &[u8],
@@ -352,7 +325,6 @@ pub fn post_inference_opts(
     .map(|d| d.text)
 }
 
-/// One request to whisper-server's /inference.
 pub fn post_decode(
     port: u16,
     wav: &[u8],
@@ -377,7 +349,6 @@ pub fn post_decode(
         if o.fast {
             field("temperature_inc", "0.0");
         } else if o.beam > 1 {
-            // Beam search on finals; temperature fallback stays on.
             field("beam_size", &o.beam.to_string());
             field("best_of", &o.beam.to_string());
         }
@@ -431,7 +402,6 @@ pub fn post_decode(
 
 impl Whisper {
     fn via_cli(&self, wav: &[u8]) -> Result<String> {
-        // In GodTerm's own (owner only) folder, never a shared temp dir.
         let path = server_log().with_file_name(format!("utt-{}.wav", std::process::id()));
         if let Some(d) = path.parent() {
             std::fs::create_dir_all(d)?;
@@ -473,8 +443,6 @@ impl Drop for Whisper {
     }
 }
 
-/// Whether the listener on 127.0.0.1:`port` is `pid` (or runs under it).
-/// Where lsof is missing it cannot be told, and the port is trusted.
 fn listens_as(port: u16, pid: u32) -> bool {
     if cfg!(unix) && !Path::new("/usr/sbin/lsof").is_file() && !which("lsof") {
         return true;
@@ -504,7 +472,6 @@ fn which(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Strip whisper's non speech markers like "[BLANK_AUDIO]" or "(music)".
 pub fn clean(t: &str) -> String {
     let mut out = String::new();
     let mut depth = 0i32;
@@ -523,7 +490,6 @@ pub fn clean(t: &str) -> String {
 mod tests {
     use super::*;
 
-    /// A port someone else listens on is not taken for whisper-server.
     #[cfg(target_os = "macos")]
     #[test]
     fn only_our_own_server_is_adopted() {

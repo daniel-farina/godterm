@@ -1,55 +1,3 @@
-//! A stand in "claude" for tests that runs on every OS: a tiny Rust
-//! program compiled once per test run (instead of a `#!/bin/sh` script),
-//! copied next to a `.cfg` file that says what this copy does:
-//!   args_to=PATH      append the arguments as one line
-//!   home_env_to=PATH  record only home/session marker vars for launch tests
-//!   stdin_to=PATH     copy stdin there as it arrives (stdin_append=1 appends)
-//!   sleep_s=N         then stay alive N seconds
-//!   exit_now=1        exit at once (like /usr/bin/true)
-//!   child_sleep_s=N   first start a child (another copy) that sleeps N s
-//!   print_n=N         print the numbers 1 to N
-//!   ready_to=PATH     write that file once started (after the child)
-//!   fake_admin=1      act out `mcp add|list|remove|login` and `plugin
-//!                     install|uninstall|enable|disable|marketplace add`, with
-//!                     state in $CLAUDE_CONFIG_DIR (or $GROK_HOME)/fake-admin.txt;
-//!                     remote servers need a sign in (login_fail=1 fails it);
-//!                     `mcp login` "opens the browser" (a line in
-//!                     browser-opens.txt), prints the URL with --no-browser,
-//!                     or says it could not open one (browser_fails=1)
-//!   print_file=PATH   print that file (a canned output), then stderr_line
-//!                     to stderr and exit with exit_code (after args_to)
-//!   fake_login=1      show a login screen with a wrapped OAuth URL and a code
-//!                     prompt; login_code=CODE is the code that works
-//!   rc_answers=A,B..  answer remote_control requests in turn: ok (a
-//!                     session_url, then bridge_state connected), fail
-//!                     (initialization failed) or silent; counted across
-//!                     runs of this copy
-//!   resume_fail=1     a --resume exits at once with claude's "No
-//!                     conversation found" error
-//!   resume_bg=SHORT   a plain --resume prints claude's "That session is
-//!                     running in the background (SHORT)" and exits 1;
-//!                     `stop` makes later resumes work; attach and
-//!                     --fork-session run normally
-//!   env_to=PATH       append "cwd|CLAUDE_CONFIG_DIR" as one line
-//!   bg_print=TEXT    `--bg` prints TEXT and returns at once (bg_fail=MSG: fails)
-//!   do=STEP           (repeatable, run in order after the options above,
-//!                     then exit) a scripted program in place of a /bin/sh -c
-//!                     one-liner, the same on every OS:
-//!                       say:TEXT        print TEXT (\\n \\r \\e \\\\ escapes; {x} is
-//!                                       the last line `read:x` got)
-//!                       read:x          read a line of stdin into x
-//!                       sleep:SECS      sleep (SECS may be 0.3)
-//!                       lines:N:FMT     print FMT + newline for i in 0..N
-//!                                       ({i} or {i5}: zero padded to 5)
-//!                       bytes:N:C       print N bytes of the character C
-//!                       yes:N           print `y` lines up to N bytes
-//!                       hexdump:N       read N raw bytes, print them as
-//!                                       ` xx` (16 a line), like od -An -tx1
-//!                       echo_lines:PRE  print PRE + each stdin line to EOF
-//!                       cat             copy stdin to stdout to EOF
-//!                       noecho / raw    like stty -echo / stty raw -echo
-//! Without stdin_to it reads stdin to the end and drops it.
-
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -522,7 +470,6 @@ fn exe_name(stem: &str) -> String {
     }
 }
 
-/// The compiled stub (once per test process).
 fn built() -> &'static PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
@@ -545,9 +492,6 @@ fn built() -> &'static PathBuf {
     })
 }
 
-/// Run a stub "agent" in a console of its own on Windows (as a claude in
-/// another terminal is), so a Ctrl-C sent to its console never reaches
-/// the test process.
 pub fn own_console(c: &mut std::process::Command) -> &mut std::process::Command {
     #[cfg(windows)]
     {
@@ -558,7 +502,6 @@ pub fn own_console(c: &mut std::process::Command) -> &mut std::process::Command 
     c.stdin(std::process::Stdio::null())
 }
 
-/// Wait (up to 5 s) for a stub's ready_to file.
 pub fn wait_ready(p: &Path) {
     let t0 = std::time::Instant::now();
     while !p.exists() && t0.elapsed() < std::time::Duration::from_secs(5) {
@@ -567,8 +510,6 @@ pub fn wait_ready(p: &Path) {
     assert!(p.exists(), "the stub did not start in 5 s");
 }
 
-/// A program that exits at once, like /usr/bin/true (which Windows lacks):
-/// the claude for tests that never need one to run.
 pub fn true_bin() -> String {
     if cfg!(unix) {
         return "/usr/bin/true".into();
@@ -582,20 +523,15 @@ pub fn true_bin() -> String {
     .into_owned()
 }
 
-/// A stub program in `dir` that runs `steps` (the `do=` steps, see the
-/// module doc) in place of a `/bin/sh -c "..."` script. Returns its path.
 pub fn script(dir: &Path, steps: &[&str]) -> PathBuf {
     let opts: Vec<(&str, String)> = steps.iter().map(|s| ("do", s.to_string())).collect();
     claude(dir, &opts)
 }
 
-/// A stub "claude" in `dir` doing what `opts` say (see the module doc).
 pub fn claude(dir: &Path, opts: &[(&str, String)]) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     let exe = dir.join(exe_name("claude"));
-    // A hard link: no file of ours is ever open for writing, so a fork in
-    // another test thread cannot hold it (ETXTBSY on exec). Else a copy to
-    // a temp name, synced, closed, then renamed into place.
+
     let _ = std::fs::remove_file(&exe);
     if std::fs::hard_link(built(), &exe).is_err() {
         let tmp = dir.join(format!(".claude-{}.tmp", std::process::id()));
