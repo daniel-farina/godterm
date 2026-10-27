@@ -349,7 +349,7 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let (mut c, root) = ctx("vis", "m");
         let base = root.join("remote");
-        c.cfg.sync.remote = format!("file://{}", base.display());
+        c.cfg.sync.remote = crate::sync::git::file_url(&base);
         c.cfg.sync.owner = "me".into();
         c.cfg.sync.state_repo = "state".into();
         let d = base.join("me/state.git");

@@ -52,7 +52,12 @@ pub fn check(dir: &Path) -> Vec<String> {
         let local = remotes
             .lines()
             .filter_map(|l| l.split_whitespace().nth(1))
-            .all(|u| u.starts_with('/') || u.starts_with("file://") || u.starts_with('.'));
+            .all(|u| {
+                u.starts_with('/')
+                    || Path::new(u).is_absolute()
+                    || u.starts_with("file://")
+                    || u.starts_with('.')
+            });
         w.push(if local {
             "not backed up: the remote is only a folder on this machine".into()
         } else {

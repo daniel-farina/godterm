@@ -52,7 +52,7 @@ impl PathMap {
             return Some(self.home.clone());
         }
         if let Some(r) = s.strip_prefix("~/") {
-            return Some(self.home.join(r));
+            return Some(self.home.join(native_rest(r)));
         }
         if let Some(r) = s.strip_prefix('@') {
             let (name, rest) = r.split_once('/').unwrap_or((r, ""));
@@ -60,7 +60,7 @@ impl PathMap {
             return Some(if rest.is_empty() {
                 dir.clone()
             } else {
-                dir.join(rest)
+                dir.join(native_rest(rest))
             });
         }
         Some(PathBuf::from(s))
@@ -68,7 +68,7 @@ impl PathMap {
 
     /// A path written in config (maybe already `~/...`) made portable.
     pub fn portable_text(&self, s: &str) -> String {
-        if s.starts_with('~') || s.starts_with('@') || !s.starts_with('/') {
+        if s.starts_with('~') || s.starts_with('@') || !is_abs_text(s) {
             return s.to_string();
         }
         self.to_portable(Path::new(s))
@@ -93,8 +93,34 @@ impl PathMap {
     }
 }
 
+/// A portable `a/b` tail in this platform's separators (Windows paths
+/// stay `C:\x\a\b`, not `C:\x\a/b`, so they compare equal).
+fn native_rest(r: &str) -> String {
+    if cfg!(windows) {
+        r.replace('/', "\\")
+    } else {
+        r.to_string()
+    }
+}
+
+/// Whether config text is an absolute path on any platform: `/x`,
+/// `C:\x`, `C:/x` or a UNC path.
+fn is_abs_text(s: &str) -> bool {
+    let b = s.as_bytes();
+    s.starts_with('/')
+        || s.starts_with("\\\\")
+        || (b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'\\' || b[2] == b'/'))
+}
+
 fn join_rest(head: &str, rest: &Path) -> String {
-    let r = rest.to_string_lossy();
+    // Portable form always uses `/`, whatever the platform's separator.
+    let mut r = rest.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        r = r.replace('\\', "/");
+    }
     if r.is_empty() {
         head.to_string()
     } else {
@@ -527,6 +553,31 @@ pub fn render(keys: &BTreeMap<String, Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_style_config_paths_count_as_absolute() {
+        for p in ["/x", "C:\\Users\\a", "d:/x", "\\\\srv\\share"] {
+            assert!(is_abs_text(p), "{p}");
+        }
+        for p in ["~/x", "rel/x", "C:", "@n/x"] {
+            assert!(!is_abs_text(p), "{p}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_map_to_portable_and_back() {
+        let m = PathMap::new(Path::new("C:\\Users\\alice"), &BTreeMap::new());
+        assert_eq!(
+            m.to_portable(Path::new("C:\\Users\\alice\\code\\api")),
+            "~/code/api"
+        );
+        assert_eq!(m.portable_text("C:\\Users\\alice\\code"), "~/code");
+        assert_eq!(
+            m.to_local("~/code/api"),
+            Some(PathBuf::from("C:\\Users\\alice\\code\\api"))
+        );
+    }
 
     #[test]
     fn path_map_round_trips_between_homes() {

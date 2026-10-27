@@ -466,7 +466,7 @@ fn offline_start_resumes_our_lease_with_a_banner_and_forks_on_reconnect() {
         }],
     );
     let mut b_off = t.b.clone();
-    b_off.cfg.sync.remote = format!("file://{}", t.b.home.join("no-network").display());
+    b_off.cfg.sync.remote = super::git::file_url(&t.b.home.join("no-network"));
     let _ = std::fs::remove_dir_all(b_off.sync_dir().join("leases.git"));
     // A restart while offline: our last known lease resumes, with the banner.
     let mut eb = engine(&b_off, &[]);
@@ -561,7 +561,7 @@ fn back_online_with_nobody_else_on_it_keeps_going_without_a_fork() {
     let t = two("lease-offline-quiet");
     // Offline from the start, with no lease anywhere for S1.
     let mut b_off = t.b.clone();
-    b_off.cfg.sync.remote = format!("file://{}", t.b.home.join("no-network").display());
+    b_off.cfg.sync.remote = super::git::file_url(&t.b.home.join("no-network"));
     let mut eb = engine(&b_off, &[]);
     let ev = eb.handle(
         &b_off,

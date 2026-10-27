@@ -120,27 +120,9 @@ selfswitch_tests::off_does_nothing
 selfswitch_tests::remote_control_comes_back_on_the_new_account
 selfswitch_tests::the_conversation_comes_along
 
-# sync::lease_tests
-sync::lease_tests::a_dead_machine_returning_forks_what_it_never_pushed
-sync::lease_tests::a_lease_expires_after_ten_minutes_and_a_stale_owner_never_blocks
-sync::lease_tests::back_online_with_nobody_else_on_it_keeps_going_without_a_fork
-sync::lease_tests::offline_start_resumes_our_lease_with_a_banner_and_forks_on_reconnect
-sync::lease_tests::pulled_store_changes_go_through_the_app_never_written_under_it
-sync::lease_tests::request_then_the_idle_owner_releases_and_the_requester_takes_it
-sync::lease_tests::take_over_now_on_a_live_lease_old_owner_blocks_and_forks_its_unsent_bytes
-sync::lease_tests::two_clones_race_to_acquire_and_exactly_one_wins
 
-# sync::setup_tests
-sync::setup_tests::clone_refuses_a_state_repo_that_is_not_private
-sync::setup_tests::preflight_and_plan_warnings_name_the_repo_account_and_secrets
 
-# sync::tests
-sync::tests::end_to_end_two_homes_init_then_clone
-sync::tests::fixture_home_walk_never_yields_a_forbidden_file
-sync::tests::plan_totals_and_vault_by_content
 
-# sync::ui_tests
-sync::ui_tests::join_checks_the_repo_asks_once_then_clones
 
 # told_tests
 told_tests::told_user_reaches_the_next_brain_turn_once

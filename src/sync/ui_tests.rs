@@ -26,7 +26,7 @@ fn app_at(home: &Path, remotes: &Path) -> App {
         sync: SyncCfg {
             owner: "tester".into(),
             account: "tester".into(),
-            remote: format!("file://{}", remotes.display()),
+            remote: super::git::file_url(remotes),
             ..Default::default()
         },
         ..Default::default()

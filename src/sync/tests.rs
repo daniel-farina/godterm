@@ -59,8 +59,8 @@ pub(super) fn config_text(remotes: &Path, accounts: bool) -> String {
         ("/usr/b/claude", "default", "1.0", "B Mic")
     };
     let mut s = format!(
-        "claude_bin = \"{bin}\"\nremember_window = false\npermission_mode = \"{mode}\"\n\n[voice]\ntts_speed = {speed}\ndevice = \"{mic}\"\n\n[sync]\nenabled = false\nowner = \"tester\"\naccount = \"tester\"\nremote = \"file://{}\"\n",
-        remotes.display()
+        "claude_bin = \"{bin}\"\nremember_window = false\npermission_mode = \"{mode}\"\n\n[voice]\ntts_speed = {speed}\ndevice = \"{mic}\"\n\n[sync]\nenabled = false\nowner = \"tester\"\naccount = \"tester\"\nremote = \"{}\"\n",
+        super::git::file_url(remotes)
     );
     if accounts {
         s += "\n[[account]]\nname = \"work\"\nlabel = \"Work\"\n\n[[account]]\nname = \"g\"\nlabel = \"Grok\"\nharness = \"grok\"\n";
@@ -104,12 +104,7 @@ pub(super) fn fixture_a(r: &Path) -> (Ctx, PathBuf) {
     sh_git(&api, &["commit", "-q", "-m", "first"]);
     sh_git(
         &api,
-        &[
-            "remote",
-            "add",
-            "origin",
-            &format!("file://{}", bare.display()),
-        ],
+        &["remote", "add", "origin", &super::git::file_url(&bare)],
     );
     sh_git(
         &api,

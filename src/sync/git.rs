@@ -22,12 +22,31 @@ pub enum Remote {
     Local { base: PathBuf },
 }
 
+/// A folder as a `file://` URL git and the config accept: `file:///tmp/x`
+/// on unix, `file:///C:/x/y` on Windows (forward slashes, no backslashes,
+/// which TOML strings and git both mangle).
+pub fn file_url(p: &Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    if s.starts_with('/') {
+        format!("file://{s}")
+    } else {
+        format!("file:///{s}")
+    }
+}
+
+/// The folder behind a `file://` URL (the inverse of `file_url`); a
+/// Windows drive path loses the slash in front of its drive letter.
+pub fn from_file_url(u: &str) -> Option<PathBuf> {
+    let p = u.strip_prefix("file://")?;
+    let b = p.as_bytes();
+    let drive = b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':';
+    Some(PathBuf::from(if drive { &p[1..] } else { p }))
+}
+
 impl Remote {
     pub fn from_cfg(c: &super::SyncCfg, exe: &Path) -> Remote {
-        match c.remote.strip_prefix("file://") {
-            Some(p) => Remote::Local {
-                base: PathBuf::from(p),
-            },
+        match from_file_url(&c.remote) {
+            Some(base) => Remote::Local { base },
             None => Remote::GitHub {
                 account: c.account.clone(),
                 exe: exe.to_path_buf(),
@@ -38,12 +57,7 @@ impl Remote {
     pub fn url(&self, owner: &str, name: &str) -> String {
         match self {
             Remote::GitHub { .. } => format!("https://github.com/{owner}/{name}.git"),
-            Remote::Local { base } => {
-                format!(
-                    "file://{}",
-                    base.join(owner).join(format!("{name}.git")).display()
-                )
-            }
+            Remote::Local { base } => file_url(&base.join(owner).join(format!("{name}.git"))),
         }
     }
 
@@ -604,6 +618,24 @@ mod tests {
             "+refs/heads/main:refs/remotes/origin/main"
         ]))
         .is_ok());
+    }
+
+    #[test]
+    fn file_urls_round_trip_without_backslashes() {
+        assert_eq!(file_url(Path::new("/tmp/a b")), "file:///tmp/a b");
+        assert_eq!(
+            file_url(Path::new("D:\\a\\r/remotes")),
+            "file:///D:/a/r/remotes"
+        );
+        assert_eq!(
+            from_file_url("file:///D:/a/r"),
+            Some(PathBuf::from("D:/a/r"))
+        );
+        assert_eq!(
+            from_file_url("file:///tmp/x"),
+            Some(PathBuf::from("/tmp/x"))
+        );
+        assert_eq!(from_file_url("github"), None);
     }
 
     #[test]
