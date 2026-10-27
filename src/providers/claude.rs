@@ -11,6 +11,11 @@ use super::{Backend, Caps, Provider, StartCtx, TabModel};
 use crate::app::AppEvent;
 use crate::assistant::{allowed_tools, dir, parse_line, write_mcp_config, BrainEvent};
 
+/// Where the assistant's system prompt is written for claude to read.
+pub(crate) fn prompt_file_path() -> std::path::PathBuf {
+    dir().join("system-prompt.md")
+}
+
 pub const PROVIDER: Provider = Provider {
     id: "claude",
     name: "Claude",
@@ -86,6 +91,8 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
     let mcp = write_mcp_config(&exe)?;
     let d = dir();
     std::fs::create_dir_all(&d)?;
+    let prompt_file = prompt_file_path();
+    crate::config::write_private(&prompt_file, &ctx.system_prompt)?;
     let mut cmd = Command::new(claude);
     cmd.args([
         "-p",
@@ -107,11 +114,13 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         // The slot's own hooks and plugins stay out of the assistant.
         "--setting-sources",
         "local",
-        "--append-system-prompt",
-        // The user's learned preferences follow the built in rules.
-        &ctx.system_prompt,
-        "--mcp-config",
+        // The prompt (with the user's learned preferences after the built
+        // in rules) goes by file: on Windows a command line is limited to
+        // 32767 characters, and this prompt alone can pass that.
+        "--append-system-prompt-file",
     ])
+    .arg(&prompt_file)
+    .arg("--mcp-config")
     .arg(&mcp)
     .args(session_args(ctx.session.as_ref()))
     .arg("--allowedTools")

@@ -241,3 +241,12 @@ fn interrupting_while_priming_stops_the_turn() {
     drop(b);
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn a_long_prompt_is_cut_at_a_paragraph_to_fit_a_command_line() {
+    let p = format!("{}\n\n{}", "a".repeat(30), "b".repeat(30));
+    assert_eq!(super::fit_argv(p.clone(), 100), p);
+    let cut = super::fit_argv(p, 40);
+    assert!(cut.starts_with(&"a".repeat(30)) && !cut.contains('b') && cut.contains("left out"));
+    assert!(super::fit_argv("é".repeat(30), 7).len() < 80);
+}

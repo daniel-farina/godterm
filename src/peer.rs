@@ -81,8 +81,38 @@ pub fn parent_of(pid: u32) -> Option<u32> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub fn parent_of(_pid: u32) -> Option<u32> {
-    None
+pub fn parent_of(pid: u32) -> Option<u32> {
+    #[cfg(windows)]
+    {
+        return crate::procs::process(pid)
+            .map(|p| p.ppid)
+            .filter(|p| *p != 0);
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// `parent_of` for a walk up several generations: on Windows one look at
+/// the process list answers every step (asking the system for each is slow).
+pub fn parents() -> impl Fn(u32) -> Option<u32> {
+    #[cfg(windows)]
+    let all: std::collections::HashMap<u32, u32> = crate::procs::processes()
+        .into_iter()
+        .map(|p| (p.pid, p.ppid))
+        .collect();
+    move |pid| {
+        #[cfg(windows)]
+        {
+            all.get(&pid).copied().filter(|p| *p != 0)
+        }
+        #[cfg(not(windows))]
+        {
+            parent_of(pid)
+        }
+    }
 }
 
 /// Whether `pid` is one of `roots` or runs under one of them (at most 64

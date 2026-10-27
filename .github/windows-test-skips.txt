@@ -23,78 +23,29 @@ bglock_tests::attach_and_fork_stay_in_the_tab
 # Windows binary builds, installs and passes its own smoke test). Port a test
 # and delete its line.
 
-# app_gitcfg::tests
-app_gitcfg::tests::tui_editor_saves_on_the_users_keys
 
-# app_gitpanel::tests
-app_gitpanel::tests::assistant_tools_cannot_change_anything
-app_gitpanel::tests::tui_panel_commits_and_pushes_on_the_users_keys
 
 # brainstorm_tests
-brainstorm_tests::utterances_accumulate_and_send_it_sends_one_message
 
 # busy_tests
-busy_tests::a_question_to_a_busy_tab_uses_the_side_channel
-busy_tests::work_for_a_busy_tab_forks_a_background_session
 
 # demo_seed::tests
-demo_seed::tests::the_harness_world_runs_every_cli
 
 # events_tests
-events_tests::a_finished_tab_is_not_announced_and_the_assistant_gets_the_event
-events_tests::approvals_reach_the_user_through_the_assistant
-events_tests::direct_mode_keeps_its_own_voice_and_events_wait
-events_tests::finished_work_is_batched_but_approvals_go_at_once
-events_tests::update_mode_news_goes_to_the_assistant
 
-# git_cred::tests
-git_cred::tests::accounts_from_status
-git_cred::tests::create_is_always_private_and_checked
-git_cred::tests::gh_token_is_env_never_argv
-git_cred::tests::helper_protocol
 
-# git_ops::tests
-git_ops::tests::branches_switch_and_create
-git_ops::tests::commit_push_pull_sync
-git_ops::tests::diverged_branch_name_taken_gets_a_suffix
-git_ops::tests::diverged_goes_to_its_own_branch
-git_ops::tests::log_changes_and_diff
 
-# git_panel::tests
-git_panel::tests::commit_and_push_only_after_confirm_and_typed_override
-git_panel::tests::define_then_create_private_repo
-git_panel::tests::diverged_then_push_as_branch
-git_panel::tests::view_lists_actions_and_undefined_asks
-git_panel::tests::warnings_for_what_is_not_backed_up
-git_panel::tests::web_frames_view_prepare_run
 
-# git_scan::tests
-git_scan::tests::builtin_scan_of_outgoing_commits
-git_scan::tests::secret_files_links_and_ignores
-git_scan::tests::size_thresholds
 
 # image_tests
-image_tests::brain_message_has_the_image_block
 
 # panel_win_tests
 panel_win_tests::quick_buttons_trigger_their_actions
 
-# project_git::tests
-project_git::tests::a_hung_git_is_cut_off
-project_git::tests::facts_of_temp_repos
-project_git::tests::git_status_answers_which_projects_are_only_local
-project_git::tests::reading_never_writes_into_a_repo
-project_git::tests::the_cache_recomputes_only_what_changed
 
 # provider_tests
-provider_tests::a_refused_grok_login_falls_back_to_claude
-provider_tests::grok_brain_turns_tools_and_switching
 
 # quiet_tests
-quiet_tests::a_held_answer_is_told_after_the_deadline
-quiet_tests::a_question_queued_into_a_busy_turn_is_reported
-quiet_tests::answers_wait_for_quiet_and_carry_held_updates
-quiet_tests::several_questions_one_turn_one_report
 
 # remote_keep_tests
 remote_keep_tests::a_failed_resume_starts_fresh
@@ -125,26 +76,11 @@ selfswitch_tests::the_conversation_comes_along
 
 
 # told_tests
-told_tests::told_user_reaches_the_next_brain_turn_once
 
 # ui::tests
-ui::tests::ask_the_agent_then_its_answer_is_told
-ui::tests::assistant_routing
-ui::tests::barge_in_cuts_the_turn_off
-ui::tests::brain_never_stays_paused
-ui::tests::conversations_are_saved_listed_and_resumed
-ui::tests::delegated_answers_wait_time_out_and_cancel
-ui::tests::hung_brain_never_locks_the_control_api
-ui::tests::instant_commands_drive_the_app
-ui::tests::learned_rules_from_corrections
-ui::tests::replies_join_and_narration_is_dropped
-ui::tests::token_limit_error_retries_with_a_higher_cap
 
 # wake_tests
-wake_tests::while_the_assistant_talks
 
-# web::assets::tests
-web::assets::tests::nothing_loads_while_git_works
 
 # web::tests
 web::tests::a_browser_that_comes_back_gets_only_what_it_missed
@@ -153,7 +89,6 @@ web::tests::a_reader_is_never_held_up_by_a_client_that_reads_nothing
 web::tests::a_resize_sends_its_size_and_a_respawn_a_new_snapshot
 web::tests::a_snapshot_then_output_has_no_gap_and_no_repeat
 web::tests::a_wheel_from_a_browser_reaches_the_app_as_its_mouse_reports
-web::tests::git_frames_round_trip
 web::tests::serve_identity_headers_sign_in_only_allowed_logins_on_ts_net
 web::tests::websocket_keeps_up_with_a_flood
 web::tests::websocket_sends_a_big_snapshot_gzipped_when_asked

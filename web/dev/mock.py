@@ -86,7 +86,9 @@ class Tab:
     def json(self, pos, n):
         a = acct(self.account)
         v = {"id": "t%d" % self.uid, "uid": self.uid, "cols": self.cols, "rows": self.rows, "running": True, "account": self.account, "account_label": a["label"], "position": "tab %d of %d" % (pos, n),
-             "name": self.name, "folder": self.folder, "state": self.state, "model": self.model}
+             "name": self.name, "folder": self.folder, "state": self.state, "model": self.model,
+             # Last activity: a spread from now to days ago, by uid (like GodTerm's active_at, to 30 s).
+             "active_at": int(time.time()) - (0, 240, 3 * 3600, 26 * 3600, 50 * 3600, 90, 7200)[self.uid % 7]}
         if self.pinned:
             v["pinned"] = True
         if self.state == "working":

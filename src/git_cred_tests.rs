@@ -18,11 +18,10 @@ impl Stub {
 /// A stub gh in a temp folder. `vis` is what repo view reports after a
 /// create (PRIVATE, or PUBLIC to test the loud check).
 fn stub(tag: &str, vis: &str) -> Stub {
-    use crate::platform::PermissionsExt;
     let dir = std::env::temp_dir().join(format!("godterm-gh-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let d = dir.display();
+    let d = crate::test_sh::sh_path(&dir);
     let script = format!(
         r#"#!/bin/sh
 echo "ARGS $*" >> "{d}/log"
@@ -50,9 +49,7 @@ echo "unexpected" >&2
 exit 2
 "#
     );
-    let gh = dir.join("gh");
-    std::fs::write(&gh, script).unwrap();
-    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let gh = crate::test_sh::program(&dir, "gh", &script);
     Stub { dir, gh }
 }
 

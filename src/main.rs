@@ -105,6 +105,7 @@ mod events_tests;
 #[cfg(test)]
 mod failover_tests;
 mod find_all;
+mod fspath;
 mod first_run;
 #[cfg(test)]
 mod fuzz_tests;
@@ -284,6 +285,8 @@ mod takeover;
 #[cfg(test)]
 mod talkback_tests;
 mod test_guard;
+#[cfg(test)]
+mod test_sh;
 #[cfg(test)]
 mod test_stub;
 mod theme;

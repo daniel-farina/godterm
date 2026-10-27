@@ -32,6 +32,22 @@
 //!                     --fork-session run normally
 //!   env_to=PATH       append "cwd|CLAUDE_CONFIG_DIR" as one line
 //!   bg_print=TEXT    `--bg` prints TEXT and returns at once (bg_fail=MSG: fails)
+//!   do=STEP           (repeatable, run in order after the options above,
+//!                     then exit) a scripted program in place of a /bin/sh -c
+//!                     one-liner, the same on every OS:
+//!                       say:TEXT        print TEXT (\\n \\r \\e \\\\ escapes; {x} is
+//!                                       the last line `read:x` got)
+//!                       read:x          read a line of stdin into x
+//!                       sleep:SECS      sleep (SECS may be 0.3)
+//!                       lines:N:FMT     print FMT + newline for i in 0..N
+//!                                       ({i} or {i5}: zero padded to 5)
+//!                       bytes:N:C       print N bytes of the character C
+//!                       yes:N           print `y` lines up to N bytes
+//!                       hexdump:N       read N raw bytes, print them as
+//!                                       ` xx` (16 a line), like od -An -tx1
+//!                       echo_lines:PRE  print PRE + each stdin line to EOF
+//!                       cat             copy stdin to stdout to EOF
+//!                       noecho / raw    like stty -echo / stty raw -echo
 //! Without stdin_to it reads stdin to the end and drops it.
 
 use std::path::{Path, PathBuf};
@@ -45,6 +61,9 @@ use std::io::{Read, Write};
 #[link(name = "kernel32")]
 extern "system" {
     fn SetConsoleCtrlHandler(handler: usize, add: i32) -> i32;
+    fn GetStdHandle(n: u32) -> isize;
+    fn GetConsoleMode(h: isize, m: *mut u32) -> i32;
+    fn SetConsoleMode(h: isize, m: u32) -> i32;
 }
 // Unix: take SIGINT the default way (exit) even when the parent left it
 // ignored (a shell's background job ignores SIGINT, and that is inherited).
@@ -52,10 +71,20 @@ extern "system" {
 extern "C" {
     fn signal(sig: i32, handler: usize) -> usize;
 }
+// Windows: on a console (a tab's ConPTY) read keys as bytes like an
+// interactive claude does: not in line mode, where Escape clears the line
+// and never arrives and Enter comes as CR LF.
+static VT_IN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 fn main() {
     #[cfg(windows)]
     unsafe {
         SetConsoleCtrlHandler(0, 0);
+        let h = GetStdHandle(-10i32 as u32);
+        let mut m = 0u32;
+        // ENABLE_PROCESSED_INPUT 1 (Ctrl-C still ends us), ENABLE_VIRTUAL_TERMINAL_INPUT 0x200.
+        if GetConsoleMode(h, &mut m) != 0 && SetConsoleMode(h, 0x201) != 0 {
+            VT_IN.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
     #[cfg(unix)]
     unsafe {
@@ -107,7 +136,16 @@ fn main() {
     }
     if let Some(p) = get("args_to") {
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap();
-        let _ = writeln!(f, "{}", args.join(" "));
+        // A prompt given as a file (Windows) is recorded as if it were inline.
+        let shown: Vec<String> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| match i.checked_sub(1).map(|j| args[j].as_str()) {
+                Some("--append-system-prompt-file") => std::fs::read_to_string(a).unwrap_or_else(|_| a.clone()),
+                _ => a.clone(),
+            })
+            .collect();
+        let _ = writeln!(f, "{}", shown.join(" ").replace("--append-system-prompt-file", "--append-system-prompt"));
     }
     if let Some(p) = get("env_to") {
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap();
@@ -157,6 +195,11 @@ fn main() {
             std::process::exit(1);
         }
     }
+    let steps: Vec<String> = cfg.lines().filter_map(|l| l.strip_prefix("do=").map(str::to_string)).collect();
+    if !steps.is_empty() {
+        run_steps(&steps);
+        return;
+    }
     let rc: Vec<String> = get("rc_answers").map(|s| s.split(',').map(|x| x.to_string()).collect()).unwrap_or_default();
     let mut line = Vec::new();
     let mut out: Option<std::fs::File> = get("stdin_to").map(|p| {
@@ -169,6 +212,10 @@ fn main() {
         match input.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
+                // What a unix tty's line discipline does with Enter (CR to LF).
+                if VT_IN.load(std::sync::atomic::Ordering::SeqCst) {
+                    buf[..n].iter_mut().filter(|b| **b == b'\r').for_each(|b| *b = b'\n');
+                }
                 if let Some(f) = out.as_mut() {
                     let _ = f.write_all(&buf[..n]);
                     let _ = f.flush();
@@ -197,6 +244,150 @@ fn main() {
 // Answers a remote_control request with the next of rc_answers (ok, fail,
 // silent; counted across runs in <exe>.rc_n): ok gives a session_url
 // and bridge_state connected.
+fn unescape(s: &str) -> String {
+    let mut o = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            o.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('n') => o.push('\n'),
+            Some('r') => o.push('\r'),
+            Some('e') => o.push('\x1b'),
+            Some(x) => o.push(x),
+            None => o.push('\\'),
+        }
+    }
+    o
+}
+
+/// stty -echo (raw=false) or stty raw -echo (raw=true) on our stdin.
+fn tty_mode(raw: bool) {
+    #[cfg(windows)]
+    unsafe {
+        let h = GetStdHandle(-10i32 as u32);
+        let mut m = 0u32;
+        if GetConsoleMode(h, &mut m) != 0 {
+            // ENABLE_ECHO_INPUT 4, ENABLE_VIRTUAL_TERMINAL_INPUT 0x200.
+            SetConsoleMode(h, if raw { 0x200 } else { m & !4 });
+        }
+    }
+    #[cfg(unix)]
+    {
+        let args: &[&str] = if raw { &["raw", "-echo"] } else { &["-echo"] };
+        let _ = std::process::Command::new("stty").args(args).status();
+    }
+}
+
+fn read_line(input: &mut impl Read) -> Option<String> {
+    let mut b = Vec::new();
+    let mut one = [0u8; 1];
+    loop {
+        match input.read(&mut one) {
+            Ok(0) | Err(_) => return if b.is_empty() { None } else { Some(String::from_utf8_lossy(&b).into_owned()) },
+            Ok(_) if one[0] == b'\n' => break,
+            Ok(_) if one[0] == b'\r' && VT_IN.load(std::sync::atomic::Ordering::SeqCst) => break,
+            Ok(_) => b.push(one[0]),
+        }
+    }
+    Some(String::from_utf8_lossy(&b).trim_end_matches('\r').to_string())
+}
+
+fn run_steps(steps: &[String]) {
+    let mut out = std::io::stdout();
+    let mut input = std::io::stdin();
+    let mut vars: Vec<(String, String)> = Vec::new();
+    for st in steps {
+        let (op, arg) = st.split_once(':').unwrap_or((st.as_str(), ""));
+        match op {
+            "say" => {
+                let mut t = unescape(arg);
+                for (k, v) in &vars {
+                    t = t.replace(&format!("{{{k}}}"), v);
+                }
+                let _ = out.write_all(t.as_bytes());
+            }
+            "read" => {
+                let v = read_line(&mut input).unwrap_or_default();
+                vars.retain(|(k, _)| k != arg);
+                vars.push((arg.to_string(), v));
+            }
+            "sleep" => std::thread::sleep(std::time::Duration::from_secs_f64(arg.parse().unwrap_or(1.0))),
+            "lines" => {
+                let (n, f) = arg.split_once(':').unwrap_or(("0", ""));
+                let f = unescape(f);
+                for i in 0..n.parse::<u64>().unwrap_or(0) {
+                    let l = f.replace("{i5}", &format!("{i:05}")).replace("{i}", &i.to_string());
+                    if writeln!(out, "{l}").is_err() {
+                        break;
+                    }
+                }
+            }
+            "bytes" => {
+                let (n, c) = arg.split_once(':').unwrap_or(("0", "x"));
+                let mut left = n.parse::<usize>().unwrap_or(0);
+                let chunk = c.repeat(65536.min(left.max(1)));
+                while left > 0 {
+                    let k = left.min(chunk.len());
+                    if out.write_all(&chunk.as_bytes()[..k]).is_err() {
+                        break;
+                    }
+                    left -= k;
+                }
+            }
+            "yes" => {
+                let mut left = arg.parse::<usize>().unwrap_or(0);
+                let chunk = "y\n".repeat(32768);
+                while left > 0 {
+                    let k = left.min(chunk.len());
+                    if out.write_all(&chunk.as_bytes()[..k]).is_err() {
+                        break;
+                    }
+                    left -= k;
+                }
+            }
+            "hexdump" => {
+                let mut n = arg.parse::<usize>().unwrap_or(0);
+                let mut text = String::new();
+                let mut count = 0;
+                let mut buf = [0u8; 1];
+                while n > 0 && input.read(&mut buf).map(|k| k == 1).unwrap_or(false) {
+                    text.push_str(&format!(" {:02x}", buf[0]));
+                    count += 1;
+                    if count % 16 == 0 {
+                        text.push('\n');
+                    }
+                    n -= 1;
+                }
+                text.push('\n');
+                let _ = out.write_all(text.as_bytes());
+            }
+            "echo_lines" => {
+                let pre = unescape(arg);
+                while let Some(l) = read_line(&mut input) {
+                    let _ = write!(out, "{pre}{l}\n");
+                    let _ = out.flush();
+                }
+            }
+            "cat" => {
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = input.read(&mut buf) {
+                    if n == 0 || out.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                    let _ = out.flush();
+                }
+            }
+            "noecho" => tty_mode(false),
+            "raw" => tty_mode(true),
+            _ => {}
+        }
+        let _ = out.flush();
+    }
+}
+
 fn remote_answer(exe: &std::path::Path, rc: &[String], l: &str) {
     let n_path = exe.with_extension("rc_n");
     let n: usize = std::fs::read_to_string(&n_path).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
@@ -392,6 +583,13 @@ pub fn true_bin() -> String {
     .into_owned()
 }
 
+/// A stub program in `dir` that runs `steps` (the `do=` steps, see the
+/// module doc) in place of a `/bin/sh -c "..."` script. Returns its path.
+pub fn script(dir: &Path, steps: &[&str]) -> PathBuf {
+    let opts: Vec<(&str, String)> = steps.iter().map(|s| ("do", s.to_string())).collect();
+    claude(dir, &opts)
+}
+
 /// A stub "claude" in `dir` doing what `opts` say (see the module doc).
 pub fn claude(dir: &Path, opts: &[(&str, String)]) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();
@@ -445,6 +643,39 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(d.join("in.txt")).unwrap(),
             "hello\n"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn scripted_steps_replace_a_shell_one_liner() {
+        use std::io::{Read, Write};
+        let d = std::env::temp_dir().join(format!("godterm-stubscript-{}", std::process::id()));
+        let exe = super::script(
+            &d,
+            &[
+                "say:first\\n",
+                "read:x",
+                "say:got {x}\\n",
+                "lines:2:l{i5}",
+                "bytes:5:z",
+                "say:\\n",
+                "echo_lines:> ",
+            ],
+        );
+        let mut c = std::process::Command::new(&exe)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut i = c.stdin.take().unwrap();
+        i.write_all(b"hi\nmore\n").unwrap();
+        drop(i);
+        let mut o = String::new();
+        c.stdout.take().unwrap().read_to_string(&mut o).unwrap();
+        assert_eq!(
+            o.replace("\r\n", "\n"),
+            "first\ngot hi\nl00000\nl00001\nzzzzz\n> more\n"
         );
         let _ = std::fs::remove_dir_all(&d);
     }

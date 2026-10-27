@@ -199,7 +199,7 @@ pub fn locate(p: &Path) -> Option<(PathBuf, PathBuf, PathBuf)> {
                             g.join(r)
                         }
                     })
-                    .map(|r| std::fs::canonicalize(&r).unwrap_or(r))
+                    .map(|r| crate::fspath::canonical(&r).unwrap_or(r))
                     .unwrap_or_else(|| g.clone());
                 return Some((c.to_path_buf(), g, common));
             }
@@ -286,13 +286,14 @@ pub(crate) fn quiet_env(c: &mut Command) {
 /// A git command that can never write into the repo or prompt.
 fn git(top: &Path) -> Command {
     let mut c = Command::new("git");
+    let top = crate::fspath::plain(top);
     c.arg("--no-optional-locks")
         .args(["-c", "core.fsmonitor=false"])
         .args(["-c", "core.untrackedCache=false"])
         .args(["-c", "gc.auto=0"])
         .args(["-c", "maintenance.auto=false"])
         .arg("-C")
-        .arg(top);
+        .arg(&top);
     quiet_env(&mut c);
     c
 }
@@ -423,6 +424,9 @@ fn strip_query(u: &str) -> String {
 /// A local path remote (a folder or file:// URL, no host).
 pub fn is_local(url: &str) -> bool {
     let u = url.trim();
+    if crate::fspath::is_drive_path(u) {
+        return true;
+    }
     if u.starts_with("file://") || u.starts_with('/') || u.starts_with('.') || u.starts_with('~') {
         return true;
     }

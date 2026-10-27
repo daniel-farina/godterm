@@ -250,6 +250,24 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
     )))
 }
 
+/// Grok takes the system prompt only as an argument, and Windows limits
+/// a command line to 32767 characters (the prompt is about 50 KB): there
+/// it is cut at a paragraph so the rest of the line (the turn's text, the
+/// flags) fits.
+const WINDOWS_PROMPT_MAX: usize = 20_000;
+
+pub fn fit_argv(prompt: String, max: usize) -> String {
+    if prompt.len() <= max {
+        return prompt;
+    }
+    let mut end = max;
+    while !prompt.is_char_boundary(end) {
+        end -= 1;
+    }
+    let cut = prompt[..end].rfind("\n\n").unwrap_or(end);
+    format!("{}\n\n(Some of the rules were left out: they did not fit.)", &prompt[..cut])
+}
+
 impl GrokBackend {
     fn new(
         launch: Launch,
@@ -261,6 +279,7 @@ impl GrokBackend {
         session: Option<super::SessionPlan>,
     ) -> GrokBackend {
         // A kept session: its id; resumed, it is open already (no primer).
+        let prompt = if cfg!(windows) { fit_argv(prompt, WINDOWS_PROMPT_MAX) } else { prompt };
         let (session, started) = match session {
             Some(s) => (s.id, s.resume),
             None => (crate::session_ops::new_uuid(), false),

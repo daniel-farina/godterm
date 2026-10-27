@@ -262,7 +262,7 @@ impl Assets {
 /// The git dir for `dir`'s checkout: a `.git` folder above it, or the
 /// one a worktree's `.git` file names.
 fn git_dir(dir: &Path) -> Option<PathBuf> {
-    let dir = dir.canonicalize().ok()?;
+    let dir = crate::fspath::canonical(dir).ok()?;
     for a in dir.ancestors() {
         let g = a.join(".git");
         if g.is_dir() {
@@ -496,7 +496,7 @@ mod tests {
         let a = Assets::from_dir(d.clone());
         assert_eq!(
             a.git.as_deref(),
-            Some(repo.canonicalize().unwrap().join(".git").as_path())
+            Some(crate::fspath::canonical(&repo).unwrap().join(".git").as_path())
         );
         let first = a.build();
         for busy in ["index.lock", "MERGE_HEAD", "rebase-merge"] {
@@ -517,7 +517,9 @@ mod tests {
             // Back as it was loaded: nothing to do.
             let _ = a.poll();
         }
-        write(&d, "js/a.js", "export const a = 5;\n");
+        // A different length: a file time only moves with the clock tick
+        // (about 15 ms on Windows), so a same size rewrite can look unchanged.
+        write(&d, "js/a.js", "export const a = 5000;\n");
         assert_eq!(a.poll(), None);
         assert_eq!(a.poll(), None);
         assert!(a.poll().is_some(), "loads once git is done");

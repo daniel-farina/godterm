@@ -166,30 +166,64 @@ pub fn origin_ok(origin: Option<&str>, host: &str, forwarded: Option<&str>) -> b
 }
 
 /// The other processes on a TCP connection whose client side is
-/// `ip`:`port` (lsof). None when that cannot be told: lsof must list this
-/// process (the server end), or it saw nothing at all.
+/// `ip`:`port` (lsof; `netstat -ano` on Windows). None when that cannot
+/// be told: the listing must show this process (the server end), or it
+/// saw nothing at all.
 fn conn_peers(ip: std::net::IpAddr, port: u16) -> Option<Vec<u32>> {
     let addr = match ip {
         std::net::IpAddr::V4(v) => v.to_string(),
         std::net::IpAddr::V6(v) => format!("[{v}]"),
     };
-    let out = std::process::Command::new(if cfg!(target_os = "macos") {
-        "/usr/sbin/lsof"
+    let pids: Vec<u32> = if cfg!(windows) {
+        let out = crate::procs::output_timeout(
+            std::process::Command::new("netstat").args(["-ano", "-p", "TCP"]),
+            std::time::Duration::from_secs(3),
+        )
+        .ok()?;
+        parse_netstat_conn(&String::from_utf8_lossy(&out.stdout), &addr, port)
     } else {
-        "lsof"
-    })
-    .args(["-nP", "-t", &format!("-iTCP@{addr}:{port}")])
-    .stdin(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null())
-    .output()
-    .ok()?;
+        let out = std::process::Command::new(if cfg!(target_os = "macos") {
+            "/usr/sbin/lsof"
+        } else {
+            "lsof"
+        })
+        .args(["-nP", "-t", &format!("-iTCP@{addr}:{port}")])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect()
+    };
     let me = std::process::id();
-    let pids: Vec<u32> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.trim().parse().ok())
-        .collect();
     pids.contains(&me)
         .then(|| pids.into_iter().filter(|p| *p != me).collect())
+}
+
+/// The pids on the established connections of `netstat -ano` output that
+/// have `addr`:`port` as either end (a loopback connection is two lines:
+/// the client's and the server's), each once.
+pub(crate) fn parse_netstat_conn(text: &str, addr: &str, port: u16) -> Vec<u32> {
+    let end = format!("{addr}:{port}");
+    let mut out = vec![];
+    for l in text.lines() {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        // Proto, local, foreign, state, pid.
+        if w.len() < 5 || !w[0].eq_ignore_ascii_case("tcp") {
+            continue;
+        }
+        if !w[3].eq_ignore_ascii_case("established") || (w[1] != end && w[2] != end) {
+            continue;
+        }
+        if let Ok(pid) = w[4].parse::<u32>() {
+            if !out.contains(&pid) {
+                out.push(pid);
+            }
+        }
+    }
+    out
 }
 
 /// The connection comes from inside GodTerm: a tab's agent (or anything
@@ -200,14 +234,18 @@ fn conn_peers(ip: std::net::IpAddr, port: u16) -> Option<Vec<u32>> {
 /// `local`: the peer is on this machine (loopback, or this Mac's own
 /// tailnet address).
 pub fn from_inside(peer: std::net::SocketAddr, local: bool) -> bool {
-    if !local || !cfg!(unix) {
+    if !local {
         return false;
     }
     let me = std::process::id();
-    conn_peers(peer.ip(), peer.port())
-        .unwrap_or_default()
+    let peers = conn_peers(peer.ip(), peer.port()).unwrap_or_default();
+    if peers.is_empty() {
+        return false;
+    }
+    let parent = crate::peer::parents();
+    peers
         .into_iter()
-        .any(|p| crate::peer::descends_from(p, &[me], crate::peer::parent_of))
+        .any(|p| crate::peer::descends_from(p, &[me], &parent))
 }
 
 /// The executable a process runs (the kernel's answer, not its argv[0]).
@@ -237,9 +275,23 @@ fn exe_of(pid: u32) -> Option<std::path::PathBuf> {
 
 /// Tailscale's own program: owned by root (so not something this user
 /// made) and named for it.
-#[cfg(not(unix))]
-fn is_tailscale(_pid: u32) -> bool {
-    false
+#[cfg(windows)]
+fn is_tailscale(pid: u32) -> bool {
+    // tailscaled is a service under Program Files, where this user cannot
+    // write: a program of this user's own that takes its name is not it.
+    let Some(exe) = crate::procs::process(pid).and_then(|p| p.exe) else {
+        return false;
+    };
+    let named = exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.to_ascii_lowercase().starts_with("tailscale"));
+    let dirs: Vec<std::path::PathBuf> = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+        .iter()
+        .filter_map(|k| std::env::var_os(k))
+        .map(std::path::PathBuf::from)
+        .collect();
+    named && dirs.iter().any(|d| exe.starts_with(d))
 }
 
 #[cfg(unix)]
@@ -261,7 +313,7 @@ fn is_tailscale(pid: u32) -> bool {
 /// sends serve's identity headers itself is seen here and refused. False
 /// when it cannot be told.
 pub fn via_tailscale(peer: std::net::SocketAddr) -> bool {
-    if !peer.ip().is_loopback() || !cfg!(unix) {
+    if !peer.ip().is_loopback() {
         return false;
     }
     match conn_peers(peer.ip(), peer.port()) {

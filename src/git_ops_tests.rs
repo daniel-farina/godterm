@@ -9,7 +9,7 @@ fn base(tag: &str) -> PathBuf {
     let b = std::env::temp_dir().join(format!("godterm-ops-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&b);
     std::fs::create_dir_all(&b).unwrap();
-    std::fs::canonicalize(&b).unwrap()
+    crate::fspath::canonical(&b).unwrap()
 }
 
 /// Fixture git, isolated from the user's settings.
@@ -68,7 +68,7 @@ pub(crate) fn fixture(tag: &str) -> Fx {
     let bare = root.join("remote.git");
     std::fs::create_dir_all(&bare).unwrap();
     g(&bare, &["init", "-q", "--bare", "-b", "main"]);
-    let url = format!("file://{}", bare.display());
+    let url = crate::fspath::file_url(&bare);
     let seed = root.join("seed");
     std::fs::create_dir_all(&seed).unwrap();
     g(&seed, &["init", "-q", "-b", "main"]);

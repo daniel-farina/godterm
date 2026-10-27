@@ -229,8 +229,7 @@ fn diverged_then_push_as_branch() {
 
 /// A stub gh that knows alice and creates repos (logs argv/env).
 fn stub_gh(dir: &Path) -> PathBuf {
-    use crate::platform::PermissionsExt;
-    let d = dir.display();
+    let d = crate::test_sh::sh_path(dir);
     let script = format!(
         r#"#!/bin/sh
 echo "ARGS $*" >> "{d}/gh.log"
@@ -244,10 +243,7 @@ esac
 exit 2
 "#
     );
-    let gh = dir.join("gh");
-    std::fs::write(&gh, script).unwrap();
-    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-    gh
+    crate::test_sh::program(dir, "gh", &script)
 }
 
 #[test]

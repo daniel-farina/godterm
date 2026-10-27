@@ -278,6 +278,12 @@ impl App {
                 v["pane"] = json!(s + 1);
                 v["active"] = json!(self.panes[s].active == t);
                 v["running"] = json!(tab.is_running());
+                // When it last printed, was typed in or changed state (unix
+                // seconds, to 30 s so a busy tab does not change every frame):
+                // the browser sorts by it and says "5 min ago".
+                let idle = tab.last_activity().elapsed().as_secs();
+                let at = crate::app_assistant::now_ms() / 1000 - idle as i64;
+                v["active_at"] = json!(at - at.rem_euclid(30));
                 // The conversation it runs ("copy session", "resume").
                 if let Some(id) = &tab.session_id {
                     v["session_id"] = json!(id);

@@ -42,6 +42,12 @@ function keep(t) {
 const ORDER = { approval: 0, waiting: 1, working: 2, background: 3, ready: 4 };
 function cmp(a, b) {
   if (!!b.pinned - !!a.pinned) return !!b.pinned - !!a.pinned;
+  if (sort === 'recent' || sort === 'oldest') {
+    // Newest activity first (or last); a server without the time keeps tab order.
+    const d = (b.active_at || 0) - (a.active_at || 0);
+    if (d) return sort === 'recent' ? d : -d;
+    return posOf(a) - posOf(b);
+  }
   if (sort === 'name') return String(a.name).localeCompare(b.name);
   if (sort === 'folder') return String(a.folder).localeCompare(b.folder);
   if (sort === 'state') return (ORDER[a.state] ?? 9) - (ORDER[b.state] ?? 9);
@@ -72,6 +78,17 @@ function groups(tabs) {
   return out;
 }
 
+// "active now", "active 5 min ago", "active 3 h ago", "active 2 days ago".
+function agoWords(at) {
+  const s = Math.max(0, Date.now() / 1000 - at);
+  if (s < 75) return 'active now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `active ${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `active ${h} h ago`;
+  return `active ${Math.round(h / 24)} days ago`;
+}
+
 function sub(t) {
   const bits = [];
   if (t.label && t.label !== t.state) bits.push(t.label);
@@ -79,6 +96,7 @@ function sub(t) {
   if (t.waiting_for) bits.push(t.waiting_for);
   if (t.move_pending) bits.push('→ ' + t.move_pending.to + ' when ' + t.move_pending.waiting_for + ' end');
   if (t.folder && grp !== 'folder') bits.push(t.folder);
+  if (t.active_at && (sort === 'recent' || sort === 'oldest')) bits.push(agoWords(t.active_at));
   if (grp === 'harness' && t.account_label) bits.push(t.account_label);
   return bits.join(' · ');
 }

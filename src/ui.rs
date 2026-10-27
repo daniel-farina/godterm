@@ -10050,7 +10050,10 @@ mod tests {
         // The next turn: the brain restarts with the rule in its prompt.
         app.ask_assistant("open a tab for the api");
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let argv = std::fs::read_to_string(&args_file).unwrap_or_default();
+        // The prompt goes to claude by file (--append-system-prompt-file): read
+        // it with the arguments.
+        let argv = std::fs::read_to_string(&args_file).unwrap_or_default()
+            + &std::fs::read_to_string(crate::providers::claude::prompt_file_path()).unwrap_or_default();
         assert!(
             argv.contains("Learned preferences from the user")
                 && argv.contains("[rule 1] Check weekly usage"),
@@ -10623,7 +10626,10 @@ mod tests {
             "no I'm talking about the pauses, just ask the agent about the latest status on that";
         app.ask_assistant_from(said, Some(said));
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let argv = std::fs::read_to_string(&args_file).unwrap_or_default();
+        // The prompt goes to claude by file (--append-system-prompt-file): read
+        // it with the arguments.
+        let argv = std::fs::read_to_string(&args_file).unwrap_or_default()
+            + &std::fs::read_to_string(crate::providers::claude::prompt_file_path()).unwrap_or_default();
         assert!(
             argv.contains("make exactly one send_prompt")
                 && argv.contains("recent_turns")

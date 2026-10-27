@@ -128,7 +128,7 @@ fn expand(pat: &str) -> String {
 pub fn glob_matches(pat: &str, p: &Path) -> bool {
     let full = expand(pat);
     let opts = glob::MatchOptions {
-        case_sensitive: !cfg!(target_os = "macos"),
+        case_sensitive: !cfg!(any(target_os = "macos", windows)),
         require_literal_separator: true,
         require_literal_leading_dot: false,
     };

@@ -17,6 +17,26 @@ Results go to `e2e-results/<suite>-<time>/` (gitignored): `report.md`,
 `.ansi` twin (colors kept) for every failed step and every screen a step
 chose to keep. A failed step records its screen and the suite goes on.
 
+## The portable test stub (src/test_stub.rs)
+
+Unit tests never run `/bin/sh` scripts as a fake claude or fake terminal
+program: Windows has no `/bin/sh`. `src/test_stub.rs` compiles one tiny Rust
+program with `rustc` once per test run (no extra Cargo target, nothing
+shipped), hard links it as `claude` (`claude.exe` on Windows) into the test's
+folder and writes a `claude.cfg` next to it. The cfg says what that copy
+does: record its arguments or stdin, print N lines, sleep, exit at once,
+act out `mcp`/`plugin` admin commands, answer remote control requests, and
+so on (the list is the module doc). Use `test_stub::claude(dir, &[..])`, or
+`test_stub::true_bin()` for a program that only exits.
+
+A shell one-liner such as `echo first; read x; echo "got $x"; sleep 5` is
+written as steps with `test_stub::script(dir, &["say:first\\n", "read:x",
+"say:got {x}\\n", "sleep:5"])`; the steps (`say`, `read`, `sleep`, `lines`,
+`bytes`, `yes`, `hexdump`, `echo_lines`, `cat`, `noecho`, `raw`) are listed in
+the module doc and behave the same on every OS. Pass the returned path as the
+`program` of a `LaunchSpec`, never a `/bin/sh -c` string. Paths given to
+children must not be `\\?\` verbatim paths.
+
 ## The e2e suite (scripts/e2e)
 
 `scripts/e2e/run.py` starts its own tmux server (`tmux -L godterm-e2e-<pid>`,

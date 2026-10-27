@@ -13,7 +13,7 @@ fn base(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&b);
     std::fs::create_dir_all(&b).unwrap();
     // Canonical: /var is /private/var on macOS, and git says the latter.
-    std::fs::canonicalize(&b).unwrap()
+    crate::fspath::canonical(&b).unwrap()
 }
 
 /// Run git for the fixture (isolated from the user's own settings).
@@ -351,7 +351,7 @@ fn a_worktree_and_an_unborn_repo() {
     let (t, gd, c) = locate(&side).unwrap();
     assert_eq!(t, side);
     assert_ne!(gd, c);
-    assert_eq!(c, std::fs::canonicalize(r.join(".git")).unwrap());
+    assert_eq!(c, crate::fspath::canonical(&r.join(".git")).unwrap());
     let f = compute(&t, &gd, &c, Duration::from_secs(5));
     assert_eq!(f.branch.as_deref(), Some("side"));
     assert_eq!(f.error, None);

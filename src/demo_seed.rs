@@ -844,6 +844,13 @@ impl Paths {
 /// Link (or copy) the running godterm as the demo's agent CLIs
 /// (`bin/claude`, `bin/grok`, `bin/codex`, `bin/cursor-agent`, `bin/agy`,
 /// `bin/opencode`).
+/// The path of a demo agent's program (a Windows one is `name.exe`).
+fn agent_bin(p: &Paths, f: Flavor) -> String {
+    let name = f.bin();
+    let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+    p.bin.join(file).to_string_lossy().into_owned()
+}
+
 fn link_agents(p: &Paths) -> Result<()> {
     std::fs::create_dir_all(&p.bin)?;
     // In tests the running binary is the test harness: started as an
@@ -1030,12 +1037,12 @@ pub fn seed_world(home: &Path, world: World) -> Result<Paths> {
          antigravity_bin = {:?}\nopencode_bin = {:?}\nrefresh_secs = 2\nnotifications = false\n\
          remember_window = false\nauto_trust = true\nrestore = \"eager\"\nlayout = \"auto\"\n\
          new_tab_base = {:?}\nshow_email = false\npermission_mode = \"default\"\nsuggest_move_below = 10.0\n\n",
-        p.bin.join(Flavor::Claude.bin()).to_string_lossy(),
-        p.bin.join(Flavor::Grok.bin()).to_string_lossy(),
-        p.bin.join(Flavor::Codex.bin()).to_string_lossy(),
-        p.bin.join(Flavor::Cursor.bin()).to_string_lossy(),
-        p.bin.join(Flavor::Antigravity.bin()).to_string_lossy(),
-        p.bin.join(Flavor::OpenCode.bin()).to_string_lossy(),
+        agent_bin(&p, Flavor::Claude),
+        agent_bin(&p, Flavor::Grok),
+        agent_bin(&p, Flavor::Codex),
+        agent_bin(&p, Flavor::Cursor),
+        agent_bin(&p, Flavor::Antigravity),
+        agent_bin(&p, Flavor::OpenCode),
         p.work.to_string_lossy(),
     ));
     let brain = if world == World::Full {
@@ -1395,7 +1402,7 @@ mod tests {
             let name = tabs[0]["cwd"]
                 .as_str()
                 .unwrap()
-                .rsplit('/')
+                .rsplit(['/', '\\'])
                 .next()
                 .unwrap()
                 .to_string();

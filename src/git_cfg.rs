@@ -354,9 +354,11 @@ pub fn glob_problem(pat: &str) -> Option<String> {
     if p.is_empty() {
         return Some("a folder rule needs a glob, like ~/work/**".into());
     }
-    if !(p.starts_with("~/") || p == "~" || p.starts_with('/')) {
+    let drive = cfg!(windows) && (crate::fspath::is_drive_path(p) || p.starts_with(r"\\"));
+    if !(p.starts_with("~/") || p == "~" || p.starts_with('/') || drive) {
         return Some(format!(
-            "\"{p}\" is not a folder glob: start it with ~/ or /"
+            "\"{p}\" is not a folder glob: start it with ~/ or /{}",
+            if cfg!(windows) { " or a drive like C:\\" } else { "" }
         ));
     }
     let full = crate::config::expand_tilde(p)

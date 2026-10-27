@@ -408,15 +408,28 @@ fn snapshot_history_keeps_colors_without_cursor_moves() {
     );
 }
 
-fn shell_tab(script: &str, rows: u16, cols: u16) -> (Pane, std::sync::mpsc::Receiver<AppEvent>) {
+/// A stub program running `steps` (see test_stub::script) in a fresh folder.
+fn stub_program(steps: &[&str]) -> String {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let d = std::env::temp_dir().join(format!(
+        "godterm-web-stub-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    crate::test_stub::script(&d, steps)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn shell_tab(steps: &[&str], rows: u16, cols: u16) -> (Pane, std::sync::mpsc::Receiver<AppEvent>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut p = Pane::new(std::env::temp_dir());
     p.resize(rows, cols);
     p.spawn(
         LaunchSpec {
-            program: "/bin/sh".into(),
+            program: stub_program(steps),
             home_env: "",
-            args: vec!["-c".into(), script.into()],
+            args: vec![],
             cwd: std::env::temp_dir(),
             config_dir: std::env::temp_dir(),
             kind: LaunchKind::Normal,
@@ -470,11 +483,7 @@ fn replay(frames: &[Out], uid: u64) -> Option<vt100::Parser> {
 #[test]
 fn a_snapshot_then_output_has_no_gap_and_no_repeat() {
     // Numbered lines, fast, while the client subscribes in the middle.
-    let (p, _rx) = shell_tab(
-        "i=0; while [ $i -lt 3000 ]; do echo \"line $i\"; i=$((i+1)); done; sleep 1",
-        20,
-        60,
-    );
+    let (p, _rx) = shell_tab(&["lines:3000:line {i}", "sleep:1"], 20, 60);
     let uid = p.uid;
     std::thread::sleep(Duration::from_millis(30));
     let out = Outbox::new();
@@ -523,7 +532,7 @@ fn a_snapshot_then_output_has_no_gap_and_no_repeat() {
 
 #[test]
 fn a_resize_sends_its_size_and_a_respawn_a_new_snapshot() {
-    let (mut p, _rx) = shell_tab("echo hello; sleep 5", 10, 40);
+    let (mut p, _rx) = shell_tab(&["say:hello\\n", "sleep:5"], 10, 40);
     let uid = p.uid;
     std::thread::sleep(Duration::from_millis(200));
     let out = Outbox::new();
@@ -565,9 +574,9 @@ fn a_resize_sends_its_size_and_a_respawn_a_new_snapshot() {
     let (tx, _rx2) = std::sync::mpsc::channel();
     p.spawn(
         LaunchSpec {
-            program: "/bin/sh".into(),
+            program: stub_program(&["say:second\\n", "sleep:5"]),
             home_env: "",
-            args: vec!["-c".into(), "echo second; sleep 5".into()],
+            args: vec![],
             cwd: std::env::temp_dir(),
             config_dir: std::env::temp_dir(),
             kind: LaunchKind::Normal,
@@ -625,8 +634,12 @@ fn a_wheel_from_a_browser_reaches_the_app_as_its_mouse_reports() {
     // An app on the alternate screen with SGR mouse reports that prints,
     // in hex, the bytes it reads.
     let (p, _rx) = shell_tab(
-        "stty raw -echo; printf '\\033[?1049h\\033[?1003h\\033[?1006hready\\r\\n'; \
-         dd bs=1 count=30 2>/dev/null | od -An -tx1; sleep 5",
+        &[
+            "raw",
+            "say:\\e[?1049h\\e[?1003h\\e[?1006hready\\r\\n",
+            "hexdump:30",
+            "sleep:5",
+        ],
         10,
         80,
     );
@@ -694,7 +707,14 @@ fn drain(out: &std::sync::Arc<Outbox>, client: u64, frames: &mut Vec<Out>) {
 #[test]
 fn a_browser_that_comes_back_gets_only_what_it_missed() {
     let (mut p, _rx) = shell_tab(
-        "echo first; read x; echo \"got $x\"; read y; echo \"then $y\"; sleep 5",
+        &[
+            "say:first\\n",
+            "read:x",
+            "say:got {x}\\n",
+            "read:y",
+            "say:then {y}\\n",
+            "sleep:5",
+        ],
         10,
         40,
     );
@@ -755,7 +775,7 @@ fn a_reader_is_never_held_up_by_a_client_that_reads_nothing() {
     // 8 MB through a tab whose only client never reads: the tab's own
     // screen keeps up (the reader is capped at STREAM_CAP a second).
     let (p, _rx) = shell_tab(
-        "head -c 6000000 /dev/zero | tr '\\0' 'x'; echo; echo DONE; sleep 5",
+        &["bytes:6000000:x", "say:\\n", "say:DONE\\n", "sleep:5"],
         24,
         80,
     );
@@ -806,7 +826,7 @@ fn websocket_streams_a_tab_and_takes_input() {
     let (hub, tok, h, rx) = test_hub("ws");
     let cookie = format!("{}={}", auth::COOKIE, auth::cookie_value(&tok));
     // A shell that echoes what it reads, line by line.
-    let (p, _prx) = shell_tab("stty -echo; while read l; do echo \"got:$l\"; done", 24, 80);
+    let (p, _prx) = shell_tab(&["noecho", "echo_lines:got:"], 24, 80);
     let uid = p.uid;
     let mut ws = ws_client(hub.port, &cookie);
     // The server asked the app for a hello.
@@ -890,7 +910,13 @@ fn websocket_keeps_up_with_a_flood() {
     let (hub, tok, h, _rx) = test_hub("flood");
     let cookie = format!("{}={}", auth::COOKIE, auth::cookie_value(&tok));
     let (p, _prx) = shell_tab(
-        "sleep 0.3; yes | head -c 20000000; echo; echo END-OF-FLOOD; sleep 10",
+        &[
+            "sleep:0.3",
+            "yes:20000000",
+            "say:\\n",
+            "say:END-OF-FLOOD\\n",
+            "sleep:10",
+        ],
         50,
         200,
     );
@@ -962,11 +988,12 @@ fn a_process_godterm_started_cannot_sign_in() {
     let (hub, tok, h, _rx) = test_hub("inside");
     // curl as this process's child stands in for a tab's agent that read
     // the token file.
-    let out = std::process::Command::new("/usr/bin/curl")
+    let sink = h.join("curl-body.txt");
+    let out = std::process::Command::new("curl")
         .args([
             "-s",
             "-o",
-            "/dev/null",
+            sink.to_str().unwrap(),
             "-w",
             "%{http_code}",
             &format!("http://127.0.0.1:{}/?t={tok}", hub.port),
@@ -1585,11 +1612,12 @@ fn serve_identity_headers_sign_in_only_allowed_logins_on_ts_net() {
     drop(c);
     // Another local process sending the header itself (curl as our child
     // stands in for any program of this user): refused, it is not serve.
-    let out = std::process::Command::new("/usr/bin/curl")
+    let sink = h.join("curl-body.txt");
+    let out = std::process::Command::new("curl")
         .args([
             "-s",
             "-o",
-            "/dev/null",
+            sink.to_str().unwrap(),
             "-w",
             "%{http_code}",
             "-H",
@@ -2446,7 +2474,11 @@ fn websocket_sends_a_big_snapshot_gzipped_when_asked() {
     let cookie = format!("{}={}", auth::COOKIE, auth::cookie_value(&tok));
     // A shell with 2500 lines of colored history, then a prompt.
     let (p, _prx) = shell_tab(
-        "i=0; while [ $i -lt 2500 ]; do printf '\\033[32mline %05d\\033[0m the quick brown fox jumps over the lazy dog\\n' $i; i=$((i+1)); done; echo READY; cat",
+        &[
+            "lines:2500:\\e[32mline {i5}\\e[0m the quick brown fox jumps over the lazy dog",
+            "say:READY\\n",
+            "cat",
+        ],
         24,
         80,
     );
@@ -2540,4 +2572,19 @@ fn websocket_sends_a_big_snapshot_gzipped_when_asked() {
     drop(ws);
     drop(p);
     let _ = std::fs::remove_dir_all(&h);
+}
+
+#[test]
+fn netstat_lines_name_both_ends_of_a_connection() {
+    let text = "\r\nActive Connections\r\n\r\n  Proto  Local Address          Foreign Address        State           PID\r\n  TCP    127.0.0.1:7878         127.0.0.1:50112        ESTABLISHED     100\r\n  TCP    127.0.0.1:50112        127.0.0.1:7878         ESTABLISHED     4242\r\n  TCP    127.0.0.1:50113        127.0.0.1:7878         ESTABLISHED     77\r\n  TCP    127.0.0.1:7878         0.0.0.0:0              LISTENING       100\r\n  TCP    [::1]:7878             [::1]:50200            ESTABLISHED     100\r\n  TCP    [::1]:50200            [::1]:7878             ESTABLISHED     55\r\n  TCP    127.0.0.1:50114        127.0.0.1:7878         TIME_WAIT       0\r\n";
+    assert_eq!(
+        auth::parse_netstat_conn(text, "127.0.0.1", 50112),
+        vec![100, 4242]
+    );
+    assert_eq!(
+        auth::parse_netstat_conn(text, "[::1]", 50200),
+        vec![100, 55]
+    );
+    assert!(auth::parse_netstat_conn(text, "127.0.0.1", 50114).is_empty());
+    assert!(auth::parse_netstat_conn(text, "127.0.0.1", 1).is_empty());
 }
