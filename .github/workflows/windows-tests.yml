@@ -1,0 +1,38 @@
+name: Windows tests (subset)
+
+# Run chosen unit tests on a Windows runner, for porting them. Dispatch with a
+# space separated list of test name filters (cargo test substring filters) and
+# read the log; nothing is skipped here. Not part of the regular CI.
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "cargo test filters, space separated (e.g. 'git_ops_tests events_tests::a_finished')"
+        required: true
+      threads:
+        description: "--test-threads"
+        default: "1"
+
+concurrency:
+  group: wintests-${{ github.ref }}-${{ inputs.filter }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  RUST_BACKTRACE: 1
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: test
+        shell: pwsh
+        env:
+          RUSTFLAGS: -Dwarnings
+        run: |
+          $f = "${{ inputs.filter }}" -split '\s+' | Where-Object { $_ }
+          cargo test --locked --bin godterm -- --test-threads=${{ inputs.threads }} @f
