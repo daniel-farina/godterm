@@ -6,16 +6,8 @@
 # Image attachments (0.2.10): Unix paths (/tmp, /etc/hosts) and mode bits.
 # Windows image paste is future work; a dragged Windows path is not
 # recognized yet (pasted_files_must_exist).
-assistant_images::tests::downscale_for_the_model
-assistant_images::tests::pasted_files_must_exist
-assistant_images::tests::path_paste_forms
-assistant_images::tests::tab_text_forms_and_strip
-image_tests::chips_in_the_input
-image_tests::send_prompt_with_images
 # Background run lock (0.2.10): the stub claude's exit under ConPTY is not
 # seen within the test's pump budget.
-bglock_tests::a_background_lock_offers_attach_stop_and_fork
-bglock_tests::attach_and_fork_stay_in_the_tab
 
 # Tests that use a /bin/sh stub (fake claude, shell one-liners), unix git and ssh
 # behaviour, or paths and signals Windows lacks. Added from the first full CI run

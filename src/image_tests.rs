@@ -45,9 +45,16 @@ fn key(app: &mut App, code: KeyCode) {
     app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
-fn mode(p: &Path) -> u32 {
+/// Owner only on unix (`want`); Windows has no mode bits, so there the
+/// file or folder is just not read only.
+fn assert_private(p: &Path, want: u32) {
     use crate::platform::PermissionsExt;
-    std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    let mode = std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    if cfg!(windows) {
+        assert!(mode & 0o200 != 0, "{p:?} is read only");
+    } else {
+        assert_eq!(mode, want, "{p:?}");
+    }
 }
 
 /// Ctrl-V, an empty paste (Cmd-V of an image) and a pasted path attach
@@ -64,8 +71,8 @@ fn chips_in_the_input() {
     assert_eq!(app.assistant.input, "[image 1: 64x32] ");
     let first = app.assistant.pending_images[0].path.clone();
     assert!(first.starts_with(img::dir()) && first.is_file());
-    assert_eq!(mode(&first), 0o600);
-    assert_eq!(mode(&img::dir()), 0o700);
+    assert_private(&first, 0o600);
+    assert_private(&img::dir(), 0o700);
     for c in "fix this".chars() {
         key(&mut app, KeyCode::Char(c));
     }
@@ -244,13 +251,15 @@ fn send_prompt_with_images() {
         last(&app),
         format!("Fix the header\n\n{}\n{}", p1.display(), own.display())
     );
+    let notes = elsewhere.join("notes.txt");
+    std::fs::write(&notes, "not an image").unwrap();
     let private = home.join("x.png");
     std::fs::write(&private, png(2, 2)).unwrap();
     let n = app.deliveries.len();
     for (bad, why) in [
         (json!([9]), "not an attachment"),
         (json!([2]), "over 30 minutes"),
-        (json!(["/etc/hosts"]), "not an image file"),
+        (json!([notes.display().to_string()]), "not an image file"),
         // GodTerm's own home is private (only its images folder is not).
         (json!([private.display().to_string()]), "private"),
     ] {

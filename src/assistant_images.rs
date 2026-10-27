@@ -354,7 +354,8 @@ fn shell_words(text: &str) -> Option<Vec<String>> {
         match (quote, c) {
             (Some(q), c) if c == q => quote = None,
             (Some('\''), c) => cur.push(c),
-            (_, '\\') => {
+            // Windows paths use the backslash as a separator: literal there.
+            (_, '\\') if !cfg!(windows) => {
                 cur.push(chars.next()?);
                 have = true;
             }
@@ -385,7 +386,16 @@ fn shell_words(text: &str) -> Option<Vec<String>> {
 fn word_path(w: &str) -> Option<PathBuf> {
     let w = match w.strip_prefix("file://") {
         // file://localhost/x or file:///x
-        Some(rest) => percent_decode(rest.strip_prefix("localhost").unwrap_or(rest)),
+        Some(rest) => {
+            let d = percent_decode(rest.strip_prefix("localhost").unwrap_or(rest));
+            // file:///C:/x names C:/x on Windows.
+            let drive = d.as_bytes();
+            if cfg!(windows) && drive.len() > 2 && drive[0] == b'/' && drive[1].is_ascii_alphabetic() && drive[2] == b':' {
+                d[1..].to_string()
+            } else {
+                d
+            }
+        }
         None => w.to_string(),
     };
     let p = crate::config::expand_tilde(&w);
@@ -781,6 +791,30 @@ mod tests {
                     .collect::<Vec<_>>()
             })
         };
+        if cfg!(windows) {
+            // A dragged Windows path: plain, quoted, a file URL, several.
+            assert_eq!(p(r"C:\Users\me\a.png"), Some(vec![r"C:\Users\me\a.png".into()]));
+            assert_eq!(
+                p(r#"  "C:\Users\me\My Shot.PNG"  "#),
+                Some(vec![r"C:\Users\me\My Shot.PNG".into()])
+            );
+            assert_eq!(
+                p("'D:\\x y\\z.jpg'"),
+                Some(vec![r"D:\x y\z.jpg".into()])
+            );
+            assert_eq!(
+                p("file:///C:/Users/me/a%20b.webp"),
+                Some(vec!["C:/Users/me/a b.webp".into()])
+            );
+            assert_eq!(
+                p("C:\\a.png \"C:\\b c.heic\"\n'C:\\d.jpg'"),
+                Some(vec![r"C:\a.png".into(), r"C:\b c.heic".into(), r"C:\d.jpg".into()])
+            );
+            for t in [r"C:\a.txt", "a.png", r"look at C:\a.png", r"C:\a.png and", "", "   ", r"'C:\a.png", "/tmp/a.png"] {
+                assert_eq!(paste_paths(t), None, "{t:?}");
+            }
+            return;
+        }
         assert_eq!(p("/tmp/a.png"), Some(vec!["/tmp/a.png".into()]));
         assert_eq!(
             p("  '/tmp/My Shot.PNG'  "),
@@ -829,7 +863,12 @@ mod tests {
         std::fs::write(&a, testing::png(4, 3)).unwrap();
         let txt = d.join("notes.txt");
         std::fs::write(&txt, "x").unwrap();
-        let esc = a.display().to_string().replace(' ', "\\ ");
+        // Unix pastes escape spaces with a backslash; Windows ones quote.
+        let esc = if cfg!(windows) {
+            format!("\"{}\"", a.display())
+        } else {
+            a.display().to_string().replace(' ', "\\ ")
+        };
         assert_eq!(pasted_images(&esc), Some(vec![a.clone()]));
         assert_eq!(
             pasted_images(&format!("'{}'", a.display())),
@@ -871,26 +910,21 @@ mod tests {
 
     #[test]
     fn tab_text_forms_and_strip() {
-        let ps = vec![
-            PathBuf::from("/h/.godterm/assistant/images/1.png"),
-            PathBuf::from("/h/b.jpg"),
-        ];
+        // Absolute on every OS (a Windows path has a drive).
+        let r = if cfg!(windows) { "C:" } else { "" };
+        let (one, two) = (format!("{r}/h/.godterm/assistant/images/1.png"), format!("{r}/h/b.jpg"));
+        let ps = vec![PathBuf::from(&one), PathBuf::from(&two)];
         let c = tab_text("fix the button", &ps, false);
-        assert_eq!(
-            c,
-            "fix the button\n\n/h/.godterm/assistant/images/1.png\n/h/b.jpg"
-        );
+        assert_eq!(c, format!("fix the button\n\n{one}\n{two}"));
         let g = tab_text("fix the button", &ps, true);
-        assert_eq!(
-            g,
-            "fix the button\n\nImage: /h/.godterm/assistant/images/1.png\nImage: /h/b.jpg"
-        );
+        assert_eq!(g, format!("fix the button\n\nImage: {one}\nImage: {two}"));
         assert_eq!(strip_image_lines(&c), "fix the button");
         assert_eq!(strip_image_lines(&g), "fix the button");
         assert_eq!(strip_image_lines("no images"), "no images");
         assert_eq!(tab_text("x", &[], false), "x");
         // Only a path: kept (nothing else to look for).
-        assert_eq!(strip_image_lines("/a.png"), "/a.png");
+        let only = format!("{r}/a.png");
+        assert_eq!(strip_image_lines(&only), only);
     }
 
     #[test]
@@ -909,7 +943,9 @@ mod tests {
         {
             use crate::platform::PermissionsExt;
             let mode = std::fs::metadata(&small).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
+            // Windows has no mode bits: the file is the user's own, writable.
+            let want = if cfg!(windows) { 0o644 } else { 0o600 };
+            assert_eq!(mode & 0o777, want);
         }
         if cfg!(target_os = "macos") {
             let (big, _, _) = save_png(&testing::png(2400, 1200)).unwrap();

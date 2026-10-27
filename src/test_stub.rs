@@ -493,15 +493,14 @@ fn fake_admin(args: &[String], get: &dyn Fn(&str) -> Option<String>) -> i32 {
     }
 }
 fn fake_login(get: &dyn Fn(&str) -> Option<String>) {
-    use std::io::BufRead;
     let code = get("login_code").unwrap_or_else(|| "CODE-1234".into());
     println!("Browser didn't open? Use the url below to sign in:\r\n\r");
     println!("https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-\r");
     println!("5944d1962f5e&state=abc123\r\n\r");
     print!("Paste code here if prompted > ");
     let _ = std::io::stdout().flush();
-    let stdin = std::io::stdin();
-    for line in stdin.lock().lines().map_while(Result::ok) {
+    let mut stdin = std::io::stdin();
+    while let Some(line) = read_line(&mut stdin) {
         let l = line.replace("\x1b[200~", "").replace("\x1b[201~", "");
         if l.trim() == code {
             println!("\r\nLogin successful. Press Enter to continue\r");

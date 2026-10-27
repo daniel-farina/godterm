@@ -563,6 +563,31 @@ impl Pane {
         let last = Arc::clone(&self.last_output);
         let (id, gen) = (self.uid, self.generation);
         let secret = self.secret.clone();
+        // Windows: ConPTY keeps its output open after the child exits, so
+        // the reader may never see EOF; a watcher reports the exit then.
+        let reader_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(windows)]
+        if let Some(pid) = child.process_id() {
+            let (done, events) = (Arc::clone(&reader_done), events.clone());
+            let _ = std::thread::Builder::new()
+                .name(format!("pty-exit-{id}"))
+                .spawn(move || {
+                    let mut gone = 0;
+                    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(200));
+                        gone = if crate::platform::kill(pid as i32, 0) != 0 { gone + 1 } else { 0 };
+                        if gone >= 2 {
+                            // Let the reader take the last output first.
+                            std::thread::sleep(Duration::from_millis(400));
+                            if !done.load(std::sync::atomic::Ordering::SeqCst) {
+                                let _ = events.send(AppEvent::PaneExited(id, gen));
+                            }
+                            return;
+                        }
+                    }
+                });
+        }
+        let reader_flag = Arc::clone(&reader_done);
         std::thread::Builder::new()
             .name(format!("pty-{id}"))
             .spawn(move || {
@@ -656,6 +681,7 @@ impl Pane {
                         }
                     }
                 }
+                reader_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = events.send(AppEvent::PaneExited(id, gen));
             })?;
 

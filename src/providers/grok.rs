@@ -243,7 +243,7 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
         },
         ctx.model,
         effort_for(&ctx.cfg.effort),
-        format!("{}{}", ctx.system_prompt, tools_note()),
+        format!("{}{}", fit_prompt(ctx.system_prompt), tools_note()),
         ctx.events,
         ctx.gen,
         ctx.session,
@@ -255,6 +255,10 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
 /// it is cut at a paragraph so the rest of the line (the turn's text, the
 /// flags) fits.
 const WINDOWS_PROMPT_MAX: usize = 20_000;
+
+fn fit_prompt(p: String) -> String {
+    if cfg!(windows) { fit_argv(p, WINDOWS_PROMPT_MAX) } else { p }
+}
 
 pub fn fit_argv(prompt: String, max: usize) -> String {
     if prompt.len() <= max {
@@ -282,11 +286,6 @@ impl GrokBackend {
         session: Option<super::SessionPlan>,
     ) -> GrokBackend {
         // A kept session: its id; resumed, it is open already (no primer).
-        let prompt = if cfg!(windows) {
-            fit_argv(prompt, WINDOWS_PROMPT_MAX)
-        } else {
-            prompt
-        };
         let (session, started) = match session {
             Some(s) => (s.id, s.resume),
             None => (crate::session_ops::new_uuid(), false),
