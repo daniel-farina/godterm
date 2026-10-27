@@ -971,7 +971,7 @@ done
         "--output-format stream-json",
         "--strict-mcp-config",
         "mcp__godterm__answer_prompt",
-        "--model claude-haiku-4-5",
+        "--model claude-sonnet-5-5",
         "--effort low",
         "--session-id ",
         "Do, don't offer",
@@ -1403,7 +1403,7 @@ fn grok_account_runs_isolated() {
     std::fs::write(
         &grok,
         format!(
-            "#!/bin/sh\nenv > \"{home}/grok-env.txt\"\necho \"$*\" > \"{home}/grok-args.txt\"\necho \" Grok Build\"\necho \"\"\necho \" Allow this command?\"\necho \" › Allow once\"\necho \"   Always allow this command\"\necho \"   Always allow on all sessions\"\necho \"   Reject\"\nIFS= read -r k\necho \"answered: $k\" > \"{home}/grok-answer.txt\"\necho \" Type a message...\"\nexec cat\n",
+            "#!/bin/sh\ncase \"$1\" in \"\"|models) exit 0;; esac\nenv > \"{home}/grok-env.txt\"\necho \"$*\" > \"{home}/grok-args.txt\"\necho \" Grok Build\"\necho \"\"\necho \" Allow this command?\"\necho \" › Allow once\"\necho \"   Always allow this command\"\necho \"   Always allow on all sessions\"\necho \"   Reject\"\nIFS= read -r k\necho \"answered: $k\" > \"{home}/grok-answer.txt\"\necho \" Type a message...\"\nexec cat\n",
             home = home.display()
         ),
     )
