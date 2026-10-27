@@ -149,11 +149,11 @@ pub fn badge(ix: &crate::project_index::Index, dir: &Path) -> Option<String> {
     // The home folder itself and temp folders are no project.
     let home = crate::config::home_dir();
     let tmp = std::env::temp_dir();
-    if crate::guard::same(dir, &home)
-        || dir.starts_with("/private/tmp")
-        || dir.starts_with("/tmp")
-        || (dir.starts_with(&tmp) && !cfg!(test))
-    {
+    // (Tests build their fixtures in the temp folder, which on Linux is
+    // /tmp itself: the temp rule does not apply to them.)
+    let in_tmp =
+        dir.starts_with("/private/tmp") || dir.starts_with("/tmp") || dir.starts_with(&tmp);
+    if crate::guard::same(dir, &home) || (in_tmp && !cfg!(test)) {
         return None;
     }
     let w = match project_git::repo_top(dir) {

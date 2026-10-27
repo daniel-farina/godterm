@@ -1030,7 +1030,8 @@ done
     );
     // The system prompt goes to claude by file (--append-system-prompt-file).
     let args = std::fs::read_to_string(home.join("brain-args.txt")).unwrap()
-        + &std::fs::read_to_string(home.join("assistant").join("system-prompt.md")).unwrap_or_default();
+        + &std::fs::read_to_string(home.join("assistant").join("system-prompt.md"))
+            .unwrap_or_default();
     for want in [
         "--input-format stream-json",
         "--output-format stream-json",
