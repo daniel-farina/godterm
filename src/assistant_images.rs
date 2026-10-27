@@ -390,7 +390,12 @@ fn word_path(w: &str) -> Option<PathBuf> {
             let d = percent_decode(rest.strip_prefix("localhost").unwrap_or(rest));
             // file:///C:/x names C:/x on Windows.
             let drive = d.as_bytes();
-            if cfg!(windows) && drive.len() > 2 && drive[0] == b'/' && drive[1].is_ascii_alphabetic() && drive[2] == b':' {
+            if cfg!(windows)
+                && drive.len() > 2
+                && drive[0] == b'/'
+                && drive[1].is_ascii_alphabetic()
+                && drive[2] == b':'
+            {
                 d[1..].to_string()
             } else {
                 d
@@ -793,24 +798,37 @@ mod tests {
         };
         if cfg!(windows) {
             // A dragged Windows path: plain, quoted, a file URL, several.
-            assert_eq!(p(r"C:\Users\me\a.png"), Some(vec![r"C:\Users\me\a.png".into()]));
+            assert_eq!(
+                p(r"C:\Users\me\a.png"),
+                Some(vec![r"C:\Users\me\a.png".into()])
+            );
             assert_eq!(
                 p(r#"  "C:\Users\me\My Shot.PNG"  "#),
                 Some(vec![r"C:\Users\me\My Shot.PNG".into()])
             );
-            assert_eq!(
-                p("'D:\\x y\\z.jpg'"),
-                Some(vec![r"D:\x y\z.jpg".into()])
-            );
+            assert_eq!(p("'D:\\x y\\z.jpg'"), Some(vec![r"D:\x y\z.jpg".into()]));
             assert_eq!(
                 p("file:///C:/Users/me/a%20b.webp"),
                 Some(vec!["C:/Users/me/a b.webp".into()])
             );
             assert_eq!(
                 p("C:\\a.png \"C:\\b c.heic\"\n'C:\\d.jpg'"),
-                Some(vec![r"C:\a.png".into(), r"C:\b c.heic".into(), r"C:\d.jpg".into()])
+                Some(vec![
+                    r"C:\a.png".into(),
+                    r"C:\b c.heic".into(),
+                    r"C:\d.jpg".into()
+                ])
             );
-            for t in [r"C:\a.txt", "a.png", r"look at C:\a.png", r"C:\a.png and", "", "   ", r"'C:\a.png", "/tmp/a.png"] {
+            for t in [
+                r"C:\a.txt",
+                "a.png",
+                r"look at C:\a.png",
+                r"C:\a.png and",
+                "",
+                "   ",
+                r"'C:\a.png",
+                "/tmp/a.png",
+            ] {
                 assert_eq!(paste_paths(t), None, "{t:?}");
             }
             return;
@@ -912,7 +930,10 @@ mod tests {
     fn tab_text_forms_and_strip() {
         // Absolute on every OS (a Windows path has a drive).
         let r = if cfg!(windows) { "C:" } else { "" };
-        let (one, two) = (format!("{r}/h/.godterm/assistant/images/1.png"), format!("{r}/h/b.jpg"));
+        let (one, two) = (
+            format!("{r}/h/.godterm/assistant/images/1.png"),
+            format!("{r}/h/b.jpg"),
+        );
         let ps = vec![PathBuf::from(&one), PathBuf::from(&two)];
         let c = tab_text("fix the button", &ps, false);
         assert_eq!(c, format!("fix the button\n\n{one}\n{two}"));

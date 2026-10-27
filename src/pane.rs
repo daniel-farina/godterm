@@ -575,7 +575,11 @@ impl Pane {
                     let mut gone = 0;
                     while !done.load(std::sync::atomic::Ordering::SeqCst) {
                         std::thread::sleep(Duration::from_millis(200));
-                        gone = if crate::platform::kill(pid as i32, 0) != 0 { gone + 1 } else { 0 };
+                        gone = if crate::platform::kill(pid as i32, 0) != 0 {
+                            gone + 1
+                        } else {
+                            0
+                        };
                         if gone >= 2 {
                             // Let the reader take the last output first.
                             std::thread::sleep(Duration::from_millis(400));

@@ -257,7 +257,11 @@ fn start(ctx: StartCtx) -> Result<Box<dyn Backend>> {
 const WINDOWS_PROMPT_MAX: usize = 20_000;
 
 fn fit_prompt(p: String) -> String {
-    if cfg!(windows) { fit_argv(p, WINDOWS_PROMPT_MAX) } else { p }
+    if cfg!(windows) {
+        fit_argv(p, WINDOWS_PROMPT_MAX)
+    } else {
+        p
+    }
 }
 
 pub fn fit_argv(prompt: String, max: usize) -> String {

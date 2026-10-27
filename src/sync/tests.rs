@@ -91,7 +91,7 @@ pub(super) fn fixture_a(r: &Path) -> (Ctx, PathBuf) {
     std::fs::create_dir_all(&remotes).unwrap();
     let ctx = ctx_for(&home, &config_text(&remotes, true));
     let app = &ctx.app_home;
-    let api = home.join("code/api");
+    let api = home.join("code").join("api");
     // The project: a repo with a GitHub-like remote (a bare repo here).
     let bare = remotes.join("tester/api.git");
     std::fs::create_dir_all(&bare).unwrap();
@@ -252,7 +252,7 @@ fn fixture_home_walk_never_yields_a_forbidden_file() {
         );
         assert!(!s.starts_with(home.join("vault")));
     }
-    let enc = crate::state::encode_project_dir(&home.join("code/api"));
+    let enc = crate::state::encode_project_dir(&home.join("code").join("api"));
     let mem = format!("memory/work/{}", portable::path_key("~/code/api"));
     let mut golden: Vec<String> = vec![
         "archive.json".into(),
@@ -313,7 +313,9 @@ fn plan_totals_and_vault_by_content() {
             std::fs::metadata(
                 ctx.app_home
                     .join("accounts/work/projects")
-                    .join(crate::state::encode_project_dir(&ctx.home.join("code/api")))
+                    .join(crate::state::encode_project_dir(
+                        &ctx.home.join("code").join("api"),
+                    ))
                     .join(format!("{s}.jsonl")),
             )
             .unwrap()
@@ -467,7 +469,7 @@ fn end_to_end_two_homes_init_then_clone() {
     );
     // The project was cloned to its mapped folder; its .env files are back
     // as 0600.
-    let api_b = home_b.join("code/api");
+    let api_b = home_b.join("code").join("api");
     assert!(api_b.join("main.rs").is_file(), "{:?}", cl.projects);
     assert_eq!(
         std::fs::read_to_string(api_b.join(".env")).unwrap_or_default(),
@@ -489,7 +491,7 @@ fn end_to_end_two_homes_init_then_clone() {
         );
     }
     // The tab's session resumes from the mapped path, byte for byte.
-    let s1_a = session_file(&a, "work", &home_a.join("code/api"), "S1");
+    let s1_a = session_file(&a, "work", &home_a.join("code").join("api"), "S1");
     let s1_b = session_file(&b, "work", &api_b, "S1");
     assert_eq!(std::fs::read(&s1_b).unwrap(), std::fs::read(&s1_a).unwrap());
     let st: Value =
@@ -531,7 +533,7 @@ fn end_to_end_two_homes_init_then_clone() {
     assert_eq!(jobs_a["jobs"][0]["enabled"], true);
 
     // A writes more of S2; B (not in a tab there) is extended.
-    let s2_a = session_file(&a, "work", &home_a.join("code/api"), "S2");
+    let s2_a = session_file(&a, "work", &home_a.join("code").join("api"), "S2");
     let s2_b = session_file(&b, "work", &api_b, "S2");
     assert!(s2_b.is_file(), "S2 is in the hot set: {:?}", cl.placed);
     let mut f = std::fs::OpenOptions::new()
@@ -540,7 +542,7 @@ fn end_to_end_two_homes_init_then_clone() {
         .unwrap();
     std::io::Write::write_all(
         &mut f,
-        line("S2", &home_a.join("code/api"), "third").as_bytes(),
+        line("S2", &home_a.join("code").join("api"), "third").as_bytes(),
     )
     .unwrap();
     drop(f);
@@ -554,7 +556,10 @@ fn end_to_end_two_homes_init_then_clone() {
         let mut f = std::fs::OpenOptions::new().append(true).open(p).unwrap();
         std::io::Write::write_all(&mut f, t.as_bytes()).unwrap();
     };
-    add(&s2_a, &line("S2", &home_a.join("code/api"), "from A"));
+    add(
+        &s2_a,
+        &line("S2", &home_a.join("code").join("api"), "from A"),
+    );
     add(&s2_b, &line("S2", &api_b, "from B"));
     assert!(state_repo::sync_now(&a).unwrap().ok);
     let rb = state_repo::sync_now(&b).unwrap();
@@ -610,13 +615,13 @@ fn end_to_end_two_homes_init_then_clone() {
     }
     // The runner refuses writes outside a sync repo outright.
     assert!(git::run(
-        &home_a.join("code/api"),
+        &home_a.join("code").join("api"),
         &["commit", "--allow-empty", "-m", "x"],
         None
     )
     .is_err());
     assert!(git::run(
-        &home_a.join("code/api"),
+        &home_a.join("code").join("api"),
         &["push", "origin", "HEAD:refs/heads/main"],
         None
     )

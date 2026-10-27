@@ -786,6 +786,9 @@ fn a_reader_is_never_held_up_by_a_client_that_reads_nothing() {
         assert!(t0.elapsed() < Duration::from_secs(15), "the reader stalled");
         std::thread::sleep(Duration::from_millis(50));
     }
+    // "DONE" and the newline after it can arrive apart (ConPTY): let the
+    // screen settle, else the snapshot below is one scroll behind it.
+    std::thread::sleep(Duration::from_millis(500));
     let (bytes, _) = out.queued();
     assert!(bytes <= tap::OUTPUT_LIMIT);
     // Once read, it ends with a resync, whose snapshot shows the end.
