@@ -1,6 +1,6 @@
 [package]
 name = "godterm"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 description = "Run many Claude Code sessions side by side, each on its own account"
 license = "MIT"
@@ -42,6 +42,8 @@ minisign-verify = "0.2"
 # Web Push: VAPID signing and RFC 8291 encryption (already in the tree
 # through rustls).
 ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
 # The web app's WebSocket (sync, on plain threads; see src/web).
 tungstenite = "0.28"
 # Git sync: secret patterns and the [git] rules' globs.

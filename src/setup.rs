@@ -71,7 +71,7 @@ fn ask(input: &mut dyn BufRead, prompt: &str, default: &str) -> Result<String> {
 pub fn ask_accounts(input: &mut dyn BufRead, base: Config) -> Result<Config> {
     println!("godterm setup\n");
     println!("Choose a coding agent for each slot. Claude, Grok and Codex have separate homes.");
-    println!("Cursor, Antigravity and OpenCode use their native shared login stores.");
+    println!("Cursor and OpenCode use their native shared login stores; each Antigravity account signs in by itself.");
     let n: usize = loop {
         let a = ask(input, "How many agent slots do you want to use", "2")?;
         match a.parse::<usize>() {

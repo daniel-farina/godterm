@@ -4,6 +4,7 @@ import { S } from './state.js';
 import { panes } from './term.js';
 
 const run = (...a) => import('./manage.js').then((m) => m.run(...a));
+const openSession = (...a) => import('./manage.js').then((m) => m.openSession(...a));
 
 const FIRST = { arch: 5, other: 8 };
 const MORE = 20;
@@ -104,7 +105,7 @@ export function foundClick(e) {
     if (!s) return true;
     if (s.open_in_tab) { showTab(s.open_in_tab); return true; }
     toast('Opening ' + (s.title || 'session') + '...', 'info');
-    run(s.external ? 'take_over_session' : 'open_session', { id: s.id }, 'Opened').then((r) => showTab(r?.result?.tab || r?.result?.tab_id));
+    openSession(s).then((r) => showTab(r?.result?.tab || r?.result?.tab_id));
   }
   return true;
 }

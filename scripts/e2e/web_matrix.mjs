@@ -818,7 +818,7 @@ async function main() {
         const s = await now();
         await page.click('#b-ptt');
         await sleep(300);
-        await page.locator('button.mm-i[data-m="push"]').first().click();
+        await page.locator('button.sg-b[data-m="push"]').first().click();
         await sleep(800);
         const talk = page.locator('#talk').first();
         const box = await talk.boundingBox();
@@ -835,7 +835,7 @@ async function main() {
         rec('voice', 'push to talk', '', mic > 0 && /talk":true/.test(v) && /talk":false/.test(v) ? 'pass' : 'fail', `${mic} mic frames; sent ${v.slice(0, 160)}; got ${replies.slice(0, 200)}`);
         await page.click('#b-ptt');
         await sleep(200);
-        await page.locator('button.mm-i[data-m="off"]').first().click().catch(() => {});
+        await page.locator('button.sg-b[data-m="off"]').first().click().catch(() => {});
       } catch (e) { rec('voice', 'push to talk', '', 'fail', e.message); }
     }
   }

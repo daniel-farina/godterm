@@ -586,7 +586,10 @@ fn other_clients_are_read_only() {
     assert!(act.contains("read-only"), "{act}");
 
     let env = std::fs::read_to_string(home.join("work").join(".tab-env.txt")).unwrap_or_default();
-    assert!(env.contains("PATH=") && !env.contains("GODTERM_"), "{env}");
+    let leaked = env
+        .lines()
+        .any(|l| l.starts_with("GODTERM_") && !l.starts_with("GODTERM_HOME="));
+    assert!(env.contains("PATH=") && !leaked, "{env}");
 }
 
 #[test]
@@ -668,7 +671,7 @@ fn a_tab_gets_a_job_server_limited_to_itself() {
         .unwrap()
         .len();
 
-    assert_eq!(tools, 7);
+    assert_eq!(tools, 9);
 
     let jobs = std::fs::read_to_string(home.join("jobs.json")).unwrap_or_default();
     assert!(!jobs.contains("\"prompt\""), "{jobs}");
@@ -777,6 +780,24 @@ fn eager_restore_starts_every_tab() {
         "recents": []
     });
     std::fs::write(home.join("state.json"), state.to_string()).unwrap();
+    let enc: String = proj
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    for (account, id) in [("one", "sess-123"), ("two", "sess-456")] {
+        let dir = home
+            .join("accounts")
+            .join(account)
+            .join("projects")
+            .join(&enc);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{id}.jsonl")),
+            format!("{{\"sessionId\":\"{id}\",\"cwd\":\"{}\",\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"hi\"}}}}\n", proj.display()),
+        )
+        .unwrap();
+    }
     let t = Tui::start(home.clone(), &[]);
     t.wait_for("Restored 3 tabs across 2 accounts", 20);
 

@@ -76,6 +76,9 @@ impl App {
         let Some((s, t)) = self.find_tab(uid) else {
             return;
         };
+        if self.assistant.bound.is_some() {
+            return;
+        }
         let tab = self.spoken_tab_name(uid);
         let project = crate::config::tilde(&self.panes[s].tabs[t].cwd);
         let text = crate::sessions::snippet(text.trim(), RESULT_CHARS);
@@ -198,7 +201,11 @@ impl App {
             return;
         }
 
-        if self.direct.on.is_some() || self.brainstorm_on() || self.paused() {
+        if self.direct.on.is_some()
+            || self.assistant.bound.is_some()
+            || self.brainstorm_on()
+            || self.paused()
+        {
             return;
         }
         if !self.quiet_moment() || self.brain_account().is_none() {
@@ -249,6 +256,16 @@ impl App {
         let note = format!("(events: {})", names.join(", "));
         crate::log::info(&format!("events: to the assistant: {}", names.join(", ")));
         self.ask_assistant_system(&note, &msg);
+        if self.assistant.busy {
+            let mut uids: Vec<u64> = vec![];
+            for &i in &pending {
+                let u = self.assistant.events.events[i].uid;
+                if u != 0 && !uids.contains(&u) {
+                    uids.push(u);
+                }
+            }
+            self.assistant.turn_tabs = uids;
+        }
         if !self.assistant.busy {
             crate::log::info("events: the assistant did not start; they wait");
             self.assistant.events.retry_at = Some(now + RETRY);

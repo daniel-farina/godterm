@@ -160,6 +160,38 @@ tabs, PTYs and assistant as the terminal UI, at the same moment.
   may do what the keyboard may do, and confirmations it answers count as
   the user's.
 
+### Remote access and passkey login (new)
+
+Settings > Remote access and login (web/js/remoteui.js; the server side
+is src/web/login.rs, webauthn.rs and remote.rs) sets up the remote
+address and who may use it. It is new in 0.4.0 and has had less use than
+the token and tailnet sign in above.
+
+- **The address.** GodTerm runs `tailscale serve` for itself, which gives
+  an HTTPS address only the devices of your own tailnet can open. An
+  address that already serves GodTerm is adopted. Tailscale has to be
+  installed and signed in already; GodTerm installs nothing.
+- **Login.** With login on, every request that arrives through the remote
+  address needs a passkey session (WebAuthn: Face ID, Touch ID, a device
+  code or a security key). The browser on the machine itself at 127.0.0.1
+  keeps the token link, and the token link no longer works remotely. A
+  passkey belongs to one address and is created from that address, opened
+  from the app or through a one time link that is good for ten minutes.
+  Up to 20 passkeys.
+- **Sessions.** A signed in browser is remembered for 30 days, renewed by
+  use, at most 90 days. The page lists them and can sign out one or all.
+- **Recovery.** A recovery code is shown once and signs in one time.
+  `godterm login status` prints the state, and `godterm login reset` on
+  the machine turns login off, signs every browser out and closes Funnel;
+  passkeys are kept.
+- **Funnel.** The address is private to the tailnet. Turning on Tailscale
+  Funnel makes it reachable from the whole internet; it is offered only
+  with login on, asks first, and visitors then see only the sign in page.
+  Turning login off makes a public address private again.
+- **Only the user.** These settings answer only the web app's own
+  requests from the owner; tabs and the assistant are refused. The
+  assistant has a read only `login_status` tool.
+
 ### Trying it
 
     # A demo instance on its own HOME, web app on port 7901:
@@ -338,6 +370,265 @@ so an agent never picks its own browser.
 An older GodTerm has no `tab_browser`: the section then shows its old
 read only cards and says choosing browsers needs a restart.
 
+### A tab's route (`tab_route`)
+
+A route sends one tab's agent through a proxy. It is chosen per tab,
+saved with the tab (state, closed tabs, the archive, a move to another
+account) and applied when the tab's program starts: the process gets
+`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and their lowercase forms, plus
+`NO_PROXY=localhost,127.0.0.1,::1` followed by whatever `NO_PROXY`
+GodTerm itself was started with. A tab with no route gets none of these
+from GodTerm.
+
+**What it is not.** This is proxying by environment variable, not a
+kill switch. Programs that ignore the variables (ssh, raw sockets, some
+CLIs) still connect directly. The UI says so wherever a route is chosen.
+Claude Code documents `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` and says
+it does not support SOCKS proxies; Grok Build documents the same three
+variables and says nothing about SOCKS. So the agent always gets an
+`http://` endpoint, see the kinds below.
+
+Two kinds, defined in `config.toml`:
+
+```toml
+[routes]
+list = [
+  { name = "office", kind = "custom", url = "http://proxy.example:3128" },
+  { name = "exit", kind = "tailscale", exit_node = "exit-node-1" },
+]
+# tailscaled_bin = "/opt/homebrew/bin/tailscaled"
+# tailscale_bin = "/opt/homebrew/bin/tailscale"
+```
+
+- **custom**: a proxy URL, `http://`, `https://`, `socks5://` or
+  `socks5h://`. An HTTP(S) proxy URL is passed to the tab as is. For a
+  SOCKS URL GodTerm runs a small bridge on `127.0.0.1` (HTTP CONNECT in,
+  SOCKS5 out) and gives the tab that `http://127.0.0.1:<port>` address,
+  since the agents do not speak SOCKS. A user name and password in the
+  URL are a secret: they live only in `config.toml` (mode 600; the
+  whole `[routes]` table is machine local, so GodTerm Sync never carries
+  it to another machine or into the sync repository), are
+  masked as `scheme://***@host:port` in everything the web app, the
+  assistant and the state tools see, and are never logged. Limits worth
+  knowing: an HTTP(S) proxy URL with a password is in the routed tab's
+  own environment, so that tab's agent can read it; a SOCKS password
+  stays inside GodTerm, behind the bridge.
+- **tailscale** (experimental): an exit node of your tailnet through a
+  second, userspace Tailscale that GodTerm runs for this route only. The
+  unit tests and the web gate drive it against stand-ins for `tailscaled`
+  and `tailscale`; it has not been run end to end against a real tailnet
+  and exit node yet.
+
+  ```
+  tailscaled --tun=userspace-networking --statedir=<home>/tailscale/<route> --socket=<home>/tailscale/<route>/tailscaled.sock
+  tailscale --socket=<that socket> up --reset --hostname=godterm-<route> --json
+  tailscale --socket=<that socket> set --exit-node=<node> --exit-node-allow-lan-access=<true|false>
+  tailscale --socket=<that socket> status --json
+  tailscaled ... --socks5-server=127.0.0.1:<port> --outbound-http-proxy-listen=127.0.0.1:<port>
+  ```
+
+  `<home>` is GodTerm's data folder. The instance is a separate device
+  on the tailnet (`godterm-<route>`) and needs one login: the login link
+  `tailscale up` prints is shown in Manage routes for you to open;
+  GodTerm never logs in by itself. It needs the open source `tailscaled`
+  (for example `brew install tailscale`); the Tailscale app from the App
+  Store or the standalone app has no `tailscaled` and its `tailscale`
+  command is refused (GodTerm checks that the command honours `--socket`
+  before it runs anything that changes settings). Both programs are
+  found in the usual folders or set by full path under Manage routes,
+  and are always run by absolute path. The system Tailscale is never
+  changed: every `up`, `set` and `status` names the route's own socket.
+  The only command sent to the system Tailscale is the read only
+  `tailscale exit-node list`, to suggest exit node names in the form.
+
+  The proxy ports are opened in two steps so the route cannot leak while
+  it is being set up. tailscaled first runs **without** the proxy
+  flags; GodTerm logs in, sets the exit node and waits until `status
+  --json` shows that node as the active exit node and online; only then
+  it restarts tailscaled with the two proxy flags, on a port chosen
+  fresh each time, so nothing knows the port before the route is ready.
+  Whenever a later `status` shows the node is no longer the active,
+  online exit node (or a login is needed again), tailscaled is restarted
+  without the proxy flags, so the routed tabs' connections are refused
+  instead of leaving from this machine. When the route comes back it is
+  on a new port: tabs started on the old one stay cut off and are marked
+  (state `warn`, "reload this tab to reconnect it") until you reload
+  them, which goes through the launch check again. Status is read every
+  3 seconds; in that window, if the exit node is removed from the
+  tailnet or the device is logged out, a userspace tailscaled may
+  connect directly. A route is a strong default, not a guarantee.
+
+  The instance starts when the first tab using the route is launched
+  (or with Connect in Manage routes, which keeps it for 10 minutes to
+  log in and choose a node) and stops when no open tab has the route any
+  more, and when GodTerm exits. A tailscaled left by a crashed GodTerm is
+  stopped on the next start (its pid file, checked against its command
+  line). Deleting a route leaves its state folder and its device on the
+  tailnet: remove the device in the Tailscale admin console.
+
+**Fail closed at launch.** A tab with a route is started only when the
+route answers: a TCP connect to the proxy, and for a tailscale route
+the managed instance reporting the exit node active with its proxy
+open. Otherwise the tab is **not** started without the route: the pane
+shows "Not started: route <name> is not ready" with Retry, Change route
+and "Launch without the route". The last one is the user's explicit
+choice for that one launch; the route stays set, the tab is marked
+(chip and badge in the warning colour, state `bypassed`) and the next
+launch is checked again. A tab held for a tailscale route that is still
+starting or waiting for login starts by itself once the route is ready.
+Reload, reopen, resume, restore and a move all go through the same
+check.
+
+**Only the user.** `tab_route` is not in the tool list any agent sees
+and answers only the web app's own requests (`_client` web; the web
+server refuses connections from processes GodTerm started). The
+assistant, a tab's MCP server and other control clients get "refused".
+What an agent can see is `route` on its tab in the state: `{name, kind,
+state, detail?}` with state `on`, `idle` (set, the tab is not running),
+`blocked`, `bypassed` or `warn` (running, the tailscale route is not
+ready right now), never the proxy URL or a login link.
+
+`tab_route` `{op, ...}`:
+
+- `view` `{system?}`: `{routes: [{name, kind, state, detail, tabs,
+  url (masked) and has_secret | exit_node, allow_lan, running, nodes,
+  login_url, test?}], bins, limits, test_host, system_nodes?}`. Route
+  states: `ready`, `starting`, `login`, `missing` (no tailscaled),
+  `choose` (no exit node yet), `unreachable`, `error`, `stopped`.
+- `set` `{tab, route, force?}`: `route` "" is Direct. A running tab is
+  restarted and resumes its conversation; when it is working the answer
+  is `{needs_confirm, say}` and the web app asks before sending `force`.
+- `retry`, `launch_direct` `{tab}`: the two buttons of a held tab.
+- `save` `{name, kind, url? | exit_node?, allow_lan?, was?}`: add, or
+  with `was` edit or rename. An edit without `url` keeps the saved one,
+  since the web app only ever has the masked form.
+- `delete` `{name}` (refused while a tab uses it), `bins` `{tailscaled,
+  tailscale}`, `connect` `{name}`, `test` `{name}`.
+
+Test connects through the route to `api.anthropic.com:443` and stops
+after the TLS handshake (certificate checked); nothing else is sent and
+no "what is my IP" service is asked. The result shows on the route.
+
+In the web app (web/js/route.js): the **Route chip** in the top bar's
+second row shows the focused tab's route, dim "Direct" when off,
+highlighted "via <name>" when on, the warning colour when held or
+bypassed. Its menu lists Direct and every route with its live state,
+and Manage routes. Routed tabs carry a "via <name>" badge in the pane
+header and the tab list. On a phone the chip is hidden (the row is
+full): the route is under the tab's options (Route) and Manage
+(Routes); a routed tab tints the tab options button and the title line
+starts with "via <name>". Routing has its own calm accent
+(`--route`, the teal swatch), apart from voice's `--vox`.
+
+In the terminal UI the route shows at the right of the tab's model bar
+("via <name>", with "!" when held or bypassed) and a held tab says why
+in its pane; Enter retries. Choosing and editing routes is in the web
+app only.
+
+### The embedded browser (`ebv` frames, binary kind 7)
+
+With `web.embedded_browser` on, a pane can show pages of a GodTerm-run
+Chrome beside the terminal (see docs/EMBEDDED_BROWSER.md). One Chrome is
+shared by all tabs; each tab only sees and drives its own pages. Browser to server: `{t: "ebv",
+id?, tab, op}` with `op` `open` (`w`, `h`: the pane's size; starts the
+browser lazily and attaches this client; answers the page meta), `close`
+(detach), `kill`, `keep`, `go` (`url`), `back`, `forward`, `reload`, `stop`,
+`resize` (`w`, `h`), `tab_new` (`url` optional), `tab_switch` and `tab_close`
+(`page`: the page tab id; answered with the new meta), `mouse` (`kind` move, down, up or wheel, `fx` and `fy`
+as fractions of the picture, `button`, `cc`, `dx`, `dy`), `key` (`key`,
+`code`, `mods`), `text`. Server to browser: `{t: "ebv", tab, op: "meta",
+url, title, loading, back, fwd, w, h, tabs: [{id, url, title, asleep?}],
+active}` (the active page; at most 6 page tabs per GodTerm tab, page ids
+are unique over all tabs; `asleep` marks a page put to sleep, which
+`tab_switch` or attaching wakes by reloading it), `{op: "ended"}`, the
+answers, and the pictures as binary kind 7 (JPEG). There is no limit on
+browsers any more, only on pages awake over all tabs
+(`web.embedded_browser_max_pages`). `state` carries `embedded_browser` and
+`embedded_open` (tab uids that own pages, awake or asleep).
+
+### The Apps page (`apps` frames)
+
+Apps is a personal catalog of what you built: every app, game, utility, dashboard, page,
+tool or library built on this machine, with the conversations that worked on
+each. It opens from the Apps button of the toolbar on a desktop and from
+Manage > Apps on a phone, as a sheet (`web/js/apps.js`; the server side is
+`src/app_catalog.rs`).
+
+Two sources are merged on the server:
+
+- The catalog file `apps.json` in the GodTerm data folder (`config::app_home()`,
+  so `GODTERM_HOME` and the `location` pointer apply). GodTerm only reads it;
+  an agent writes it. Shape: `{"version": 1, "generated_at": "...", "apps":
+  [{"name", "kind", "description", "path", "project", "tech", "run", "tags"}]}`
+  with `kind` one of app, game, utility, dashboard, page, tool, library, other.
+  Missing fields are empty, unknown fields are ignored, an unknown kind is
+  `other`, and a missing or broken file is an empty catalog.
+- The session index (the same one Sessions and resume use). Each catalog entry
+  gets the conversations whose working folder is its `path` or `project` or
+  inside them, newest first. Every other folder with conversations is listed
+  as an Undescribed entry named after the folder. A session that ran in a
+  worktree under `.claude/worktrees/` counts for the project it branched from.
+  Subagent, scripted and temp folder sessions are left out, as in Sessions,
+  and nothing under the private vault is listed or checked.
+
+Browser to server: `{t: "apps", id, op}`. Every answer is `{t: "apps", id, op,
+ok}` plus the fields below, or `error`.
+
+- `op: "list"` answers `catalog` (the file, shown with `~`), `generated_at`,
+  `indexing` (the first scan is still running: ask again), `workspace` (the
+  folder for new tabs), `kinds` and `apps`: `{name, kind, description, path,
+  shown_path, project, project_name, tech, run, tags, described, missing,
+  project_missing, last, last_ms, conversations, sessions}`. `kind` is
+  `undescribed` for entries that are not in the catalog. `missing` means the
+  entry's `path` is not on disk; `project_missing` says the same of its
+  project, so an app folder that is gone inside a live project flags only the
+  app. `sessions` holds the newest 30 as `{id, title, when, when_ms, harness,
+  source, folder, cwd, gone}`; `gone` means that conversation's own folder is
+  not on disk.
+- `op: "restore"` with `session` (an id) and `confirm`: makes the empty folder
+  a conversation ran in, so it can be resumed. Without `confirm: true` it
+  creates nothing and answers `ok: false, needs_confirmation: true, folder`.
+  With it, the folder is made by the same rules as a new tab's folder (inside
+  the home folder only, never a system or private folder, never the vault) and
+  the answer is `folder` and `created`. The folder comes from the session
+  index, never from the browser.
+- `op: "prefill"` with `tab`, `what` and, by `what`: `describe` (`path`),
+  `refresh`, or `rebuild` (`path`, `session`, `resumed`). GodTerm pastes the
+  matching prompt into that tab's input box once the tab is ready and does not
+  press Enter; the user reads it and sends it. The three prompt texts live
+  together in `src/app_catalog.rs` (`describe_prompt`, `refresh_prompt`,
+  `rebuild_prompt`). The first two ask the agent to read READMEs and core
+  source only (no config or json, no secrets, nothing under the vault) and to
+  update the catalog file while keeping the other entries. The rebuild prompt
+  asks it to look for a git remote in the history first and offer to clone it,
+  otherwise to recreate the files from the history, and to say what could not
+  be recovered.
+
+The page has a search box (name, description, path, tech, tags), a chip per
+kind with counts plus Missing, and a sort by kind (grouped, the default), name
+or last worked on. Missing entries sit after the others in their group, folded
+behind an "N missing" row. A card shows the name, kind, description, tech, the
+path (a click copies it), the project, when it was last worked on and how many
+conversations it has. Its actions use the tools the rest of the web app uses:
+Open conversation resumes the newest one with `open_session` (All N lists the
+others), New chat here opens a tab with `open_tab`, and Describe (undescribed
+entries) and Refresh catalog (the page) open a tab and place a prompt in it.
+
+When a conversation's folder is gone, a plain resume cannot find it (the tab
+is marked "conversation not found"), because a harness looks a conversation up
+by the folder it ran in. So Open conversation first asks, in the page, whether
+to make the empty folder again at the same path; only a yes sends `restore`,
+and then the conversation resumes there. Rebuild from history asks the same,
+resumes the newest conversation and places the rebuild prompt in it; when the
+folder cannot be made or the resume does not open a tab, it opens a new tab
+whose prompt points at the conversation's transcript file instead. These are
+user actions of the page only: there is no assistant or MCP tool for them.
+
+The dev mock answers the same frames with a fictional catalog
+(`web/dev/mock_apps.py`), `/dev/apps` reports what the page asked for, and the
+gate checks the page in `scripts/e2e/web_gate_apps.mjs`. The Rust tests are in
+`src/app_catalog_tests.rs`.
+
 ### The live browser view (`bview` frames, binary kind 5)
 
 A tab's Browser section shows the page its agent drives, live, when the
@@ -500,19 +791,30 @@ output before any screen sees it and is stored only in the keychain
   - `approvals`: what waits for a yes, the authority for an approvals
     list: `{id, kind, tab, question, choices, name?}` where kind is
     `confirm` (the assistant asks; id `confirm:<token>`, choices yes/no),
-    `switch` (moving the assistant to another account; id `switch`) or
+    `switch` (moving the assistant to another account; id `switch`),
+    `tabjob` (a tab's agent asks to change its jobs; id
+    `tabask:<token>`, `tab` its uid or null once the tab is gone, with
+    `tool`, `what` (short words such as "create job"), `asked_at` and
+    `expires_at` in epoch seconds; choices yes/no) or
     `tab` (a tab at a permission prompt; id `tab:<uid>`, choices: those
     of yes, always and no its prompt has; none when GodTerm cannot read
-    it, and the app offers Show to answer it in the tab).
+    it, and the app offers Show to answer it in the tab). A `confirm`
+    also has `tabs` (the uids of the open tabs it is about) and `tool`.
+    Everything but `tab` is a GodTerm confirmation: the app shows it as
+    a banner with Yes and No on the pane of each tab it is about, since
+    nothing in the terminal asks for it.
   - each account also has `models`: its tabs' model bar `[{arg, label,
     desc}]` (empty for a CLI that picks its own model).
   - `assistant` `{on, busy, provider, account}`; `voice` `{mode (off,
     push, wake, open), muted, heard, action, web, speaking, awake,
-    wake_word, barge_in}` (`web`: the client id of the browser that is the
-    voice now, or null; `speaking`: a reply is being spoken; `awake`: the
-    wake word's follow up window is open).
-  - `mode_flags.direct` (the tab talked to directly, or null) and
-    `mode_flags.brainstorm`.
+    wake_word, barge_in, direct_follow}` (`web`: the client id of the
+    browser that is the voice now, or null; `speaking`: a reply is being
+    spoken; `awake`: the wake word's follow up window is open;
+    `direct_follow`: the setting `voice.direct_follow`).
+  - `mode_flags.direct` (the name of the tab talked to directly, or
+    null), `mode_flags.direct_tab` (its uid, or null) and
+    `mode_flags.brainstorm`. Each tab has `can_direct`: it runs, so it
+    can take direct mode.
 - binary kind 1 `output`: raw PTY bytes of a subscribed tab, as the parser
   got them. Terminal queries GodTerm answers itself (cursor position,
   device attributes, XTVERSION, DECRQM, kitty `?u`, OSC 10/11/12/4 color
@@ -633,11 +935,22 @@ output before any screen sees it and is stored only in the keychain
   in its panel. `images`: up to 6 pasted images as data URLs (PNG, JPEG,
   GIF or WebP, 20 MB each), attached as the panel attaches them: saved
   under the assistant's images, named in the text ("[image 1: 1280x720]"),
-  sent to its model, and referable for tabs.
+  sent to its model, and referable for tabs. `raw: true` (only while a
+  tab conversation is open, no images): the text is typed into that tab
+  as is, queued behind its work, and the assistant is not asked.
+- Tab conversation: the tool `tab_chat` `{tab}` opens the user's own
+  conversation about one tab (`{off: true}` ends it). Then the assistant
+  thread is that tab's: `state.assistant.tab_conv` is `{id, name, harness,
+  account, model, state}` (null otherwise), `assistant_reset` swaps the
+  messages, and each message goes to an assistant that sees only that tab
+  (state, screen, recent turns, queue) and can act on it only. The thread
+  is kept per tab; ending the conversation restores the main one.
 - `answer` `{id, choice}`: answer an approval from `state.approvals`.
   `tab:<uid>` presses the prompt's own option (yes, always or no) in that
   tab; `confirm:<token>` and `switch` say yes or no to the assistant, as
-  its Yes and No buttons do.
+  its Yes and No buttons do; `tabask:<token>` allows or declines a tab's
+  job request (the terminal UI's dialog for it closes too). Only a
+  browser's own `answer` frame does this: no tool answers a job request.
 - `tool` `{name, args, id, user_says?}`: any control tool, on the UI
   thread through the same path as the control socket, as client `web`
   (not the assistant: never counted against its turn, kept out of its
@@ -673,7 +986,9 @@ output before any screen sees it and is stored only in the keychain
   on the browser's audio, below), instant commands, direct mode and
   brainstorm.
 - `voice` `{direct: uid | false}`: talk to that tab directly (as Ctrl-a K
-  does), or back to the assistant. `{brainstorm: true | false}`: brainstorm
+  does), or back to the assistant. `{follow: true | false}` (alone or with
+  `direct`): sets `voice.direct_follow`, whether direct mode follows the
+  active tab. `{brainstorm: true | false}`: brainstorm
   mode on or off. `{hush: true}`: stop the reply being spoken (as talking
   over it does). `{away: true | false}`: the page went to the background
   or came back (logged; iOS stops the mic meanwhile).
@@ -783,25 +1098,92 @@ of its own, capitalised), the Talk button's state words, the mic menu
 and the voice sheet's mode buttons all take their words from it.
 
 The mic has one control: the mic in the header. A tap opens the mic
-menu: Off, Push to talk, Open mic, Wake word ("Hey God", or the wake word
-set), with the current one checked, then Direct to this tab (a switch:
-`voice {direct}`) and Voice settings. The pick is kept on the device
+menu, a small panel of three sections that stays open while you change
+things:
+
+- Microphone: one segmented control (a radio group) with Off, Push to
+  talk, Open mic and Wake word, and one line under it that describes the
+  mode picked. The section's header has the mute switch (Live or Muted;
+  M on a keyboard): muted, the switch, the picked mode and the line
+  under it turn clay and the mode's icon is a slashed mic.
+  Under that, Input: which of the browser's microphones is used
+  (`enumerateDevices`, audio inputs), System default first. The choice
+  is kept in this browser (`gt.voice.input`, the id and the name) and
+  asked for as `deviceId: {exact}`; the Mac's own `voice.device` is not
+  touched. Names are only known once the browser has allowed the mic:
+  until then the row says System default with a hint, and the list is
+  read again after the first capture and on `devicechange`. A chosen
+  input that is unplugged or does not start falls back to the default,
+  one line says so, and the choice is kept for when it returns. A
+  change while the mic is live opens the mic again on the new input in
+  place (the voice mode stays on). With one input the row only names
+  it. The row is hidden where the browser cannot list devices (no
+  HTTPS, no `mediaDevices`).
+- Spoken replies: one On/Off switch in the header, the same switch as
+  Talk back in Settings > Voice and the speaker mute (it calls the
+  `speaker` tool; On also sets `voice.tts`). On shows the volume slider
+  with its percentage and the option "Also speak replies to typed
+  messages" (`assistant.speak_typed`). Off hides both and says "Replies
+  show as text only". With the volume at 0 the switch reads Off, the
+  slider stays, and On brings back the last volume.
+- Talk to: one segmented control with Assistant (direct mode off), This
+  tab (direct mode on for the tab shown, and it stays there) and Follow
+  active tab (direct mode on and `voice.direct_follow` on: `voice
+  {direct, follow}`). The line under it says who hears you now
+  ("Talking to docs"). When voice stays with another tab than the one
+  shown, nothing is picked and the line says so.
+- Voice settings, a small row at the bottom.
+
+Left and right arrows move inside a segmented control, up and down
+between the controls, and Enter or Space picks.
+
+With following on, GodTerm moves direct mode to the tab you open (in
+the app or in a browser, whichever you picked last) about 0.7 s after
+you stop switching, and says "Now talking to docs." It waits while a
+message is being typed into the old tab or an approval awaits your
+spoken yes, and skips a tab that is not running. Messages still queued
+for the old tab stay queued for it. A browser's first view after it
+connects counts as where you already were, not as a pick.
+
+With following off, opening another running tab shows a small bar under
+the header: "Voice is talking to docs. Move here". Move here moves
+direct mode to the tab shown; the x dismisses the bar until you have
+been back to the old tab. It goes away on the old tab and is not spoken.
+
+The pick of the mic mode is kept on the device
 (`gt.voice.pick`, Off by default). The header's mic shows it at a glance:
 slashed and dim for Off, a PTT badge for push to talk, OPEN in green for
 open mic, WAKE in blue for the wake word.
 
-- Push to talk: a big Talk button stays on screen at the bottom right,
-  above the key bar (the chat's own mic does the same in the chat). Hold
-  it while you talk: it fills, says "Release to send" and shows the live
-  level (a bar and dB). Nothing else listens.
+- The voice bar: on a desktop one row sits right below the panes, above
+  the status bar, at all times (44 px, quiet while voice is Off). From
+  the left: the Talk button, the Talk to dropdown (Assistant, Follow
+  active tab, or any open tab by name, with a filter), the assistant's
+  Context while speech goes to the assistant, then the mode switch (Off,
+  Push, Open, Wake), the mic mute switch, the Spoken replies switch with
+  its volume, the Input picker on a very wide bar, and Voice settings.
+  It shares its state with the header's mic and its menu. A narrow bar
+  drops labels, then the slider, and under 640 px keeps Talk, Talk to
+  and one button that opens the mic menu. While a mode is on the bar and
+  the header's mic take a muted purple (`--vox`), stronger while the mic
+  listens, and the pane speech goes to gets a purple line and a Voice
+  badge in its header (the assistant panel's header when speech goes to
+  the assistant). On a phone the compact bar shows only in push to talk,
+  above the key bar, hides while the keyboard is up, and moves into the
+  chat while the chat covers the tab.
+- Push to talk: hold Talk in the voice bar while you talk (the chat's
+  own mic does the same in the chat): it fills, says "Release to send"
+  and shows the live level (a bar and dB). Nothing else listens. In open
+  mic and wake word the same button shows the listening state instead.
 - Open mic and Wake word: a strip under the header says so for as long
   as the mode is on ("Open mic · listening", "Wake word · say "Hey
   God"", hearing you, heard you with what was heard, thinking, speaking
   with Stop) with the live level as a bar and in dB (dBFS, e.g. -42 dB).
   A tap on it opens the mic menu (another mode, or Off). After a reload
   it offers Start (iOS needs a tap for the mic and the speakers).
-- Mute mic: the slashed mic button on the strip, Mute mic in the mic
-  menu (a switch) and in the voice sheet, or M on a keyboard (when the
+- Mute mic: the slashed mic button on the strip, the Live or Muted
+  switch in the mic menu's Microphone header, Mute mic in the voice
+  sheet, or M on a keyboard (when the
   focus is not in a text field, the terminal or the chat; not while
   voice is Off). The mode stays; the capture track is disabled (so the
   browser's recording indicator shows it) and only silence goes to
@@ -814,9 +1196,9 @@ open mic, WAKE in blue for the wake word.
   muted opens no mic and says how to unmute. Unmute listens again at
   once. Kept per browser (`gt.voice.micmute`); after a reload the strip
   still offers Start, muted.
-- The agent's voice here: Agent voice in the mic menu and in the voice
-  sheet ("Voice in this browser") is a speaker button (a tap mutes) and
-  a volume slider (0 to 100 %, live). Every clip goes through one gain
+- The agent's voice here: Spoken replies in the mic menu is the On/Off
+  switch with a volume slider; Agent voice in the voice sheet is a
+  speaker button (a tap mutes) and a volume slider (0 to 100 %, live). Every clip goes through one gain
   node, so a change applies at once, also mid reply. The strip has a
   small speaker button: a tap mutes or unmutes, and it shows the volume
   when under 100 % (or a crossed speaker when muted). Replies still come
@@ -892,6 +1274,12 @@ the icons):
   phone keyboard is up only row 1 shows, and a phone on its side puts
   the two rows side by side. Below 380 px the Update pill in row 1 keeps
   its icon only, so the tab's name keeps its room.
+- The Route chip (desktop, first in row 2) shows the focused tab's
+  route: dim "Direct", highlighted "via <name>", or the warning colour
+  when the tab is held or runs without its route. On a phone the row has
+  no room for it: a routed tab tints the tab options button at the right
+  end and its route leads the line under the tab's name. See "A tab's
+  route".
 - The open mic / wake word strip sits under row 2 while one is on.
 
 ### Layout and breakpoints
@@ -1169,8 +1557,17 @@ The side list on a desktop, the drawer on a phone (web/js/tabs.js):
   elsewhere). Sessions already open in a tab or archived are left out
   of it. The two server queries go out 150 ms after the last key (a
   stale reply is dropped); Archived shows 5 and Other sessions 8, and
-  Show more adds 20. Antigravity and OpenCode keep their sessions in
-  their own databases and are not indexed.
+  Show more adds 20. OpenCode keeps its sessions in
+  its own database and is not indexed; Antigravity's are, per slot, and
+  the ones made with plain `agy` as "Antigravity (plain terminal)".
+  Opening one of those asks first: it is copied into an Antigravity
+  account and resumed there, the original stays (Sessions and Existing
+  sessions let you pick the account when there are several).
+- The Sessions page's Agent chips list every agent that has an account
+  or indexed sessions; All agents is every one of them. An empty result
+  names the filters that are on, and when the Account filter is an
+  Antigravity account with nothing to show while plain terminal
+  conversations exist, one line and a Show them button lead to them.
 
 ### On a phone
 
@@ -1427,7 +1824,7 @@ Light); components use the tokens, never literal colors.
   copied"); on a desktop they sit at the bottom right above the status
   bar (left of the assistant when it is open), wrapping, never over the
   pane header. On a phone they float above the key bar, and with push to
-  talk on above the Talk button (`body.ptt`), so a held Talk keeps
+  talk on above the voice bar (`body.vx-ph`), so a held Talk keeps
   "Release to send" and its level in view.
 
 Keyboard (web/js/keys.js, web/js/sheet.js). The terminal takes every key
@@ -1568,6 +1965,9 @@ lines, across a rollover).
 
 All through `tool`. The tab tools take `tab` as an id ("t12"), a list, or
 a word ("all", "waiting"...).
+
+- Routes: `tab_route` (see "A tab's route"); the user's own, refused
+  for agents.
 
 - Sessions: `sessions` `{text?, harness? (claude|grok|all), source?
   (account number or name, "main", "all"), since?, until? ("today",

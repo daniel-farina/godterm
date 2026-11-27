@@ -375,3 +375,34 @@ fn a_small_terminal_caps_the_drawer() {
     assert!(app.loops_drawer_geo.borrow().get(&0).is_none());
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn a_stop_is_asked_at_most_twice_and_never_doubled() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, dir) = test_app("stopcap");
+    let uid = with_loops(&mut app);
+    app.stop_loops(uid, vec!["a1b2c3d4".into()]);
+    app.stop_loops(uid, vec!["a1b2c3d4".into()]);
+    app.stop_loops(uid, vec!["a1b2c3d4".into()]);
+    assert_eq!(app.stop_reqs.len(), 1);
+
+    let late = crate::clock::ago(std::time::Duration::from_secs(121));
+    app.stop_reqs[0].sent = Some(late);
+    app.stop_reqs[0].tries = 1;
+    app.stop_tick();
+    assert_eq!(app.stop_reqs.len(), 1, "one retry is still allowed");
+
+    app.stop_reqs[0].sent = Some(late);
+    app.stop_reqs[0].tries = crate::app_loops::STOP_TRIES;
+    app.stop_tick();
+    assert!(app.stop_reqs.is_empty(), "{:?}", app.stop_reqs);
+
+    app.stop_loops(uid, vec!["a1b2c3d4".into()]);
+    app.stop_reqs[0].sent = Some(std::time::Instant::now());
+    app.on_loops(vec![]);
+    assert!(
+        app.stop_reqs.is_empty(),
+        "a job no longer listed counts as stopped"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

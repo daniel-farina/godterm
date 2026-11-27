@@ -61,7 +61,7 @@ Settings. Restart existing tabs after changing their harness or binary.
 | Grok Build | `grok` | `grok login` | Isolated `GROK_HOME` |
 | Codex CLI | `codex` | `codex login` (verified: subcommand exists) | Isolated `CODEX_HOME` in the slot's `config_dir` |
 | Cursor CLI | `cursor-agent` or `agent` (both verified, one binary) | `agent login` (verified: subcommand exists) | Native store, shared between slots |
-| Antigravity CLI | `agy` | None: onboarding and `/login` inside the CLI (no login subcommand, verified) | Native store, shared between slots |
+| Antigravity CLI | `agy` | Its own sign-in screen when the tab starts (no login subcommand, verified) | Isolated: the slot's `config_dir` is the CLI's `HOME` (macOS and Linux; see "Antigravity CLI in detail") |
 | OpenCode | `opencode` | `opencode auth login` (verified: subcommand exists, not run) | Native store, shared between slots |
 
 Codex starts with a fresh home under `~/.godterm/accounts/<name>`; sign in
@@ -71,12 +71,14 @@ Do not point multiple Codex slots at the same `config_dir` if you need
 separate accounts. API-key authentication still uses the native CLI's
 environment; `CODEX_HOME` does not isolate inherited API keys.
 
-Cursor, Antigravity and OpenCode slots reuse native configuration and
+Cursor and OpenCode slots reuse native configuration and
 authentication. Multiple slots can run concurrently, but they do not
-provide separate identities. GodTerm does not override `HOME` or invent
-unsupported home variables. Use the CLI to manage its login; GodTerm's
-logout action refuses these new harnesses to avoid clearing a shared
+provide separate identities. GodTerm does not override `HOME` for them or
+invent unsupported home variables. Use the CLI to manage its login; GodTerm's
+logout action refuses them to avoid clearing a shared
 login. Codex logout is also CLI-managed in this first integration.
+Antigravity is the exception: each slot has its own home and login, and
+GodTerm can log it out (see "Antigravity CLI in detail").
 
 GodTerm labels these logins as **CLI-managed** and lets the CLI handle
 authentication errors or onboarding when starting a tab. It does not
@@ -158,7 +160,10 @@ the shared Cursor store's `projects/<slug>/agent-transcripts/<id>/<id>.jsonl`
 (read once, as the first Cursor slot's; the folder is the existing path
 the slug spells). Opening one resumes it on that slot. The main
 `~/.codex` is not indexed (a slot cannot resume it without a copy), nor
-are Antigravity's and OpenCode's databases. These readers follow the
+is OpenCode's database. Each Antigravity slot's conversations are indexed
+from its `brain/<id>/.system_generated/logs/transcript.jsonl`, and so are
+the ones made with plain `agy` in your real home, as the source
+"Antigravity (plain terminal)" (see "Antigravity CLI in detail"). The Codex and Cursor readers follow the
 formats above but were checked only against fixtures.
 
 **How GodTerm learns the id.** It reads no transcripts for these CLIs (the
@@ -171,6 +176,8 @@ Enter, a restart of GodTerm or "reopen closed tab" resume the same
 conversation. A tab GodTerm closes or kills (or a GodTerm that quits)
 prints nothing and starts fresh next time; use the CLI's own resume picker
 for those. Codex's `/status` and OpenCode's `session list` also show ids.
+Antigravity does better: the CLI reports its conversation id to GodTerm
+while it runs, so a killed tab resumes too.
 
 Because ids are only known after a clean quit, and a move between slots
 would need GodTerm to copy a session between homes (Codex keeps one home per
@@ -185,7 +192,8 @@ through GodTerm's voice/typed assistant. The new harnesses can autostart
 without GodTerm inspecting their credentials. The assistant itself still
 uses the existing Claude/Grok providers and requires its own login.
 
-Usage meters, transcript browsing/copy/move/takeover, quota failover and
+Usage meters (also Antigravity, from what its CLI reports), transcript
+browsing/copy/move/takeover, quota failover and
 MCP/plugin administration remain available for Claude/Grok only. GodTerm
 does not query a Claude usage endpoint or run Claude admin commands for
 the new harnesses. Manage those features in the native CLI.
@@ -260,7 +268,7 @@ added per launch, never by editing your global config:
 | Codex | `-c mcp_servers.godterm.command/args/env/env_vars` on the command line; the tab and token come from the environment (`env_vars`, so the token is not in `ps`); `default_tools_approval_mode="approve"`, because GodTerm asks you itself; the hint as `-c developer_instructions=...` (appended to the slot's own) | `/mcp` lists `godterm: connected (7 tools)`; the env reaches the server; a call ran without a prompt; the model quoted the instruction |
 | Cursor | `--plugin-dir ~/.godterm/tab-mcp/cursor-t<uid>` with a `.cursor-plugin/plugin.json` and an `mcp.json` | `/mcp` lists `Godterm (plugin) - enabled`, 7 tools; env delivered; a call asked "Run this MCP tool?" (answer `y`) and returned. No rules/skills channel for a hint was found to load, so Cursor gets none; the tool descriptions say to prefer them over loops |
 | OpenCode | `OPENCODE_CONFIG=~/.godterm/tab-mcp/opencode-t<uid>.json` (`mcp.servers.godterm`) plus `--standalone` | the TUI shows `1 MCP`, godterm `Connected`; env delivered; the shared service ignores the file (hence `--standalone`). The hint is unverified (no model), so none is sent |
-| Antigravity | none per launch: `agy mcp add` writes the user-level `mcp_config.json`, and plugins install globally; there is no flag or environment variable (checked `--help` and the binary) | refused: "Antigravity CLI tabs have no GodTerm job or browser tools: the CLI only takes MCP servers from its global mcp_config.json, which GodTerm does not edit" |
+| Antigravity | the slot's own `<config_dir>/.gemini/config/mcp_config.json` gets a `godterm` server (other servers in the file are kept, a server of that name that is not GodTerm's is left alone); the tab and token come from the tab's environment, which the CLI passes on to stdio servers. No prompt hint is sent. Not on Windows, and not for a slot whose `config_dir` is your real home | agy 1.5.18: a stdio server from that file was started with the tab's environment plus the file's `env`. A real tool call needs a signed-in account (unverified) |
 
 Turn it off with `[tabs] jobs_tools = false`.
 
@@ -269,12 +277,16 @@ Turn it off with `[tabs] jobs_tools = false`.
 | Feature | Claude, Grok | Codex, Cursor, OpenCode | Antigravity |
 | --- | --- | --- | --- |
 | Model bar (Ctrl-a #, `set_tab_model`) | model picker | a bar with the loops and Browser buttons; "the model is chosen inside the CLI" | same |
-| Browser button, Ctrl-a i, tab browser binding | yes | yes: the dialog binds the Chrome profile and the default profile; the agent learns it from `list_browsers` / `browser_status` | button present; its hint and the dialog say the tab tools are unsupported |
-| Tab job tools and prompt hint | yes | yes (hint: Codex only) | refused, with the reason above |
+| Browser button, Ctrl-a i, tab browser binding | yes | yes: the dialog binds the Chrome profile and the default profile; the agent learns it from `list_browsers` / `browser_status` | same as Codex (on Windows the tab tools are unsupported and the dialog says so) |
+| Route (proxy per tab, web app) | proxy variables set; both document `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` (no SOCKS: GodTerm gives an HTTP endpoint) | variables set; whether the CLI honours them is not checked | same |
+| Tab job tools and prompt hint | yes | yes (hint: Codex only) | tools yes, no hint |
 | BrowserSkill install | copies the skill into the account | skipped with a note: GodTerm copies it only into Claude and Grok homes. `bsk install-skill` itself knows Codex (`~/.agents/skills`) and Cursor (`~/.cursor/skills`), not Antigravity or OpenCode (`bsk install-skill --list`) | skipped |
 | Move / copy to another slot, failover | same harness | refused (see Sessions) | refused |
 | Archive | yes | only with a recorded session id; otherwise refused | same |
-| Recently closed (reopen) | resumes the session | resumes when an id was recorded (a quit tab), else a fresh tab | same |
+| Recently closed (reopen) | resumes the session | resumes when an id was recorded (a quit tab), else a fresh tab | resumes the session (the id is known while the tab runs) |
+| Login state, email, plan, logout | yes | CLI-managed | signed in or not from the slot's token file; email and plan once a tab of the slot has run; logout removes the slot's token file |
+| Usage in the account bar | yes | no | the quota the CLI last reported in a tab of the slot; nothing until then |
+| Working / ready / needs you | screen | screen | the CLI's own state report, with the screen as the fallback |
 | Voice or button approvals | keys read from the prompt | keys read from the prompt (above) | same |
 | Message receipts | transcript (Claude), delivered or not (Grok) | delivered or not | same |
 
@@ -284,10 +296,231 @@ need to know which file belongs to the tab, and GodTerm only knows a session
 id after a clean quit, so a reader would be guessing among sessions in the
 same folder.
 
+## Antigravity CLI in detail
+
+Checked against agy 1.5.18 on macOS. "Verified" means seen with the real
+binary in a throwaway home, with no Google account: the CLI was run in
+its Gemini API key mode against a local stand-in for the model endpoint, so
+every screen, file and report below except the signed-in ones is the real
+CLI's. "Documented" means the official docs or the CLI's own `changelog`
+say so. "Unverified" needs a signed-in account and is listed at the end.
+
+### Where it keeps things, and one account per slot
+
+- Everything is under the home directory: `~/.gemini/antigravity-cli/`
+  (settings.json, keybindings.json, conversations, brain, log, cache) and
+  `~/.gemini/config/` (mcp_config.json, hooks.json, plugins, projects).
+  Documented, and verified.
+- There is no variable or flag that moves it (documented: none; verified:
+  `ANTIGRAVITY_GEMINI_DIR`, `ANTIGRAVITY_APP_DATA_DIR` and
+  `ANTIGRAVITY_CONFIG_REL_DIR`, names found in the binary, change nothing).
+  The only thing that moves it is `HOME` (verified).
+- So a slot's `config_dir` (default `~/.godterm/accounts/<name>`) is given
+  to the CLI as `HOME`. Its `.gemini` is the slot's own: login, settings,
+  conversations, MCP servers, hooks and folder trust are per slot.
+- The sign-in token would still be shared, because on macOS the CLI keeps
+  it in the Keychain, which does not depend on `HOME`. GodTerm sets
+  `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1`, and the CLI then keeps the token in
+  a file in the slot (verified: its log says "Using file-based token storage
+  because AGY_CLI_FORCE_FILE_TOKEN_STORAGE is set"). The variable is in the
+  binary and the changelog speaks of file based storage, but it is not in
+  the docs.
+- The trade-off of a different `HOME`: commands the agent runs see it too.
+  To keep git, ssh, npm, gh and the like working, every entry of your real
+  home is linked into the slot's home by name when a tab starts (names only,
+  nothing is read; `.gemini`, `.Trash` and GodTerm's own folder are left
+  out; links whose target is gone are removed). What follows from that:
+  an existing file or folder under `~` is your real one; a new top level
+  file the agent creates directly in `~` lands in the slot's home, not in
+  your real home; `~/.gemini/GEMINI.md` and your own `~/.gemini/config` are
+  not seen by the slot; each slot shows the CLI's first run screens (colour
+  scheme, terms) and asks to trust each folder once.
+- To use your existing native login instead, set the slot's
+  `config_dir = "~"`: nothing is isolated then, the Keychain is used as
+  usual, GodTerm does not touch `mcp_config.json`, shows the login as
+  CLI-managed and refuses to log out.
+- Windows: no isolation (the CLI does not use `HOME` there), the state
+  report and the tab tools are off, and screens are read as before.
+
+### Login
+
+- Documented: with no saved session the CLI shows its sign-in screen and
+  opens the browser (Google OAuth), or prints a link and takes a pasted
+  code when there is no browser; `agy acp --login` signs in by pasted code
+  and exits; `GEMINI_API_KEY` needs `"modelProvider": "gemini"` in
+  settings.json; `AGY_ADC_AUTH=true` uses Application Default Credentials;
+  `/logout` removes the tokens.
+- Verified: a signed out CLI starts on "Select login method: 1. Google
+  OAuth, 2. Use a Google Cloud project". A Login tab is therefore just the
+  CLI itself; once you are signed in the same tab is a normal session.
+- Signed in or not: GodTerm only checks that the slot's token file
+  (`.gemini/antigravity-cli/antigravity-oauth-token`) exists; it never
+  reads it. Email and plan come from the CLI's state report (below) and
+  are kept in `<config_dir>/.godterm-agy/account.json`, so they show after a
+  tab of the slot has run once.
+- Log out in GodTerm stops the slot's tabs and deletes that token file and
+  the record.
+
+### Conversations
+
+- Verified: a conversation is `conversations/<id>.db` plus
+  `brain/<id>/.system_generated/logs/transcript.jsonl` (one JSON object
+  per step: `step_index`, `source`, `type` such as `USER_INPUT` and
+  `PLANNER_RESPONSE`, `status`, `created_at`, `content`, and for model steps
+  `model` and token counts), a title in `annotations/<id>.pbtxt`, and the
+  last conversation of each folder in `cache/last_conversations.json`.
+- The id is a UUID the CLI makes with the first prompt. A caller cannot
+  choose it: `--conversation <unknown id>` starts a fresh conversation
+  with another id (verified). `--conversation <id>` (also `--resume`, `-r`)
+  resumes; `-c` continues the folder's last one. `/clear` (alias `/new`)
+  starts a new id in the same process (verified); `/fork` makes a new id
+  (documented).
+- How GodTerm learns the id without guessing: the CLI runs a `title`
+  command whenever its state changes and pipes its session as JSON to it
+  (documented for the status line and the title; the two share one
+  payload). GodTerm passes, for the session only, `--settings
+  {"title":{"type":"command","command":...}}` whose command writes that
+  JSON to a file named by the tab's own environment
+  (`GODTERM_AGY_STATE`). The file carries `conversation_id`, so each tab
+  knows its own conversation, also after `/clear`, and never looks at
+  folders. The command prints nothing, so the window title is not changed.
+  If the slot's `args` already have `--settings`, GodTerm adds nothing and
+  falls back to the farewell line and the screen.
+- The session index lists each slot's transcripts with the title, the
+  first prompt, the model and the folder (the folder the tab reported, else
+  the one in `last_conversations.json`, else none). Opening one resumes it
+  on that slot.
+- Move, copy and failover to another slot stay refused.
+
+### Conversations made with plain `agy`
+
+- Conversations you made by running `agy` in a plain terminal live in your
+  real home (`~/.gemini/antigravity-cli`), which an isolated slot cannot
+  see. GodTerm indexes that home as its own source, "Antigravity (plain
+  terminal)": the Sessions page (Agent: Antigravity, Account: Main) and New
+  tab > Existing sessions list them with title, first prompt, folder and
+  time. It is left out when a slot has `config_dir = "~"` (that slot
+  already lists them as its own), in demo mode and on a home inside the
+  private vault. Only transcripts, titles, `cache/last_conversations.json`
+  and `history.jsonl` are read; the token is never touched.
+- The folder of such a conversation: `last_conversations.json` knows only
+  the last conversation of each folder, so for the others GodTerm matches
+  the conversation's prompts against `history.jsonl` (one line per typed
+  prompt: `display`, `timestamp` in milliseconds, `workspace`; verified)
+  by text and time (within two minutes). A conversation started with
+  `-p` is not in the history and may show no folder; it then resumes in the
+  slot's work folder.
+- Opening one copies it into an Antigravity slot and resumes it there with
+  `--conversation <id>`. GodTerm asks first and names the slot; the
+  original is never changed, and nothing is ever written into the real
+  home. Copied: `conversations/<id>.db` (and its `-wal`/`-shm` files if
+  present), `brain/<id>/` and `annotations/<id>.pbtxt`. Not copied: the
+  token, settings, the shared `conversation_summaries.db`, caches, symlinks.
+  If the slot has no `config/projects/default-cli-project.json` yet, the
+  one the CLI itself writes on first use is created.
+- Verified with agy 1.5.18 between two throwaway homes (API key mode, local
+  stand-in endpoint): `conversations/<id>.db` alone is what the CLI resumes
+  from (with only `brain/<id>` it starts a fresh conversation under a new
+  id); after the copy, `agy --conversation <id>` in the second home showed
+  the earlier exchange, sent the earlier turns to the model with the next
+  prompt and kept the id, in print mode and interactively. Without the
+  default project file a brand new home showed a one time "Invalid
+  Project" notice and still continued; with it there was none.
+- Unverified: a conversation that belongs to a named project (not the
+  default CLI project), and one made by a signed-in account resumed under
+  another Google account.
+- If the slot already has a conversation with that id (copied before), that
+  copy opens and nothing is copied again; turns added later in the plain
+  terminal are not merged.
+
+### Working, ready, needs you
+
+- The same JSON has `agent_state` (`idle`, `working`, `tool_use`,
+  `reviewing`, `authenticating`, `initializing`, `error`) and
+  `tool_confirmation_pending` (documented; `idle`, `initializing`,
+  `authenticating` verified). GodTerm maps `working` and `tool_use` to
+  working, `idle` to ready, a pending confirmation to needs approval, and
+  leaves the rest to the screen. A prompt GodTerm can read on the screen
+  always wins (that is what the approval keys come from), and a report
+  older than 10 seconds loses to the screen when they disagree.
+- The CLI also has terminal status reports over OSC 7501 (in its
+  changelog; verified with `AGY_CLI_OSC7501=on`:
+  `state=idle|working|done|blocked`, `kind=permission|question|auth`, a
+  base64 `msg`). GodTerm does not use them: the CLI only sends them to a
+  terminal that answers its query, and the title command says more.
+- Hooks (`~/.gemini/config/hooks.json`: SessionStart, PreInvocation,
+  PostInvocation, PreToolUse, PostToolUse, Stop, with `conversationId` on
+  stdin) work in the CLI (verified) but GodTerm installs none: there is no
+  hook for a permission prompt, and the title command already covers the
+  rest.
+
+### Models, effort, modes
+
+- `agy models` lists the models of the signed-in account; `--model` and
+  `--effort low|medium|high|xhigh|max` set them for a launch, `/model` and
+  `/effort` inside the CLI (`/model <model> <prompt>` is for one prompt
+  only). Put the flags in the slot's `args`. GodTerm has no model bar for
+  Antigravity: there is no command that switches the model for the rest of
+  a session without its picker.
+- Modes: `--mode accept-edits|auto|plan` and
+  `--dangerously-skip-permissions` (see Permission modes); Shift+Tab cycles
+  them in the CLI.
+
+### Usage
+
+- Documented: the state JSON has `quota`, a map of bucket to
+  `remaining_fraction` and `reset_time`. GodTerm shows those buckets in the
+  account bar after a tab of the slot reported them, and nothing before.
+  It never calls a quota endpoint itself. `/usage` in the CLI shows the
+  same. An API key has no quota to show.
+
+### Proxy, keys, input
+
+- Proxy: not documented. The binary reads `HTTPS_PROXY` (Go's standard
+  behaviour) and has `AGY_PROXY_STRICT_SSL`; GodTerm sets its route
+  variables as for every tab. Whether sign-in and model traffic follow them
+  is unverified (a test in API key mode through `HTTP_PROXY` reached no
+  proxy).
+- Esc stops a turn; Ctrl+C stops a turn, twice at an empty prompt quits
+  and prints `agy --conversation=<id>`; Ctrl+D quits at an empty prompt.
+- New line: Shift+Enter, Ctrl+J, Alt+Enter. Bracketed paste is on.
+- A message typed while it works is queued until the turn ends
+  (`queuedMessages: "queue"`, the default; `"send-immediately"`
+  interrupts). GodTerm's voice and typed prompts therefore keep waiting for
+  the turn to end; steering mid turn is documented only for `agy acp`.
+- Slash commands of use here: `/clear` or `/new`, `/resume`, `/fork`,
+  `/rename <name>`, `/compact`, `/model`, `/effort`, `/usage`, `/mcp`,
+  `/logout`.
+
+### Unverified (needs a signed-in account)
+
+- That Google sign-in completes with the token kept in the slot's file
+  (the forced file storage itself is verified, the file name is the one the
+  CLI uses when it falls back from the Keychain).
+- `email`, `plan_tier` and `quota` in the state JSON (documented, absent in
+  API key mode), and therefore the email, plan and usage in the account
+  bar.
+- `tool_confirmation_pending` on a real approval prompt; a real call of a
+  `godterm` tab tool.
+- Proxy routes for sign-in and model traffic.
+- `agy models` for a signed-in account (so no model list is shown).
+
 ## CLI references
 
 - [Codex commands](https://developers.openai.com/codex/cli/reference/)
 - [Cursor parameters](https://cursor.com/docs/cli/reference/parameters)
-- [Antigravity getting started](https://antigravity.google/docs/getting-started?tab=cli)
+- [Antigravity getting started](https://antigravity.google/docs/getting-started?tab=cli),
+  [CLI reference](https://antigravity.google/docs/cli/reference),
+  [install and sign-in](https://antigravity.google/docs/install?tab=cli),
+  [settings](https://antigravity.google/docs/settings?tab=cli),
+  [conversations](https://antigravity.google/docs/cli/conversations),
+  [status line](https://antigravity.google/docs/cli/statusline),
+  [title](https://antigravity.google/docs/cli/title),
+  [hooks](https://antigravity.google/docs/hooks),
+  [MCP](https://antigravity.google/docs/mcp),
+  [headless](https://antigravity.google/docs/cli/headless),
+  [ACP](https://antigravity.google/docs/cli/acp),
+  [usage](https://antigravity.google/docs/cli/commands/usage)
+  (each page is also served as markdown at the same address plus `.md`)
 - [OpenCode CLI](https://opencode.ai/docs/cli/)
 - [OpenCode permissions](https://opencode.ai/docs/permissions/)

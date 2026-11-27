@@ -1,3 +1,5 @@
+import { I } from './icons.js';
+
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -19,47 +21,8 @@ export function h(sel, props, ...kids) {
   return el;
 }
 
-const P = {
-  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
-  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
-  history: '<path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4h4"/><path d="M12 8v4l3 2"/>',
-  usage: '<path d="M5 20V11M12 20V5M19 20v-7"/>',
-  chat: '<path d="M5 5h14v10H9l-4 4z"/>',
-  check: '<path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
-  more: '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
-  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
-  send: '<path d="M4 12l16-8-6 16-2-6z"/>',
-  plus: '<path d="M12 5v14M5 12h14"/>',
-  x: '<path d="M6 6l12 12M18 6L6 18"/>',
-  split: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>',
-  search: '<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>',
-  dots: '<circle cx="12" cy="5" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="12" cy="19" r="1.2"/>',
-  image: '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9.5" cy="10" r="1.5"/><path d="M20 16l-5-5-8 8"/>',
-  max: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
-  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/>',
-  pin: '<path d="M9 4h6l-1 6 4 3H6l4-3z"/><path d="M12 13v7"/>',
-  color: '<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/>',
-  group: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
-  move: '<path d="M5 12h13M13 6l6 6-6 6"/>',
-  dup: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5H4v11h4"/>',
-  copyto: '<path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/>',
-  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
-  desktop: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
-  model: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/>',
-  clock: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
-  stop: '<rect x="7" y="7" width="10" height="10" rx="1.5"/>',
-  reopen: '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v4h-4"/>',
-  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
-  hash: '<path d="M5 9h14M5 15h14M10 4L8 20M16 4l-2 16"/>',
-  ext: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v6H4V6h6"/>',
-  globe: '<circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.7 2.7 2.7 13.3 0 16M12 4c-2.7 2.7-2.7 13.3 0 16"/>',
-  archive: '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v11h14V9M10 13h4"/>',
-  chev: '<path d="M9 6l6 6-6 6"/>',
-  back: '<path d="M15 6l-6 6 6 6"/>',
-  filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
-  kbdown: '<rect x="3" y="3" width="18" height="11" rx="2"/><path d="M7 7h.01M11 7h.01M15 7h.01M7 10.5h10"/><path d="M9 18l3 3 3-3"/>',
-};
-export const icon = (n) => `<svg viewBox="0 0 24 24" aria-hidden="true">${P[n] || ''}</svg>`;
+export const svgOf = (inner) => `<svg viewBox="0 0 24 24" aria-hidden="true">${inner}</svg>`;
+export const icon = (n) => svgOf(I[n] || '');
 export function paintIcons(root = document) {
   for (const el of $$('[data-i]', root)) {
     if (el.dataset.ip) continue;
@@ -77,14 +40,16 @@ export const store = {
   set(k, v) { try { if (v == null) localStorage.removeItem('gt.' + k); else localStorage.setItem('gt.' + k, JSON.stringify(v)); } catch {} },
 };
 
-export function toast(text, level = 'info', action, ms) {
+export function toast(text, level = 'info', action, ms, opt = {}) {
   const box = $('#toasts');
 
-  for (const o of box.children) if (o.dataset.t === level + '|' + text && !o.classList.contains('gone')) { if (!action) { clearTimeout(o._life); o._life = setTimeout(() => o.remove(), ms ?? 4000); } return o; }
+  if (!opt.keep) for (const o of box.children) if (o.dataset.t === level + '|' + text && !o.classList.contains('gone')) { if (!action) { clearTimeout(o._life); o._life = setTimeout(() => o.remove(), ms ?? 4000); } return o; }
   const el = h('div.toast.' + level, { role: 'status', 'data-t': level + '|' + text }, h('span', {}, text));
+  if (opt.secs) { el.classList.add('cd'); el.style.setProperty('--cd', opt.secs + 's'); }
   const gone = (dx = 0) => {
     if (!el.isConnected || el.classList.contains('gone')) return;
     el.classList.add('gone');
+    opt.onGone?.();
     el.style.transform = dx ? `translateX(${dx > 0 ? 110 : -110}%)` : '';
     setTimeout(() => el.remove(), 160);
   };
@@ -108,7 +73,7 @@ export function toast(text, level = 'info', action, ms) {
   el.addEventListener('pointerup', up);
   el.addEventListener('pointercancel', () => { x0 = null; el.style.transform = ''; el.style.opacity = ''; });
   box.append(el);
-  while (box.children.length > 3) box.firstChild.remove();
+  while (box.children.length > 3) { const v = [...box.children].find((o) => !o.classList.contains('arch')); if (!v || v === el) break; v.remove(); }
   const life = ms ?? (action ? 8000 : 4000);
   if (life) el._life = setTimeout(() => gone(), life);
   return el;
@@ -226,7 +191,7 @@ export function emptyState(text, hint, action) {
 
 export function li(ic, label, o = {}) {
   return h('button.li' + (o.bad ? '.bad' : '') + (o.on ? '.on' : ''), { type: 'button', role: 'menuitem', disabled: !!o.off, title: o.off || o.tip || '', onclick: o.fn },
-    h('span', { html: icon(ic) }), h('span.ll', {}, label), o.hint ? h('span.lh', {}, o.hint) : null, o.chev ? h('span.lc', { html: icon('chev') }) : null);
+    h('span', { html: icon(ic) }), h('span.ll', {}, o.sub ? [label, h('small.ls', {}, o.sub)] : label), o.hint ? h('span.lh', {}, o.hint) : null, o.chev ? h('span.lc', { html: icon('chev') }) : null);
 }
 export const group = (label, rows) => {
   rows = rows.flat().filter(Boolean);

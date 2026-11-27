@@ -260,6 +260,46 @@ def main():
             return f"{ms:.1f} ms with a client that reads nothing"
 
         step("a stuck browser holds nothing up", stall)
+
+        def routes():
+            import socket
+
+            ws = st["ws"]
+
+            def call(name, args, i):
+                ws.send_json({"t": "tool", "name": name, "args": args, "id": i})
+                while True:
+                    v = ws.recv_json("result", timeout=20)
+                    if v["id"] == i:
+                        return v["result"]
+
+            def route_of(tab):
+                r = call("get_state", {}, "rs")
+                tabs = (r.get("result") or r).get("tabs") or []
+                return next((t.get("route") for t in tabs if t["id"] == tab), None)
+
+            with socket.socket() as s:
+                s.bind(("127.0.0.1", 0))
+                dead = s.getsockname()[1]
+            r = call("tab_route", {"op": "save", "name": "e2e", "kind": "custom", "url": "http://user:pw-e2e@127.0.0.1:%d" % dead}, "r1")
+            assert r["ok"], r
+            row = r["result"]["view"]["routes"][0]
+            assert row["url"] == "http://***@127.0.0.1:%d" % dead and "pw-e2e" not in json.dumps(r), r
+            tab = st["hello"]["state"]["tabs"][0]["id"]
+            r = call("tab_route", {"op": "set", "tab": tab, "route": "e2e", "force": True}, "r2")
+            assert r["ok"] and "not started" in r["result"]["say"], r
+            rt = route_of(tab)
+            assert rt and rt["state"] == "blocked" and "pw-e2e" not in json.dumps(rt), rt
+            r = call("tab_route", {"op": "set", "tab": tab, "route": ""}, "r3")
+            assert r["ok"] and "direct" in r["result"]["say"], r
+            assert route_of(tab) is None
+            r = call("tab_route", {"op": "delete", "name": "e2e"}, "r4")
+            assert r["ok"] and not r["result"]["view"]["routes"], r
+            log = open(os.path.join(home, ".godterm-demo", "app", "godterm.log")).read()
+            assert "pw-e2e" not in log, "the proxy password is in the log"
+            return "a route is saved masked, holds the tab while the proxy is down, and comes off again"
+
+        step("routes (the user's own tab_route)", routes)
         assert tm.alive(SESSION), "godterm exited"
     finally:
         try:

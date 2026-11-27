@@ -1,5 +1,6 @@
 import { h, on, toast, pctClass, icon, emit, words, skeleton, failRow } from './util.js';
 import { send } from './conn.js';
+import { emailOf, emailToggle } from './emails.js';
 import { openSheet, closeSheet, sheetKind } from './sheet.js';
 
 let seq = 0;
@@ -75,7 +76,7 @@ function style() {
 }
 
 const put = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
-const title = (t) => h('div.sh-title', {}, h('span', {}, t), h('button.ib', { 'aria-label': 'Close', title: 'Close', onclick: closeSheet, html: icon('x') }));
+const title = (t) => h('div.sh-title', {}, h('span', {}, t), t === 'Accounts' ? emailToggle(null, () => paint(), 'em-right') : null, h('button.ib', { 'aria-label': 'Close', title: 'Close', onclick: closeSheet, html: icon('x') }));
 const btn = (label, fn, cls = '', extra = {}) => h('button.btn' + cls, { type: 'button', onclick: (e) => { e.preventDefault(); fn(); }, ...extra }, label);
 
 const STATE = {
@@ -123,7 +124,7 @@ function usage(a) {
 
 function card(a) {
   const [sl, sc] = STATE[a.state] || [words(a.state), ''];
-  const who = [a.email, a.plan, a.org].filter(Boolean).join(' · ');
+  const who = [emailOf(a), a.plan, a.org].filter(Boolean).join(' · ');
   const n = a.account;
   const busy = a.flow && !['done', 'failed'].includes(a.flow.stage);
   const loginLabel = a.state === 'logged_in' ? 'Re-login' : 'Log in';
@@ -139,14 +140,14 @@ function card(a) {
     a.removed ? h('div.note', {}, 'It goes away when GodTerm restarts.') : [
       h('div.row', {},
         busy ? null : btn(loginLabel, () => act({ op: 'login', account: n }), a.state === 'logged_in' ? '.sm' : '.pri'),
-        a.integrated && a.state === 'logged_in' ? btn('Log out', () => act({ op: 'logout', account: n }), '.sm.bad') : null,
+        (a.can_logout ?? a.integrated) && a.state === 'logged_in' ? btn('Log out', () => act({ op: 'logout', account: n }), '.sm.bad') : null,
         !a.assistant && (a.harness === 'claude' || a.harness === 'grok') && a.state === 'logged_in' ? btn('Use for the assistant', () => act({ op: 'assistant', account: n }), '.sm') : null),
       h('div.row', {},
         btn('Rename', () => renameSheet(a), '.sm'),
         btn('Color', () => colorSheet(a), '.sm'),
         btn('Remove', () => removeSheet(a), '.sm.bad')),
       a.can_token ? tokenBox(a) : null,
-      a.state === 'cli' ? h('div.note', {}, `${a.harness_label} keeps its login itself (shared on this Mac). Log in opens its login in a tab.`) : null,
+      a.state === 'cli' ? h('div.note', {}, a.can_logout ? `${a.harness_label} signs in inside its own CLI, once for this account. Log in opens it in a tab.` : `${a.harness_label} keeps its login itself (shared on this Mac). Log in opens its login in a tab.`) : null,
     ]);
 }
 

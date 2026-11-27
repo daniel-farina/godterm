@@ -1,6 +1,11 @@
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
+import { appsChecks } from './web_gate_apps.mjs';
+import { voiceBarChecks } from './web_gate_voicebar.mjs';
+import { routeChecks } from './web_gate_route.mjs';
+import { asksChecks } from './web_gate_asks.mjs';
+import { sessionsChecks } from './web_gate_sessions.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf('--' + k); return i < 0 ? d : (argv[i + 1]?.startsWith('--') || argv[i + 1] == null ? true : argv[i + 1]); };
@@ -193,6 +198,11 @@ async function run() {
       await screens(ctxo);
       await combos(ctxo);
       await flows(ctxo);
+      await appsChecks(ctxo, { sleep, origin });
+      await voiceBarChecks(ctxo, { sleep, problems });
+      await routeChecks(ctxo, { sleep });
+      await asksChecks(ctxo, { sleep, origin });
+      await sessionsChecks(ctxo, { sleep, origin });
 
       if (errors.length) for (const e of [...new Set(errors)].slice(0, 5)) R.fail('page', 'page error', '', e.slice(0, 300));
       else R.ok('page', 'no page errors');
@@ -244,6 +254,44 @@ async function screens(c) {
   });
   await step('git', async () => { const id = await tabId(); await open(`const { S } = await mod('state'); (await mod('git')).gitSheet(S.tabs.find((t) => t.id === a[0]))`, id); await sleep(900); await audit('git', OV); });
   await step('new tab', async () => { await open(`(await mod('manage')).newTabSheet()`); await sleep(400); await audit('new tab', OV); });
+  await step('antigravity', async () => {
+    const name = 'antigravity';
+    const s = await c.S();
+    const a = s.accounts.find((x) => x.harness === 'antigravity');
+    const t = a && s.tabs.find((x) => x.account === a.account);
+    if (!a || !t) { c.R.fail(name, 'no Antigravity account with a tab in the state', '', JSON.stringify(s.accounts.map((x) => x.harness))); return; }
+    if (!isDesk) { await page.click('#b-menu'); await sleep(350); }
+    const row = await page.evaluate(([id, label]) => {
+      const el = document.querySelector(`#side [data-id="${id}"], #side [data-tab="${id}"]`);
+      const scope = el?.closest('[data-id]') || el;
+      const badge = scope?.querySelector('.hb-antigravity');
+      const head = [...document.querySelectorAll('#side .acct .an')].find((e) => e.textContent.includes(label));
+      return { found: !!el, badge: !!badge, title: badge?.getAttribute('title') || '', glyph: !!badge?.querySelector('svg path'), head: head?.textContent || '' };
+    }, [t.id, a.label]);
+    if (!row.found) c.R.fail(name, 'its tab is not in the tab list', '#side', t.id);
+    if (!row.badge || !row.glyph) c.R.fail(name, 'its tab has no Antigravity mark', '.hb-antigravity', JSON.stringify(row));
+    if (row.title !== 'Antigravity') c.R.fail(name, 'the mark is not named Antigravity', '.hb-antigravity', row.title);
+    if (!/antigravity/.test(row.head)) c.R.fail(name, 'the account heading does not say antigravity', '#side .acct .an', row.head);
+    await audit('antigravity tab list', ['#side']);
+    if (!isDesk) await c.closeAll();
+    await open(`(await mod('manage')).newTabSheet()`);
+    await sleep(400);
+    const pick = await page.evaluate((n) => {
+      const sel = document.querySelector('#sheet-body select');
+      const o = [...(sel?.options || [])].find((x) => Number(x.value) === n);
+      if (!o) return null;
+      sel.value = String(n);
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return { text: o.textContent, disabled: o.disabled, picked: Number(sel.value) === n };
+    }, a.account);
+    if (!pick) c.R.fail(name, 'the new tab account picker does not list it', '#sheet-body select');
+    else {
+      if (!pick.text.includes(a.label) || !/antigravity/.test(pick.text)) c.R.fail(name, 'the picker entry does not name the account and its agent', '#sheet-body select', pick.text);
+      if (pick.disabled || !pick.picked) c.R.fail(name, 'the account cannot be chosen for a new tab', '#sheet-body select', JSON.stringify(pick));
+    }
+    await audit('antigravity new tab', OV);
+    await c.closeAll();
+  });
   await step('approvals', async () => { await fetch(origin + '/dev/approval'); await sleep(900); await open(`(await mod('chat')).approvalsSheet()`); await sleep(300); await audit('approvals', OV); });
   await step('help', async () => { await open(`(await mod('keys')).helpSheet()`); await sleep(250); await audit('help', OV); });
   await step('prompt box', async () => { await show(await tabId()); await open(`(await mod('keybar')).promptSheet('prompt')`); await sleep(350); await audit('prompt box', OV); });
@@ -252,6 +300,196 @@ async function screens(c) {
   await step('install', async () => { await open(`(await mod('install')).install()`); await sleep(400); await audit('install', OV); });
   await step('voice sheet', async () => { await open(`(await mod('voice')).openVoiceSheet()`); await sleep(500); await audit('voice sheet', OV); });
   await step('mic menu', async () => { await page.click('#b-ptt'); await sleep(450); await audit('mic menu', OV); });
+  await step('mic menu controls', async () => {
+    const name = 'mic menu controls';
+    const st = () => open(`const { S } = await mod('state'); const { voicePick, micIsMuted } = await mod('voice'); return { tab: S.mode_flags?.direct_tab ?? null, name: S.mode_flags?.direct ?? null, follow: S.voice?.direct_follow === true, pick: voicePick(), muted: micIsMuted() }`);
+    const until = async (f, ms = 4000) => { for (let i = 0; i < ms / 100; i++) { if (f(await st())) return true; await new Promise((r) => setTimeout(r, 100)); } return false; };
+    const need = (ok, kind, detail = '') => { if (!ok) c.R.fail(name, kind, '#pop.mic-pop', detail); return ok; };
+    const menu = () => page.evaluate(() => {
+      const g = (sel) => { const e = document.querySelector('#pop.mic-pop ' + sel); return e ? { role: e.getAttribute('role'), n: e.querySelectorAll('[role=radio]').length, on: [...e.querySelectorAll('[role=radio][aria-checked=true]')].map((b) => b.dataset.m), tab: [...e.querySelectorAll('[role=radio]')].filter((b) => b.tabIndex === 0).length } : null; };
+      const p = document.querySelector('#pop.mic-pop');
+      return { mic: g('.sg-mic'), talk: g('.sg-talk'), mute: p?.querySelector('.mp-mute')?.getAttribute('aria-checked'), muteText: p?.querySelector('.mp-mute .mm-st')?.textContent, note: p?.querySelector('.mp-micnote')?.textContent, who: p?.querySelector('.mp-who')?.textContent, vol: p?.querySelector('.vol-row .vr-v')?.textContent, volShown: !!p?.querySelector('.vol-row')?.getClientRects().length, typedShown: !!p?.querySelector('.mm-typed')?.getClientRects().length, typedText: p?.querySelector('.mm-typed .mm-t')?.textContent, spk: p?.querySelector('.mp-spk[role=switch]')?.getAttribute('aria-checked'), spkText: p?.querySelector('.mp-spk .mm-st')?.textContent, spkNote: p?.querySelector('.mp-spknote')?.getClientRects().length ? p.querySelector('.mp-spknote').textContent : '', ph: p?.getBoundingClientRect().height, typed: !!p?.querySelector('.mm-typed[role=switch]'), settings: !!p?.querySelector('.mp-set'), h: p ? Math.round(p.getBoundingClientRect().height) : 0, focus: document.activeElement?.dataset?.m || '' };
+    });
+    const seg = (g, m) => page.locator(`#pop.mic-pop .${g} .sg-b[data-m="${m}"]`).click({ timeout: 4000 });
+    const tabs = await open(`const { S } = await mod('state'); return S.tabs.filter((t) => t.can_direct && t.state === 'ready').map((t) => ({ id: t.id, uid: t.uid, name: t.name }))`);
+    if (!need(tabs.length >= 2, 'the mock has no two tabs that can take direct mode')) return;
+    const [A, B] = tabs;
+    await show(A.id);
+    await page.click('#b-ptt'); await sleep(450);
+    let m = await menu();
+    need(m.mic?.role === 'radiogroup' && m.mic.n === 4 && m.mic.on.length === 1 && m.mic.tab === 1, 'the microphone control is not a radio group of four', JSON.stringify(m.mic));
+    need(m.talk?.role === 'radiogroup' && m.talk.n === 3 && m.talk.on.join() === 'assistant' && m.talk.tab === 1, 'the Talk to control is not a radio group of three on Assistant', JSON.stringify(m.talk));
+    need(/^\d+%$/.test(m.vol || '') && m.typed && m.settings, 'a row of the old menu is missing', JSON.stringify(m));
+    need(m.spk === 'true' && m.spkText === 'On' && m.volShown && m.typedShown && !m.spkNote && /^Also speak replies to typed messages$/.test(m.typedText || ''), 'Spoken replies is not On with its volume and typed option', JSON.stringify(m));
+    const onH = m.ph;
+    await page.locator('#pop.mic-pop .mp-spk').click({ timeout: 4000 }); await sleep(300);
+    m = await menu();
+    need(m.spk === 'false' && m.spkText === 'Off' && !m.volShown && !m.typedShown && m.spkNote === 'Replies show as text only' && m.ph <= onH, 'Spoken replies off does not hide the volume and the typed option', JSON.stringify(m));
+    need(await open(`const { S } = await mod('state'); return S.voice?.speaker_muted === true`), 'Spoken replies off did not mute the speaker', '');
+    await audit('mic menu spoken replies off', OV);
+    await page.locator('#pop.mic-pop .mp-spk').click({ timeout: 4000 }); await sleep(300);
+    m = await menu();
+    need(m.spk === 'true' && m.spkText === 'On' && m.volShown && m.typedShown && !m.spkNote, 'Spoken replies did not turn back on', JSON.stringify(m));
+    need(m.h > 0 && m.h <= 480, 'the popup is taller than 480 px', String(m.h));
+    await seg('sg-mic', 'push'); await sleep(500);
+    m = await menu();
+    need(m.mic?.on.join() === 'push' && (await st()).pick === 'push' && /Hold Talk/.test(m.note || ''), 'Push to talk did not take', JSON.stringify(m));
+    await audit('mic menu push to talk', OV);
+    if (!c.size.touch) {
+      await page.locator('#pop.mic-pop .sg-mic .sg-b[data-m="push"]').focus();
+      await page.keyboard.press('ArrowRight');
+      m = await menu();
+      need(m.focus === 'open' && m.mic.on.join() === 'push', 'the right arrow does not move inside the radio group', JSON.stringify(m));
+    }
+    await page.locator('#pop.mic-pop .mp-mute').click({ timeout: 4000 }); await sleep(300);
+    m = await menu();
+    need(m.mute === 'true' && m.muteText === 'Muted' && /^Muted/.test(m.note || '') && (await st()).muted, 'the mute switch does not say Muted', JSON.stringify(m));
+    await audit('mic menu muted', OV);
+    await page.locator('#pop.mic-pop .mp-mute').click({ timeout: 4000 }); await sleep(200);
+    m = await menu();
+    need(m.mute === 'false' && m.muteText === 'Live', 'the mute switch does not say Live', JSON.stringify(m));
+    await seg('sg-talk', 'tab');
+    need(await until((x) => x.tab === A.uid && !x.follow), 'This tab did not start direct mode here', JSON.stringify(await st()));
+    await sleep(200);
+    m = await menu();
+    need(m.talk.on.join() === 'tab' && (m.who || '').includes('Talking to ' + A.name), 'This tab is not shown as picked', JSON.stringify(m));
+    await audit('mic menu this tab', OV);
+    await seg('sg-talk', 'follow');
+    need(await until((x) => x.tab === A.uid && x.follow), 'Follow active tab did not turn following on', JSON.stringify(await st()));
+    await sleep(200);
+    m = await menu();
+    need(m.talk.on.join() === 'follow', 'Follow active tab is not shown as picked', JSON.stringify(m));
+    await audit('mic menu follow active tab', OV);
+    await c.closeAll();
+    await show(B.id);
+    need(await until((x) => x.tab === B.uid), 'voice did not follow to the tab shown', JSON.stringify(await st()));
+    const bar = () => page.evaluate(() => { const e = document.querySelector('#voice-move'); if (!e || e.hidden) return null; const r = e.getBoundingClientRect(); return { text: e.querySelector('.vm-t').textContent, in: r.left >= 0 && r.top >= 0 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1 }; });
+    need(!(await bar()), 'the Move here bar shows while following');
+    await page.click('#b-ptt'); await sleep(400);
+    await seg('sg-talk', 'tab');
+    need(await until((x) => x.tab === B.uid && !x.follow), 'This tab did not make it sticky again', JSON.stringify(await st()));
+    await c.closeAll();
+    await show(A.id); await sleep(400);
+    let b = await bar();
+    need(b && b.in && b.text === `Voice is talking to ${B.name}.`, 'no Move here bar on another tab', JSON.stringify(b));
+    need((await st()).tab === B.uid, 'voice moved although following is off');
+    await audit('move here bar', ['#voice-move']);
+    await page.click('#b-ptt'); await sleep(400);
+    m = await menu();
+    need(m.talk.on.length === 0 && /not the tab you see/.test(m.who || ''), 'the popup does not say voice is with another tab', JSON.stringify(m));
+    await c.closeAll();
+    await show(B.id); await sleep(400);
+    need(!(await bar()), 'the Move here bar stays on the tab voice talks to');
+    await show(A.id); await sleep(400);
+    await page.locator('#voice-move .vm-x').click({ timeout: 4000 }); await sleep(200);
+    need(!(await bar()), 'Dismiss does not hide the Move here bar');
+    await show(B.id); await sleep(300);
+    await show(A.id); await sleep(400);
+    need(!!(await bar()), 'the Move here bar does not come back after a visit to the old tab');
+    await page.locator('#voice-move .vm-go').click({ timeout: 4000 });
+    need(await until((x) => x.tab === A.uid), 'Move here did not move voice', JSON.stringify(await st()));
+    await sleep(300);
+    need(!(await bar()), 'the Move here bar stays after the move');
+    await page.click('#b-ptt'); await sleep(400);
+    await seg('sg-talk', 'assistant');
+    need(await until((x) => x.tab === null), 'Assistant did not end direct mode', JSON.stringify(await st()));
+    await seg('sg-mic', 'off'); await sleep(300);
+    need((await st()).pick === 'off', 'Off did not take');
+    if (!problems.some((p) => p.label === c.label && p.screen === name)) c.R.ok(name);
+  });
+  await step('mic input picker', async () => {
+    const name = 'mic input picker';
+    if (c.engine !== 'chromium') return;
+    const need = (ok, kind, detail = '') => { if (!ok) c.R.fail(name, kind, '#pop.mic-pop .mp-in', detail); return ok; };
+    const menu = async () => { if (!(await page.locator('#pop.mic-pop').count())) { await page.click('#b-ptt'); await sleep(450); } };
+    const seg = (m) => page.locator(`#pop.mic-pop .sg-mic .sg-b[data-m="${m}"]`).click({ timeout: 4000 });
+    const get = () => page.evaluate(() => {
+      const p = document.querySelector('#pop.mic-pop'), b = p?.querySelector('.mp-in'), s = b?.querySelector('select');
+      const r = b?.getBoundingClientRect(), pr = p?.getBoundingClientRect();
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem('gt.voice.input')); } catch {}
+      return { shown: !!b && !b.hidden, opts: s ? [...s.options].map((o) => o.textContent) : null, val: s ? s.selectedOptions[0]?.textContent : null, one: b?.querySelector('.mp-in1')?.textContent ?? null,
+        note: b?.querySelector('.mp-innote')?.textContent ?? '', h: r ? Math.round(r.height) : 0, inside: !!r && r.left >= pr.left && r.right <= pr.right + 1 && pr.right <= innerWidth,
+        saved: saved?.label ?? null, calls: (window.__mic?.calls || []).slice(), strip: document.querySelector('#mic-strip .ms-t')?.textContent || '' };
+    });
+    const until = async (f, ms = 5000) => { let g; for (let i = 0; i < ms / 100; i++) { g = await get(); if (f(g)) return g; await new Promise((r) => setTimeout(r, 100)); } return null; };
+    const J = (x) => JSON.stringify(x);
+    await page.evaluate(() => {
+      try { localStorage.removeItem('gt.voice.input'); } catch {}
+      const md = navigator.mediaDevices, en = md.enumerateDevices.bind(md), gum = md.getUserMedia.bind(md);
+      const M = window.__mic = { asked: true, drop: '', only: '', long: false, calls: [], en, gum };
+      md.enumerateDevices = async () => {
+        let l = (await en()).map((d) => ({ kind: d.kind, deviceId: d.deviceId, label: d.label, groupId: d.groupId }));
+        if (!M.asked) l = l.map((d) => ({ ...d, deviceId: '', label: '' })).slice(0, 1);
+        if (M.only) l = l.filter((d) => d.kind !== 'audioinput' || d.deviceId === 'default' || d.label === M.only);
+        if (M.drop) l = l.filter((d) => d.label !== M.drop);
+        if (M.long) l = l.map((d) => (d.label === 'Fake Audio Input 2' ? { ...d, label: 'Rehearsal Room Wireless Lavalier Receiver Channel B' } : d));
+        return l;
+      };
+      md.getUserMedia = async (q) => { const s = await gum(q); M.asked = true; M.calls.push({ exact: !!q?.audio?.deviceId?.exact, label: s.getAudioTracks()[0]?.label || '' }); return s; };
+      M.say = () => md.dispatchEvent(new Event('devicechange'));
+    });
+    const set = (o) => page.evaluate((o) => { Object.assign(window.__mic, o); window.__mic.say(); }, o);
+    try {
+      await menu();
+      let g = await until((x) => x.opts?.length === 3);
+      need(g && g.opts[0] === 'System default' && g.val === 'System default' && !g.note && g.inside, 'the picker does not list System default first and the inputs', J(await get()));
+      await audit('mic menu input', OV);
+      await set({ asked: false });
+      g = await until((x) => !x.opts && x.one === 'System default');
+      need(g && /first used/.test(g.note), 'before permission it is not System default with a hint', J(await get()));
+      await audit('mic menu input before permission', OV);
+      await seg('open'); await menu();
+      g = await until((x) => x.opts?.length === 3 && /Open mic/.test(x.strip));
+      need(g && !g.note && g.calls.length === 1 && !g.calls[0].exact, 'the list did not fill in after the first capture', J(await get()));
+      await page.selectOption('#pop.mic-pop .mp-in select', { label: 'Fake Audio Input 2' });
+      g = await until((x) => x.calls.length === 2);
+      await menu();
+      need(g && g.calls[1].exact && g.calls[1].label === 'Fake Audio Input 2' && g.saved === 'Fake Audio Input 2', 'picking an input while live did not switch capture to it', J(await get()));
+      g = await until((x) => /Open mic · (listening|hearing you|heard you)/.test(x.strip));
+      need(!!g, 'open mic is not listening after the switch', J(await get()));
+      await set({ drop: 'Fake Audio Input 2' });
+      g = await until((x) => /not connected/.test(x.val || ''));
+      need(g && /^Not connected, using the system default$/.test(g.note) && g.saved === 'Fake Audio Input 2', 'a missing input is not said in one line or the choice was dropped', J(await get()));
+      await audit('mic menu input not connected', OV);
+      await seg('off'); await sleep(300);
+      await seg('open'); await menu();
+      g = await until((x) => x.calls.length === 3);
+      need(g && !g.calls[2].exact && g.saved === 'Fake Audio Input 2', 'capture did not fall back to the default input', J(await get()));
+      await set({ drop: '' });
+      g = await until((x) => x.calls.length === 4);
+      await menu();
+      need(g && g.calls[3].exact && g.calls[3].label === 'Fake Audio Input 2' && (await until((x) => x.val === 'Fake Audio Input 2' && !x.note)), 'the saved input did not come back when it returned', J(await get()));
+      await set({ long: true });
+      g = await until((x) => /^Rehearsal Room/.test(x.val || ''));
+      need(g && g.inside, 'a long device name does not fit the row', J(await get()));
+      await audit('mic menu input long name', OV);
+      await set({ long: false });
+      await until((x) => x.val === 'Fake Audio Input 2');
+      await page.selectOption('#pop.mic-pop .mp-in select', { label: 'System default' });
+      g = await until((x) => x.calls.length === 5);
+      need(g && !g.calls[4].exact && g.saved === null, 'System default did not clear the choice', J(await get()));
+      await menu();
+      await seg('off'); await sleep(300);
+      await set({ only: 'Fake Audio Input 1' });
+      g = await until((x) => !x.opts && x.one === 'Fake Audio Input 1');
+      need(g && !g.note && g.h <= 48, 'one input is not shown as one compact line', J(await get()));
+      await audit('mic menu input one device', OV);
+    } finally {
+      await page.evaluate(() => {
+        const M = window.__mic, md = navigator.mediaDevices;
+        if (!M) return;
+        md.enumerateDevices = M.en; md.getUserMedia = M.gum;
+        try { localStorage.removeItem('gt.voice.input'); } catch {}
+        delete window.__mic;
+        md.dispatchEvent(new Event('devicechange'));
+      });
+      await menu().catch(() => {});
+      await seg('off').catch(() => {});
+      await sleep(300);
+    }
+    if (!problems.some((p) => p.label === c.label && p.screen === name)) c.R.ok(name);
+  });
   await step('assistant', async () => { await open(`(await mod('chat')).setChat(true)`); await sleep(500); await audit('assistant', ['#chat', '#top', '#keyrow']); });
 
   await step('tab options', async () => {
@@ -319,7 +557,7 @@ async function combos(c) {
   const { page, isDesk, step, audit, size } = c;
   const open = (expr, ...a) => page.evaluate(async ([e, a]) => { const f = new Function('mod', 'a', `return (async () => { ${e} })()`); return f(window.__g.mod.bind(window.__g), a); }, [expr, a]);
   const geometry = (sel) => page.evaluate((sel) => { const e = document.querySelector(sel); if (!e) return null; const r = e.getBoundingClientRect(), cs = getComputedStyle(e); return { hidden: e.hidden || cs.display === 'none' || cs.visibility === 'hidden', x: r.left, y: r.top, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight }; }, sel);
-  const talkOk = (g) => g && !g.hidden && g.w >= 40 && g.h >= 40 && g.x >= 0 && g.y >= 0 && g.x + g.w <= g.vw + 1 && g.y + g.h <= g.vh + 1;
+  const talkOk = (g) => g && !g.hidden && g.w >= 40 && g.h >= (size.touch ? 40 : 28) && g.x >= 0 && g.y >= 0 && g.x + g.w <= g.vw + 1 && g.y + g.h <= g.vh + 1;
 
   await step('combo push to talk + assistant', async () => {
     await open(`(await mod('voice')).setMode('push')`); await sleep(700);
@@ -328,10 +566,10 @@ async function combos(c) {
     await open(`(await mod('chat')).setChat(true)`); await sleep(700);
     const g = await geometry('#talk');
     if (!talkOk(g)) c.R.fail('combo push to talk + assistant', 'Talk button missing or off screen while the assistant is open', '#talk', JSON.stringify(g));
-    await audit('combo push to talk + assistant', ['#chat', '#talk', '#voice-bar', '#top', '#keyrow']);
+    await audit('combo push to talk + assistant', ['#chat', '#vbar', '#voice-bar', '#top', '#keyrow']);
 
     await open(`(await mod('voice')).setMicMuted(true)`); await sleep(500);
-    await audit('combo mic muted + assistant', ['#chat', '#talk', '#voice-bar', '#mic-strip', '#top']);
+    await audit('combo mic muted + assistant', ['#chat', '#vbar', '#voice-bar', '#mic-strip', '#top']);
     await open(`(await mod('voice')).setMicMuted(false)`);
     await open(`(await mod('voice')).setMode('off')`); await sleep(300);
   });

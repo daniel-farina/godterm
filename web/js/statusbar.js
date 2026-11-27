@@ -1,7 +1,9 @@
 import { $, h, on, emit, icon, pctClass, isDesk, tcOf, tcStyle, words } from './util.js';
 import { S, tabById, acctOf } from './state.js';
 import { panes } from './term.js';
+import { emailOf } from './emails.js';
 import { openMenu, closeSheet } from './sheet.js';
+import { waitWords } from './asks.js';
 
 const BROWSER = {
   ready: ['browser ready', 'ok', 'BrowserSkill is ready: this tab\'s agent can drive its Chrome profile'],
@@ -21,7 +23,7 @@ function usage(t) {
   const left = a.effective_left_pct ?? a.five_hour_left_pct;
   const buckets = (a.buckets?.length ? a.buckets : [{ bucket: '5 hour', left_pct: a.five_hour_left_pct }, { bucket: 'week', left_pct: a.week_left_pct }])
     .filter((b) => b.left_pct != null).map((b) => `${b.bucket} ${b.left_pct}% left`);
-  const tip = [label, ...buckets, a.logged_in === false && 'logged out', a.usage_error && !(a.logged_in === false && /logged/i.test(a.usage_error)) && words(a.usage_error)].filter(Boolean).join(' · ');
+  const tip = [label, emailOf(a), ...buckets, a.logged_in === false && 'logged out', a.usage_error && !(a.logged_in === false && /logged/i.test(a.usage_error)) && words(a.usage_error)].filter(Boolean).join(' · ');
   const cls = a.logged_in === false ? 'warn' : pctClass(left) === 'out' ? 'bad' : pctClass(left) === 'lo' ? 'warn' : '';
   return item('usage', cls, tip, h('span.sb-v', {}, label),
     left != null ? h('span.sb-meter', { html: `<i class="${pctClass(left)}" style="width:${Math.max(0, Math.min(100, left))}%"></i>` }) : null,
@@ -48,7 +50,7 @@ function loops(t) {
   const n = t.loops || 0;
   const jobs = (S.jobs?.jobs || []).filter((j) => j.tab === t.name).length;
   const words = [n || !jobs ? plural(n, 'loop') : '', jobs ? plural(jobs, 'job') : ''].filter(Boolean).join(' · ');
-  return item('loops', n || jobs ? '' : 'faint', `This tab's loops and jobs: ${words}`, ic('clock'), h('span.sb-v', {}, words));
+  return item('loops', n || jobs ? '' : 'faint', `This tab's loops and jobs: ${words}`, ic('loops'), h('span.sb-v', {}, words));
 }
 
 function git(t) {
@@ -57,17 +59,17 @@ function git(t) {
   const tip = [t.git, warn && '⚠ ' + warn].filter(Boolean).join(' · ') || 'Git';
   if (!g) {
 
-    if (!t.git && !warn) return item('git', 'faint', 'Git: status, commit, push and pull', ic('hash'), h('span.sb-v', {}, 'git'));
+    if (!t.git && !warn) return item('git', 'faint', 'Git: status, commit, push and pull', ic('branch'), h('span.sb-v', {}, 'git'));
     const word = t.git === 'not a git repo' || /not in git/.test(warn || '') ? 'no git' : 'git';
-    return item('git', warn ? 'warn' : 'faint', tip, ic('hash'), h('span.sb-v', {}, word), warn ? h('span.sb-w', {}, '⚠') : null);
+    return item('git', warn ? 'warn' : 'faint', tip, ic('branch'), h('span.sb-v', {}, word), warn ? h('span.sb-w', {}, '⚠') : null);
   }
   const bits = [g.error ? 'git error' : null, g.dirty ? g.dirty + ' changed' : null, g.unpushed ? '↑' + g.unpushed : null, g.behind ? '↓' + g.behind : null].filter(Boolean);
-  return item('git', g.error ? 'bad' : warn ? 'warn' : '', tip, ic('hash'), h('span.sb-v', {}, g.branch || '?'),
+  return item('git', g.error ? 'bad' : warn ? 'warn' : '', tip, ic('branch'), h('span.sb-v', {}, g.branch || '?'),
     bits.length ? h('span.sb-d', {}, '· ' + bits.join(' ')) : null, warn ? h('span.sb-w', {}, '⚠') : null);
 }
 
 function state(t) {
-  const extra = [t.label && t.label !== t.state ? t.label : '', t.queued_prompts ? t.queued_prompts + ' queued' : '', t.move_pending ? 'moving to ' + t.move_pending.to + ' when ' + t.move_pending.waiting_for + ' end' : ''].filter(Boolean).join(' · ');
+  const extra = [waitWords(t) || (t.label && t.label !== t.state ? t.label : ''), t.queued_prompts ? t.queued_prompts + ' queued' : '', t.move_pending ? 'moving to ' + t.move_pending.to + ' when ' + t.move_pending.waiting_for + ' end' : ''].filter(Boolean).join(' · ');
   const tip = [t.state, t.waiting_for, t.background_work, extra].filter(Boolean).join(' · ') + ': click for the tab\'s options';
   return item('root', 'sb-state', tip, h('span.dot.' + (t.state || 'idle').split(' ')[0]), h('span.sb-v', {}, t.state || 'idle'), extra ? h('span.sb-d', {}, '· ' + extra) : null);
 }
@@ -117,9 +119,11 @@ function paint() {
   const t = isDesk() ? tabById(panes.focused()?.id) : null;
   bar.hidden = !t;
   if (!t) { sig = ''; return; }
+  bar.classList.toggle('tc', !!tcOf(t));
+  bar.setAttribute('style', tcStyle(t));
   const a = acctOf(t.account);
   const jobs = (S.jobs?.jobs || []).filter((j) => j.tab === t.name).length;
-  const s = JSON.stringify([t, a?.effective_left_pct, a?.five_hour_left_pct, a?.week_left_pct, a?.buckets, a?.logged_in, jobs, bar.clientWidth]);
+  const s = JSON.stringify([t, a?.effective_left_pct, a?.five_hour_left_pct, a?.week_left_pct, a?.buckets, a?.logged_in, jobs, bar.clientWidth, emailOf(a)]);
   if (s === sig) return;
   sig = s;
   const items = [color(t), usage(t), model(t), browser(t), loops(t), git(t)].filter(Boolean);
@@ -139,6 +143,7 @@ export function initStatusBar() {
     emit('tabsection', b.dataset.k, b.getBoundingClientRect());
   });
   on('state', paint);
+  on('asks', paint);
   on('focus', paint);
   on('layout', () => { sig = ''; paint(); });
   addEventListener('resize', () => { sig = ''; paint(); });

@@ -377,7 +377,7 @@ fn attach_and_fork_stay_in_the_tab() {
     assert!(
         t.args()
             .lines()
-            .any(|l| l.contains(&format!("--resume {SID}")) && l.ends_with("--fork-session")),
+            .any(|l| l.contains(&format!("--resume {SID} --fork-session --session-id "))),
         "{}",
         t.args()
     );
@@ -475,4 +475,43 @@ fn read_tab_returns_the_asked_tab_after_churn() {
     );
     assert_eq!(r["result"]["tab"], json!(format!("t{dst}")), "{r}");
     assert_eq!(r["result"]["moved_from"], json!(format!("t{src}")), "{r}");
+}
+
+#[test]
+fn lost_sessions_list_only_what_no_tab_holds() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut t = setup("lost", &[]);
+    let cwd = t.cwd();
+    let dir = t.app.cfg.accounts[2].config_dir();
+    transcript(&dir, &cwd, SID, "left in a plain terminal");
+    transcript(
+        &dir,
+        &cwd,
+        "aaaa1111-0000-4000-8000-000000000001",
+        "something else entirely",
+    );
+    t.app.kick_index(true);
+    let v = t.app.control_call(
+        "list_lost_sessions",
+        &json!({"limit": 10, "include_headless": true}),
+    );
+    assert!(ids(&v).contains(&SID.to_string()), "{v}");
+    assert_eq!(v["result"]["sessions"][0]["running"], false, "{v}");
+    assert_eq!(v["result"]["sessions"][0]["account"], 3, "{v}");
+
+    let v = t.app.control_call(
+        "list_lost_sessions",
+        &json!({"harness": "grok", "include_headless": true}),
+    );
+    assert_eq!(v["result"]["matched"], 0, "{v}");
+
+    let v = t.app.control_call(
+        "open_session",
+        &json!({"session_id": SID, "harness": "claude"}),
+    );
+    assert_eq!(v["result"]["opened"], SID, "{v}");
+    let v = t
+        .app
+        .control_call("list_lost_sessions", &json!({"include_headless": true}));
+    assert!(!ids(&v).contains(&SID.to_string()), "{v}");
 }

@@ -66,6 +66,20 @@ pub const PROVIDER: Provider = Provider {
 
 pub const NO_TRAFFIC: &str = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC";
 
+pub fn no_reporting_env(h: crate::harness::Harness) -> Vec<(String, String)> {
+    let mut env = vec![("DO_NOT_TRACK".to_string(), "1".to_string())];
+    if h == crate::harness::Harness::Claude {
+        for k in [
+            "DISABLE_TELEMETRY",
+            "DISABLE_ERROR_REPORTING",
+            "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+        ] {
+            env.push((k.to_string(), "1".to_string()));
+        }
+    }
+    env
+}
+
 pub struct ClaudeBackend {
     child: Child,
     stdin: ChildStdin,

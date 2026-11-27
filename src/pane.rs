@@ -216,7 +216,11 @@ pub struct Pane {
 
     pub accent: Option<String>,
 
+    pub avatar: Option<String>,
+
     pub session_id: Option<String>,
+
+    pub launch_id: Option<String>,
 
     pub started: std::time::SystemTime,
 
@@ -255,9 +259,21 @@ pub struct Pane {
 
     pub browser_also: Vec<String>,
 
+    pub route: Option<String>,
+
+    pub route_live: Option<String>,
+
+    pub route_port: u16,
+
+    pub route_block: Option<crate::app_routes::RouteBlock>,
+
+    pub route_skip: bool,
+
     pub opened: std::time::SystemTime,
 
     pub last_input: Instant,
+
+    pub own_input: Option<Instant>,
 
     pub finished: bool,
 
@@ -266,6 +282,8 @@ pub struct Pane {
     pub bg_wait_unseen: bool,
 
     pub bg_lock: Option<crate::session_ids::BgLock>,
+
+    pub lost: Option<crate::relink::Lost>,
 
     pub next_launch: Option<crate::session_ids::NextLaunch>,
 
@@ -312,7 +330,9 @@ impl Pane {
             cwd,
             custom_name: None,
             accent: None,
+            avatar: None,
             session_id: None,
+            launch_id: None,
             started: std::time::SystemTime::now(),
             pending: None,
             activity: Activity::Idle,
@@ -340,12 +360,21 @@ impl Pane {
             pinned: false,
             browser: None,
             browser_also: vec![],
+            route: None,
+            route_live: None,
+            route_port: 0,
+            route_block: None,
+            route_skip: false,
             opened: std::time::SystemTime::now(),
-            last_input: Instant::now(),
+            last_input: Instant::now()
+                .checked_sub(std::time::Duration::from_secs(3600))
+                .unwrap_or_else(Instant::now),
+            own_input: None,
             finished: false,
             bg_wait: false,
             bg_wait_unseen: false,
             bg_lock: None,
+            lost: None,
             next_launch: None,
             lease: None,
             model: None,
@@ -407,6 +436,29 @@ impl Pane {
         self.state == PaneState::Running
     }
 
+    pub fn set_session(&mut self, id: Option<String>, why: &str) -> bool {
+        if self.session_id == id {
+            return false;
+        }
+        crate::log::info(&format!(
+            "session: tab {} changes from {} to {} ({why})",
+            self.uid,
+            self.session_id.as_deref().unwrap_or("none"),
+            id.as_deref().unwrap_or("none")
+        ));
+        self.session_id = id;
+        true
+    }
+
+    pub fn mark_lost(&mut self, lost: crate::relink::Lost) {
+        self.kill();
+        self.set_session(Some(lost.id.clone()), "its conversation was marked lost");
+        self.lost = Some(lost);
+        self.pending = None;
+        self.state = PaneState::Exited(None);
+        self.set_activity(Activity::Exited);
+    }
+
     pub fn spawn(&mut self, spec: LaunchSpec, events: Sender<AppEvent>) -> Result<()> {
         if cfg!(test) && crate::test_guard::is_current_exe(std::path::Path::new(&spec.program)) {
             anyhow::bail!("refused in tests: {} is the test binary", spec.program);
@@ -424,9 +476,11 @@ impl Pane {
         self.cwd = spec.cwd.clone();
         self.started = std::time::SystemTime::now();
         self.pending = None;
+        self.lost = None;
         self.trust_answered = false;
+        self.launch_id = None;
         if let LaunchKind::Resume(id) = &spec.kind {
-            self.session_id = Some(id.clone());
+            self.set_session(Some(id.clone()), "launched to resume it");
         }
         self.set_activity(Activity::Starting);
 
@@ -457,6 +511,9 @@ impl Pane {
         }
         for (k, v) in &spec.extra_env {
             cmd.env(k, v);
+        }
+        if crate::datapath::live().1 != crate::datapath::Source::Default {
+            cmd.env("GODTERM_HOME", crate::config::app_home());
         }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
@@ -686,6 +743,11 @@ impl Pane {
             .contents();
         let next = crate::prompt_cli::activity_for(self.harness, &text)
             .unwrap_or_else(|| detect_activity(&text));
+        let next = if self.harness == crate::harness::Harness::Antigravity {
+            crate::antigravity::blend(self.uid, self.started, next)
+        } else {
+            next
+        };
         let old = self.activity;
         if next != old {
             self.set_activity(next);
@@ -703,6 +765,18 @@ impl Pane {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "~".into())
+    }
+
+    pub fn write_own(&mut self, bytes: &[u8]) {
+        let before = self.last_input;
+        self.write(bytes);
+        if self.last_input != before {
+            self.own_input = Some(self.last_input);
+        }
+    }
+
+    pub fn user_typed_within(&self, d: std::time::Duration) -> bool {
+        self.last_input.elapsed() < d && self.own_input != Some(self.last_input)
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -1148,6 +1222,40 @@ fn is_typing(b: &[u8]) -> bool {
         } else {
             return true;
         }
+    }
+    false
+}
+
+pub fn typed_draft(screen: &vt100::Screen) -> bool {
+    let (rows, cols) = screen.size();
+    let mut seen = 0;
+    for r in (0..rows).rev() {
+        let cells: Vec<(char, bool)> = (0..cols)
+            .filter_map(|c| screen.cell(r, c))
+            .map(|cell| {
+                let plain = !cell.dim()
+                    && !cell.inverse()
+                    && matches!(cell.fgcolor(), vt100::Color::Default);
+                (cell.contents().chars().next().unwrap_or(' '), plain)
+            })
+            .collect();
+        if cells.iter().all(|(c, _)| c.is_whitespace()) {
+            continue;
+        }
+        seen += 1;
+        if seen > 8 {
+            return false;
+        }
+        let start = cells
+            .iter()
+            .position(|(c, _)| !c.is_whitespace() && !matches!(c, '│' | '|'));
+        let Some(i) = start else { continue };
+        if !matches!(cells[i].0, '>' | '❯') {
+            continue;
+        }
+        return cells[i + 1..]
+            .iter()
+            .any(|(c, plain)| *plain && !c.is_whitespace() && !matches!(c, '│' | '|'));
     }
     false
 }

@@ -436,8 +436,11 @@ fn install(args: &[String]) -> Result<()> {
         .unwrap_or(INTERVAL_S);
     let exe = crate::install::real_exe()?;
     let mut env: Vec<(String, String)> = vec![];
-    if let Ok(h) = std::env::var("GODTERM_HOME") {
-        env.push(("GODTERM_HOME".into(), h));
+    if crate::datapath::live().1 != crate::datapath::Source::Default {
+        env.push((
+            "GODTERM_HOME".into(),
+            crate::config::app_home().to_string_lossy().into_owned(),
+        ));
     }
     for (k, v) in std::env::vars() {
         if k.starts_with("GODTERM_SUPERVISOR_") {

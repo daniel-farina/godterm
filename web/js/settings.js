@@ -11,10 +11,11 @@ import { run, usageCards, jobRows, loopRows, updateSheet } from './manage.js';
 import { ttsBox, voicePick, setMode, openVoiceSheet } from './voice.js';
 import { gitcfgSection } from './gitcfg.js';
 import { syncSection } from './syncui.js';
+import { remoteSection } from './remoteui.js';
 
 const SECTIONS = [
   ['browser', 'This browser'], ['voice', 'Voice'], ['terminal', 'Terminal'], ['assistant', 'Assistant'],
-  ['accounts', 'Accounts and usage'], ['jobs', 'Jobs and loops'], ['web', 'Web app'], ['general', 'General'], ['about', 'About'], ['sync', 'Sync'],
+  ['accounts', 'Accounts and usage'], ['jobs', 'Jobs and loops'], ['web', 'Web app'], ['remote', 'Remote access and login'], ['general', 'General'], ['about', 'About'], ['sync', 'Sync'],
 ];
 SECTIONS.splice(5, 0, ['github', 'GitHub accounts and repos']);
 
@@ -131,6 +132,7 @@ function aboutRows() {
   const u = S.update;
   return [
     row('GodTerm', S.version || '', h('span.lh', {}, ''), 'version'),
+    S.data_dir ? row('Data folder', `${S.data_dir} · to move it, quit GodTerm and run: godterm data-path <folder>`, h('span.lh', {}, ''), 'data path') : null,
     row('Web build', String(S.build || 'dev').slice(0, 12), h('span.lh', {}, ''), 'build'),
     row('This device', `${navigator.userAgent.match(/iPhone|iPad|Android|Macintosh|Windows|Linux/)?.[0] || 'browser'} · ${innerWidth}x${innerHeight}@${devicePixelRatio}`, h('span.lh', {}, ''), 'device'),
     u?.available ? row(`GodTerm ${u.version || ''} is available`, u.current ? 'You have ' + u.current : '', btn('Details', () => updateSheet(u, `GodTerm ${u.version || ''} is available`), '.pri'), 'update')
@@ -157,6 +159,7 @@ export async function settingsSheet(query = '') {
   body('jobs').append(jr.length ? L(jr) : note('No jobs'), lr.length ? L(lr) : note('No loops'), h('div.list.st-god'));
   body('github').append(gitcfgSection());
   body('web').append(h('div.list.st-god'));
+  body('remote').append(remoteSection());
   body('general').append(h('div.list.st-god'));
   body('about').append(L(aboutRows()));
 

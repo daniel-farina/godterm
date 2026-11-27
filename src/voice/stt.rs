@@ -2,6 +2,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::audio::wav_bytes;
@@ -35,6 +37,100 @@ pub fn whisper_threads() -> usize {
     (free / 2).clamp(2, 8)
 }
 
+pub const MODEL_NONE: u8 = 0;
+pub const MODEL_LOADING: u8 = 1;
+pub const MODEL_LOADED: u8 = 2;
+pub const MODEL_UNLOADED: u8 = 3;
+
+static PID_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static REAPED: std::sync::Once = std::sync::Once::new();
+
+fn pid_file() -> PathBuf {
+    server_log().with_file_name("whisper-server.pids")
+}
+
+fn read_pids() -> Vec<u32> {
+    std::fs::read_to_string(pid_file())
+        .map(|t| t.lines().filter_map(|l| l.trim().parse().ok()).collect())
+        .unwrap_or_default()
+}
+
+fn write_pids(pids: &[u32]) {
+    let f = pid_file();
+    if pids.is_empty() {
+        let _ = std::fs::remove_file(&f);
+        return;
+    }
+    if let Some(d) = f.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let text: String = pids.iter().map(|p| format!("{p}\n")).collect();
+    let _ = std::fs::write(&f, text);
+}
+
+fn record_pid(pid: u32) {
+    let _g = PID_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut v = read_pids();
+    if !v.contains(&pid) {
+        v.push(pid);
+    }
+    write_pids(&v);
+}
+
+fn forget_pid(pid: u32) {
+    let _g = PID_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut v = read_pids();
+    v.retain(|p| *p != pid);
+    write_pids(&v);
+}
+
+pub fn orphans(listed: &[u32], procs: &[crate::procs::ProcInfo]) -> Vec<u32> {
+    listed
+        .iter()
+        .copied()
+        .filter(|pid| {
+            procs.iter().any(|p| {
+                p.pid == *pid && p.ppid == 1 && {
+                    let c = p.command_line();
+                    c.contains("--host") && c.contains("--port")
+                }
+            })
+        })
+        .collect()
+}
+
+pub fn reap_orphans() {
+    if !cfg!(unix) {
+        return;
+    }
+    let _g = PID_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let listed = read_pids();
+    if listed.is_empty() {
+        return;
+    }
+    let victims = orphans(&listed, &crate::procs::processes());
+    for &pid in &victims {
+        crate::log::info(&format!(
+            "voice: reaping a speech server {pid} left by an earlier run"
+        ));
+        crate::platform::kill(pid as i32, crate::platform::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_millis(800);
+    while victims.iter().any(|p| crate::platform::alive(*p)) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for &pid in &victims {
+        if crate::platform::alive(pid) {
+            crate::platform::kill(pid as i32, crate::platform::SIGKILL);
+        }
+    }
+    let keep: Vec<u32> = listed
+        .into_iter()
+        .filter(|p| !victims.contains(p) && crate::platform::alive(*p))
+        .collect();
+    write_pids(&keep);
+}
+
 pub struct Whisper {
     model: PathBuf,
     cli: String,
@@ -43,6 +139,8 @@ pub struct Whisper {
     threads: usize,
     server: Option<(Child, u16)>,
     server_failed: bool,
+    last_used: Instant,
+    pub state: Arc<AtomicU8>,
 
     pub prompt: String,
 
@@ -163,6 +261,8 @@ impl Whisper {
             threads: whisper_threads(),
             server: None,
             server_failed: false,
+            last_used: Instant::now(),
+            state: Arc::new(AtomicU8::new(MODEL_NONE)),
             prompt: String::new(),
             beam: 5,
             vad_model: None,
@@ -189,10 +289,46 @@ impl Whisper {
         self.threads
     }
 
+    pub fn touch(&mut self) {
+        self.last_used = Instant::now();
+    }
+
+    pub fn loaded(&self) -> bool {
+        self.server.is_some()
+    }
+
+    pub fn idle_for(&self) -> Duration {
+        self.last_used.elapsed()
+    }
+
+    pub fn unload_if_idle(&mut self, after_s: u32) -> bool {
+        if after_s == 0
+            || self.server.is_none()
+            || self.idle_for() < Duration::from_secs(after_s as u64)
+        {
+            return false;
+        }
+        self.shutdown();
+        true
+    }
+
     pub fn start_server(&mut self) -> Result<()> {
         if self.server.is_some() || self.server_failed {
+            self.touch();
             return Ok(());
         }
+        REAPED.call_once(reap_orphans);
+        self.state.store(MODEL_LOADING, Ordering::Relaxed);
+        let r = self.spawn_server();
+        self.touch();
+        self.state.store(
+            if r.is_ok() { MODEL_LOADED } else { MODEL_NONE },
+            Ordering::Relaxed,
+        );
+        r
+    }
+
+    fn spawn_server(&mut self) -> Result<()> {
         let port = free_port().ok_or_else(|| anyhow!("no free port"))?;
         let log_path = server_log();
         if let Some(d) = log_path.parent() {
@@ -216,6 +352,7 @@ impl Whisper {
         let mut child = match child {
             Ok(c) => {
                 super::track(c.id());
+                record_pid(c.id());
                 c
             }
             Err(e) => {
@@ -227,6 +364,7 @@ impl Whisper {
         while t0.elapsed() < Duration::from_secs(60) {
             if let Ok(Some(_)) = child.try_wait() {
                 super::untrack(child.id());
+                forget_pid(child.id());
                 self.server_failed = true;
                 bail!("whisper-server exited during startup");
             }
@@ -246,6 +384,7 @@ impl Whisper {
         let _ = child.kill();
         let _ = child.wait();
         super::untrack(child.id());
+        forget_pid(child.id());
         self.server_failed = true;
         bail!("whisper-server did not come up in 60 s")
     }
@@ -256,6 +395,7 @@ impl Whisper {
 
     pub fn transcribe_full(&mut self, samples: &[i16]) -> Result<Decoded> {
         let wav = wav_bytes(samples);
+        self.touch();
         if self.server.is_none() && !self.server_failed {
             let _ = self.start_server();
         }
@@ -276,10 +416,13 @@ impl Whisper {
                         let _ = c.kill();
                         let _ = c.wait();
                         super::untrack(c.id());
+                        forget_pid(c.id());
+                        self.state.store(MODEL_UNLOADED, Ordering::Relaxed);
                     }
                 }
             }
         }
+        self.touch();
         self.via_cli(&wav).map(|t| Decoded {
             text: clean(&t),
             ..Default::default()
@@ -433,6 +576,8 @@ impl Whisper {
             let _ = c.kill();
             let _ = c.wait();
             super::untrack(c.id());
+            forget_pid(c.id());
+            self.state.store(MODEL_UNLOADED, Ordering::Relaxed);
         }
     }
 }
@@ -505,6 +650,82 @@ mod tests {
         let _ = c.kill();
         let _ = c.wait();
         drop(l);
+    }
+
+    fn stub_server(dir: &Path) -> Option<PathBuf> {
+        if !which("python3") {
+            return None;
+        }
+        let f = dir.join("fake-whisper-server");
+        let body = "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --port ] && P=$2; shift; done\nexec python3 -c 'import socket,sys\ns=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind((\"127.0.0.1\",int(sys.argv[1])));s.listen(8)\nwhile True:\n    c,_=s.accept();c.close()' $P\n";
+        std::fs::write(&f, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        Some(f)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_idle_server_is_stopped_and_loads_again() {
+        let _g = crate::config::testing::LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let d = std::env::temp_dir().join(format!("godterm-stt-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        crate::config::testing::set_home(&d.join("home"));
+        let Some(bin) = stub_server(&d) else { return };
+        let model = d.join("m.bin");
+        std::fs::write(&model, b"x").unwrap();
+        let mut w = Whisper::new(model, "none".into(), bin.display().to_string(), "en".into());
+        assert_eq!(w.state.load(Ordering::Relaxed), MODEL_NONE);
+        w.start_server().unwrap();
+        assert!(w.loaded());
+        assert_eq!(w.state.load(Ordering::Relaxed), MODEL_LOADED);
+        let pid = w.server.as_ref().unwrap().0.id();
+        assert!(read_pids().contains(&pid));
+        assert!(!w.unload_if_idle(300), "a fresh server stays");
+        assert!(!w.unload_if_idle(0), "0 never unloads");
+        w.last_used = Instant::now() - Duration::from_secs(400);
+        assert!(w.unload_if_idle(300));
+        assert!(!w.loaded());
+        assert_eq!(w.state.load(Ordering::Relaxed), MODEL_UNLOADED);
+        assert!(!crate::platform::alive(pid), "the child is reaped");
+        assert!(!read_pids().contains(&pid));
+        w.start_server().unwrap();
+        assert!(w.loaded());
+        assert_eq!(w.state.load(Ordering::Relaxed), MODEL_LOADED);
+        let pid2 = w.server.as_ref().unwrap().0.id();
+        drop(w);
+        assert!(!crate::platform::alive(pid2), "dropping stops the server");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn only_orphaned_servers_are_reaped() {
+        let p = |pid, ppid, cmd: &str| crate::procs::ProcInfo {
+            pid,
+            ppid,
+            name: "x".into(),
+            cmd: cmd.split(' ').map(str::to_string).collect(),
+            ..Default::default()
+        };
+        let procs = vec![
+            p(
+                10,
+                1,
+                "/opt/whisper-server -m a --host 127.0.0.1 --port 5000",
+            ),
+            p(
+                11,
+                500,
+                "/opt/whisper-server -m a --host 127.0.0.1 --port 5001",
+            ),
+            p(12, 1, "/usr/bin/other thing"),
+        ];
+        assert_eq!(orphans(&[10, 11, 12, 13], &procs), vec![10]);
     }
 
     #[test]

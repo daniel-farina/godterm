@@ -110,7 +110,29 @@ pub fn web_stop() {
 }
 
 pub fn web_played_db(window: std::time::Duration) -> Option<f32> {
-    web_clock().played_db(window, std::time::Instant::now())
+    let v = web_volume();
+    web_clock()
+        .played_db(window, std::time::Instant::now())
+        .map(|d| {
+            if v <= 1e-5 {
+                -100.0
+            } else {
+                (d + 20.0 * v.log10()).max(-100.0)
+            }
+        })
+}
+
+static WEB_VOL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+pub fn set_web_volume(v: f32) {
+    WEB_VOL.store(
+        v.clamp(0.0, 1.0).to_bits(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn web_volume() -> f32 {
+    f32::from_bits(WEB_VOL.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 pub fn web_end() -> Option<std::time::Instant> {
@@ -145,9 +167,93 @@ pub fn duck() -> f32 {
 
 pub static FLUSHED_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
+const RAMP_FRAMES: usize = 480;
+
+const NO_GAIN: u32 = u32::MAX;
+
+pub struct Mix {
+    queue: Mutex<VecDeque<f32>>,
+    flush: Arc<std::sync::atomic::AtomicBool>,
+    volume: Arc<std::sync::atomic::AtomicU32>,
+    gain: std::sync::atomic::AtomicU32,
+}
+
+impl Mix {
+    pub fn new(
+        flush: Arc<std::sync::atomic::AtomicBool>,
+        volume: Arc<std::sync::atomic::AtomicU32>,
+    ) -> Arc<Mix> {
+        Arc::new(Mix {
+            queue: Default::default(),
+            flush,
+            volume,
+            gain: std::sync::atomic::AtomicU32::new(NO_GAIN),
+        })
+    }
+
+    pub fn volume(&self) -> f32 {
+        f32::from_bits(self.volume.load(std::sync::atomic::Ordering::Relaxed)).clamp(0.0, 1.0)
+    }
+
+    pub fn pending(&self) -> usize {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    fn fill<T: Copy>(&self, out: &mut [T], channels: usize, conv: impl Fn(f32) -> T) {
+        self.fill_at(out, channels, duck() * self.volume(), conv)
+    }
+
+    fn fill_at<T: Copy>(
+        &self,
+        out: &mut [T],
+        channels: usize,
+        target: f32,
+        conv: impl Fn(f32) -> T,
+    ) {
+        use std::sync::atomic::Ordering;
+        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        if self.flush.load(Ordering::SeqCst) && !q.is_empty() {
+            q.clear();
+            *FLUSHED_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+        }
+        let from = match self.gain.swap(target.to_bits(), Ordering::Relaxed) {
+            NO_GAIN => target,
+            b => f32::from_bits(b),
+        };
+        let channels = channels.max(1);
+        let ramp = (out.len() / channels).clamp(1, RAMP_FRAMES);
+        let mut sq = 0.0f32;
+        let mut n = 0usize;
+        for (i, frame) in out.chunks_mut(channels).enumerate() {
+            let gain = if i < ramp {
+                from + (target - from) * (i + 1) as f32 / ramp as f32
+            } else {
+                target
+            };
+            let x = q.pop_front().unwrap_or(0.0) * gain;
+            sq += x * x;
+            n += 1;
+            let v = conv(x);
+            for s in frame {
+                *s = v;
+            }
+        }
+        if n > 0 {
+            note_played((sq / n as f32).sqrt());
+        }
+    }
+
+    #[cfg(test)]
+    pub fn render(&self, frames: usize) -> Vec<f32> {
+        let mut out = vec![0.0f32; frames];
+        self.fill_at(&mut out, 1, self.volume(), |s| s);
+        out
+    }
+}
+
 pub struct Player {
-    queue: Arc<Mutex<VecDeque<f32>>>,
-    _stream: cpal::Stream,
+    mix: Arc<Mix>,
+    _stream: Option<cpal::Stream>,
     rate: u32,
     pub device: String,
 }
@@ -187,7 +293,20 @@ pub fn output_devices() -> Vec<String> {
 }
 
 impl Player {
-    pub fn open(device: &str, flush: Arc<std::sync::atomic::AtomicBool>) -> Result<Player> {
+    pub fn silent(mix: Arc<Mix>, rate: u32) -> Player {
+        Player {
+            mix,
+            _stream: None,
+            rate,
+            device: "silent".into(),
+        }
+    }
+
+    pub fn open(
+        device: &str,
+        flush: Arc<std::sync::atomic::AtomicBool>,
+        volume: Arc<std::sync::atomic::AtomicU32>,
+    ) -> Result<Player> {
         if devices_off() {
             return Err(anyhow!("audio devices are off (tests, GODTERM_NO_AUDIO)"));
         }
@@ -205,21 +324,20 @@ impl Player {
         let cfg = dev.default_output_config().map_err(|e| anyhow!("{e}"))?;
         let rate = cfg.sample_rate().0;
         let channels = cfg.channels() as usize;
-        let queue: Arc<Mutex<VecDeque<f32>>> = Default::default();
-        let q = Arc::clone(&queue);
-        let (f1, f2) = (Arc::clone(&flush), flush);
+        let mix = Mix::new(flush, volume);
+        let (m1, m2) = (Arc::clone(&mix), Arc::clone(&mix));
         let err = |e| crate::log::info(&format!("audio output: {e}"));
         let sc: cpal::StreamConfig = cfg.clone().into();
         let stream = match cfg.sample_format() {
             cpal::SampleFormat::F32 => dev.build_output_stream(
                 &sc,
-                move |out: &mut [f32], _| fill(out, channels, &q, &f1, |s| s),
+                move |out: &mut [f32], _| m1.fill(out, channels, |s| s),
                 err,
                 None,
             ),
             cpal::SampleFormat::I16 => dev.build_output_stream(
                 &sc,
-                move |out: &mut [i16], _| fill(out, channels, &q, &f2, |s| (s * 32767.0) as i16),
+                move |out: &mut [i16], _| m2.fill(out, channels, |s| (s * 32767.0) as i16),
                 err,
                 None,
             ),
@@ -228,54 +346,29 @@ impl Player {
         .map_err(|e| anyhow!("{e}"))?;
         stream.play().map_err(|e| anyhow!("{e}"))?;
         Ok(Player {
-            queue,
-            _stream: stream,
+            mix,
+            _stream: Some(stream),
             rate,
             device: name,
         })
     }
 
-    pub fn push(&self, samples: &[f32], from_rate: u32, volume: f32) {
+    pub fn push(&self, samples: &[f32], from_rate: u32) {
         let s = resample(samples, from_rate, self.rate);
-        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        q.extend(s.into_iter().map(|v| v * volume));
+        let mut q = self.mix.queue.lock().unwrap_or_else(|e| e.into_inner());
+        q.extend(s);
     }
 
     pub fn pending_s(&self) -> f32 {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len() as f32 / self.rate as f32
+        self.mix.pending() as f32 / self.rate as f32
     }
 
     pub fn clear(&self) {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    }
-}
-
-fn fill<T: Copy>(
-    out: &mut [T],
-    channels: usize,
-    q: &Mutex<VecDeque<f32>>,
-    flush: &std::sync::atomic::AtomicBool,
-    conv: impl Fn(f32) -> T,
-) {
-    let mut q = q.lock().unwrap_or_else(|e| e.into_inner());
-    if flush.load(std::sync::atomic::Ordering::SeqCst) && !q.is_empty() {
-        q.clear();
-        *FLUSHED_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
-    }
-    let mut sq = 0.0f32;
-    let mut n = 0usize;
-    let gain = duck();
-    for frame in out.chunks_mut(channels.max(1)) {
-        let x = q.pop_front().unwrap_or(0.0) * gain;
-        sq += x * x;
-        n += 1;
-        let v = conv(x);
-        for s in frame {
-            *s = v;
-        }
-    }
-    if n > 0 {
-        note_played((sq / n as f32).sqrt());
+        self.mix
+            .queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 }
 
@@ -366,6 +459,62 @@ mod tests {
         c.clip(&[], 16_000, t0 + Duration::from_secs(41));
         c.clip(&[0.1; 10], 0, t0 + Duration::from_secs(41));
         assert_eq!(c.levels.len(), n);
+    }
+
+    fn mix_at(volume: f32) -> (Arc<Mix>, Arc<std::sync::atomic::AtomicU32>, Player) {
+        let vol = Arc::new(std::sync::atomic::AtomicU32::new(volume.to_bits()));
+        let flush = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mix = Mix::new(Arc::clone(&flush), Arc::clone(&vol));
+        let p = Player::silent(Arc::clone(&mix), 24_000);
+        (mix, vol, p)
+    }
+
+    #[test]
+    fn a_volume_change_reaches_audio_that_was_already_queued() {
+        let (mix, vol, p) = mix_at(0.8);
+        p.push(&[1.0; 24_000], 24_000);
+        let a = mix.render(1000);
+        assert!(a.iter().all(|x| (x - 0.8).abs() < 1e-6), "{:?}", &a[..4]);
+
+        vol.store(0.25f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        let b = mix.render(1000);
+        assert!(
+            b[0] < 0.8 && b[0] > 0.25,
+            "a short ramp, no click: {}",
+            b[0]
+        );
+        assert!(b.windows(2).all(|w| w[1] <= w[0] + 1e-6), "it only falls");
+        assert!(
+            b[RAMP_FRAMES..].iter().all(|x| (x - 0.25).abs() < 1e-6),
+            "queued before the change, played at the new volume"
+        );
+
+        p.push(&[1.0; 500], 24_000);
+        vol.store(0.0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        let c = mix.render(2000);
+        assert!(
+            c[RAMP_FRAMES..].iter().all(|x| *x == 0.0),
+            "zero is silence"
+        );
+        assert!(mix.pending() > 0, "silence still plays through the reply");
+
+        vol.store(1.0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        let d = mix.render(2000);
+        assert!(d[RAMP_FRAMES..].iter().all(|x| (x - 1.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn a_flush_drops_what_was_queued() {
+        let vol = Arc::new(std::sync::atomic::AtomicU32::new(1.0f32.to_bits()));
+        let flush = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mix = Mix::new(Arc::clone(&flush), vol);
+        let p = Player::silent(Arc::clone(&mix), 24_000);
+        p.push(&[0.5; 24_000], 24_000);
+        assert!(mix.render(100).iter().all(|x| *x > 0.4));
+        flush.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(mix.render(100).iter().all(|x| *x == 0.0));
+        assert_eq!(mix.pending(), 0);
+        assert_eq!(p.pending_s(), 0.0);
     }
 
     #[test]

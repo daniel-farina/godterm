@@ -7,8 +7,13 @@ shell, a fake assistant, approvals, jobs, loops and ~200 fake sessions.
     python3 web/dev/mock.py [--port 7890]
 
 Dev endpoints: /dev/bump (new web build -> "Update available"),
-/dev/update (GodTerm app update news), /dev/approval (a new approval),
-/dev/sync-on, /dev/sync-off, /dev/sync-fail (Settings > Sync's state).
+/dev/update (GodTerm app update news), /dev/approval (a new approval), /dev/jobask (a tab's job request waiting
+for the user's yes; ?tab=<uid>, or ?tab=none for a closed tab),
+/dev/jobask-expire (they expire), /dev/answers (what was answered),
+/dev/sync-on, /dev/sync-off, /dev/sync-fail (Settings > Sync's state),
+/dev/ebv-open?uid=N (an agent opened the embedded browser of tab N),
+/dev/ebv-sleep?id=P (page tab P of the embedded browser went to sleep),
+/dev/apps (what the Apps page asked for: prompts placed, folders made again).
 """
 import argparse
 import base64
@@ -27,23 +32,36 @@ import time
 import urllib.parse
 import wave
 
+import mock_apps
+import mock_ebv
 import mock_git
+import mock_routes
 import mock_sync
 
 WEB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 LOCK = threading.RLock()
 CLIENTS = set()
+mock_ebv.CLIENTS = CLIENTS
 BUILD = [hashlib.sha1(str(time.time()).encode()).hexdigest()[:12]]
 RNG = random.Random(7)
 
 ACCOUNTS = [
     {"account": 1, "label": "Alpha", "email": "dev@example.com", "harness": "claude", "logged_in": True, "available": True},
-    {"account": 2, "label": "Bravo", "harness": "claude", "logged_in": True, "available": True},
-    {"account": 3, "label": "Grok", "harness": "grok", "logged_in": True, "available": True},
-    {"account": 4, "label": "Delta", "harness": "claude", "logged_in": False, "available": False},
+    {"account": 2, "label": "Bravo", "email": "bravo.work@example.org", "harness": "claude", "logged_in": True, "available": True},
+    {"account": 3, "label": "Grok", "email": "grok-team@example.net", "harness": "grok", "logged_in": True, "available": True},
+    {"account": 4, "label": "Delta", "email": "delta@example.com", "harness": "claude", "logged_in": False, "available": False},
+    {"account": 5, "label": "Gravity", "email": "gravity@example.com", "harness": "antigravity", "logged_in": True, "available": True},
 ]
-USAGE = {1: (72, 55), 2: (18, 40), 3: (90, 88), 4: (None, None)}
+SHARING = {
+    1: {"state": "on", "locked": False, "product": "Help improve Claude", "how": "link", "url": "https://claude.ai/settings/data-privacy-controls", "slash": ""},
+    2: {"state": "off", "locked": False, "product": "Help improve Claude", "how": "link", "url": "https://claude.ai/settings/data-privacy-controls", "slash": ""},
+    3: {"state": "on", "locked": False, "product": "Help improve Grok", "how": "slash", "url": "", "slash": "/privacy"},
+}
+for a in ACCOUNTS:
+    if a["account"] in SHARING:
+        a["sharing"] = SHARING[a["account"]]
+USAGE = {1: (72, 55), 2: (18, 40), 3: (90, 88), 4: (None, None), 5: (64, 81)}
 for a in ACCOUNTS:
     five, week = USAGE[a["account"]]
     a["five_hour_left_pct"] = five
@@ -74,9 +92,10 @@ class Tab:
         self.hist = bytearray()
         self.line = ""
         self.work_left = 0
-        self.model = "opus" if acct(account)["harness"] == "claude" else "grok-4.7"
+        self.model = {"claude": "opus", "antigravity": "Gemini 4 Argon (Medium)"}.get(acct(account)["harness"], "grok-4.7")
         self.group = None
         self.color = None
+        self.avatar = None
         self.out(c("{y}{B}╭" + "─" * 40 + "╮{0}\r\n"))
         self.out(c("{y}│{0} {B}%-38s{0} {y}│{0}\r\n") % ("GodTerm mock: " + name)[:38])
         self.out(c("{y}│{0} {d}%-38s{0} {y}│{0}\r\n") % folder[:38])
@@ -86,7 +105,7 @@ class Tab:
 
     def json(self, pos, n):
         a = acct(self.account)
-        v = {"id": "t%d" % self.uid, "uid": self.uid, "cols": self.cols, "rows": self.rows, "running": True, "account": self.account, "account_label": a["label"], "position": "tab %d of %d" % (pos, n),
+        v = {"id": "t%d" % self.uid, "uid": self.uid, "cols": self.cols, "rows": self.rows, "running": True, "can_direct": can_direct(self), "account": self.account, "account_label": a["label"], "position": "tab %d of %d" % (pos, n),
              "name": self.name, "folder": self.folder, "state": self.state, "model": self.model,
              "active_at": int(time.time()) - (0, 240, 3 * 3600, 26 * 3600, 50 * 3600, 90, 7200)[self.uid % 7]}
         if self.pinned:
@@ -95,10 +114,22 @@ class Tab:
             v["busy"] = True
         if self.state == "approval":
             v["waiting_for"] = "Bash(rm -rf build/)"
+        if any(x.get("kind") == "tabjob" and x.get("tab") == self.uid for x in APPROVALS.values()):
+            v["label"] = "confirm"
+        v["session_id"] = "0199aaaa-%04x-7ccc-8ddd-eeeeeeeeeeee" % self.uid
+        if getattr(self, "lost", None):
+            v["running"] = False
+            v["state"] = "ended"
+            v["conversation_lost"] = {"conversation": v["session_id"], "folder": self.folder, "why": "the folder %s is gone" % self.folder,
+                                      "fix": "relink_conversation"}
         if self.group:
             v["group"] = self.group
         if self.color:
             v["color"] = self.color
+        if self.avatar:
+            v["avatar"] = self.avatar
+        if mock_routes.of(self.uid):
+            v["route"] = mock_routes.of(self.uid)
         loops = sum(1 for l in LOOPS if l["tab"] == "t%d" % self.uid)
         if loops:
             v["loops"] = loops
@@ -268,18 +299,38 @@ def seed():
     now = int(time.time() * 1000)
     CHAT.extend([
         {"id": "h1", "role": "user", "text": "what did docs pass do last week?", "at": now - 8 * 86400000},
-        {"id": "h2", "role": "assistant", "text": "It rewrote the web app docs and committed twice.", "at": now - 8 * 86400000 + 9000},
+        {"id": "h2", "role": "assistant", "text": "It rewrote the web app docs and committed twice.", "at": now - 8 * 86400000 + 9000, "tab": "t3763", "tab_name": "docs pass"},
         {"id": "h3", "role": "user", "text": "is anything waiting for me?", "at": now - 86400000},
-        {"id": "h4", "role": "assistant", "text": "api refactor waits for an approval: `rm -rf build/`.", "at": now - 86400000 + 6000},
+        {"id": "h4", "role": "assistant", "text": "It waits for an approval: `rm -rf build/`.", "at": now - 86400000 + 6000, "tab": "t3764", "tab_name": "api refactor"},
+        {"id": "h5", "role": "assistant", "text": "The tab merged PR 67 and is idle now.", "at": now - 3600000, "tab": "t3762", "tab_name": "trading room"},
+        {"id": "h6", "role": "assistant", "text": "Two tabs are working, nothing waits for you.", "at": now - 3500000},
+        {"id": "h7", "role": "assistant", "text": "That tab was closed after it finished its Slack sweep.", "at": now - 3400000, "tab": "t99", "tab_name": "slack sweep"},
     ])
     new_tab(1, "web app", "~/godterm", cols=120, rows=36, pinned=True)
     new_tab(1, "trading room", "~/trading", cols=100, rows=30, state="working").work_left = 30
+    TABS[-1].color = "sage"
     new_tab(1, "docs pass", "~/godterm/docs", cols=80, rows=24)
-    new_tab(2, "api refactor", "~/varium/api", cols=132, rows=40, state="approval")
+    new_tab(2, "api refactor", "~/varium/api", cols=132, rows=40, state="approval").color = "clay"
     new_tab(2, "landing page", "~/sites/landing", cols=90, rows=28)
     new_tab(3, "grok scratch", "~/scratch", cols=100, rows=30)
     new_tab(3, "data pipeline", "~/etl", cols=110, rows=32, state="background")
+    new_tab(1, "old billing", "~/work/billing-old", cols=100, rows=30).lost = True
+    new_tab(5, "orbit notes", "~/orbit", cols=100, rows=30)
     TABS[1].tick()
+    TABS[0].avatar = store_avatar(DEMO_LOGO.encode())
+
+AVATARS = {}
+DEMO_LOGO = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="#3d4a55"/><path d="M14 46L32 14l18 32z" fill="#c9a46a"/><circle cx="32" cy="38" r="6" fill="#3d4a55"/></svg>'
+
+
+def store_avatar(b):
+    ext = "png" if b[:4] == b"\x89PNG" else "svg" if b"<svg" in b[:400] else None
+    if not ext or not b or len(b) > 512 * 1024:
+        return None
+    name = hashlib.sha256(b).hexdigest()[:16] + "." + ext
+    AVATARS[name] = b
+    return name
+
 
 JOBS = [
     {"id": "j1", "name": "morning brief", "schedule": "0 8 * * 1-5", "status": "active", "tab": "docs pass", "next": "in 14 h", "last": "ok"},
@@ -288,9 +339,14 @@ JOBS = [
 LOOPS = [{"job": "L7", "tab": "t3762", "cadence": "every 10m", "prompt": "Check the order book and report anything unusual.", "next": "in 4m"}]
 CLOSED = [{"index": 0, "tab": "old experiment", "account": 1, "cwd": "~/exp", "loops": 0}]
 APPROVALS = {}
+ANSWERS = []
 ARCHIVED0 = []
+SPK = {"muted": False, "typed": False, "vol": 100, "level": "normal"}
 MODES = {"memory_saver": False, "privacy": False, "voice": "push"}
+DIRECT = {"uid": None, "follow": False, "seq": 0}
 CHAT = []
+GLOBAL_CHAT = []
+TABCONV = {"uid": None, "hist": {}}
 BUSY = [False]
 SEQ = [0]
 STATE_DIRTY = [False]
@@ -300,23 +356,108 @@ def modes_line():
     return "Modes: memory saver %s, privacy %s, voice %s" % ("on" if MODES["memory_saver"] else "off", "on" if MODES["privacy"] else "off", MODES["voice"])
 
 
+def can_direct(t):
+    return t.state != "ended" and not getattr(t, "lost", None)
+
+
+def set_direct(uid):
+    t = next((x for x in TABS if x.uid == uid), None)
+    if uid is not None and (t is None or not can_direct(t)):
+        return
+    DIRECT["uid"] = uid
+    DIRECT["seq"] += 1
+    dirty()
+
+
+def follow_later(uid):
+    DIRECT["seq"] += 1
+    seq = DIRECT["seq"]
+
+    def go():
+        with LOCK:
+            if DIRECT["seq"] == seq and DIRECT["follow"] and DIRECT["uid"] not in (None, uid):
+                set_direct(uid)
+    threading.Timer(0.7, go).start()
+
+
 def state():
     n = len(TABS)
+    direct = next((x for x in TABS if x.uid == DIRECT["uid"]), None)
     for a in ACCOUNTS:
         a["tabs"] = sum(1 for t in TABS if t.account == a["account"])
     return {
         "accounts": ACCOUNTS, "moved": MOVED, "tabs": [t.json(i + 1, n) for i, t in enumerate(TABS)],
         "jobs": {"count": len(JOBS), "active": sum(j["status"] == "active" for j in JOBS), "next": "morning brief in 14 h", "jobs": JOBS},
         "loops": LOOPS, "closed": CLOSED, "modes": modes_line(), "pending_confirmations": [],
-        "voice": {"mode": MODES["voice"], "sample_rate": 24000},
+        "mode_flags": {"direct": direct.name if direct else None, "direct_tab": direct.uid if direct else None, "brainstorm": False},
+        "voice": {"mode": MODES["voice"], "sample_rate": 24000, "speaker_muted": SPK["muted"], "typed_spoken": SPK["typed"], "volume_pct": SPK["vol"], "talk_level": SPK["level"],
+                  "direct_follow": DIRECT["follow"]},
         "approvals": [public(a) for a in APPROVALS.values()],
-        "assistant": {"on": True, "busy": BUSY[0], "provider": "claude"},
+        "assistant": {"on": True, "busy": BUSY[0], "provider": "claude", "tab_conv": tabconv_json()},
         "archived": archived_state(),
+        "tab_avatars": True,
+        "embedded_browser": True,
+        "embedded_open": sorted(mock_ebv.OPEN),
+        "claude_desktop": True,
     }
 
 
 def dirty():
     STATE_DIRTY[0] = True
+
+
+def tabconv_json():
+    uid = TABCONV["uid"]
+    t = next((x for x in TABS if x.uid == uid), None)
+    if t is None:
+        return None
+    return {"id": "t%d" % t.uid, "name": t.name, "harness": {"grok": "Grok", "antigravity": "Antigravity CLI"}.get(acct(t.account)["harness"], "Claude Code"),
+            "account": acct(t.account)["label"], "model": t.model, "state": t.state}
+
+
+def open_tabconv(t):
+    if TABCONV["uid"] is None:
+        GLOBAL_CHAT[:] = CHAT
+    else:
+        TABCONV["hist"][TABCONV["uid"]] = list(CHAT)
+    TABCONV["uid"] = t.uid
+    CHAT[:] = TABCONV["hist"].get(t.uid) or []
+    CHAT.append({"id": "n%d" % int(time.time() * 1000), "role": "note", "text": "Talking with %s. Everything here is about this tab." % t.name, "at": int(time.time() * 1000)})
+    broadcast({"t": "assistant_reset", "messages": CHAT[-60:]})
+    dirty()
+
+
+def close_tabconv():
+    uid = TABCONV["uid"]
+    if uid is None:
+        return
+    TABCONV["hist"][uid] = list(CHAT)
+    TABCONV["uid"] = None
+    CHAT[:] = GLOBAL_CHAT
+    CHAT.append({"id": "n%d" % int(time.time() * 1000), "role": "note", "text": "Back to the assistant (the conversation is kept)", "at": int(time.time() * 1000)})
+    broadcast({"t": "assistant_reset", "messages": CHAT[-60:]})
+    dirty()
+
+
+def tabconv_reply(t, text):
+    low = text.lower()
+    tid = "t%d" % t.uid
+    if any(w in low for w in ("stop", "cancel", "do it now", "right away")):
+        chat_msg("tool", json.dumps({"tool": "press_key", "args": {"tab": tid, "key": "escape"}, "status": "ok"}))
+        chat_msg("tool", json.dumps({"tool": "send_prompt", "args": {"tab": tid, "text": text, "mode": "queue"}, "status": "ok"}))
+        return "I stopped %s and sent it your instruction right away." % t.name
+    if t.state == "approval" and any(w in low for w in ("yes", "approve", "allow", "go ahead")):
+        chat_msg("tool", json.dumps({"tool": "answer_prompt", "args": {"tab": tid, "choice": "yes"}, "status": "ok"}))
+        return "Approved. %s carries on with the command." % t.name
+    if any(w in low for w in ("doing", "progress", "how long", "why", "status", "what")):
+        if t.state == "approval":
+            return "%s is stopped at a permission prompt: it wants to run `rm -rf build/`. Say yes to allow it, or no." % t.name
+        if t.state == "working":
+            return "%s is working: it is reading the order book files and has about thirty steps left. Nothing needs you yet." % t.name
+        return "%s is ready. Its last message said the tests pass and it committed." % t.name
+    chat_msg("tool", json.dumps({"tool": "send_prompt", "args": {"tab": tid, "text": text, "mode": "queue"}, "status": "queued"}))
+    chat_msg("note", "Prompt to %s: queued" % tid)
+    return "I queued that for %s behind its current work." % t.name
 
 
 
@@ -409,6 +550,24 @@ def ask_approval(tab):
     broadcast({"t": "approval", **public(APPROVALS[aid])})
 
 
+JOBASK_N = [0]
+
+
+def ask_job(tab, tool="create_job"):
+    JOBASK_N[0] += 1
+    aid = "tabask:%08x" % (0xa11ce000 + JOBASK_N[0])
+    name = tab.name if tab else "a closed tab"
+    what = {"create_job": "create job", "update_job": "change job", "delete_job": "delete job", "adopt_loop": "keep loop as job"}.get(tool, "change jobs")
+    q = ('The agent in the "%s" tab asks: Create the job "nightly dependency audit" for this tab, every day at 02:30, '
+         'with the prompt "Run the dependency audit, open an issue for anything high or critical, and summarise what changed since yesterday"?' % name)
+    now = int(time.time())
+    APPROVALS[aid] = {"id": aid, "kind": "tabjob", "tab": tab.uid if tab else None, "name": tab.name if tab else None, "tool": tool, "what": what,
+                      "question": q, "choices": ["yes", "no"], "asked_at": now - 180, "expires_at": now + 3420, "tab_ref": tab}
+    dirty()
+    broadcast({"t": "approval", **public(APPROVALS[aid])})
+    return aid
+
+
 def public(a):
     return {k: v for k, v in a.items() if k != "tab_ref"}
 
@@ -477,7 +636,10 @@ def stream_reply(cl, text):
         dirty()
         return
     t = next((x for x in TABS if x.name in low), TABS[1])
-    if low.startswith("/event"):
+    bound = next((x for x in TABS if x.uid == TABCONV["uid"]), None)
+    if bound and not low.startswith(("/md", "/event")):
+        body = tabconv_reply(bound, text)
+    elif low.startswith("/event"):
         chat_msg("note", "(events: t%d finished)" % t.uid, hidden=True)
         chat_msg("tool", json.dumps({"tool": "read_tab", "args": {"tab": "t%d" % t.uid, "lines": 40}, "status": "ok"}), hidden=True)
         body = "**%s** finished: the tests pass (42 of 42) and it committed `fix: order book depth`. Nothing waits for you there." % t.name
@@ -559,10 +721,28 @@ def make_sessions():
         out.append({"id": "acme%04d-0000-4000-8000-%012d" % (i, i), "harness": h, "source": src, "project": proj, "title": title,
                     "first_prompt": "Please look at " + title.lower(), "modified": now - age, "created": now - age - 3600, "messages": 20 + i,
                     "tokens": {"new_input": 9000, "output": 3000, "largest_context": 40000}, "subagents": None, "live": False})
+    for i, (src, proj, title, plain) in enumerate([
+            (5, "~/work/acme-api", "Gravity checks the acme api", False),
+            ("Antigravity (plain terminal)", "~/work/acme-import", "Acme importer tidy up", True),
+            ("Antigravity (plain terminal)", "~/work/acme-web", "Plain terminal acme web notes", True)]):
+        age = (i + 2) * 7 * 3600
+        d = {"id": "agy0%04d-0000-4000-8000-%012d" % (i, i), "harness": "antigravity", "source": src, "project": proj, "title": title,
+             "first_prompt": "Please look at " + title.lower(), "modified": now - age, "created": now - age - 3600, "messages": 6 + i,
+             "tokens": {"new_input": 4000, "output": 900, "largest_context": 20000}, "subagents": None, "live": False}
+        if plain:
+            d["plain_terminal"] = True
+        out.append(d)
     return out
 
 
 SESSIONS = make_sessions()
+OPENED = []
+
+
+def from_source(s, want):
+    if str(want) == "main":
+        return s["source"] == "main" or bool(s.get("plain_terminal"))
+    return str(s["source"]) == str(want)
 
 ARCHIVED = [{"id": "arch%02d" % i, "name": n, "account": acc, "account_label": "Account %d" % acc, "provider": "claude", "folder": f,
              "session": None, "model": None, "pinned": False, "group": None, "loops": 0, "idle_hours_when_archived": 30,
@@ -590,7 +770,7 @@ def sessions_tool(a):
     if a.get("harness") not in (None, "", "all"):
         rows = [s for s in rows if s["harness"] == a["harness"]]
     if a.get("source") not in (None, "", "all"):
-        rows = [s for s in rows if str(s["source"]) == str(a["source"])]
+        rows = [s for s in rows if from_source(s, a["source"])]
     if a.get("project"):
         rows = [s for s in rows if a["project"].lower() in s["project"].lower()]
     if a.get("state") == "active":
@@ -607,8 +787,34 @@ def sessions_tool(a):
     rows = sorted(rows, key=keys.get(key, keys["modified"]), reverse=bool(a.get("reverse")))
     lim = int(a.get("limit") or 30)
     shown = [{**{k: v for k, v in s.items() if k not in ("modified", "created")}, "last_activity": rel(s["modified"])} for s in rows[:lim]]
-    return {"sessions": shown, "matched": len(rows), "shown": len(shown), "say": "%d sessions." % len(rows)}
+    return {"sessions": shown, "matched": len(rows), "shown": len(shown), "say": "%d sessions." % len(rows),
+            "harnesses": [h for h in ("claude", "grok", "codex", "cursor", "antigravity", "opencode") if any(s["harness"] == h for s in SESSIONS) or any(x["harness"] == h for x in ACCOUNTS)],
+            "plain_antigravity": sum(1 for s in SESSIONS if s.get("plain_terminal"))}
 
+
+
+def lost_tool(a):
+    open_ids = {getattr(x, "session", None) for x in TABS}
+    rows = [s for s in SESSIONS if s["id"] not in open_ids]
+    text = (a.get("query") or "").lower().split()
+    if text:
+        rows = [s for s in rows if all(w in (s["title"] + " " + s["first_prompt"] + " " + s["project"]).lower() for w in text)]
+    if a.get("harness") not in (None, "", "all"):
+        rows = [s for s in rows if s["harness"] == a["harness"]]
+    if a.get("account") not in (None, "", "all"):
+        rows = [s for s in rows if from_source(s, a["account"])]
+    rows = sorted(rows, key=lambda s: -s["modified"])
+    off, lim = int(a.get("offset") or 0), int(a.get("limit") or 30)
+    out = []
+    for i, s in enumerate(rows[off:off + lim]):
+        n = s["source"] if isinstance(s["source"], int) else None
+        d = {k: v for k, v in s.items() if k not in ("modified", "created", "live", "source")}
+        d.update({"session_id": s["id"], "folder": s["project"], "account": n, "account_label": ("Account %d" % n) if n else s["source"] if s.get("plain_terminal") else "Main",
+                  "last_activity": rel(s["modified"]), "running": (off + i) % 7 == 1})
+        if (off + i) % 5 == 2:
+            d["closed_tab"] = {"name": "old tab", "at": "2026-11-10 09:12"}
+        out.append(d)
+    return {"sessions": out, "matched": len(rows), "shown": len(out), "offset": off, "indexing": False, "say": "%d outside GodTerm." % len(rows)}
 
 
 CONFIRM = {}
@@ -633,6 +839,9 @@ def tool(name, a):
     r = mock_sync.tool(name, a, needs, TABS)
     if r is not None:
         return r
+    r = mock_routes.tool(name, a, find, dirty)
+    if r is not None:
+        return r
     t = find(a.get("tab"))
     if name == "list_settings":
         if not a.get("section"):
@@ -641,6 +850,8 @@ def tool(name, a):
         return {"ok": True, "result": {"settings": [
             mk("voice.tts_engine", "Voice engine", "kokoro", {"one of": ["kokoro", "say", "grok", "off"]}, "Talk back"),
             mk("voice.tts_speed", "Speed", "1.0", "number", "Talk back"),
+            mk("voice.talk_level", "How much is said", SPK["level"], {"one of": ["brief", "normal", "detailed"]}, "Talk back behavior"),
+            mk("voice.direct_follow", "Direct mode follows the active tab", "on" if DIRECT["follow"] else "off", "on/off", "Listening"),
             mk("voice.mode", "Mode", "push", {"one of": ["push", "wake"]}, "Listening"),
             mk("voice.wake_words", "Wake words", "hey god", "text", "Listening"),
             mk("voice.engine", "Recognizer", "whisper", {"one of": ["auto", "apple", "whisper", "grok"]}, "Speech recognition"),
@@ -648,9 +859,22 @@ def tool(name, a):
             mk("voice.debug_save_audio", "Save last 20 utterances", "off", "on/off", "Advanced and debugging"),
         ]}}
     if name == "speaker":
+        if "muted" in a:
+            SPK["muted"] = bool(a["muted"])
+        if "volume" in a:
+            SPK["vol"] = int(a["volume"])
+        STATE_DIRTY[0] = True
+        if "speak_typed" in a:
+            SPK["typed"] = bool(a["speak_typed"])
+        if "talk_level" in a:
+            if a["talk_level"] not in ("brief", "normal", "detailed"):
+                return {"ok": False, "error": "talk_level: brief, normal or detailed"}
+            SPK["level"] = a["talk_level"]
         return {"ok": True, "result": {"say": "ok"}}
     if name == "sessions":
         return {"ok": True, "result": sessions_tool(a)}
+    if name == "list_lost_sessions":
+        return {"ok": True, "result": lost_tool(a)}
     if name == "list_archived":
         words = (a.get("text") or a.get("name") or "").lower().split()
         rows = [r for r in ARCHIVED if all(w in (r["name"] + " " + r["folder"] + " " + r["account_label"]).lower() for w in words)]
@@ -665,6 +889,12 @@ def tool(name, a):
         dirty()
         return {"ok": True, "result": {"restored": 1, "tabs": [{"id": r["id"], "name": r["name"], "tab": "t%d" % nt.uid}], "say": "Restored 1 conversation."}}
     if name in ("open_tab", "open_session", "take_over_session", "reopen_tab", "reopen_closed"):
+        if name == "open_session":
+            OPENED.append({k: v for k, v in a.items() if not k.startswith("_")})
+            plain = next((s for s in SESSIONS if s["id"] == a.get("id") and s.get("plain_terminal")), None)
+            if plain and not a.get("copy"):
+                return {"ok": False, "needs_confirmation": "Copy this conversation, made with agy in a plain terminal, into Gravity and resume it there? Gravity keeps its own conversations; the original stays where it is.",
+                        "args": {"id": plain["id"], "harness": "antigravity", "account": 5, "copy": True}}
         acc = int(a.get("account") or 1)
         nm = a.get("name") or (a.get("dir") or "").rsplit("/", 1)[-1] or ("session " + str(a.get("id", ""))[:6]) or "new tab"
         nt = new_tab(acc, nm, a.get("dir") or "~/" + nm.replace(" ", "-"), cols=100, rows=30)
@@ -679,6 +909,10 @@ def tool(name, a):
             x["index"] = i
         dirty()
         return {"ok": True, "result": {"say": "Closed %s." % t.name}}
+    if name == "archive_tabs" and t and a.get("dry_run"):
+        why = {"working": "it is working", "approval": "it is waiting for your approval", "background": "it is busy: work still runs in the background"}.get(t.state)
+        return {"ok": True, "result": {"dry_run": True, "would_archive": [] if why else [{"tab": "t%d" % t.uid, "name": t.name}],
+                                       "skipped": [{"tab": "t%d" % t.uid, "name": t.name, "reason": why}] if why else [], "say": "dry run"}}
     if name == "archive_tabs" and t:
         if t.state in ("working", "background", "approval") and not a.get("force"):
             return {"ok": False, "error": "%s is busy; force=true archives it anyway." % t.name}
@@ -686,7 +920,7 @@ def tool(name, a):
         ARCHIVED.insert(0, {"id": "arch%d" % t.uid, "name": t.name, "account": t.account, "account_label": acct(t.account)["label"], "provider": "claude",
                             "folder": getattr(t, "folder", ""), "session": None, "last_active": "just now", "archived": "just now", "by": "user"})
         dirty()
-        return {"ok": True, "result": {"say": "Archived 1 tab.", "archived": 1}}
+        return {"ok": True, "result": {"say": "Archived 1 tab.", "archived": 1, "tabs": [{"id": "arch%d" % t.uid, "name": t.name}]}}
     if name == "send_prompt" and t:
         busy = t.state in ("working", "approval")
         mode = a.get("mode") or "auto"
@@ -700,6 +934,29 @@ def tool(name, a):
              "state": "received" if busy else "started", "mode": "queue" if busy or mode == "queue" else "direct"}
         say = ("%s is busy: queued behind its current work." if busy else "Sent to %s.") % t.name
         return {"ok": True, "result": {"say": say, "prompt": d, "deliveries": [d], "state": t.state, "failed": [], "will_report": False}}
+    if name == "relink_conversation" and find(a.get("id")):
+        t = find(a.get("id"))
+        sid = "0199aaaa-%04x-7ccc-8ddd-eeeeeeeeeeee" % t.uid
+        path = (a.get("path") or "").strip()
+        known = ["~/work/billing", "~/godterm", "~/varium/api", "~/sites/landing", "~/trading", "~/etl", "~/scratch"]
+        matches = [{"folder": "~/work/billing-old", "folder_exists": False, "stored_at": "~/.claude/projects/-Users-me-work-billing-old/%s.jsonl" % sid},
+                   {"folder": "~/work/billing", "folder_exists": True, "stored_at": "~/.claude/projects/-Users-me-work-billing/%s.jsonl" % sid}]
+        if not path:
+            return {"ok": True, "result": {"tab": "t%d" % t.uid, "conversation": sid, "harness": "claude", "folder": t.folder, "matches": matches,
+                                           "known_folders": known, "say": "The conversation is stored under 2 folders."}}
+        if not path.startswith(("~", "/")):
+            return {"ok": False, "error": "%s is not a full path (start it with / or ~)" % path}
+        if path.endswith("nope"):
+            return {"ok": False, "error": "%s does not exist" % path}
+        if path.endswith("empty") and not a.get("fresh"):
+            return {"ok": True, "result": {"not_found": True, "say": "No conversation 0199aaaa exists on this account, under any folder. A new conversation can start in %s." % path}}
+        if path.endswith("billing-copy") and not a.get("copy") and not a.get("fresh"):
+            return {"ok": True, "result": {"needs_copy": True, "from": "~/work/billing", "to": path,
+                                           "say": "The conversation is stored under ~/work/billing, not under %s. Copying it makes it resume there; the original stays where it is. Copy it?" % path}}
+        t.lost = False
+        t.folder = path
+        dirty()
+        return {"ok": True, "result": {"relinked": True, "say": "'%s' now points at %s and resumes its conversation." % (t.name, path)}}
     if name == "rename_tab" and t:
         t.name = a.get("name") or t.name
         dirty()
@@ -733,6 +990,23 @@ def tool(name, a):
         t.color = None if a.get("color") == "default" else a.get("color")
         dirty()
         return {"ok": True, "result": {"say": "Color set."}}
+    if name == "set_tab_avatar" and t:
+        if a.get("clear"):
+            t.avatar = None
+        elif a.get("regenerate"):
+            t.avatar = "gen:%d" % random.randint(1, 99999)
+        elif a.get("from_project"):
+            t.avatar = store_avatar(DEMO_LOGO.encode())
+        elif a.get("data"):
+            raw = base64.b64decode(str(a["data"]).split("base64,")[-1])
+            nm = store_avatar(raw)
+            if not nm:
+                return {"ok": False, "error": "the avatar must be a PNG, JPEG, GIF, WebP or plain SVG image under 512 KB"}
+            t.avatar = nm
+        else:
+            return {"ok": False, "error": "give from_project, path, regenerate or clear"}
+        dirty()
+        return {"ok": True, "result": {"avatar": t.avatar, "say": "Avatar updated."}}
     if name == "group_tabs" and t:
         t.group = a.get("group")
         dirty()
@@ -752,6 +1026,18 @@ def tool(name, a):
             return needs(name, a, "Interrupt %s? It is working." % t.name)
         t.key(b"\x1b" if a.get("key") == "escape" else b"\x03" if a.get("key") == "ctrl_c" else b"\r")
         return {"ok": True, "result": {"say": "Pressed %s in %s." % (a.get("key"), t.name)}}
+    if name == "tab_chat":
+        if a.get("off"):
+            close_tabconv()
+            return {"ok": True, "result": {"say": "Back to the assistant."}}
+        if not t:
+            return {"ok": False, "error": "no such tab"}
+        open_tabconv(t)
+        return {"ok": True, "result": {"tab": "t%d" % t.uid, "say": "Talking with %s." % t.name}}
+    if name == "open_desktop":
+        return {"ok": True, "result": {"say": "GodTerm is on screen on the Mac (mock)."}}
+    if name == "open_in_claude_desktop":
+        return {"ok": True, "result": {"say": "Opened in Claude Desktop (mock)."}}
     if name in ("talk_to_tab", "open_path", "show_tab_loops"):
         return {"ok": True, "result": {"say": "Done (mock %s)." % name}}
     if name == "browser_status":
@@ -812,6 +1098,12 @@ def handle_text(cl, m):
         elif tab:
             tab.cols, tab.rows = int(m["cols"]), int(m["rows"])
             broadcast({"t": "resized", "tab": tab.uid, "cols": tab.cols, "rows": tab.rows})
+    elif t == "say" and m.get("raw") and TABCONV["uid"] is not None:
+        bt = next((x for x in TABS if x.uid == TABCONV["uid"]), None)
+        chat_msg("user", m.get("text", ""))
+        if bt:
+            bt.key((m.get("text", "") + "\r").encode())
+        chat_msg("note", "Sent to the tab as is")
     elif t == "say":
         uid_ = "u%d" % int(time.time() * 1000)
         um = {"id": uid_, "role": "user", "text": m.get("text", ""), "at": int(time.time() * 1000)}
@@ -821,7 +1113,13 @@ def handle_text(cl, m):
     elif t == "answer":
         ap = APPROVALS.pop(m.get("id"), None)
         cl.send({"t": "answered", "id": m.get("id"), "ok": bool(ap), **({"result": "answered"} if ap else {"error": "that question is no longer open"})})
-        if ap:
+        if ap and ap.get("kind") == "tabjob":
+            ANSWERS.append({"id": ap["id"], "choice": m.get("choice")})
+            if m.get("choice") == "yes" and ap["tab_ref"]:
+                JOBS.append({"id": "j%d" % (len(JOBS) + 1), "name": "nightly dependency audit", "schedule": "30 2 * * *", "status": "active", "tab": ap["tab_ref"].name, "next": "in 9 h", "last": None})
+            dirty()
+        elif ap:
+            ANSWERS.append({"id": ap["id"], "choice": m.get("choice")})
             ap["tab_ref"].set_state("ready")
             ap["tab_ref"].out("\r\n\x1b[38;5;108mAnswered: %s\x1b[0m\r\n" % m.get("choice"))
             dirty()
@@ -849,12 +1147,47 @@ def handle_text(cl, m):
             cl.send({"t": t, "id": m.get("id"), "path": p, **({"w": 1, "h": 1} if t == "image" else {})})
     elif t == "ping":
         cl.send({"t": "pong", "id": m.get("id")})
+    elif t == "accounts":
+        ok = m.get("op") in ("sharing_check", "sharing_slash")
+        cl.send({"t": "accounts", "id": m.get("id"), "ok": ok, **({"said": "ok"} if ok else {"error": "mock: unsupported op"})})
+    elif t == "oext":
+        mock_ebv.open_ext(cl, m)
+    elif t == "apps":
+        mock_apps.handle(cl, m, find)
+    elif t == "ebv":
+        threading.Thread(target=mock_ebv.handle, args=(cl, m, find), daemon=True).start()
     elif t == "git":
         time.sleep(0.1)
         r = mock_git.frame(m, find)
         cl.send({"t": "git", "id": m.get("id"), **r})
+    elif t == "view":
+        tabs, i = m.get("tabs") or [], m.get("focused")
+        now = tabs[i] if isinstance(i, int) and 0 <= i < len(tabs) else None
+        now = int(str(now).lstrip("t")) if now is not None else None
+        was = getattr(cl, "viewing", None)
+        if now is not None:
+            cl.viewing = now
+            if was is not None and was != now:
+                follow_later(now)
     elif t == "voice":
-        if "muted" in m:
+        if isinstance(m.get("set"), dict) and m["set"].get("key") == "voice.talk_level" and m["set"].get("value") in ("brief", "normal", "detailed"):
+            SPK["level"] = m["set"]["value"]
+            dirty()
+        if "follow" in m:
+            DIRECT["follow"] = bool(m["follow"])
+            dirty()
+        if "direct" in m:
+            set_direct(None if m["direct"] is False else int(str(m["direct"]).lstrip("t")))
+        if m.get("web_tts_list"):
+            cl.send({"t": "voice", "web_tts_list": [
+                {"engine": "kokoro", "label": "Kokoro", "available": True, "voices": [{"id": "af_heart", "label": "Heart"}, {"id": "bf_emma", "label": "Emma"}]},
+                {"engine": "say", "label": "Apple say", "available": True, "voices": [{"id": "system", "label": "System voice"}]},
+            ], "default": {"engine": "kokoro", "voice": "af_heart"}})
+        elif "preview_tts" in m:
+            cl.send({"t": "voice", "preview": "start"})
+            cl.bin(2, 0, beep())
+            cl.send({"t": "voice", "preview": "done", "who": "mock"})
+        elif "muted" in m:
             print("voice: client %d mic %s (nonzero audio so far: %d bytes)" % (id(cl) % 1000, "muted" if m["muted"] else "unmuted", cl.audio_nonzero), flush=True)
             cl.audio_nonzero = 0
         elif m.get("on"):
@@ -907,6 +1240,93 @@ TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": 
          ".webmanifest": "application/manifest+json", ".json": "application/json", ".txt": "text/plain"}
 
 
+AUTH = {}
+
+
+def auth_reset(scenario="fresh"):
+    AUTH.clear()
+    now = int(time.time())
+    AUTH.update({
+        "scenario": scenario,
+        "enabled": scenario in ("on", "public"),
+        "origin": "https://mac.example.ts.net" if scenario != "fresh" else "",
+        "public": scenario == "public",
+        "tailscale": "none" if scenario == "notailscale" else "ok",
+        "passkeys": [
+            {"pid": "a1b2c3d4e5f6", "label": "iPhone", "created": now - 86400 * 9, "last_used": now - 3600, "rp": "mac.example.ts.net", "current": True},
+            {"pid": "b2c3d4e5f6a1", "label": "MacBook", "created": now - 86400 * 20, "last_used": 0, "rp": "mac.example.ts.net", "current": True},
+        ] if scenario in ("on", "public", "off") else [],
+        "sessions": [
+            {"sid": "s1", "label": "iPhone, Safari", "created": now - 86400 * 3, "last_seen": now - 120, "expires": now + 86400 * 27, "current": True},
+            {"sid": "s2", "label": "Mac, Chrome", "created": now - 86400 * 10, "last_seen": now - 86400 * 2, "expires": now + 86400 * 20, "current": False},
+        ] if scenario in ("on", "public") else [],
+    })
+
+
+auth_reset()
+
+
+def auth_status():
+    return {"ok": True, "login": {"enabled": AUTH["enabled"], "remote_url": AUTH["origin"], "passkeys": len(AUTH["passkeys"]), "sessions": len(AUTH["sessions"]), "recovery": AUTH["enabled"]},
+            "passkeys": AUTH["passkeys"], "sessions": AUTH["sessions"], "here": {"remote": False, "gate": False, "session": False}, "web_port": 7878}
+
+
+def auth_remote():
+    if AUTH["tailscale"] == "none":
+        return {"installed": False, "running": False, "host": "", "url": "", "public": False, "https_port": 0}
+    return {"installed": True, "running": True, "host": "mac.example.ts.net", "url": AUTH["origin"], "public": AUTH["public"], "https_port": 443 if AUTH["origin"] else 0}
+
+
+def auth_post(path, body):
+    if path == "remote":
+        a = body.get("action")
+        if a == "serve":
+            AUTH["origin"] = "https://mac.example.ts.net"
+        elif a == "funnel":
+            if not AUTH["enabled"]:
+                return 400, {"ok": False, "error": "Turn login on first"}
+            AUTH["public"] = True
+        elif a == "private":
+            AUTH["public"] = False
+        elif a == "off":
+            AUTH["origin"] = ""
+        return 200, {"ok": True, "remote": auth_remote()}
+    if path == "enable":
+        AUTH["enabled"] = True
+        return 200, {"ok": True, "recovery": "K7QM-2VXD-9HTR-4NWB-8FJC"}
+    if path == "disable":
+        AUTH["enabled"] = False
+        AUTH["public"] = False
+        AUTH["sessions"] = []
+        return 200, {"ok": True}
+    if path == "recovery/new":
+        return 200, {"ok": True, "recovery": "P3ZT-6GKS-W2LA-9YED-5CRH"}
+    if path == "register/begin":
+        return 200, {"cid": "c" * 32, "publicKey": {"rp": {"id": "localhost", "name": "GodTerm"}, "user": {"id": "dXNlcg", "name": "godterm", "displayName": "GodTerm"},
+                     "challenge": "Y2hhbGxlbmdl", "pubKeyCredParams": [{"type": "public-key", "alg": -7}], "timeout": 60000, "attestation": "none",
+                     "authenticatorSelection": {"residentKey": "required", "requireResidentKey": True, "userVerification": "required"}, "excludeCredentials": []}}
+    if path == "register/finish":
+        AUTH["passkeys"].append({"pid": "%012x" % random.getrandbits(48), "label": body.get("label") or "Passkey", "created": int(time.time()), "last_used": 0, "rp": "mac.example.ts.net", "current": True})
+        return 200, {"ok": True}
+    if path == "passkey/rename":
+        for k in AUTH["passkeys"]:
+            if k["pid"] == body.get("pid"):
+                k["label"] = body.get("label")
+        return 200, {"ok": True}
+    if path == "passkey/remove":
+        AUTH["passkeys"] = [k for k in AUTH["passkeys"] if k["pid"] != body.get("pid")]
+        return 200, {"ok": True}
+    if path == "session/revoke":
+        AUTH["sessions"] = [k for k in AUTH["sessions"] if k["sid"] != body.get("sid")]
+        return 200, {"ok": True}
+    if path == "session/revoke_all":
+        AUTH["sessions"] = []
+        return 200, {"ok": True}
+    if path == "pair":
+        return 200, {"ok": True, "url": "https://mac.example.ts.net/auth/pair?c=" + "0" * 48, "valid_s": 600}
+    return 404, {"ok": False, "error": "not found"}
+
+
 class H(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -921,8 +1341,35 @@ class H(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def jreply(self, code, obj):
+        self.reply(code, json.dumps(obj).encode(), "application/json")
+
+    def do_POST(self):
+        u = urllib.parse.urlparse(self.path)
+        n = int(self.headers.get("Content-Length", "0") or 0)
+        raw = self.rfile.read(n) if n else b"{}"
+        if not u.path.startswith("/auth/"):
+            return self.reply(405, b"GET only")
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            body = {}
+        code, obj = auth_post(u.path[6:], body)
+        self.jreply(code, obj)
+
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
+        if u.path == "/auth/state":
+            return self.jreply(200, {"enabled": AUTH["enabled"], "origin": AUTH["origin"]})
+        if u.path == "/auth/status":
+            return self.jreply(200, auth_status())
+        if u.path == "/auth/remote":
+            return self.jreply(200, {"ok": True, "remote": auth_remote()})
+        if u.path == "/login":
+            u = urllib.parse.urlparse("/login.html")
+        if u.path.startswith("/dev/auth/"):
+            auth_reset(u.path[len("/dev/auth/"):])
+            return self.reply(200, b"ok")
         if u.path == "/ws" and self.headers.get("Upgrade", "").lower() == "websocket":
             key = self.headers["Sec-WebSocket-Key"]
             acc = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
@@ -931,6 +1378,11 @@ class H(http.server.BaseHTTPRequestHandler):
             self.close_connection = True
             ws_session(self.connection)
             return
+        if u.path.startswith("/avatar/"):
+            b = AVATARS.get(u.path[8:])
+            if b is None:
+                return self.reply(404, b"not found")
+            return self.reply(200, b, "image/svg+xml" if u.path.endswith(".svg") else "image/png")
         if u.path == "/dev/bump":
             BUILD[0] = hashlib.sha1(str(time.time()).encode()).hexdigest()[:12]
             broadcast({"t": "build", "build": BUILD[0]})
@@ -938,6 +1390,10 @@ class H(http.server.BaseHTTPRequestHandler):
         if u.path == "/dev/update":
             broadcast({"t": "update", "available": True, "version": "0.42.0", "current": "0.41.3", "state": "downloaded", "notes": "Faster startup and a new sessions view.", "page": None, "update_with": "Update and restart"})
             return self.reply(200, b"ok")
+        if u.path == "/dev/opened":
+            return self.reply(200, json.dumps(OPENED).encode(), "application/json")
+        if u.path == "/dev/apps":
+            return self.reply(200, json.dumps({"prefills": mock_apps.PREFILLS, "restored": mock_apps.RESTORED}).encode(), "application/json")
         if u.path == "/dev/last_prompt":
             return self.reply(200, json.dumps(LAST_PROMPT).encode(), "application/json")
         if u.path in ("/dev/sync-on", "/dev/sync-off", "/dev/sync-fail"):
@@ -946,9 +1402,12 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.reply(200, b"ok")
         if u.path == "/dev/reset":
             with LOCK:
-                TABS.clear(); MOVED.clear(); APPROVALS.clear(); CHAT.clear(); LAST_PROMPT.clear()
+                TABS.clear(); MOVED.clear(); APPROVALS.clear(); ANSWERS.clear(); CHAT.clear(); LAST_PROMPT.clear()
                 ARCHIVED[:] = ARCHIVED0
                 NEXT_UID[0] = 3760
+                DIRECT.update(uid=None, follow=False)
+                mock_apps.reset()
+                mock_routes.reset()
                 seed()
                 dirty()
             return self.reply(200, b"ok")
@@ -965,9 +1424,56 @@ class H(http.server.BaseHTTPRequestHandler):
                     t.work_left = 10 ** 6
                     t.set_state("working")
             return self.reply(200, b"ok")
+        if u.path == "/dev/ebv-open":
+            q = urllib.parse.parse_qs(u.query)
+            mock_ebv.OPEN.add(int(q.get("uid", [TABS[0].uid])[0]))
+            dirty()
+            return self.reply(200, b"ok")
+        if u.path in ("/dev/ebv-tab", "/dev/ebv-switch"):
+            q = urllib.parse.parse_qs(u.query)
+            uid = int(q.get("uid", [TABS[0].uid])[0])
+            if u.path == "/dev/ebv-tab":
+                ok = mock_ebv.agent_tab(uid, q.get("url", [""])[0])
+            else:
+                ok = mock_ebv.agent_tab(uid, switch=int(q.get("id", ["0"])[0]))
+            return self.reply(200 if ok else 400, b"ok" if ok else b"no")
+        if u.path == "/dev/ebv-sleep":
+            q = urllib.parse.parse_qs(u.query)
+            uid = int(q.get("uid", [TABS[0].uid])[0])
+            ok = mock_ebv.agent_sleep(uid, int(q.get("id", ["0"])[0]))
+            return self.reply(200 if ok else 400, b"ok" if ok else b"no")
+        if u.path == "/dev/ebv-hit":
+            q = urllib.parse.parse_qs(u.query)
+            mock_ebv.set_hit(q.get("kind", ["page"])[0])
+            return self.reply(200, b"ok")
+        if u.path == "/dev/ebv-close":
+            q = urllib.parse.parse_qs(u.query)
+            mock_ebv.OPEN.discard(int(q.get("uid", [TABS[0].uid])[0]))
+            dirty()
+            return self.reply(200, b"ok")
+        if u.path == "/dev/jobask":
+            q = urllib.parse.parse_qs(u.query)
+            with LOCK:
+                want = q.get("tab", [""])[0]
+                tab = None if want == "none" else next((t for t in TABS if str(t.uid) == want.lstrip("t")), TABS[0])
+                aid = ask_job(tab, q.get("tool", ["create_job"])[0])
+            return self.reply(200, aid.encode())
+        if u.path == "/dev/jobask-expire":
+            with LOCK:
+                for k in [k for k, v in APPROVALS.items() if v.get("kind") == "tabjob"]:
+                    APPROVALS.pop(k)
+                dirty()
+            return self.reply(200, b"ok")
+        if u.path == "/dev/answers":
+            return self.reply(200, json.dumps(ANSWERS).encode(), "application/json")
         if u.path == "/dev/approval":
             with LOCK:
                 ask_approval(RNG.choice(TABS))
+            return self.reply(200, b"ok")
+        if u.path == "/dev/mac-mute":
+            SPK["muted"] = True
+            with LOCK:
+                broadcast({"t": "state", "state": state()})
             return self.reply(200, b"ok")
         if u.path == "/dev/clip":
             for cl in list(CLIENTS):

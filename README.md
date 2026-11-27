@@ -33,14 +33,18 @@ Interactive slots also support **Codex CLI, Cursor CLI, Antigravity CLI
 (`agy`) and OpenCode**. Choose one in Add account, or set an account's
 `harness` in config.toml. These integrations support terminal input,
 launch/resume flags and voice-driven tab creation. Codex gets its own
-`CODEX_HOME`; Cursor, Antigravity and OpenCode use their native shared
+`CODEX_HOME`; each Antigravity slot gets its own home and Google login
+(macOS and Linux); Cursor and OpenCode use their native shared
 login stores. A slot of one of the four never gets the global `bypass`
-default unless its own `permission_mode` says so. They have no usage meters,
-model picker (the bar keeps the loops and Browser buttons) or move/copy. Tab
-job tools and the Browser binding reach Codex, Cursor and OpenCode, not
-Antigravity; approvals are answered with each CLI's own keys. See
+default unless its own `permission_mode` says so. They have no
+model picker (the bar keeps the loops and Browser buttons) or move/copy, and
+only Antigravity shows usage (what its CLI reports). Tab
+job tools and the Browser binding reach all four; approvals are answered
+with each CLI's own keys. See
 [CLI harnesses](docs/CLI_HARNESSES.md) for configuration and what was
-verified against each real CLI.
+verified against each real CLI. Antigravity accounts are a preview: the
+per-account Google sign-in, and the email, plan and usage it should show,
+have not been exercised end to end with a signed-in account yet.
 
 ## Features
 
@@ -61,12 +65,25 @@ verified against each real CLI.
   on account two in the api folder and tell it to run the tests". It plans,
   asks once before anything destructive, and reports what really happened.
   With Remote Control on, you can drive it from claude.ai or the Claude app.
+- **GodTerm Web.** The whole app in a browser on a desktop, a tablet or a
+  phone, served by the running GodTerm (off by default): live terminals,
+  the assistant, approvals and a tab's job requests, a voice bar under the
+  panes (Talk, Talk to any tab, mic mode and mute, spoken replies, volume
+  and reply length), Git, Sync, and Apps, a catalog of what you built
+  with the conversations behind each project. The remote address can
+  require a passkey. See [GodTerm Web in short](#godterm-web-in-short).
+- **A route per tab.** Send one tab's agent through your own proxy, or
+  (experimental) through a Tailscale exit node. It sets proxy variables
+  for that tab and is not a kill switch.
 - **Approvals queue** across every account, notifications for background
   tabs that need you, scheduled loops, a command palette and broadcast.
 - **Sessions browser** across every account and the main `~/.claude`:
   search, sort, group, copy or move between accounts.
 - **Private by design.** No telemetry, no account of its own; everything
-  stays in `~/.godterm`. Privacy mode hides emails for screen sharing.
+  stays in `~/.godterm` (or the folder you pick with `godterm data-path`).
+  Tabs start their CLI with `DO_NOT_TRACK=1`, and Claude Code with its
+  telemetry, error reporting and feedback survey off. Privacy mode hides
+  emails for screen sharing.
 - **Everywhere.** macOS (Apple silicon and Intel, signed and notarized),
   Linux (x86_64 and arm64) and Windows (x86_64, unsigned installer).
 
@@ -204,6 +221,42 @@ serves it too), device `default`; set `[voice] device = "alsa:hw:1"` to
 read an ALSA device directly. On Windows voice capture is untested, and
 replies use Kokoro or Grok.
 
+## GodTerm Web in short
+
+GodTerm Web is the same tabs, terminals and assistant in a browser. It is
+off until you turn it on (`[web] enabled = true` in config.toml, or
+`godterm --web` for one run), listens on `127.0.0.1:7878`, and is reached
+from other devices over your own Tailscale tailnet. A phone can install it
+as an app and get push notifications when a tab needs you.
+
+- **Voice bar.** Below the panes: Talk, a Talk to dropdown (the assistant
+  or any tab), the mic mode, mic mute, one Spoken replies switch with the
+  volume, and the reply length (Brief, Normal, Detailed). The voice menu
+  also picks which of the browser's microphones is used. Talking to a tab
+  directly says the tab's own reply and reads its options with their
+  numbers; what you say while it works is merged and typed in at its next
+  step.
+- **Apps.** A catalog of the apps, tools and pages built on this machine,
+  with the conversations behind each. Projects whose folder is gone stay
+  listed as Missing and can be rebuilt from history by an agent.
+- **Approvals and job requests.** A tab that asks to create, change or
+  delete one of its scheduled jobs shows a banner with Yes and No on its
+  pane and counts in the approvals button.
+- **Routes.** The Route chip sends a tab through a proxy (see
+  [Browser](#browser-browserskill), "A route per tab"). The Tailscale
+  exit node kind is experimental: it has not been run end to end against
+  a real tailnet.
+- **Remote access and passkeys (new).** Settings > Remote access sets up
+  the Tailscale HTTPS address and can require a passkey for every remote
+  request, with a recovery code and a list of signed in browsers. The
+  address is private to your tailnet unless you turn on Funnel yourself.
+- **Embedded browser (experimental, off by default).** A headless Chrome
+  page beside the terminal for local dev servers, which the tab's agent
+  can drive too. See [docs/EMBEDDED_BROWSER.md](docs/EMBEDDED_BROWSER.md).
+
+Protocol, screens and settings are in [docs/WEB_APP.md](docs/WEB_APP.md);
+who can sign in and what a browser may do is in [SECURITY.md](SECURITY.md).
+
 ## Privacy in short
 
 GodTerm has no telemetry and no account of its own: the app never reports
@@ -211,9 +264,14 @@ anything about you or how you use it. The only count is at install time:
 `install.sh` sends one anonymous ping with your OS, CPU architecture and the
 GodTerm version (skip it with `GODTERM_NO_TELEMETRY=1` or `DO_NOT_TRACK=1`).
 It talks to the
-network to read usage (Anthropic's usage endpoint with each account's own
-login, xAI's billing endpoint for Grok accounts), to check GitHub for
-updates, and to download what you ask Settings > Setup to install. Voice is local by
+network to read usage and account settings (Anthropic's usage, model list
+and data sharing setting with each account's own login, xAI's billing
+endpoint for Grok accounts), to check GitHub for
+updates, and to download what you ask Settings > Setup to install. The
+features you turn on yourself reach what they need: the web app's push
+notifications go through your browser's push service (encrypted), Sync
+pushes to your own private repos, and a route's Test connects to
+`api.anthropic.com`. Voice is local by
 default: audio is transcribed and replies are spoken on your machine. Only
 if you turn on Grok voice does audio (Grok recognition) or reply text
 (Grok talk back) go to xAI. Details in [Privacy](#privacy) and
@@ -535,8 +593,8 @@ agents"); it applies to tabs started or resumed afterwards. Codex, Cursor and
 OpenCode tabs get the same server per launch without touching your own
 config (Codex `-c mcp_servers...`, Cursor `--plugin-dir`, OpenCode a config
 file in `OPENCODE_CONFIG` with `--standalone`), and Codex the hint as
-`developer_instructions`; Antigravity only reads its global
-`mcp_config.json`, so its tab tools refuse with that reason.
+`developer_instructions`; Antigravity reads the `mcp_config.json` of
+the slot's own home, where GodTerm adds its server.
 
 **Start.** The assistant panel is open at every start (in the docked,
 overlay or auto mode you chose). The mic starts off unless it was on when
@@ -926,7 +984,17 @@ language, main model, partials model, whisper threads. Output: engine,
 voice, speed, volume, device, the kinds of speech, conversation mode,
 barge-in, pronunciation fixes. Wake: words and sensitivity. Test mic
 shows the live meter right on the page and what was heard. Talk back
-changes apply at once, without restarting the mic.
+changes apply at once, without restarting the mic, and volume and mute
+act on the reply that is playing.
+
+Reply length (`voice.talk_level`: brief, normal or detailed) sets how much
+is said out loud; what is written stays the same. When you talk directly
+to a tab (`Ctrl-a K`), its reply is said in its own words with no
+assistant turn in between: brief says the first sentence, normal the
+opening, detailed all of it, and a question or numbered options the tab
+asks are said at every level. What you say while a Claude Code tab is
+working is merged into one message and typed in at its next step; nothing
+is typed while the tab shows an approval or another prompt.
 
 ### Background voices
 
@@ -1494,6 +1562,19 @@ your own Chrome. There is no MCP server: agents get an Agent Skill and run
   Grok accounts are their own `GROK_HOME`, so they get the skill folder only.
   Grok's permission rules live in `config.toml` and are not changed.
 - Running tabs see a new skill in their next session.
+- **A route per tab.** A tab's agent can be sent through a proxy: your
+  own (`http://`, `https://`, `socks5://`, `socks5h://`) or a Tailscale
+  exit node through a userspace `tailscaled` GodTerm runs for that route
+  (needs the open source Tailscale, for example `brew install tailscale`,
+  and one login; the system Tailscale is never changed). The exit node
+  kind is experimental: it is tested against stand-ins, not yet end to
+  end against a real tailnet. Choose it in the
+  web app: the Route chip in the top bar, or Manage > Routes. A routed
+  tab is not started when its route is down unless you say so. It sets
+  the proxy variables for the tab's process and is not a kill switch:
+  tools that ignore them (ssh, raw sockets) connect directly. Only the
+  user sets routes; agents cannot. Details: docs/WEB_APP.md, "A tab's
+  route".
 - **A browser per tab.** The Browser button at the right end of each pane's
   bottom bar (the model bar's row, left of the loops button; Ctrl-a i, or
   "browser: Chrome profile for this tab" in the palette) picks the Chrome
@@ -1616,7 +1697,8 @@ personal is stored, only daily totals. To skip it, install with
 sends Do Not Track or Global Privacy Control.
 
 Everything GodTerm keeps
-stays in `~/.godterm` (owner only, files 0600): settings, open tabs, the
+stays in `~/.godterm` (owner only, files 0600), or in the folder you moved
+it to with `godterm data-path`: settings, open tabs, the
 session index, assistant conversations and the log. By default audio is
 captured and transcribed on your machine (whisper.cpp or Apple speech)
 and replies are spoken locally (Kokoro or `say`); recordings are not kept
@@ -1626,13 +1708,29 @@ lock, which filters only once trained; live partials stay local), and
 Grok talk back sends the reply text to xAI, signed in with `grok login`
 or an xAI API key in the Keychain, using your Grok voice credits, with the
 local engines as the fallback. Otherwise GodTerm talks to the network
-only to fetch usage (Anthropic's usage endpoint with each account's own
-login, and xAI's billing endpoint for Grok accounts), to check GitHub
+only to fetch usage and account settings (Anthropic's usage endpoint, its
+model list and the account's data sharing setting, each with that
+account's own login, and xAI's billing endpoint for Grok accounts), to
+check GitHub
 Releases for updates (`[update] enabled = false` turns that off), and to
 download what you ask Settings > Setup to install (package managers, the
 official installers, or files checked against a pinned SHA-256). The assistant and
 your tabs are Claude Code (or Grok) itself, which talks to its own
-service as it always does. Privacy mode hides account emails on screen.
+service as it always does; GodTerm starts every CLI with `DO_NOT_TRACK=1`
+and Claude Code with its telemetry, error reporting and feedback survey
+off. Privacy mode hides account emails on screen.
+
+Features that are off until you turn them on reach only what they need.
+The web app listens on 127.0.0.1 and your tailnet address, and the push
+notifications you allow on a phone are sent, encrypted, through that
+browser's push service (Apple, Google or Mozilla). The remote address is
+made with your own Tailscale and is private to your tailnet unless you
+turn on Funnel. Sync pushes to your own private GitHub repos. A route
+sends one tab's agent through the proxy or exit node you chose, by
+setting proxy variables for that tab only: it is not a kill switch, a
+program that ignores the variables connects directly, and a route's Test
+connects to `api.anthropic.com:443` and stops after the TLS handshake.
+The embedded browser loads the pages you or the tab's agent open in it.
 
 ## Crashes and logs
 
@@ -1713,7 +1811,7 @@ focused pane.
 | `Ctrl-a Shift`+arrow | move the pane that way |
 | `Ctrl-a X` / `Ctrl-a O` | mute the microphone / the speaker |
 | `Ctrl-a +` / `Ctrl-a -` | talk back volume up / down |
-| `Ctrl-a K` | talk directly to this tab (again: back to the assistant) |
+| `Ctrl-a K` | talk directly to this tab (again: back to the assistant); with `voice.direct_follow` on, direct mode then follows the tab you switch to |
 | `Ctrl-a B` | brainstorm mode (nothing is sent until "send it") |
 | `Ctrl-a ;` | the loops drawer of this tab |
 | `Ctrl-a i` | this tab's browser (Chrome profile for BrowserSkill) |

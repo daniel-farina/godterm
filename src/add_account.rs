@@ -15,7 +15,7 @@ pub const AGENTS: [(&str, &str, &str); 6] = [
     (
         "antigravity",
         "Antigravity CLI",
-        "Shared login on this machine",
+        "A Google login for each account",
     ),
     ("opencode", "OpenCode", "Shared login on this machine"),
 ];

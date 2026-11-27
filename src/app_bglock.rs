@@ -265,7 +265,10 @@ impl App {
                         "t{}: stopped background run {}, resuming {}",
                         st.uid, st.short, st.resume
                     ));
-                    self.panes[s].tabs[t].session_id = Some(st.resume.clone());
+                    self.panes[s].tabs[t].set_session(
+                        Some(st.resume.clone()),
+                        "its background run was stopped to resume it",
+                    );
                     self.launch_tab(s, t, LaunchKind::Resume(st.resume));
                 }
                 Err(e) => {

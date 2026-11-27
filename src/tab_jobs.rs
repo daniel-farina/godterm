@@ -17,11 +17,13 @@ pub const TAB_TOOLS: &[&str] = &[
     "adopt_loop",
     "list_browsers",
     "browser_status",
+    "set_tab_avatar",
+    "embedded_browser",
 ];
 
-pub const HINT: &str = "Prefer the godterm create_job tool over CronCreate or /loop for anything recurring or scheduled; it survives restarts and shows in GodTerm's Loops & schedules. To use the browser, run `bsk browsers --json`, ask the user which browser if unclear, and use `bsk session start --browser <id>`; GodTerm's list_browsers shows what is connected. If list_browsers shows a bound_profile, this tab has its own Chrome profile: use only that browser with bsk and no other (with several bound_profiles, only those: the primary unless the user means another, and ask when unclear); if none is set, ask the user to click Browser on this tab's bottom bar. Driving it: follow the BrowserSkill skill and `bsk <command> --help` (they track the installed bsk). Pass --tab-id on every page command so it never lands on whichever tab is active. For slow pages use wait-for-navigation, wait-for-element or wait-ms, not reloads. When the user must act in the page (a login, a captcha, a confirm), use `bsk request-help --prompt \"...\"` and wait for it; never ask them to click in the Agent Window, which stops the session. `tab borrow` asks the user to confirm first: say why before you call it. On \"Chrome blocked CDP access to another extension's content\" (a password manager's frame), stay in the page's main frame and leave that frame alone; if the step needs it (autofill), use request-help.";
+pub const HINT: &str = "Prefer the godterm create_job tool over CronCreate or /loop for anything recurring or scheduled; it survives restarts and shows in GodTerm's Loops & schedules. For localhost and dev servers, local apps and pages that need no login, use the godterm embedded_browser tool (navigate, screenshot, click, type, text, console), which shows beside the terminal for the user; it is there only when GodTerm's Embedded browser setting is on. For anything that needs the user's accounts (Gmail, X, a signed in site) use their real Chrome with bsk. To use that browser, run `bsk browsers --json`, ask the user which browser if unclear, and use `bsk session start --browser <id>`; GodTerm's list_browsers shows what is connected. If list_browsers shows a bound_profile, this tab has its own Chrome profile: use only that browser with bsk and no other (with several bound_profiles, only those: the primary unless the user means another, and ask when unclear); if none is set, ask the user to click Browser on this tab's bottom bar. Driving it: follow the BrowserSkill skill and `bsk <command> --help` (they track the installed bsk). Pass --tab-id on every page command so it never lands on whichever tab is active. For slow pages use wait-for-navigation, wait-for-element or wait-ms, not reloads. When the user must act in the page (a login, a captcha, a confirm), use `bsk request-help --prompt \"...\"` and wait for it; never ask them to click in the Agent Window, which stops the session. `tab borrow` asks the user to confirm first: say why before you call it. On \"Chrome blocked CDP access to another extension's content\" (a password manager's frame), stay in the page's main frame and leave that frame alone; if the step needs it (autofill), use request-help.";
 
-const ASK_FOR: Duration = Duration::from_secs(600);
+const ASK_FOR: Duration = Duration::from_secs(3600);
 
 const MAX_WAITING: usize = 5;
 
@@ -270,6 +272,12 @@ pub fn extend_launch_for(
             add_hint(args, "--append-system-prompt", HINT);
             Ok(Extras::default())
         }
+        Harness::Antigravity => Ok(Extras {
+            env: vec![
+                ("GODTERM_TAB".into(), uid.to_string()),
+                ("GODTERM_TOKEN".into(), tab_token(shared, uid)),
+            ],
+        }),
         Harness::Grok => {
             add_hint(args, "--rules", HINT);
             Ok(Extras {
@@ -279,8 +287,6 @@ pub fn extend_launch_for(
                 ],
             })
         }
-
-        _ => Ok(Extras::default()),
     }
 }
 
@@ -354,6 +360,8 @@ pub fn tab_description(tool: &str) -> &'static str {
         "adopt_loop" => "Turn this tab's own session loop (a /loop or CronCreate job; see session_loops in list_jobs) into a GodTerm job so it survives restarts: copies its prompt and schedule (a dynamic /loop has none: pass cron or every). By default you should then cancel the session loop yourself so it does not fire twice (CronDelete), unless keep_session_loop is true. loop: the loop id (optional when there is one). Also name, catch_up, until. Waits for the user's approval in GodTerm (state waiting_for_user).",
         "list_browsers" => "THIS tab's browsers for BrowserSkill (bsk): the Chrome profiles the user bound to this tab (bound_profiles, the primary first; bound_profile is the primary) and the connected browsers that are them (browsers: instance_id, label, versions, open sessions, and profile_dir and primary saying whose each is). Use only those browsers, never another: the primary one unless the request is clearly about another bound profile's account or site, and when it is unclear which, ask the user. The instance_id goes to `bsk session start --browser <id>`. You never choose or change a tab's browser yourself. No bound_profile: the user has not set one; ask them to choose one (Browser on this tab's bottom bar, or the tab's Browser section in the web app). Read only.",
         "browser_status" => "BrowserSkill (bsk) status for THIS tab, read only: installed and version, daemon state, doctor summary, this tab's bound Chrome profiles (bound_profiles, the primary first) with their extension state, and the connected browsers that are them. Use only those; ask the user which when unclear.",
+        "embedded_browser" => "The embedded browser: THIS tab's own pages in a separate Chrome with an empty throwaway profile that GodTerm runs, shown beside the terminal in the web app, where the user can also see and click them live. You only see and drive this tab's pages, never another tab's. Use it for localhost and dev servers, local apps and tools, pages you are building, and any public page that needs no login. It has none of the user's cookies or logins (its throwaway cookies and storage are shared by the pages of all GodTerm tabs). For anything that needs the user's accounts (Gmail, X, a signed-in dashboard) use BrowserSkill (bsk) in their real Chrome instead (see list_browsers), never this. action: open (url optional; also device phone|tablet|desktop or width and height), navigate (url; http or https only, a bare localhost:3000 works; file: and chrome: are refused: serve the folder instead), back, forward, reload, screenshot (you get the picture and a file path; full_page true for the whole page), snapshot (numbered clickable and typeable elements, their text and position: refs last until the next snapshot or navigation), click (ref, selector, text, or x and y in viewport pixels), type (text into ref or selector, replacing what is there unless clear false; submit true presses Enter), press (key such as Enter, Tab, Control+A), scroll (dy, dx, or ref or selector into view), hover, text (the visible page text, or selector's; max_chars), html (selector optional), eval (expression), wait (selector, text, gone, ms, or neither to wait for the page to finish loading; timeout_ms), console (level error for errors only; since: the cursor of your last call), network (failed requests; all true for every response), resize (device or width and height), tabs (the page tabs: id, url, title, active, asleep), new_tab (url optional; opens and activates it), switch_tab (id), close_tab (id), status (also owned_pages and asleep_pages), close (closes all of this tab's pages). The browser has page tabs, at most 6: window.open and target=_blank links open as a new tab, and every other action acts on the active tab, so check tabs after a click that may open one. Every result carries the active page url and title. After you change code, reload and check console and network for errors. Close page tabs you no longer need: the pages awake over all tabs are limited. A page nobody used for a while is put to sleep and reloaded on its next use; that result carries woke true and a note, and form input and script state in that page are gone. Your pages close with the tab. Only on when the user turned on Embedded browser in GodTerm's settings.",
+        "set_tab_avatar" => "Set THIS tab's avatar, the round picture next to its name in GodTerm's tab list (every tab has a generated pixel avatar until one is set). Once you know what project this tab works on, set it to the project's logo: from_project true finds a logo, icon, favicon or og image in the tab's folder (or its repository root) by itself; or path: an image (PNG, JPEG, GIF, WebP or plain SVG, at most 512 KB) inside the tab's folder. clear true goes back to the generated avatar. Do not change an avatar the user set on purpose unless asked.",
         _ => "",
     }
 }
@@ -396,6 +404,17 @@ pub struct TabAsk {
     pub plan: Value,
     pub question: String,
     pub at: Instant,
+    pub asked: i64,
+}
+
+pub fn ask_words(tool: &str) -> &'static str {
+    match tool {
+        "create_job" => "create job",
+        "update_job" => "change job",
+        "delete_job" => "delete job",
+        "adopt_loop" => "keep loop as job",
+        _ => "change jobs",
+    }
 }
 
 #[derive(Debug, Default)]
@@ -417,6 +436,12 @@ impl App {
 
     fn tab_call_inner(&mut self, uid: u64, tool: &str, args: &Value) -> Result<Value, String> {
         let a = self.tab_scoped(uid, tool, args)?;
+        if tool == "set_tab_avatar" {
+            return Ok(self.control_call(tool, &a));
+        }
+        if tool == "embedded_browser" {
+            return Ok(self.embedded_tool_ctx(uid));
+        }
         if matches!(tool, "list_browsers" | "browser_status") {
             return self.browser_tool_for(uid, tool);
         }
@@ -478,10 +503,11 @@ impl App {
                 plan,
                 question: question.clone(),
                 at: Instant::now(),
+                asked: chrono::Utc::now().timestamp(),
             });
             crate::log::info(&format!("tab job: t{uid} {tool} asks: {question}"));
             self.flash(format!(
-                "The {label} tab asks to change its jobs: answer in the dialog"
+                "The {label} tab asks to change its jobs: it needs your yes or no"
             ));
         }
         Ok(json!({"ok": true, "result": {
@@ -523,6 +549,36 @@ impl App {
         }
     }
 
+    pub fn tab_ask_answer_remote(&mut self, token: &str, yes: bool) -> Result<String, String> {
+        if !self.tab_jobs.asks.iter().any(|k| k.token == token) {
+            return Err("that question is no longer open".into());
+        }
+        if matches!(&self.modal, Modal::ConfirmTabJob(t) if t == token) {
+            self.modal = Modal::None;
+        }
+        self.tab_ask_answer(token, yes);
+        Ok("answered".into())
+    }
+
+    pub fn tab_asks_json(&self) -> Vec<Value> {
+        self.tab_jobs
+            .asks
+            .iter()
+            .map(|k| {
+                let name = self
+                    .find_tab(k.uid)
+                    .map(|(s, t)| self.panes[s].tabs[t].name());
+                json!({
+                    "id": format!("tabask:{}", k.token), "kind": "tabjob",
+                    "tab": if name.is_some() { json!(k.uid) } else { Value::Null },
+                    "name": name, "tool": k.tool, "what": ask_words(&k.tool),
+                    "question": k.question, "choices": ["yes", "no"],
+                    "asked_at": k.asked, "expires_at": k.asked + ASK_FOR.as_secs() as i64,
+                })
+            })
+            .collect()
+    }
+
     pub fn tab_jobs_tick(&mut self) {
         if self.tab_jobs.asks.is_empty() && self.tab_jobs.shown.is_none() {
             return;
@@ -530,7 +586,7 @@ impl App {
         if let Some(tok) = self.tab_jobs.shown.clone() {
             let still = matches!(&self.modal, Modal::ConfirmTabJob(t) if *t == tok);
             if !still {
-                self.tab_ask_answer(&tok, false);
+                self.tab_jobs.shown = None;
             }
         }
         let old: Vec<String> = self
@@ -599,6 +655,13 @@ impl App {
                 &std::env::current_exe().unwrap_or_else(|_| "godterm".into()),
                 self.cfg.tabs.jobs_tools && shared_token().is_some(),
             );
+        }
+        if h == Harness::Antigravity {
+            let on = self.cfg.tabs.jobs_tools && shared_token().is_some();
+            let exe = std::env::current_exe().unwrap_or_else(|_| "godterm".into());
+            if !crate::antigravity::write_mcp(config_dir, &exe, on) {
+                return vec![];
+            }
         }
         if !self.cfg.tabs.jobs_tools {
             return off(args);

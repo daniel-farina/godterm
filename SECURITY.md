@@ -129,6 +129,24 @@ what it does not:
   from another account) and tagged devices are refused. Host and Origin
   checks stop DNS rebinding and cross site WebSockets, and a login or
   socket from a process GodTerm started is refused.
+- **Remote access and passkey login** (new in 0.4.0; docs/WEB_APP.md).
+  With login on, every request through the remote address needs a
+  passkey session; the token link then works on 127.0.0.1 only. The
+  address is private to your tailnet unless you turn on Tailscale Funnel
+  yourself, which is offered only with login on and puts the sign in page
+  on the public internet. Only the owner, from the web app, can change
+  these settings; tabs and the assistant are refused.
+  `godterm login reset` turns login off, signs out every browser and
+  closes Funnel.
+- **A tab's route** sets proxy variables for that tab's process only. It
+  is not a kill switch: a program that ignores them connects directly.
+  Only the user sets routes; no tool an agent sees can. The tab's own
+  process does see the proxy variables it was given. The Tailscale exit
+  node kind is experimental.
+- **The embedded browser** (off by default, experimental) is a headless
+  Chrome with its debugging port on 127.0.0.1 only; each tab's agent
+  reaches only its own pages. Pages that need your accounts stay in your
+  real Chrome.
 - **Files.** `~/.godterm` and its files are owner only; config, state,
   jobs, archive and indexes are written through a private temp file and a
   rename. State and the assistant's history hold folders, session ids and

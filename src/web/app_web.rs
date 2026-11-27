@@ -102,6 +102,10 @@ pub(super) fn message(id: u64, e: &Entry, hidden: bool) -> Value {
     if hidden {
         m["hidden"] = json!(true);
     }
+    if let Some((uid, name)) = &e.tab {
+        m["tab"] = json!(format!("t{uid}"));
+        m["tab_name"] = json!(name);
+    }
     m
 }
 
@@ -126,6 +130,12 @@ pub fn theme_json() -> Value {
 const SIZE_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
 
 impl App {
+    pub fn web_changed(&mut self) {
+        if let Some(w) = self.web.as_mut() {
+            w.changed = true;
+        }
+    }
+
     pub fn web_size_back(&mut self, uid: u64) {
         if let Some(w) = self.web.as_mut() {
             w.taken.remove(&uid);
@@ -243,6 +253,7 @@ impl App {
                 v["pane"] = json!(s + 1);
                 v["active"] = json!(self.panes[s].active == t);
                 v["running"] = json!(tab.is_running());
+                v["can_direct"] = json!(crate::app_direct::tab_can_direct(tab));
 
                 let idle = tab.last_activity().elapsed().as_secs();
                 let mut at = crate::app_assistant::now_ms() / 1000 - idle as i64;
@@ -310,6 +321,11 @@ impl App {
             if let Some(e) = self.email_label(i, 64) {
                 a["email"] = json!(e);
             }
+
+            let sh = crate::sharing::json_for(acc);
+            if !sh.is_null() {
+                a["sharing"] = sh;
+            }
         }
         json!(v)
     }
@@ -317,11 +333,21 @@ impl App {
     pub fn web_approvals(&self) -> Vec<Value> {
         let mut v = vec![];
         for p in self.pending_confirms.iter().filter(|p| p.answerable()) {
+            let mut tabs: Vec<u64> = vec![];
+            if let Some(u) = p.plan.get("uid").and_then(|v| v.as_u64()) {
+                tabs.push(u);
+            }
+            if let Some(us) = p.plan.get("uids").and_then(|v| v.as_array()) {
+                tabs.extend(us.iter().filter_map(|v| v.as_u64()));
+            }
+            tabs.retain(|u| self.find_tab(*u).is_some());
             v.push(json!({
                 "id": format!("confirm:{}", p.token), "kind": "confirm", "tab": Value::Null,
+                "tabs": tabs, "tool": p.tool,
                 "question": p.summary, "choices": ["yes", "no"],
             }));
         }
+        v.extend(self.tab_asks_json());
         if let Some(a) = &self.assistant.selfswitch.asked {
             v.push(json!({
                 "id": "switch", "kind": "switch", "tab": Value::Null,
@@ -384,6 +410,7 @@ impl App {
                 "privacy": self.privacy(),
                 "emails_shown": self.show_email_global(),
                 "direct": self.direct.on.as_ref().map(|d| d.name.clone()),
+                "direct_tab": self.direct.on.as_ref().map(|d| d.uid),
                 "brainstorm": self.brainstorm.on.is_some(),
                 "updates": self.updates_on(),
             },
@@ -391,6 +418,10 @@ impl App {
             "tabs": self.web_tabs(&s),
             "focused": self.panes.get(self.focus).map(|p| p.cur().uid),
 
+            "tab_avatars": self.cfg.web.tab_avatars,
+            "embedded_browser": self.cfg.web.embedded_browser,
+            "embedded_open": crate::embedded::live_uids(),
+            "claude_desktop": crate::app_claude_desktop::installed(),
             "moved": self
                 .moved_ids
                 .iter()
@@ -406,6 +437,7 @@ impl App {
             "assistant": {
                 "on": self.assistant_on(),
                 "busy": self.assistant.busy,
+                "tab_conv": self.tab_conv_json(),
                 "provider": self.cfg.assistant.provider,
                 "account": pick("assistant_account"),
             },
@@ -422,12 +454,22 @@ impl App {
                 "wake_word": self.cfg.voice.wake_words.first(),
                 "barge_in": self.cfg.voice.barge_in,
                 "typed_spoken": self.cfg.assistant.speak_typed,
+                "direct_follow": self.cfg.voice.direct_follow,
+                "talk_level": crate::app_talkback::TalkLevel::of(&self.cfg).name(),
+                "speaker_muted": self.cfg.voice.speaker_muted || !self.cfg.voice.tts,
+                "volume_pct": (self.cfg.voice.tts_volume * 100.0).round() as u32,
                 "status": match &self.voice.status {
                     crate::voice::VoiceStatus::Starting => "starting",
                     crate::voice::VoiceStatus::Idle => "idle",
                     crate::voice::VoiceStatus::Listening => "listening",
                     crate::voice::VoiceStatus::Transcribing => "transcribing",
                     crate::voice::VoiceStatus::Off(_) => "off",
+                },
+                "model": match self.voice.engine.as_ref().map(|e| e.model_state()) {
+                    Some(crate::voice::stt::MODEL_LOADING) => "loading",
+                    Some(crate::voice::stt::MODEL_UNLOADED) => "unloaded",
+                    Some(crate::voice::stt::MODEL_LOADED) => "loaded",
+                    _ => "none",
                 },
                 "error": match &self.voice.status {
                     crate::voice::VoiceStatus::Off(Some(e)) => Some(e.clone()),
@@ -459,12 +501,17 @@ impl App {
                 client,
                 text,
                 images,
+                raw,
             } => {
                 crate::log::info(&format!(
                     "web: a turn typed in browser {client} ({} images)",
                     images.len()
                 ));
 
+                if raw && self.tab_conv_uid().is_some() && images.is_empty() {
+                    self.tab_conv_send_raw(&text);
+                    return;
+                }
                 self.assistant.pending_web = Some(client);
                 self.web_say(&text, &images);
                 self.assistant.pending_web = None;
@@ -477,6 +524,12 @@ impl App {
                         Err(e) => json!({"t": "answered", "id": id, "ok": false, "error": e}),
                     };
                     c.out.text(frame.to_string());
+                }
+            }
+            ToApp::Viewing { client, uid } => {
+                let uid = self.current_uid(uid);
+                if self.find_tab(uid).is_some() {
+                    self.user_picked_tab(uid, &format!("in browser {client}"));
                 }
             }
             ToApp::Typed(uid) => {
@@ -534,8 +587,12 @@ impl App {
             ToApp::Git { client, v } => self.web_git(client, v),
             ToApp::Accounts { client, v } => self.web_accounts(client, v),
             ToApp::BrowserView { client, v } => self.web_bview(client, v),
+            ToApp::Embedded { client, v } => self.web_embedded(client, v),
+            ToApp::OpenExt { client, v } => self.web_open_ext(client, v),
+            ToApp::Apps { client, v } => self.web_apps(client, v),
             ToApp::Gone(client) => {
                 crate::browser_view::unwatch(client, None);
+                crate::embedded::drop_client(client);
                 if self.web_voice_client() == Some(client) {
                     self.web_voice_off("the browser left");
                 }
@@ -612,6 +669,14 @@ impl App {
             return Ok(self.answer_tab(s, t, pick));
         }
 
+        if let Some(tok) = id.strip_prefix("tabask:") {
+            let r = self.tab_ask_answer_remote(tok, yes);
+            if r.is_ok() {
+                crate::log::info(&format!("web: the user answered {id}: {c}"));
+            }
+            return r;
+        }
+
         if id == "switch" || id.starts_with("confirm:") {
             if let Some(tok) = id.strip_prefix("confirm:") {
                 if !self.pending_confirms.iter().any(|p| p.token == tok) {
@@ -643,6 +708,7 @@ impl App {
             "t": "hello",
             "proto": super::PROTO,
             "version": env!("CARGO_PKG_VERSION"),
+            "data_dir": crate::config::app_home().to_string_lossy(),
             "build": w.hub.assets.build(),
             "client": id,
             "theme": theme_json(),

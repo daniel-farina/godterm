@@ -278,6 +278,9 @@ impl App {
                 "buckets": buckets,
                 "usage_error": usage_error,
                 "integrated": h.integrated(),
+                "can_logout": h.integrated()
+                    || (h == crate::harness::Harness::Antigravity
+                        && crate::antigravity::isolated(&c.config_dir())),
                 "installed": installed,
                 "can_token": claude,
                 "token": token,
@@ -363,6 +366,29 @@ impl App {
                     .ok_or("no sign in page yet")?;
                 self.open_service_link(&url);
                 Ok(json!({"said": "Opened on the Mac"}))
+            }
+            "sharing_check" => {
+                let a = self.acct_index(v)?;
+                let acc = self.cfg.accounts[a].clone();
+                crate::sharing::forget(&acc);
+                let _ = crate::sharing::reading(&acc);
+                if let Some(w) = self.web.as_mut() {
+                    w.changed = true;
+                }
+                Ok(json!({"said": "Checking the setting again"}))
+            }
+            "sharing_slash" => {
+                let a = self.acct_index(v)?;
+                if self.cfg.accounts[a].harness() != crate::harness::Harness::Grok {
+                    return Err("only Grok has a command for it".into());
+                }
+                let uid = v["tab"].as_u64().ok_or("which tab?")?;
+                let (s, t) = self.find_tab(uid).ok_or("that tab is gone")?;
+                if self.panes[s].account != Some(a) {
+                    return Err("that tab is on another account".into());
+                }
+                self.panes[s].tabs[t].write(b"/privacy\r");
+                Ok(json!({"said": "Typed /privacy in the tab"}))
             }
             "retry" => {
                 let a = self.acct_index(v)?;
@@ -515,7 +541,9 @@ impl App {
         let mut args = json!({"account": a + 1, "name": name});
         let (question, danger) = match op {
             "logout" => {
-                if !c.harness().integrated() {
+                let own = c.harness() == crate::harness::Harness::Antigravity
+                    && crate::antigravity::isolated(&c.config_dir());
+                if !c.harness().integrated() && !own {
                     return Err(format!(
                         "{} keeps its own login; log out in its CLI",
                         c.harness().label()
@@ -1073,7 +1101,9 @@ impl App {
 
 pub fn login_state(st: &crate::app::AccountState) -> &'static str {
     let login = &st.login;
-    if login.cli_managed {
+    if login.cli_managed && login.logged_in() {
+        "logged_in"
+    } else if login.cli_managed {
         "cli"
     } else if !login.logged_in() {
         "logged_out"

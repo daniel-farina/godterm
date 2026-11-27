@@ -361,6 +361,7 @@ impl App {
             }
             "get_setting" => self.tool_get_setting(args),
             "list_settings" => self.tool_list_settings(args),
+            "login_status" => Ok(ok(crate::web::login::summary(&crate::config::app_home()))),
             "admin_history" => Ok(ok(json!({"actions": self.admin.history}))),
             "setup_status" => Ok(ok(self.setup_status_json())),
             "login_paste_code" => self.login_paste_code(args),
@@ -507,6 +508,16 @@ impl App {
         use crate::settings::{all_settings, SECTIONS};
         let q = args["query"].as_str().unwrap_or("").trim().to_string();
         let sec = args["section"].as_str().unwrap_or("").to_lowercase();
+        if !cfg!(test) {
+            crate::settings::start_audio_lists(&self.cfg.voice, false);
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(1200);
+            while sec.contains("voice")
+                && crate::settings::list_state() == crate::settings::ListState::Detecting
+                && std::time::Instant::now() < until
+            {
+                std::thread::sleep(std::time::Duration::from_millis(40));
+            }
+        }
         let rows: Vec<Value> = if !q.is_empty() {
             crate::settings::search(&self.cfg, &q)
                 .iter()

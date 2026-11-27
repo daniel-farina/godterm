@@ -477,6 +477,8 @@ pub struct App {
     pub stop_reqs: Vec<crate::app_loops::StopReq>,
     pub pending_moves: Vec<crate::app_tabmove::PendingMove>,
 
+    pub app_prefills: Vec<crate::app_catalog::Prefill>,
+
     pub session_index: crate::session_index::Shared,
 
     pub project_index: crate::project_index::Shared,
@@ -630,6 +632,8 @@ pub struct App {
 
     pub web_caller: bool,
 
+    pub routes: crate::app_routes::RoutesRt,
+
     pub web_retry_at: Option<std::time::Instant>,
     pub pane_rects: Vec<Rect>,
 
@@ -707,7 +711,10 @@ pub struct App {
     pub onboard: Option<Onboard>,
     last_status: Instant,
     last_session_scan: Instant,
+    last_agy_scan: Instant,
+    pub(crate) session_held: std::collections::HashMap<String, u64>,
     pub(crate) state_dirty: bool,
+    pub(crate) resume_check: bool,
     last_state_save: Instant,
 
     pub cont: crate::app_continue::ContinueState,
@@ -785,6 +792,7 @@ impl App {
             sel_loop: 0,
             stop_reqs: vec![],
             pending_moves: vec![],
+            app_prefills: vec![],
             moved_ids: Default::default(),
             bg_stops: vec![],
             busy: Default::default(),
@@ -874,6 +882,7 @@ impl App {
             force_eager: false,
             web: None,
             web_caller: false,
+            routes: Default::default(),
             web_retry_at: None,
             pane_rects: vec![],
             term_rects: vec![],
@@ -921,7 +930,10 @@ impl App {
             config_error: None,
             last_status: Instant::now(),
             last_session_scan: Instant::now(),
+            last_agy_scan: Instant::now(),
+            session_held: std::collections::HashMap::new(),
             state_dirty: false,
+            resume_check: !cfg!(test),
             last_state_save: Instant::now(),
             cont: Default::default(),
         };
@@ -1082,11 +1094,13 @@ impl App {
                 tab.session_id = t.session_id.clone();
                 tab.custom_name = t.name.clone();
                 tab.accent = t.accent.clone();
+                tab.avatar = crate::tab_avatar::clean(t.avatar.clone());
                 tab.group = t.group.clone();
                 tab.pinned = t.pinned;
                 tab.browser = t.browser.clone();
                 tab.browser_also =
                     crate::tab_browser::clean_also(t.browser.as_deref(), &t.browser_also);
+                tab.route = t.route.clone();
                 tab.finished = t.finished;
                 if let Some(o) = t.opened {
                     tab.opened = std::time::UNIX_EPOCH + std::time::Duration::from_secs(o);
@@ -1199,11 +1213,13 @@ impl App {
                             session_id: t.session_id.clone(),
                             name: t.custom_name.clone(),
                             accent: t.accent.clone(),
+                            avatar: t.avatar.clone(),
                             uid: Some(t.uid),
                             group: t.group.clone(),
                             pinned: t.pinned,
                             browser: t.browser.clone(),
                             browser_also: t.browser_also.clone(),
+                            route: t.route.clone(),
                             finished: t.finished,
                             opened: t
                                 .opened
@@ -1233,35 +1249,96 @@ impl App {
         self.last_state_save = Instant::now();
     }
 
+    fn note_session_holders(&mut self) {
+        for t in self.panes.iter().flat_map(|s| s.tabs.iter()) {
+            if let Some(id) = &t.session_id {
+                self.session_held.entry(id.clone()).or_insert(t.uid);
+            }
+        }
+    }
+
+    fn session_pick(
+        &self,
+        si: usize,
+        ti: usize,
+        dir: &std::path::Path,
+        claude: bool,
+    ) -> Option<(String, &'static str)> {
+        let t = &self.panes[si].tabs[ti];
+        let held_now: Vec<String> = self
+            .panes
+            .iter()
+            .flat_map(|s| s.tabs.iter())
+            .filter(|o| o.uid != t.uid)
+            .flat_map(|o| o.session_id.iter().chain(o.launch_id.iter()).cloned())
+            .chain(self.busy.fork_ids.iter().cloned())
+            .collect();
+        let has_transcript = |id: &str| crate::session_ids::transcript(dir, id).is_some();
+        if let Some(l) = t.launch_id.as_ref().filter(|_| claude) {
+            if !held_now.contains(l) && has_transcript(l) {
+                return Some((l.clone(), "launched with this id"));
+            }
+        }
+        if !t.is_running() {
+            return None;
+        }
+        if claude {
+            if let Some(r) = t
+                .pid()
+                .and_then(|pid| state::registered_session(dir, pid, t.started))
+            {
+                let free = !held_now.contains(&r) && !crate::session_ids::is_bg_session(dir, &r);
+                return (free && has_transcript(&r))
+                    .then_some((r, "the harness reports it for this process"));
+            }
+        }
+        let mut taken = held_now;
+        taken.extend(
+            self.session_held
+                .iter()
+                .filter(|(_, uid)| **uid != t.uid)
+                .map(|(id, _)| id.clone()),
+        );
+        taken.extend(self.closed.iter().filter_map(|c| c.session_id.clone()));
+        match &t.session_id {
+            Some(cur) => state::linked_session(dir, &t.cwd, t.started, &taken, cur)
+                .map(|id| (id, "its transcript links to the previous session")),
+            None if t.launch_id.is_some() => None,
+            None => state::detect_session(dir, &t.cwd, t.started, &taken).map(|id| {
+                (
+                    id,
+                    "the newest unclaimed transcript created after it started",
+                )
+            }),
+        }
+    }
+
     pub(crate) fn detect_sessions(&mut self) {
+        self.note_session_holders();
         for si in 0..self.panes.len() {
             let Some(a) = self.panes[si].account else {
                 continue;
             };
-            if !self.cfg.accounts[a].harness().integrated() {
+            let h = self.cfg.accounts[a].harness();
+            if !h.integrated() {
                 continue;
             }
+            let claude = h == crate::harness::Harness::Claude;
             let dir = self.cfg.accounts[a].config_dir();
             for ti in 0..self.panes[si].tabs.len() {
-                let t = &self.panes[si].tabs[ti];
-                if !t.is_running() || matches!(t.kind, LaunchKind::Login) {
+                if matches!(self.panes[si].tabs[ti].kind, LaunchKind::Login) {
                     continue;
                 }
-                let taken: Vec<String> = self
-                    .panes
-                    .iter()
-                    .flat_map(|s| s.tabs.iter())
-                    .filter(|o| o.uid != t.uid)
-                    .filter_map(|o| o.session_id.clone())
-                    .chain(self.busy.fork_ids.iter().cloned())
-                    .collect();
-                if let Some(id) = state::detect_session(&dir, &t.cwd, t.started, &taken) {
-                    if t.session_id.as_deref() != Some(&id) {
-                        self.panes[si].tabs[ti].session_id = Some(id.clone());
-                        self.state_dirty = true;
+                let Some((id, why)) = self.session_pick(si, ti, &dir, claude) else {
+                    continue;
+                };
+                let tab = &mut self.panes[si].tabs[ti];
+                if tab.set_session(Some(id.clone()), why) {
+                    let uid = tab.uid;
+                    self.session_held.entry(id.clone()).or_insert(uid);
+                    self.state_dirty = true;
 
-                        self.lease_claim(si, ti, &id);
-                    }
+                    self.lease_claim(si, ti, &id);
                 }
             }
         }
@@ -1308,6 +1385,9 @@ impl App {
         if self.lease_gate(pane, &kind) {
             return;
         }
+        let Some(route_env) = self.route_gate(pane, &kind) else {
+            return;
+        };
         let a = self.cfg.accounts[acct].clone();
         let dir = a.config_dir();
         if creds::is_default_dir(&dir) {
@@ -1334,6 +1414,9 @@ impl App {
             a.work_dir()
         };
         let mut type_when_idle = None;
+        let tab_dir = self.panes[pane].cur().cwd.clone();
+        let folder_gone = !tab_dir.is_dir();
+        let mut resuming = None;
         match &kind {
             LaunchKind::Normal => {}
             LaunchKind::Login if h.login_args().is_some() => {
@@ -1354,9 +1437,13 @@ impl App {
                 ));
                 self.flash("That conversation was empty: started a new one");
             }
-            LaunchKind::Resume(id) => args.extend(h.resume_args(id)),
+            LaunchKind::Resume(id) => {
+                args.extend(h.resume_args(id));
+                resuming = Some(id.clone());
+            }
         }
 
+        let fresh = resuming.is_none();
         let next = self.panes[pane].cur_mut().next_launch.take();
         self.panes[pane].cur_mut().bg_lock = None;
         match (&next, &kind, h) {
@@ -1382,6 +1469,26 @@ impl App {
                 }
             }
         }
+        let attaching = matches!(next, Some(crate::session_ids::NextLaunch::Attach(_)));
+        let forking = args.last().is_some_and(|a| a == "--fork-session");
+        let mut launch_id = None;
+        if h == crate::harness::Harness::Claude
+            && kind != LaunchKind::Login
+            && !attaching
+            && (fresh || forking)
+            && !crate::harness::picks_session(&a.args)
+        {
+            let id = crate::session_ops::new_uuid();
+            args.extend(["--session-id".into(), id.clone()]);
+            launch_id = Some(id);
+        }
+        if let Some(id) = resuming.filter(|_| !attaching && self.resume_check) {
+            let fell_back = folder_gone && cwd == a.work_dir();
+            if let Some(lost) = self.conversation_lost(h, &dir, &id, &tab_dir, &cwd, fell_back) {
+                self.mark_conversation_lost(pane, lost);
+                return;
+            }
+        }
         let mut extra_env: Vec<(String, String)> = if h == crate::harness::Harness::Grok {
             crate::harness::grok::write_slot_compat(&dir, &self.cfg.grok_claude_compat);
             self.cfg
@@ -1393,13 +1500,25 @@ impl App {
         } else {
             vec![]
         };
+        extra_env.extend(crate::providers::claude::no_reporting_env(h));
+        if h == crate::harness::Harness::Antigravity {
+            let uid = self.panes[pane].cur().uid;
+            extra_env.extend(crate::antigravity::launch(&dir, uid, &mut args));
+        }
         extra_env.extend(tab_env);
+        extra_env.extend(route_env);
         let spec = LaunchSpec {
             program: self.cfg.harness_bin(h),
-            home_env: h.home_env(),
+            home_env: if h == crate::harness::Harness::Antigravity
+                && !crate::antigravity::isolated(&dir)
+            {
+                ""
+            } else {
+                h.home_env()
+            },
             extra_env,
             args,
-            cwd,
+            cwd: state::normalize_cwd(&cwd),
             config_dir: dir,
             kind: kind.clone(),
             pass_env: self.cfg.pass_env.clone(),
@@ -1444,6 +1563,7 @@ impl App {
         let ran_before = self.panes[pane].cur().generation > 0;
         match self.panes[pane].cur_mut().spawn(spec, self.tx.clone()) {
             Ok(()) => {
+                self.panes[pane].cur_mut().launch_id = launch_id;
                 if kind != LaunchKind::Login {
                     let t = self.panes[pane].active;
                     self.tab_event(
@@ -1823,6 +1943,8 @@ impl App {
             self.state_dirty = true;
         }
         self.selection_tick();
+        self.embedded_tick();
+        self.routes_tick();
         self.headphone_tap_tick();
         self.grok_screen_tick();
         self.takeover_tick();
@@ -2013,6 +2135,10 @@ impl App {
             self.last_session_scan = Instant::now();
             self.detect_sessions();
         }
+        if self.last_agy_scan.elapsed() >= Duration::from_millis(700) {
+            self.last_agy_scan = Instant::now();
+            self.antigravity_tick();
+        }
         self.direct_tick();
         self.voice_tick();
         self.onboard_tick();
@@ -2174,6 +2300,7 @@ impl App {
                         }
                         if was_running && !was_login {
                             self.note_bg_lock(si, ti);
+                            self.note_conversation_lost(si, ti);
                             self.learn_exit_session(si, ti);
                         }
                         if was_login {
@@ -3242,6 +3369,8 @@ impl App {
         self.voice_at_quit = Some(self.voice_mode_now().into());
         self.stop_voice();
         crate::voice::kill_helpers();
+        crate::embedded::shutdown_all();
+        self.routes_shutdown();
         self.detect_sessions();
         self.save_state();
         crate::app_resume::mark_clean_exit();
@@ -4080,6 +4209,31 @@ pub fn snapshot_of(a: &AccountCfg, with_usage: bool) -> StatusSnapshot {
                 profile,
                 login,
                 usage,
+            }
+        }
+        crate::harness::Harness::Antigravity if crate::antigravity::isolated(&dir) => {
+            let logged = crate::antigravity::logged_in(&dir);
+            let rec = if logged {
+                crate::antigravity::account(&dir)
+            } else {
+                Default::default()
+            };
+            StatusSnapshot {
+                profile: creds::Profile {
+                    email: rec.email.clone(),
+                    onboarded: logged,
+                    ..Default::default()
+                },
+                login: LoginInfo {
+                    cli_managed: true,
+                    source: logged.then_some(creds::CredSource::File),
+                    subscription: logged
+                        .then(|| rec.plan.clone().unwrap_or_else(|| "antigravity".into())),
+                    ..Default::default()
+                },
+                usage: with_usage
+                    .then(|| crate::antigravity::usage(&rec.quota).map(Ok))
+                    .flatten(),
             }
         }
         _ => StatusSnapshot {

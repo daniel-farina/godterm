@@ -9,7 +9,59 @@ pub const INSTANT_KEYS: &[&str] = &[
     "assistant.panel_width",
     "assistant.input_rows",
     "voice.headphone_tap",
+    "voice.talk_level",
 ];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TalkLevel {
+    Brief,
+    Normal,
+    Detailed,
+}
+
+impl TalkLevel {
+    pub const NAMES: &'static [&'static str] = &["brief", "normal", "detailed"];
+
+    pub fn parse(s: &str) -> Option<TalkLevel> {
+        match s.trim().to_lowercase().as_str() {
+            "brief" | "minimal" | "short" | "terse" => Some(TalkLevel::Brief),
+            "normal" | "medium" | "default" => Some(TalkLevel::Normal),
+            "detailed" | "full" | "long" | "verbose" => Some(TalkLevel::Detailed),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TalkLevel::Brief => "brief",
+            TalkLevel::Normal => "normal",
+            TalkLevel::Detailed => "detailed",
+        }
+    }
+
+    pub fn chosen(cfg: &crate::config::Config) -> Option<TalkLevel> {
+        TalkLevel::parse(&cfg.voice.talk_level)
+    }
+
+    pub fn of(cfg: &crate::config::Config) -> TalkLevel {
+        TalkLevel::chosen(cfg).unwrap_or(TalkLevel::Normal)
+    }
+
+    pub fn spoken_max(cfg: &crate::config::Config) -> usize {
+        match TalkLevel::chosen(cfg) {
+            Some(TalkLevel::Detailed) => 0,
+            _ => cfg.assistant.spoken_sentences,
+        }
+    }
+
+    fn state_line(self) -> &'static str {
+        match self {
+            TalkLevel::Brief => "spoken_level: brief. The user wants very little speech. The part of your reply that is read aloud is one short sentence: the answer or the outcome only, with no preamble, no recap and no offer of more. A question or a confirmation you need answered is still asked in full.\n",
+            TalkLevel::Normal => "",
+            TalkLevel::Detailed => "spoken_level: detailed. The user wants full spoken detail and your whole reply is read aloud, so this replaces the one or two sentence limit: explain fully in plain spoken sentences and say the specifics (names, numbers, what changed and why) instead of pointing at the screen.\n",
+        }
+    }
+}
 
 pub fn parse_volume(v: &Value) -> Option<f32> {
     let n = match v {
@@ -75,6 +127,7 @@ impl App {
                     "voice.speaker_muted" => json!({"muted": v}),
                     "voice.tts_volume" => json!({"volume": v}),
                     "assistant.speak_typed" => json!({"speak_typed": v}),
+                    "voice.talk_level" => json!({"talk_level": v}),
                     "voice.headphone_tap" => {
                         let Some(on) = truthy(v) else {
                             return Some(Err("voice.headphone_tap: true or false".into()));
@@ -150,8 +203,23 @@ impl App {
                 "Okay, I'm talking again.".into()
             });
         }
+        if let Some(v) = args.get("talk_level").filter(|v| !v.is_null()) {
+            let level = v
+                .as_str()
+                .and_then(TalkLevel::parse)
+                .ok_or("talk_level: brief, normal or detailed")?;
+            self.set_talk_level(level);
+            said.push(
+                match level {
+                    TalkLevel::Brief => "Okay, short answers.",
+                    TalkLevel::Normal => "Okay, normal length.",
+                    TalkLevel::Detailed => "Okay, I'll go into detail.",
+                }
+                .into(),
+            );
+        }
         if said.is_empty() {
-            return Err("say what to change: muted, volume or speak_typed".into());
+            return Err("say what to change: muted, volume, speak_typed or talk_level".into());
         }
         Ok(json!({"ok": true, "result": {"say": said.join(" "), "speaker": self.speaker_state()}}))
     }
@@ -164,19 +232,33 @@ impl App {
         );
         self.config_mtime = crate::app::config_mtime();
         self.cfg.assistant.speak_typed = on;
+        self.web_changed();
+    }
+
+    pub fn set_talk_level(&mut self, level: TalkLevel) {
+        let _ = crate::settings::write(
+            &crate::config::Config::path(),
+            &crate::settings::Key::Global("voice.talk_level"),
+            Some(toml_edit::value(level.name())),
+        );
+        self.config_mtime = crate::app::config_mtime();
+        self.cfg.voice.talk_level = level.name().into();
+        self.state_dirty = true;
+        self.web_changed();
     }
 
     fn speaker_state(&self) -> Value {
         json!({
-            "muted": self.cfg.voice.speaker_muted,
+            "muted": self.cfg.voice.speaker_muted || !self.cfg.voice.tts,
             "volume_pct": (self.cfg.voice.tts_volume * 100.0).round() as u32,
             "typed_replies_spoken": self.cfg.assistant.speak_typed,
+            "talk_level": TalkLevel::of(&self.cfg).name(),
         })
     }
 
     pub fn speaker_state_line(&self) -> String {
         format!(
-            "speaker: {} (volume {}%), typed replies spoken: {}, this message came {}; panel: {}, {} (speaker mutes your voice, pause_listening stops hearing)\n",
+            "speaker: {} (volume {}%), typed replies spoken: {}, this message came {}; panel: {}, {} (speaker mutes your voice, pause_listening stops hearing)\n{}",
             if self.cfg.voice.speaker_muted {
                 "muted, your replies show as text only"
             } else {
@@ -187,6 +269,7 @@ impl App {
             if self.assistant.turn_spoken { "by voice" } else { "typed" },
             self.cfg.assistant.panel,
             self.panel_state_words(),
+            TalkLevel::chosen(&self.cfg).map_or("", TalkLevel::state_line),
         )
     }
 }

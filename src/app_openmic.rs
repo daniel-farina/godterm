@@ -113,7 +113,7 @@ impl App {
         self.voice.last_heard = Instant::now();
         self.start_voice(true);
         self.flash("Open mic: everything you say is a command, no wake word (say \"sleep\" or click OPEN MIC to stop)");
-        self.speak("open mic");
+        self.speak_optional("open mic");
     }
 
     pub fn set_voice_mode(&mut self, m: u8) {
@@ -132,6 +132,7 @@ impl App {
                 self.voice.open_mic_asleep = false;
                 self.voice.open_mic = false;
                 self.stop_voice();
+                self.drop_spoken_queue("voice off");
                 self.voice.info = None;
                 self.flash("Voice off");
             }

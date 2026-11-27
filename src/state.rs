@@ -18,6 +18,9 @@ pub struct TabState {
     pub accent: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uid: Option<u64>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,6 +48,9 @@ pub struct TabState {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub browser_also: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -179,11 +185,84 @@ impl AppState {
     }
 }
 
+pub fn normalize_cwd(cwd: &Path) -> PathBuf {
+    let p: PathBuf = cwd.components().collect();
+    if p.as_os_str().is_empty() {
+        cwd.to_path_buf()
+    } else {
+        p
+    }
+}
+
 pub fn encode_project_dir(cwd: &Path) -> String {
-    cwd.to_string_lossy()
+    normalize_cwd(cwd)
+        .to_string_lossy()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
+}
+
+pub fn project_dirs(config_dir: &Path, cwd: &Path) -> Vec<PathBuf> {
+    let root = config_dir.join("projects");
+    let mut v = vec![root.join(encode_project_dir(cwd))];
+    if let Ok(real) = fs::canonicalize(cwd) {
+        let d = root.join(encode_project_dir(&real));
+        if !v.contains(&d) {
+            v.push(d);
+        }
+    }
+    v
+}
+
+pub struct Candidate {
+    pub id: String,
+    pub path: PathBuf,
+    pub modified: SystemTime,
+}
+
+pub fn session_candidates(
+    config_dir: &Path,
+    cwd: &Path,
+    since: SystemTime,
+    taken: &[String],
+) -> Vec<Candidate> {
+    let since = since - std::time::Duration::from_secs(5);
+    let mut out: Vec<Candidate> = vec![];
+    for dir in project_dirs(config_dir, cwd) {
+        let Ok(rd) = fs::read_dir(dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(id) = p.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            if taken.contains(&id)
+                || out.iter().any(|c| c.id == id)
+                || crate::session_ids::is_bg_session(config_dir, &id)
+            {
+                continue;
+            }
+            let Ok(meta) = e.metadata() else {
+                continue;
+            };
+            let Ok(modified) = meta.modified() else {
+                continue;
+            };
+            let born = meta.created().unwrap_or(modified);
+            if born >= since {
+                out.push(Candidate {
+                    id,
+                    path: p,
+                    modified,
+                });
+            }
+        }
+    }
+    out
 }
 
 pub fn detect_session(
@@ -192,29 +271,60 @@ pub fn detect_session(
     since: SystemTime,
     taken: &[String],
 ) -> Option<String> {
-    let dir = config_dir.join("projects").join(encode_project_dir(cwd));
-    let since = since - std::time::Duration::from_secs(5);
-    let mut best: Option<(SystemTime, String)> = None;
-    for e in fs::read_dir(dir).ok()?.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let Some(id) = p.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
-            continue;
-        };
+    session_candidates(config_dir, cwd, since, taken)
+        .into_iter()
+        .max_by_key(|c| c.modified)
+        .map(|c| c.id)
+}
 
-        if taken.contains(&id) || crate::session_ids::is_bg_session(config_dir, &id) {
-            continue;
-        }
-        let Ok(m) = e.metadata().and_then(|m| m.modified()) else {
+pub fn transcript_parent(path: &Path) -> Option<String> {
+    use std::io::{BufRead, Read};
+    let f = fs::File::open(path).ok()?;
+    let head = std::io::BufReader::new(f.take(256 * 1024));
+    for line in head.split(b'\n').take(40).flatten() {
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&line) else {
             continue;
         };
-        if m >= since && best.as_ref().is_none_or(|(t, _)| m > *t) {
-            best = Some((m, id));
+        let link = v["forkedFrom"]["sessionId"]
+            .as_str()
+            .or(v["parentSessionId"].as_str());
+        if let Some(id) = link.filter(|id| crate::harness::Harness::safe_session_id(id)) {
+            return Some(id.to_string());
         }
     }
-    best.map(|(_, id)| id)
+    None
+}
+
+pub fn linked_session(
+    config_dir: &Path,
+    cwd: &Path,
+    since: SystemTime,
+    taken: &[String],
+    current: &str,
+) -> Option<String> {
+    session_candidates(config_dir, cwd, since, taken)
+        .into_iter()
+        .filter(|c| c.id != current)
+        .filter(|c| transcript_parent(&c.path).as_deref() == Some(current))
+        .max_by_key(|c| c.modified)
+        .map(|c| c.id)
+}
+
+pub fn registered_session(config_dir: &Path, pid: u32, since: SystemTime) -> Option<String> {
+    let p = config_dir.join("sessions").join(format!("{pid}.json"));
+    let fresh = fs::metadata(&p).and_then(|m| m.modified()).ok()?
+        >= since - std::time::Duration::from_secs(5);
+    if !fresh {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(&fs::read_to_string(&p).ok()?).ok()?;
+    if v["pid"].as_u64() != Some(pid as u64)
+        || v["kind"].as_str().is_some_and(|k| k != "interactive")
+    {
+        return None;
+    }
+    let id = v["sessionId"].as_str()?;
+    (crate::harness::Harness::safe_session_id(id) && !id.contains('.')).then(|| id.to_string())
 }
 
 #[cfg(test)]
@@ -252,6 +362,7 @@ mod tests {
                     session_id: Some("abc".into()),
                     name: Some("api".into()),
                     accent: Some("teal".into()),
+                    avatar: Some("gen:3".into()),
                     uid: Some(12),
                     group: Some("backend".into()),
                     pinned: true,
@@ -262,6 +373,7 @@ mod tests {
                     finished: true,
                     browser: Some("Profile 1".into()),
                     browser_also: vec!["Profile 3".into()],
+                    route: Some("exit-1".into()),
                 }],
                 sidebar_collapsed: true,
                 tab_pos: Some(crate::slot::TabPos::Right),
@@ -282,6 +394,7 @@ mod tests {
                 session_id: Some("abc".into()),
                 name: None,
                 accent: None,
+                avatar: None,
                 loops: vec![crate::closed::SavedLoop {
                     id: "j1".into(),
                     cron: Some("*/5 * * * *".into()),
@@ -295,6 +408,7 @@ mod tests {
                 pinned: false,
                 browser: Some("Profile 2".into()),
                 browser_also: vec![],
+                route: None,
                 label: "x".into(),
             }],
             sessions_view: Some(SessionsView {

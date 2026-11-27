@@ -154,6 +154,7 @@ const LOCAL: &[&str] = &[
     "voice.espeak",
     "voice.speaker_model",
     "voice.local",
+    "routes",
 ];
 
 fn path_valued(key: &str) -> bool {

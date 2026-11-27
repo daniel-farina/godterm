@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
-msg="${1:?usage: publish-public.sh \"commit message\"}"
+if [[ -n "${DRY_RUN:-}" ]]; then msg="${1:-dry run}"; else msg="${1:?usage: publish-public.sh \"commit message\"}"; fi
 SRC="${SRC:-master}"
 REMOTE="${PUBLIC_REMOTE:-origin}"
 BRANCH="${PUBLIC_BRANCH:-main}"
@@ -26,6 +26,10 @@ if [[ -n "$hits" ]]; then
   echo "refusing to publish: the change contains denied patterns:" >&2
   printf '%s\n' "$hits" | cut -c1-160 >&2
   exit 1
+fi
+if [[ -n "${DRY_RUN:-}" ]]; then
+  echo "dry run: $(git diff --shortstat "$base" "$tree") would be published to $REMOTE/$BRANCH; no denied patterns; nothing pushed"
+  exit 0
 fi
 
 name="$(gh api user --jq '.name // .login')"

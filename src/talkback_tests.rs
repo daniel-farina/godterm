@@ -153,6 +153,140 @@ fn muting_mid_sentence_stops_the_player() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+fn wait_until(what: &str, f: impl Fn() -> bool) {
+    let t = std::time::Instant::now();
+    while !f() {
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(10),
+            "waited for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+fn silent_preview(app: &mut crate::app::App) -> std::sync::Arc<crate::voice::player::Mix> {
+    let (sp, mix) = crate::voice::tts::Speaker::start_silent(&app.cfg.voice);
+    app.voice.preview = Some(sp);
+    mix
+}
+
+fn said(app: &crate::app::App) -> Vec<String> {
+    app.voice.preview.as_ref().unwrap().said()
+}
+
+fn muting_cuts_the_reply(app: &mut crate::app::App, mix: &crate::voice::player::Mix) {
+    wait_until("the first audio", || mix.pending() >= 4800);
+    assert!(mix.render(1200).iter().any(|x| *x > 0.0), "it is playing");
+    assert!(!said(app).iter().any(|s| s.contains("Second")), "mid reply");
+
+    let v = app.control_call("speaker", &json!({"muted": true}));
+    assert_eq!(v["ok"], json!(true), "{v}");
+    wait_until("the queue to empty", || mix.pending() == 0);
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert_eq!(mix.pending(), 0, "the rest is not synthesized");
+    assert!(
+        mix.render(1200).iter().all(|x| *x == 0.0),
+        "silence at once"
+    );
+    assert!(!said(app).iter().any(|s| s.contains("Second")));
+
+    let v = app.control_call("speaker", &json!({"muted": false}));
+    assert_eq!(v["ok"], json!(true), "{v}");
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert_eq!(mix.pending(), 0, "the old reply does not come back");
+    assert!(!said(app).iter().any(|s| s.contains("Second")));
+}
+
+#[test]
+fn muting_mid_reply_stops_the_rest_of_an_assistant_reply() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("midreply");
+    app.cfg.assistant.spoken_sentences = 3;
+    let mix = silent_preview(&mut app);
+    answer(
+        &mut app,
+        true,
+        "The build passed on every account. Second, the deploy waits for you.",
+    );
+    assert_eq!(app.assistant.spoken.len(), 1);
+    muting_cuts_the_reply(&mut app, &mix);
+
+    answer(&mut app, true, "A fresh answer.");
+    wait_until("the next reply", || mix.pending() >= 1200);
+    assert!(said(&app).iter().any(|s| s.contains("fresh")));
+    app.voice.preview.as_ref().unwrap().stop();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn muting_mid_reply_stops_the_rest_of_a_direct_reply() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("middirect");
+    app.cfg.voice.direct_reply = "full".into();
+    let mix = silent_preview(&mut app);
+    app.direct_say_reply(
+        "api",
+        "The tests pass on the branch. Second, the lint step still fails.",
+    );
+    muting_cuts_the_reply(&mut app, &mix);
+    app.voice.preview.as_ref().unwrap().stop();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_volume_change_mid_reply_is_heard_at_once_and_mute_still_stops_it() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("midvolume");
+    app.cfg.voice.tts_volume = 0.8;
+    app.cfg.assistant.spoken_sentences = 3;
+    let mix = silent_preview(&mut app);
+    let (v, _ctl) = crate::voice::Voice::fake(false);
+    answer(
+        &mut app,
+        true,
+        "The build passed on every account. Second, the deploy waits for you.",
+    );
+    wait_until("the first audio", || mix.pending() >= 4800);
+    let a = mix.render(1200);
+    assert!(a.iter().all(|x| (x - 0.8).abs() < 1e-6), "{:?}", &a[..4]);
+
+    app.voice.engine = Some(v);
+    let r = app.control_call("speaker", &json!({"volume": 40}));
+    assert_eq!(r["ok"], json!(true), "{r}");
+    assert!(!app.cfg.voice.speaker_muted, "only the volume changed");
+    assert!(
+        app.voice.preview.is_some(),
+        "the speaker that is talking is kept"
+    );
+    assert!((app.voice.engine.as_ref().unwrap().tts_volume() - 0.4).abs() < 1e-6);
+    let b = mix.render(2400);
+    assert!(
+        b[600..].iter().all(|x| (x - 0.4).abs() < 1e-6),
+        "what was queued at 80% plays at 40%: {:?}",
+        &b[600..604]
+    );
+
+    let r = app.control_call("speaker", &json!({"volume": 0}));
+    assert_eq!(r["ok"], json!(true), "{r}");
+    assert!(!app.cfg.voice.speaker_muted, "zero does not flip the mute");
+    assert!(app.cfg.voice.tts, "zero does not turn talk back off");
+    wait_until("more audio", || mix.pending() >= 2400);
+    assert!(mix.render(2400)[600..].iter().all(|x| *x == 0.0));
+
+    let stops = app.voice.engine.as_ref().unwrap().speech_stops();
+    app.control_call("speaker", &json!({"muted": true}));
+    assert_eq!(app.voice.engine.as_ref().unwrap().speech_stops(), stops + 1);
+    wait_until("the queue to empty", || mix.pending() == 0);
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(
+        mix.pending(),
+        0,
+        "mute after a volume change still stops it"
+    );
+    app.voice.engine = None;
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 #[test]
 fn volume_and_set_setting_run_at_once() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -572,5 +706,187 @@ fn the_status_bar_names_grok_when_it_runs_the_assistant() {
     app.own_usage
         .insert("grok", Ok(crate::harness::grok::parse_billing(&v)));
     assert_eq!(chip(&app).as_deref(), Some("AI: Grok · wk 13%"));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn the_web_state_follows_the_speaker_and_marks_itself_for_a_push() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("webspk");
+    let v = app.web_state()["voice"].clone();
+    assert_eq!(v["speaker_muted"], json!(false));
+    assert_eq!(v["typed_spoken"], json!(false));
+
+    app.toggle_speaker();
+    app.set_tts_volume(0.4);
+    app.set_speak_typed(true);
+    let v = app.web_state()["voice"].clone();
+    assert_eq!(v["speaker_muted"], json!(true), "{v}");
+    assert_eq!(v["volume_pct"], json!(40), "{v}");
+    assert_eq!(v["typed_spoken"], json!(true), "{v}");
+
+    let r = app.control_call("speaker", &json!({"muted": false, "volume": 70}));
+    assert_eq!(r["ok"], json!(true), "{r}");
+    let v = app.web_state()["voice"].clone();
+    assert_eq!(v["speaker_muted"], json!(false));
+    assert_eq!(v["volume_pct"], json!(70));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn the_speaker_reads_muted_while_talk_back_is_off_and_unmuting_turns_it_on() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("spktts");
+    crate::settings::write(
+        &crate::config::Config::path(),
+        &crate::settings::Key::Global("voice.tts"),
+        Some(toml_edit::value(false)),
+    )
+    .unwrap();
+    app.reload_config_now();
+    assert!(!app.cfg.voice.tts);
+    assert!(!app.cfg.voice.speaker_muted);
+
+    let v = app.web_state()["voice"].clone();
+    assert_eq!(v["speaker_muted"], json!(true), "{v}");
+    let r = app.control_call("speaker", &json!({"volume": 60}));
+    assert_eq!(r["result"]["speaker"]["muted"], json!(true), "{r}");
+    assert!(!app.cfg.voice.tts, "a volume change leaves talk back off");
+
+    let r = app.control_call("speaker", &json!({"muted": false}));
+    assert_eq!(r["ok"], json!(true), "{r}");
+    assert_eq!(r["result"]["speaker"]["muted"], json!(false), "{r}");
+    assert!(app.cfg.voice.tts, "unmuting turned talk back on");
+    assert!(!app.cfg.voice.speaker_muted);
+    let t = std::fs::read_to_string(crate::config::Config::path()).unwrap();
+    assert!(t.contains("tts = true"), "{t}");
+    let v = app.web_state()["voice"].clone();
+    assert_eq!(v["speaker_muted"], json!(false), "{v}");
+    assert_eq!(v["volume_pct"], json!(60), "{v}");
+
+    let r = app.control_call("speaker", &json!({"muted": true}));
+    assert_eq!(r["result"]["speaker"]["muted"], json!(true), "{r}");
+    assert!(app.cfg.voice.tts, "muting leaves talk back on");
+    let r = app.control_call("speaker", &json!({"muted": false}));
+    assert_eq!(r["result"]["speaker"]["muted"], json!(false), "{r}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+const OPTIONS_REPLY: &str = "I looked into the cache bug. The lock is taken twice on the hot path. Fixing it means touching the writer and the reader. The tests cover the writer only. The reader has no tests at all.\n\nOptions:\n1. Fix the reader now\n2. Add reader tests first\n\nWhich one do you want?";
+
+const OPTIONS_ASKED: &str =
+    "Options. One: Fix the reader now. Two: Add reader tests first. Which one do you want?";
+
+#[test]
+fn the_talk_level_is_unset_by_default_and_nothing_changes() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("leveldefault");
+    use crate::app_talkback::TalkLevel;
+    assert_eq!(app.cfg.voice.talk_level, "");
+    assert_eq!(TalkLevel::chosen(&app.cfg), None);
+    assert_eq!(TalkLevel::of(&app.cfg), TalkLevel::Normal);
+    assert_eq!(
+        TalkLevel::spoken_max(&app.cfg),
+        app.cfg.assistant.spoken_sentences
+    );
+    let line = app.speaker_state_line();
+    assert!(!line.contains("spoken_level"), "{line}");
+    assert!(line.ends_with("stops hearing)\n"), "{line}");
+
+    app.direct_say_reply("api", OPTIONS_REPLY);
+    assert_eq!(
+        app.direct.said.last().unwrap(),
+        &crate::app_direct::spoken_reply(OPTIONS_REPLY, 40)
+    );
+    assert!(app.direct.said.last().unwrap().contains("no tests at all"));
+
+    let s = app.find_setting("voice.talk_level", None).unwrap();
+    assert_eq!(crate::settings::display(&app.cfg, &s), "normal");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn the_talk_level_shapes_a_direct_reply_and_always_says_the_options() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("leveldirect");
+    let mut lens = vec![];
+    for (level, body) in [
+        ("brief", "I looked into the cache bug."),
+        (
+            "normal",
+            "I looked into the cache bug. The lock is taken twice on the hot path. Fixing it means touching the writer and the reader.",
+        ),
+        (
+            "detailed",
+            "I looked into the cache bug. The lock is taken twice on the hot path. Fixing it means touching the writer and the reader. The tests cover the writer only. The reader has no tests at all.",
+        ),
+    ] {
+        let v = app.control_call("speaker", &json!({"talk_level": level}));
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["result"]["speaker"]["talk_level"], json!(level));
+        app.direct_say_reply("api", OPTIONS_REPLY);
+        let said = app.direct.said.last().unwrap().clone();
+        assert_eq!(said, format!("{body} {OPTIONS_ASKED}"), "{level}");
+        lens.push(said.len());
+    }
+    assert!(lens[0] < lens[1] && lens[1] < lens[2], "{lens:?}");
+    let shown: Vec<&str> = app
+        .assistant
+        .log
+        .iter()
+        .filter(|e| e.text.starts_with("api: "))
+        .map(|e| e.text.as_str())
+        .collect();
+    assert_eq!(shown.len(), 3);
+    assert!(
+        shown.iter().all(|t| *t == shown[0]),
+        "the text on screen does not change"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn the_assistant_is_told_the_talk_level_and_it_is_set_at_once() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home) = test_app("levelprompt");
+    use crate::app_talkback::TalkLevel;
+    let v = app.control_call(
+        "set_setting",
+        &json!({"key": "voice.talk_level", "value": "brief"}),
+    );
+    assert_eq!(v["ok"], json!(true), "{v}");
+    assert!(v["result"].get("needs_confirmation").is_none(), "{v}");
+    assert_eq!(app.cfg.voice.talk_level, "brief");
+    let t = std::fs::read_to_string(crate::config::Config::path()).unwrap();
+    assert!(t.contains("talk_level = \"brief\""), "{t}");
+    let line = app.speaker_state_line();
+    assert!(line.contains("spoken_level: brief"), "{line}");
+    assert!(line.contains("one short sentence"), "{line}");
+    assert!(app.state_preamble().contains("spoken_level: brief"));
+    assert_eq!(
+        TalkLevel::spoken_max(&app.cfg),
+        app.cfg.assistant.spoken_sentences
+    );
+
+    app.set_talk_level(TalkLevel::Detailed);
+    let line = app.speaker_state_line();
+    assert!(line.contains("spoken_level: detailed"), "{line}");
+    assert_eq!(TalkLevel::spoken_max(&app.cfg), 0);
+    answer(&mut app, true, "One. Two. Three. Four.");
+    assert_eq!(app.assistant.spoken, vec!["One. Two. Three. Four."]);
+
+    app.set_talk_level(TalkLevel::Normal);
+    assert!(!app.speaker_state_line().contains("spoken_level"));
+    app.assistant.spoken.clear();
+    answer(&mut app, true, "One. Two. Three. Four.");
+    assert_eq!(app.assistant.spoken, vec!["One. Two."]);
+
+    let v = app.control_call("speaker", &json!({"talk_level": "loud"}));
+    assert!(
+        v["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("brief, normal or detailed")),
+        "{v}"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }

@@ -1,15 +1,20 @@
 const BUILD = '__BUILD__';
 const CACHE = 'gt-' + BUILD;
 const FILES = ['vendor/xterm.js', 'vendor/xterm.css', 'vendor/addon-fit.js', 'vendor/addon-webgl.js', 'vendor/addon-unicode11.js', 'vendor/addon-web-links.js',
-  'app.css', 'js/main.js', 'js/debuglog.js', 'js/util.js', 'js/conn.js', 'js/state.js', 'js/term.js', 'js/textinput.js', 'js/tabs.js', 'js/keybar.js', 'js/chat.js', 'js/md.js', 'js/sheet.js',
-  'js/voice.js', 'js/images.js', 'js/drop.js','js/install.js', 'js/manage.js', 'js/settings.js', 'js/sessions.js', 'js/git.js', 'js/bview.js', 'js/accounts.js', 'js/mic-worklet.js', 'js/mic.js', 'js/theme.js', 'js/push.js', 'offline.html', 'icon-192.png'].map((f) => f + '?v=' + BUILD);
+  'app.css', 'js/main.js', 'js/debuglog.js', 'js/util.js', 'js/conn.js', 'js/state.js', 'js/term.js', 'js/textinput.js', 'js/tabs.js', 'js/avatar.js', 'js/avatar-gen.js', 'js/keybar.js', 'js/chat.js', 'js/md.js', 'js/sheet.js',
+  'js/voice.js', 'js/images.js', 'js/drop.js','js/install.js', 'js/manage.js', 'js/settings.js', 'js/sessions.js', 'js/lost.js', 'js/git.js', 'js/bview.js', 'js/accounts.js', 'js/mic-worklet.js', 'js/mic.js', 'js/theme.js', 'js/push.js', 'offline.html', 'icon-192.png'].map((f) => f + '?v=' + BUILD);
 const OFFLINE = 'offline.html?v=' + BUILD;
 FILES.push('js/gitcfg.js?v=' + BUILD);
 FILES.push('js/statusbar.js?v=' + BUILD);
 FILES.push('js/find.js?v=' + BUILD);
+FILES.push('js/route.js?v=' + BUILD);
 FILES.push('js/syncui.js?v=' + BUILD);
 FILES.push('js/keys.js?v=' + BUILD);
+FILES.push('js/asks.js?v=' + BUILD);
 FILES.push('js/debughooks.js?v=' + BUILD);
+FILES.push('js/icons.js?v=' + BUILD);
+FILES.push('js/remoteui.js?v=' + BUILD);
+FILES.push('js/apps.js?v=' + BUILD);
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => Promise.all(FILES.map((f) => c.add(f).catch(() => {})))));

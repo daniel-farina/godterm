@@ -43,7 +43,7 @@ pub fn related(config_dir: &Path, jsonl: &Path, id: &str) -> Vec<(PathBuf, PathB
     v
 }
 
-fn copy_tree(src: &Path, dst: &Path) -> Result<u64> {
+pub(crate) fn copy_tree(src: &Path, dst: &Path) -> Result<u64> {
     if src.is_dir() {
         fs::create_dir_all(dst)?;
         let mut n = 0;

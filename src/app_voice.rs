@@ -419,6 +419,7 @@ impl App {
             self.voice.partial = None;
             self.voice.reopen = None;
             self.voice.muted = true;
+            self.drop_spoken_queue("mic muted");
             self.voice.action = Some("muted".into());
             crate::log::info("voice: muted");
             self.flash("Mic muted: nothing is heard or sent (click ● MUTED or Ctrl-a X to unmute)");
@@ -460,6 +461,16 @@ impl App {
             self.config_mtime = crate::app::config_mtime();
             self.cfg.voice.speaker_muted = on;
         }
+        if !on && !self.cfg.voice.tts {
+            let _ = crate::settings::write(
+                &crate::config::Config::path(),
+                &crate::settings::Key::Global("voice.tts"),
+                Some(toml_edit::value(true)),
+            );
+            crate::log::info("speaker: talk back was off, turned on with the speaker");
+            self.reload_config_now();
+        }
+        self.web_changed();
         crate::log::info(&format!("speaker muted: {on}"));
         self.flash(if on {
             "Speaker muted: answers show as text (Ctrl-a O talks again)"
@@ -485,7 +496,10 @@ impl App {
         if let Some(e) = self.voice.engine.as_mut() {
             e.configure_tts(&self.cfg.voice);
         }
-        self.voice.preview = None;
+        if let Some(p) = &self.voice.preview {
+            p.configure(&self.cfg.voice);
+        }
+        self.web_changed();
         self.flash(format!("Volume {}%", (v * 100.0).round() as u32));
     }
 
@@ -993,12 +1007,12 @@ impl App {
             }
             I::Sleep => {
                 self.voice.asleep = true;
-                self.speak("going quiet");
+                self.speak_optional("going quiet");
                 Some("asleep until \"wake up\"".into())
             }
             I::Wake => {
                 self.voice.asleep = false;
-                self.speak("listening");
+                self.speak_optional("listening");
                 Some("awake".into())
             }
             I::NextTab | I::PrevTab => {
@@ -1238,6 +1252,13 @@ impl App {
 
     pub(crate) fn speak(&self, text: &str) {
         self.speak_as(Kind::Confirm, text);
+    }
+
+    pub(crate) fn speak_optional(&self, text: &str) {
+        use crate::app_talkback::TalkLevel;
+        if TalkLevel::chosen(&self.cfg) != Some(TalkLevel::Brief) {
+            self.speak(text);
+        }
     }
 
     pub fn speak_as(&self, kind: Kind, text: &str) {

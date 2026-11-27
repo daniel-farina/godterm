@@ -1,4 +1,5 @@
-import { $, h, on, store, toast, skeleton, failRow } from './util.js';
+import { $, h, on, emit, store, toast, skeleton, failRow, isDesk, DESK, uidOf, svgOf as svg } from './util.js';
+import { I } from './icons.js';
 import { send, sendBin, KIND, tool, conn } from './conn.js';
 import { S } from './state.js';
 import { dlog as clog } from './debuglog.js';
@@ -14,9 +15,6 @@ const playing = new Set();
 
 let held = [];
 
-const vol0 = +store.get('voice.spkvol', 1);
-let spkVol = Number.isFinite(vol0) ? Math.max(0, Math.min(1, vol0)) : 1;
-let spkMuted = store.get('voice.spkmute', false) === true;
 let outGain = null;
 
 let micMuted = store.get('voice.micmute', false) === true;
@@ -133,15 +131,74 @@ function micError(e) {
   return ['mic', 'The mic did not start: ' + (e?.message || n || e)];
 }
 
+const canPickInput = () => secure() && !!navigator.mediaDevices?.enumerateDevices;
+const inputName = (l) => String(l || '').replace(/^Default - /, '').replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)$/i, '').trim();
+const saved0 = store.get('voice.input', null);
+let micDev = saved0 && typeof saved0 === 'object' && typeof saved0.id === 'string' && saved0.id ? { id: saved0.id, label: String(saved0.label || '') } : null;
+let inputs = [], inputsKnown = false, inputFell = '';
+
+const inputNow = () => (micDev ? inputs.find((d) => d.id === micDev.id) || (micDev.label ? inputs.find((d) => d.label === micDev.label) : null) || null : null);
+
+async function refreshInputs() {
+  if (!canPickInput()) return;
+  let list;
+  try { list = await navigator.mediaDevices.enumerateDevices(); } catch (e) { dlog('mic list failed: ' + (e?.message || e)); return; }
+  const mics = list.filter((d) => d.kind === 'audioinput' && d.label);
+  inputsKnown = mics.length > 0;
+  inputs = mics.filter((d) => d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications').map((d) => ({ id: d.deviceId, label: inputName(d.label) }));
+  const d = inputNow();
+  if (d && (d.id !== micDev.id || (d.label && d.label !== micDev.label))) { micDev = { id: d.id, label: d.label }; store.set('voice.input', micDev); }
+  paintPickers();
+}
+
+async function inputChanged() {
+  const was = inputFell;
+  await refreshInputs();
+  const tr = stream?.getAudioTracks()[0];
+  const back = was === 'gone' && !!inputNow();
+  if (back && !mode) { inputFell = ''; if (stream) release(); paintPickers(); return; }
+  if (handsFree() && (back || (tr && tr.readyState === 'ended'))) switchMic();
+}
+
+function setInput(id) {
+  const d = inputs.find((x) => x.id === id);
+  if (id && !d && micDev?.id !== id) return;
+  micDev = id ? { id, label: d?.label || micDev?.label || '' } : null;
+  store.set('voice.input', micDev);
+  inputFell = '';
+  dlog('mic input: ' + (micDev ? micDev.label || 'a chosen device' : 'system default'));
+  if (mode) switchMic();
+  else if (stream) release();
+  paintPickers();
+}
+
 async function getMic() {
   const want = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
-  let s;
-  try {
-    s = await navigator.mediaDevices.getUserMedia({ audio: want });
-  } catch (e) {
-    if (e?.name !== 'OverconstrainedError' && e?.name !== 'TypeError') throw e;
-    s = await navigator.mediaDevices.getUserMedia({ audio: true });
+  let s = null, fell = '';
+  if (micDev) {
+    if (canPickInput()) await refreshInputs();
+    const d = inputNow();
+    if (inputsKnown && !d) fell = 'gone';
+    else {
+      try {
+        s = await navigator.mediaDevices.getUserMedia({ audio: { ...want, deviceId: { exact: d ? d.id : micDev.id } } });
+      } catch (e) {
+        if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') throw e;
+        fell = e?.name === 'OverconstrainedError' || e?.name === 'NotFoundError' ? 'gone' : 'failed';
+        dlog(`chosen mic did not open (${e?.name || e}): using the system default`);
+      }
+    }
   }
+  if (!s) {
+    try {
+      s = await navigator.mediaDevices.getUserMedia({ audio: want });
+    } catch (e) {
+      if (e?.name !== 'OverconstrainedError' && e?.name !== 'TypeError') throw e;
+      s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+  }
+  inputFell = fell;
+  refreshInputs();
   try {
     const g = s.getAudioTracks()[0]?.getSettings?.() || {};
     const f = (k) => (g[k] === undefined ? '?' : g[k] ? 'on' : 'off');
@@ -218,7 +275,7 @@ function order() {
   const f = store.get('voice.force', '');
   if (METHODS.includes(f)) return [f];
   const last = store.get('voice.method', '');
-  return METHODS.includes(last) ? [last, ...METHODS.filter((m) => m !== last)] : [...METHODS];
+  return METHODS.includes(last) && last !== 'recorder' ? [last, ...METHODS.filter((m) => m !== last)] : [...METHODS];
 }
 
 function resetStats() {
@@ -406,21 +463,54 @@ function keptCheck() {
     if (!mode || st.started !== at || st.any || cap?.method === 'recorder') return;
     dlog('still no audio: opening the mic again');
     try {
-      const keep = mode;
-      probing++;
-      dropShadow();
-      try { cap?.close(); } catch {}
-      cap = null;
-      stream?.getTracks().forEach((t) => { t.onended = t.onmute = t.onunmute = null; t.stop(); });
-      stream = await getMic();
-      if (mode !== keep) { release(); return; }
-      watchTrack(stream);
-      muteTrack();
-      startShadow();
-      const o = await openFirst(order());
-      if (o) { st.started = at; probeDone = probe(o); }
+      if (await reopenMic()) st.started = at;
     } catch (e) { dlog('reopen failed: ' + (e?.message || e)); }
   }, 1400);
+}
+
+let reopens = 0;
+async function reopenMic() {
+  const keep = mode, run = ++reopens;
+  probing++;
+  dropShadow();
+  if (cap?.method === 'recorder' && cap.recording()) {
+    try { await endRec(); } catch {}
+    if (run !== reopens || mode !== keep) return false;
+  }
+  try { cap?.close(); } catch {}
+  cap = null;
+  stream?.getTracks().forEach((t) => { t.onended = t.onmute = t.onunmute = null; t.stop(); });
+  const s = await getMic();
+  if (run !== reopens) { s.getTracks().forEach((t) => t.stop()); return false; }
+  stream = s;
+  if (mode !== keep) { release(); return false; }
+  watchTrack(stream);
+  muteTrack();
+  startShadow();
+  const o = await openFirst(order());
+  if (!o) {
+    if (run !== reopens || mode !== keep) return false;
+    throw Object.assign(new Error('no way to read the mic worked here'), { name: 'NoCapture' });
+  }
+  probeDone = probe(o);
+  return true;
+}
+
+async function switchMic() {
+  try {
+    if (!(await reopenMic())) return;
+    lost = '';
+    sessionAt = performance.now();
+    if (err && err.code !== 'server') err = null;
+    dlog(`mic switched: ${stream?.getAudioTracks()[0]?.label || 'track'}, ${cap?.what}`);
+    paint();
+    checkAudio();
+  } catch (e) {
+    mode = '';
+    phase = '';
+    release();
+    fail(...micError(e));
+  }
 }
 
 function began(m, t0) {
@@ -482,6 +572,7 @@ let resumeMode = '';
 
 function release() {
   probing++;
+  reopens++;
   dropShadow();
   try { cap?.close(); } catch {}
   cap = null;
@@ -594,7 +685,7 @@ const CSS = `
 `;
 
 let bar = null;
-const SET_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>';
+const SET_ICON = svg(I.tune);
 function ensureBar() {
   if (bar) return bar;
   document.head.append(h('style', { id: 'voice-css' }, CSS));
@@ -604,7 +695,7 @@ function ensureBar() {
     h('span.vb-lv', {}, h('span.vb-meter', {}, h('i')), h('span.vb-db')),
     h('button.vb-act', { type: 'button', hidden: true }),
     h('button.vb-set', { type: 'button', 'aria-label': 'Voice settings', title: 'Voice settings', html: SET_ICON }),
-    h('button.vb-x', { type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss', html: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>' }));
+    h('button.vb-x', { type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss', html: svg(I.x) }));
   bar.querySelector('.vb-x').addEventListener('click', () => {
     if (err) { err = null; hint = ''; paint(); return; }
     hint = '';
@@ -670,7 +761,7 @@ export function micWords(m = pick, s = shown(), mu = micMuted) {
   const on = m && m !== 'off';
   let state = !on ? '' : mu ? (s === 'speaking' ? 'muted \u00b7 speaking' : 'muted') : STATE[s] || '';
   if (s === 'error') state = STATE.error;
-  return { mode, state, text: state ? `${mode} \u00b7 ${state}` : mode, short: on && mu ? 'Muted' : SHORT[m] || '', State: upFirst(state) };
+  return { mode, state, text: state ? `${mode} \u00b7 ${state}` : mode, short: on && mu ? 'Mic muted' : SHORT[m] || '', State: upFirst(state) };
 }
 
 const TEXT = new Proxy({}, { get: (_, k) => (STATE[k] ? upFirst(STATE[k]) : undefined) });
@@ -679,21 +770,25 @@ const wakeWord = () => S.voice?.wake_word || 'hey god';
 
 const wakeLabel = () => wakeWord().replace(/\b\w/g, (c) => c.toUpperCase());
 
-const MIC = '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>';
+const MIC = I.mic;
 const ICON = {
-  off: MIC + '<path d="M4 3l16 18"/>',
-  push: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8.5 21h7"/>',
-  open: MIC + '<path d="M2 8v6M22 8v6"/>',
-  wake: MIC + '<path d="M2.5 6.5l1.5 1.5M21.5 6.5L20 8"/>',
+  off: I.micoff,
+  push: I.mic,
+  open: I.audio,
+  wake: I.ear,
 };
 
 const MIC_OFF = ICON.off;
-const SPK = '<path d="M4 9.5v5h3.5L12 18V6L7.5 9.5H4z"/>';
-const spkIcon = () => svg(SPK + (spkMuted || spkVol === 0 ? '<path d="M16 9.5l5 5M21 9.5l-5 5"/>' : spkVol < 0.5 ? '<path d="M15.5 9.5a3.5 3.5 0 0 1 0 5"/>' : '<path d="M15.5 9.5a3.5 3.5 0 0 1 0 5M18 7a7 7 0 0 1 0 10"/>'));
-const spkWord = () => (spkMuted ? 'muted' : Math.round(spkVol * 100) + '%');
 
-const svg = (inner) => `<svg viewBox="0 0 24 24" aria-hidden="true">${inner}</svg>`;
-const CHECK = svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>');
+const srvMuted = () => S.voice?.speaker_muted === true;
+const agentMuted = () => srvMuted();
+const spokenOn = () => !srvMuted() && spkVolNow() > 0;
+const spkVolNow = () => { const p = S.voice?.volume_pct; return Number.isFinite(p) ? Math.max(0, Math.min(1, p / 100)) : 1; };
+const typedOn = () => S.voice?.typed_spoken === true;
+const spkIcon = () => svg(agentMuted() || spkVolNow() === 0 ? I.volx : spkVolNow() < 0.5 ? I.vol1 : I.vol2);
+const spkWord = () => (agentMuted() ? 'muted' : Math.round(spkVolNow() * 100) + '%');
+const spkKey = () => (srvMuted() ? 'M' : spkVolNow() === 0 ? 'Z' : spkVolNow() < 0.5 ? 'L' : 'H');
+const spkWhy = () => (srvMuted() ? 'Muted for the app and the web: tap to unmute' : 'Shared with the Mac app');
 
 let headPick = null;
 function paintHeader(state) {
@@ -703,19 +798,22 @@ function paintHeader(state) {
 
     const mu = micMuted && pick !== 'off';
     const w = micWords(pick, state, micMuted);
-    if (el.dataset.mode !== pick || headPick !== pick + mu + w.text) {
+    const am = agentMuted();
+    if (el.dataset.mode !== pick || headPick !== pick + mu + w.text + spkKey()) {
       el.dataset.mode = pick;
-      el.innerHTML = svg(mu ? MIC_OFF : ICON[pick]) + (id === '#b-ptt' ? `<span class="ml-s">${w.short}</span><span class="ml-l">${w.text}</span>` : '');
+      const sp = id === '#b-ptt' ? `<span class="ml-sp${am ? ' off' : ''}">${spkIcon()}${am ? '<span class="ml-spw">agent muted</span>' : ''}</span>` : '';
+      el.innerHTML = svg(mu ? MIC_OFF : ICON[pick]) + (id === '#b-ptt' ? `<span class="ml-s">${w.short}</span><span class="ml-l">${w.text}</span>` : '') + sp;
     }
     el.classList.toggle('muted', mu);
+    el.classList.toggle('amuted', am && id === '#b-ptt');
     const talking = mode === 'push' && (state === 'listening' || state === 'noaudio');
     el.classList.toggle('talking', talking);
     if (state && state !== 'paused') el.dataset.voice = state; else delete el.dataset.voice;
-    const what = pick === 'push' && id === '#b-ptt2' ? (mu ? w.text + '. M unmutes' : mode === 'push' ? 'Listening: release to send' : 'Hold to talk') : `${w.text}. Tap to change`;
+    const what = pick === 'push' && id === '#b-ptt2' ? (mu ? w.text + '. M unmutes' : mode === 'push' ? 'Listening: release to send' : 'Hold to talk') : `${w.text}. Agent voice ${am ? 'muted' : spkWord()}. Tap to change`;
     el.setAttribute('aria-label', what);
     el.title = what;
   }
-  headPick = pick + (micMuted && pick !== 'off') + micWords(pick, state, micMuted).text;
+  headPick = pick + (micMuted && pick !== 'off') + micWords(pick, state, micMuted).text + spkKey();
 }
 
 let strip = null;
@@ -728,20 +826,14 @@ function ensureStrip() {
     h('button.ms-act', { type: 'button', hidden: true }),
     h('button.ms-mute', { type: 'button', 'aria-pressed': 'false', html: svg(MIC_OFF) }),
     h('button.ms-spk', { type: 'button', 'aria-pressed': 'false' }, h('span.ms-spi'), h('span.ms-spv')),
-    h('button.ms-chg', { type: 'button', 'aria-label': 'Change the mic mode', title: 'Change the mic mode', html: svg('<path d="M6 9l6 6 6-6"/>') }));
+    h('button.ms-chg', { type: 'button', 'aria-label': 'Change the mic mode', title: 'Change the mic mode', html: svg(I.chevd) }));
   strip.addEventListener('click', (e) => {
     if (e.target.closest('.ms-mute')) { e.stopPropagation(); setMicMuted(!micMuted); return; }
-    if (e.target.closest('.ms-spk')) { e.stopPropagation(); setSpeaker({ muted: !spkMuted }); return; }
+    if (e.target.closest('.ms-spk')) { e.stopPropagation(); setSpeaker({ muted: !agentMuted() }); return; }
     const a = e.target.closest('.ms-act');
     if (a) {
       e.stopPropagation();
-      if (a.dataset.act === 'unmute') {
-
-        send({ t: 'voice', unmute_mac: true });
-        const m = resumeMode || pick; lost = ''; resumeMode = ''; err = null; unmuteAt = Date.now();
-        setTimeout(() => start(m), 400);
-      } else if (a.dataset.act === 'stop') { hush(); send({ t: 'voice', hush: true }); } else if (a.dataset.act === 'start') { const m = resumeMode || pick; lost = ''; resumeMode = ''; err = null; start(m); }
-      paint();
+      hfAct(a.dataset.act);
       return;
     }
     openMicMenu(strip);
@@ -758,12 +850,16 @@ function ensureStrip() {
   return strip;
 }
 
-function paintStrip(s) {
-  const el = ensureStrip();
-  const on = pick === 'open' || pick === 'wake';
-  if (el.hidden === on) el.hidden = !on;
-  document.body.classList.toggle('hf', on);
-  if (!on) return;
+function hfAct(act) {
+  if (act === 'unmute') {
+    send({ t: 'voice', unmute_mac: true });
+    const m = resumeMode || pick; lost = ''; resumeMode = ''; err = null; unmuteAt = Date.now();
+    setTimeout(() => start(m), 400);
+  } else if (act === 'stop') { hush(); send({ t: 'voice', hush: true }); } else if (act === 'start') { const m = resumeMode || pick; lost = ''; resumeMode = ''; err = null; start(m); }
+  paint();
+}
+
+function hfWords(s) {
   const m = handsFree() ? mode : pick;
   const flags = S.mode_flags || {};
   const extra = [flags.direct ? 'to ' + flags.direct : '', flags.brainstorm ? 'brainstorm' : ''].filter(Boolean).join(' · ');
@@ -778,6 +874,16 @@ function paintStrip(s) {
   else if (s === 'heard') { what = STATE.heard; if (heardText) sub = '"' + heardText + '"'; }
   else if (s === 'speaking') { what = STATE.speaking; act = 'stop'; }
   else what = STATE[s] || s || STATE.listening;
+  return { m, state, what, sub, act };
+}
+
+function paintStrip(s) {
+  const el = ensureStrip();
+  const on = pick === 'open' || pick === 'wake';
+  if (el.hidden === on) el.hidden = !on;
+  document.body.classList.toggle('hf', on);
+  if (!on) return;
+  const { m, state, what, sub, act } = hfWords(s);
   el.dataset.state = state || 'idle';
   el.dataset.mode = m;
   const ic = el.querySelector('.ms-ic');
@@ -791,13 +897,13 @@ function paintStrip(s) {
   const mt = micMuted ? 'Unmute the mic (M)' : 'Mute the mic (M): replies still play';
   if (mb.title !== mt) { mb.title = mt; mb.setAttribute('aria-label', mt); }
   const sb = el.querySelector('.ms-spk');
-  const sk = spkWord();
+  const sk = spkWord() + spkKey();
   if (sb.dataset.k !== sk) {
     sb.dataset.k = sk;
     sb.querySelector('.ms-spi').innerHTML = spkIcon();
-    sb.querySelector('.ms-spv').textContent = spkMuted || spkVol >= 1 ? '' : sk;
-    sb.setAttribute('aria-pressed', String(spkMuted));
-    const st3 = spkMuted ? 'The agent\'s voice is muted here: tap to hear it' : `The agent's voice here: ${sk}. Tap to mute it`;
+    sb.querySelector('.ms-spv').textContent = agentMuted() ? 'agent muted' : spkVolNow() >= 1 ? '' : spkWord();
+    sb.setAttribute('aria-pressed', String(agentMuted()));
+    const st3 = agentMuted() ? 'The agent\'s voice is muted: tap to hear it' : `The agent's voice: ${spkWord()}. Tap to mute it`;
     sb.title = st3;
     sb.setAttribute('aria-label', st3);
   }
@@ -807,122 +913,486 @@ function paintStrip(s) {
   a.textContent = { stop: 'Stop', unmute: 'Unmute', start: err ? 'Retry' : lost === 'tap' ? 'Resume' : 'Start' }[act] || '';
 }
 
-let talk = null, talkBox = null, ctxBtn = null;
-function ensureTalk() {
-  if (talk) return talk;
-  talk = h('button', { id: 'talk', type: 'button', hidden: true, 'aria-label': 'Hold to talk' },
-    h('span.tk-ic', { html: svg(MIC) }), h('span.tk-l', {}, 'Talk'),
-    h('span.tk-lv', {}, h('span.tk-meter', {}, h('i')), h('span.tk-db')));
-  ptt(talk);
+let vbar = null, talk = null;
+const vx = {};
+const barOn = () => !!vbar && !vbar.hidden;
+const tabName = (t) => t.label || t.name || t.title || 't' + t.uid;
 
-  ctxBtn = h('button', { id: 'ctxbtn', type: 'button', 'aria-label': 'Context: what the assistant looks at', title: 'Context: all tabs or one tab' }, h('span.cx-l'));
-  ctxBtn.onclick = () => { const r = ctxBtn.getBoundingClientRect(); import('./chat.js').then((m) => m.scopeMenu({ x: r.left, y: r.top - 6, up: true })); };
-  const grip = h('div', { id: 'talkgrip', role: 'separator', tabindex: 0, 'aria-label': 'Move the Talk button', title: 'Drag to move, double click to put back' }, h('i'));
-  talkBox = h('div', { id: 'talkbox' }, grip, talk, ctxBtn);
-  dragTalk(grip);
-  const paintCtx = () => import('./chat.js').then((m) => { ctxBtn.firstChild.textContent = m.scopeLabel(); });
-  on('scope', paintCtx); on('state', paintCtx); paintCtx();
-  homeTalk();
-
-  on('layout', homeTalk);
-  return talk;
+function toWords() {
+  const k = talkNow();
+  if (!k.on) return { k, v: 'assistant', label: 'Assistant', icon: I.chat, tip: 'Your voice goes to the assistant' };
+  if (k.follow) return { k, v: 'follow', label: 'Follow: ' + k.name, icon: I.eye, tip: `Your voice goes to ${k.name} and moves with the tab you open` };
+  return { k, v: 'tab', label: k.name, icon: I.squareterminal, tip: `Your voice goes to ${k.name}` };
 }
 
-function dragTalk(grip) {
-  const set = (x, y) => { talkBox.style.setProperty('--tdx', x + 'px'); talkBox.style.setProperty('--tdy', y + 'px'); };
-  const off = () => ({ x: parseFloat(talkBox.style.getPropertyValue('--tdx')) || 0, y: parseFloat(talkBox.style.getPropertyValue('--tdy')) || 0 });
-  const fit = (x, y) => {
-    const host = talkBox.parentElement?.getBoundingClientRect(), r = talkBox.getBoundingClientRect(), o = off();
-    if (!host) return { x, y };
+function pickTab(uid) {
+  if (!send({ t: 'voice', direct: uid, follow: false })) toast('Not connected', 'warn');
+}
 
-    const l0 = r.left - o.x, t0 = r.top - o.y;
-    return { x: Math.min(Math.max(x, host.left - l0), host.right - r.width - l0), y: Math.min(Math.max(y, host.top - t0), host.bottom - r.height - t0) };
+function talkMenu(anchor) {
+  if (menuSkip) { menuSkip = false; return; }
+  menuAnchor = anchor;
+  const r = anchor.getBoundingClientRect();
+  const row = (label, hint, on, fn, o = {}) => h('button.mm-i.vx-row', { type: 'button', role: 'menuitemradio', 'aria-checked': String(!!on), disabled: !!o.off, 'data-v': o.v, onclick: () => { closeSheet(); fn(); } },
+    h('span.mm-ic', { html: svg(o.icon || I.squareterminal) }),
+    h('span.mm-t', {}, h('span.vx-rn', {}, label), hint ? h('small', {}, hint) : null),
+    h('span.mm-ck', { html: on ? svg(I.tick) : '' }));
+  const list = h('div.ctx-list.vx-list', { role: 'none' });
+  const q = h('input.ctx-q', { type: 'search', placeholder: 'Filter tabs', 'aria-label': 'Filter tabs', autocomplete: 'off', spellcheck: false });
+  const draw = () => {
+    const k = talkNow();
+    const w = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const hit = (t) => w.every((x) => `${tabName(t)} ${t.folder || ''}`.toLowerCase().includes(x));
+    const seen = new Set(panes.visible().map((p) => p.id).filter(Boolean));
+    const fixed = w.length ? [] : [
+      row('Assistant', 'It hears you and acts across your tabs', !k.on, () => pickTalk('assistant'), { v: 'assistant', icon: I.chat }),
+      row('Follow active tab', k.t ? `Now ${k.t.name}, then the tab you open next` : 'Moves with the tab you open', k.follow, () => pickTalk('follow'), { v: 'follow', icon: I.eye, off: !k.can && !k.on }),
+      h('div.mm-sep')];
+    const tabs = (S.tabs || []).filter(hit).sort((a, b) => seen.has(b.id) - seen.has(a.id));
+    const rows = tabs.map((t) => {
+      const can = t.can_direct !== false;
+      const hint = [seen.has(t.id) ? 'On screen' : '', can ? '' : 'Not running', t.folder || ''].filter(Boolean).join(' · ');
+      return row(tabName(t), hint, k.on && !k.follow && k.uid === t.uid, () => pickTab(t.uid), { v: 't' + t.uid, off: !can });
+    });
+    list.replaceChildren(...fixed, ...(rows.length ? rows : [h('div.mnote', { style: 'padding:8px 12px' }, 'No tab matches')]));
   };
-  const saved = store.get('talkpos', null);
-  if (saved) set(saved.x, saved.y);
-  let d = null;
-  grip.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    grip.setPointerCapture(e.pointerId);
-    d = { px: e.clientX, py: e.clientY, ...off() };
-  });
-  grip.addEventListener('pointermove', (e) => { if (d) { const p = fit(d.x + e.clientX - d.px, d.y + e.clientY - d.py); set(p.x, p.y); } });
-  const end = () => { if (!d) return; d = null; store.set('talkpos', off()); };
-  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) grip.addEventListener(ev, end);
-  grip.addEventListener('dblclick', () => { set(0, 0); store.set('talkpos', null); });
-  grip.addEventListener('keydown', (e) => {
-    const k = { ArrowLeft: [-16, 0], ArrowRight: [16, 0], ArrowUp: [0, -16], ArrowDown: [0, 16] }[e.key];
-    if (!k) return;
-    e.preventDefault();
-    const o = off(), p = fit(o.x + k[0], o.y + k[1]);
-    set(p.x, p.y);
-    store.set('talkpos', p);
-  });
-
-  addEventListener('resize', () => { const o = off(), p = fit(o.x, o.y); set(p.x, p.y); });
-}
-function homeTalk() {
-  if (!talk) return;
-  const main = $('#main');
-  const covered = $('#app')?.classList.contains('chat-open') && main && getComputedStyle(main).visibility === 'hidden';
-  const host = covered ? $('#chat') : ($('#panes') || main);
-  if (host && talkBox.parentElement !== host) host.append(talkBox);
+  q.oninput = draw;
+  draw();
+  openMenu({ x: r.left, y: r.top - 6, up: true }, h('div.mm.vx-menu', { role: 'none' }, h('div.mm-h', { role: 'none' }, h('span', {}, 'Talk to')), q, list));
+  if (!document.body.classList.contains('touch')) q.focus({ preventScroll: true });
 }
 
-function paintTalk(s) {
-  const t = ensureTalk();
-  const on = pick === 'push';
-  if (t.hidden === on) t.hidden = !on;
-  talkBox.hidden = !on;
-  document.body.classList.toggle('ptt', on);
-  if (!on) return;
-  const st2 = err ? 'error' : mode === 'push' ? s || 'listening' : s === 'sending' || s === 'thinking' || s === 'speaking' ? s : 'idle';
-  t.dataset.state = st2;
-  const label = { idle: 'Talk', starting: upFirst(STATE.starting), asking: upFirst(STATE.asking), listening: 'Release to send', noaudio: upFirst(STATE.noaudio), sending: upFirst(STATE.sending), thinking: 'Talk', speaking: 'Talk', error: 'Talk' }[st2] || 'Talk';
-  const l = t.querySelector('.tk-l');
+function ensureVbar() {
+  if (vbar) return vbar;
+  vbar = $('#vbar');
+  talk = h('button', { id: 'talk', type: 'button', 'aria-label': 'Hold to talk' },
+    h('span.tk-ic'), h('span.tk-l', {}, 'Talk'),
+    h('span.tk-lv', { hidden: true }, h('span.tk-meter', {}, h('i')), h('span.tk-db')));
+  ptt(talk);
+  const chev = () => h('span.vx-chev', { 'aria-hidden': 'true', html: svg(I.chevd) });
+  vx.to = h('button.vx-to', { id: 'vx-to', type: 'button', 'aria-haspopup': 'menu', onclick: () => talkMenu(vx.to) },
+    h('span.vx-k', {}, 'Talk to'), h('span.vx-tic', { 'aria-hidden': 'true' }), h('b.vx-tl'), chev());
+  vx.ctx = h('button.vx-to', { id: 'ctxbtn', type: 'button', 'aria-haspopup': 'menu', 'aria-label': 'Context: what the assistant looks at', title: 'Context: what the assistant looks at, all tabs or one tab',
+    onclick: () => {
+      if (menuSkip) { menuSkip = false; return; }
+      menuAnchor = vx.ctx;
+      const r = vx.ctx.getBoundingClientRect();
+      import('./chat.js').then((m) => m.scopeMenu({ x: r.left, y: r.top - 6, up: true }));
+    } }, h('span.vx-k', {}, 'Context'), h('b.cx-l'), chev());
+  vx.seg = segGroup('sg-mic.vx-seg', 'Microphone mode', MIC_SEG, (m) => setMode(m));
+  vx.mute = muteSwitch();
+  vx.spk = spkSwitch();
+  vx.vol = volRow('vx-vol', 'Volume');
+  vx.lvl = lvlPick('vx-lvl', 'Length');
+  vx.inp = h('div.mp-in.vx-in', { hidden: true });
+  vx.set = h('button.vx-ib.vx-set', { type: 'button', 'aria-label': 'Voice settings', title: 'Voice settings: voice, speed, wake word, mic test', html: SET_ICON, onclick: openVoiceSheet });
+  vx.more = h('button.vx-ib.vx-more', { type: 'button', 'aria-haspopup': 'dialog', 'aria-label': 'Voice options', title: 'Voice options: mode, mute, spoken replies', html: svg(I.dots), onclick: () => openMicMenu(vx.more) });
+  vbar.append(talk, vx.to, vx.ctx, h('span.vx-gap'), vx.seg,
+    h('span.vx-g.vx-gm', {}, h('span.vx-k', {}, 'Mic'), vx.mute),
+    h('span.vx-g.vx-gr', {}, h('span.vx-k', {}, 'Replies'), vx.spk, vx.lvl, vx.vol),
+    vx.inp, vx.set, vx.more);
+  const paintCtx = () => import('./chat.js').then((m) => { vx.ctx.querySelector('.cx-l').textContent = m.scopeLabel(); });
+  on('scope', paintCtx); on('state', paintCtx); paintCtx();
+  on('layout', showVbar);
+  matchMedia(DESK).addEventListener('change', () => paint());
+  return vbar;
+}
+
+function homeVbar() {
+  const main = $('#main'), chat = $('#chat');
+  const covered = $('#app')?.classList.contains('chat-open') && getComputedStyle(main).visibility === 'hidden';
+  if (covered) { if (vbar.parentElement !== chat) $('#att').before(vbar); } else if (vbar.parentElement !== main) $('#sbar').before(vbar);
+}
+
+function showVbar() {
+  if (!vbar) return;
+  const desk = isDesk();
+  const show = desk || (pick === 'push' && !document.body.classList.contains('kb'));
+  homeVbar();
+  document.body.classList.toggle('vx-ph', show && !desk);
+  if (vbar.hidden !== show) return;
+  vbar.hidden = !show;
+  if (!desk) queueMicrotask(() => emit('layout'));
+}
+
+function talkAlt() {
+  if (pick === 'off') { setMode('push'); hint = 'Push to talk is on: hold Talk while you talk'; paint(); return; }
+  const a = hfWords(shown()).act;
+  if (a) hfAct(a);
+}
+
+function paintTarget(live) {
+  const k = talkNow(), on = pick !== 'off';
+  const uid = on && k.on ? k.uid : null;
+  for (const p of panes.list || []) {
+    const hit = uid != null && !!p.id && uidOf(p.id) === uid;
+    p.el.classList.toggle('vox', hit);
+    p.el.classList.toggle('vox-live', hit && live);
+    if (hit && !p.vxb) { p.vxb = h('span.vx-b', { html: svg(MIC) + '<b>Voice</b>' }); p.name.after(p.vxb); }
+    if (!p.vxb) continue;
+    p.vxb.hidden = !hit;
+    const tip = live ? 'Listening: your voice goes to this tab' : 'Your voice goes to this tab';
+    if (p.vxb.title !== tip) p.vxb.title = tip;
+  }
+  const c = $('#chat');
+  c.classList.toggle('vox', on && !k.on);
+  c.classList.toggle('vox-live', on && !k.on && live);
+}
+
+function paintVbar(s) {
+  const b = ensureVbar();
+  showVbar();
+  const off = pick === 'off', hf = pick === 'open' || pick === 'wake';
+  b.dataset.mode = pick;
+  let st2, label, tip, ic = ICON[pick], lv = false;
+  if (off) { st2 = 'off'; label = 'Voice off'; tip = 'Voice is off. Click to turn on push to talk'; }
+  else if (hf) {
+    const w = hfWords(s);
+    st2 = w.state || 'listening';
+    label = w.act === 'start' ? (err ? 'Retry' : lost === 'tap' ? 'Resume' : 'Start listening') : w.act === 'unmute' ? 'Unmute the Mac' : upFirst(w.what);
+    tip = `${modeName(w.m)}: ${w.what}${w.sub ? '. ' + w.sub : ''}${w.act === 'stop' ? '. Click to stop the reply' : ''}`;
+    ic = micMuted ? MIC_OFF : ICON[w.m] || MIC;
+    lv = !!mode && !micMuted;
+  } else {
+    st2 = err ? 'error' : micMuted ? 'muted' : mode === 'push' ? s || 'listening' : s === 'sending' || s === 'thinking' || s === 'speaking' ? s : 'idle';
+    label = { starting: upFirst(STATE.starting), asking: upFirst(STATE.asking), listening: 'Release to send', noaudio: upFirst(STATE.noaudio), sending: upFirst(STATE.sending), muted: 'Mic muted' }[st2] || 'Hold to talk';
+    tip = micMuted ? 'The mic is muted: M or the Mic switch unmutes' : mode === 'push' ? 'Listening: release to send' : 'Hold to talk';
+    if (micMuted) ic = MIC_OFF;
+    lv = mode === 'push';
+  }
+  talk.dataset.state = st2;
+  const l = talk.querySelector('.tk-l');
   if (l.textContent !== label) l.textContent = label;
-  t.querySelector('.tk-lv').hidden = mode !== 'push';
-  t.setAttribute('aria-pressed', String(mode === 'push'));
+  const ti = talk.querySelector('.tk-ic');
+  if (ti.dataset.k !== ic) { ti.dataset.k = ic; ti.innerHTML = svg(ic); }
+  if (talk.title !== tip) { talk.title = tip; talk.setAttribute('aria-label', tip); }
+  talk.querySelector('.tk-lv').hidden = !lv;
+  if (pick === 'push') talk.setAttribute('aria-pressed', String(mode === 'push')); else talk.removeAttribute('aria-pressed');
+  const live = !off && !micMuted && !err && (mode === 'push' ? s !== 'sending' : handsFree() && ['listening', 'hearing', 'heard', 'waiting'].includes(s));
+  b.toggleAttribute('data-live', live);
+  const t = toWords();
+  vx.to.dataset.v = t.v;
+  const tl = vx.to.querySelector('.vx-tl');
+  if (tl.textContent !== t.label) tl.textContent = t.label;
+  const tc = vx.to.querySelector('.vx-tic');
+  if (tc.dataset.k !== t.v) { tc.dataset.k = t.v; tc.innerHTML = svg(t.icon); }
+  const tt = `Talk to: ${t.label}. ${t.tip}. Click to change`;
+  if (vx.to.title !== tt) { vx.to.title = tt; vx.to.setAttribute('aria-label', tt); }
+  vx.ctx.hidden = t.k.on;
+  paintModeSeg(vx.seg);
+  paintMute(vx.mute);
+  paintSpk(vx.spk);
+  paintVol(vx.vol);
+  paintLvl(vx.lvl);
+  paintInput(vx.inp);
+  paintTarget(live);
 }
 
 let menuAnchor = null, menuSkip = false;
+
+const MIC_SEG = [
+  { v: 'off', label: 'Off', icon: ICON.off, note: 'The mic stays closed' },
+  { v: 'push', label: 'Push to talk', short: 'Push', icon: ICON.push, note: 'Hold Talk while you talk' },
+  { v: 'open', label: 'Open mic', short: 'Open', icon: ICON.open, note: 'Always listening for commands' },
+  { v: 'wake', label: 'Wake word', short: 'Wake', icon: ICON.wake, note: '' },
+];
+const TALK_SEG = [
+  { v: 'assistant', label: 'Assistant' },
+  { v: 'tab', label: 'This tab' },
+  { v: 'follow', label: 'Follow active tab', short: 'Follow tab' },
+];
+
+function segGroup(cls, name, opts, onPick) {
+  const g = h('div.sg.' + cls, { role: 'radiogroup', 'aria-label': name },
+    opts.map((o) => h('button.sg-b', { type: 'button', role: 'radio', 'aria-checked': 'false', tabindex: -1, 'data-m': o.v, title: o.label, onclick: () => onPick(o.v) },
+      o.icon ? h('span.sg-ic', { html: svg(o.icon) }) : null,
+      h('span.sg-l', {}, o.label), h('span.sg-s', {}, o.short || o.label))));
+  g.addEventListener('keydown', (e) => {
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    if (!step && e.key !== 'Home' && e.key !== 'End') return;
+    const bs = [...g.querySelectorAll('.sg-b:not(:disabled)')];
+    if (!bs.length) return;
+    const i = bs.indexOf(document.activeElement);
+    const n = e.key === 'Home' ? 0 : e.key === 'End' ? bs.length - 1 : (Math.max(0, i) + step + bs.length) % bs.length;
+    e.preventDefault();
+    e.stopPropagation();
+    bs[n].focus();
+  });
+  return g;
+}
+function segSet(g, v, off = []) {
+  const bs = [...g.querySelectorAll('.sg-b')];
+  for (const b of bs) {
+    const on = b.dataset.m === v;
+    b.setAttribute('aria-checked', String(on));
+    b.disabled = off.includes(b.dataset.m);
+    b.tabIndex = on ? 0 : -1;
+  }
+  if (!bs.some((b) => b.tabIndex === 0 && !b.disabled)) { const f = bs.find((b) => !b.disabled); if (f) f.tabIndex = 0; }
+}
+
+function talkNow() {
+  const f = S.mode_flags || {}, t = curTab();
+  const on = !!f.direct;
+  const follow = on && S.voice?.direct_follow === true;
+  const here = on && !!t && (f.direct_tab == null || f.direct_tab === t.uid);
+  return { on, follow, here, t, name: f.direct || '', uid: f.direct_tab, can: !!t && t.can, v: !on ? 'assistant' : follow ? 'follow' : here ? 'tab' : '' };
+}
+function pickTalk(v) {
+  const k = talkNow();
+  let ok = true;
+  if (v === 'assistant') { if (k.on) ok = send({ t: 'voice', direct: false }); }
+  else if (k.can) ok = send({ t: 'voice', direct: k.t.uid, follow: v === 'follow' });
+  else if (k.on && v === 'follow') ok = send({ t: 'voice', follow: true });
+  else { toast('Open a running tab first', 'warn'); return; }
+  if (!ok) toast('Not connected', 'warn');
+}
+
+function paintInput(box) {
+  if (!box) return;
+  const can = canPickInput();
+  if (box.hidden === can) box.hidden = !can;
+  if (!can) return;
+  const cur = inputNow();
+  const gone = !!micDev && !cur;
+  const note = gone && inputsKnown ? 'Not connected, using the system default'
+    : inputFell === 'failed' ? 'Did not start, using the system default'
+      : inputFell === 'gone' ? 'Not connected, using the system default'
+        : !inputsKnown ? 'Names show after the mic is first used' : '';
+  const sig = JSON.stringify([inputs, inputsKnown, micDev, note]);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  let ctl;
+  if (!micDev && inputs.length < 2) {
+    const name = inputs[0]?.label || 'System default';
+    ctl = h('span.mp-in1', { title: name }, name);
+  } else {
+    ctl = h('select', { 'aria-label': 'Microphone input', onchange: (e) => setInput(e.target.value) },
+      h('option', { value: '' }, 'System default'),
+      inputs.map((d) => h('option', { value: d.id, selected: cur?.id === d.id }, d.label)),
+      gone ? h('option', { value: micDev.id, selected: true }, (micDev.label || 'Saved mic') + (inputsKnown ? ' (not connected)' : '')) : null);
+    ctl.value = cur ? cur.id : gone ? micDev.id : '';
+    ctl.title = ctl.selectedOptions[0]?.textContent || '';
+  }
+  box.replaceChildren(h('label.mp-inr', {}, h('span.mp-inl', {}, 'Input'), ctl));
+  if (note) box.append(h('p.mp-note.mp-innote', {}, note));
+}
+
+function paintModeSeg(g) {
+  const mu = micMuted && pick !== 'off';
+  segSet(g, pick);
+  g.classList.toggle('muted', mu);
+  for (const b of g.querySelectorAll('.sg-b')) {
+    const want = mu && b.dataset.m === pick ? 'x' : '';
+    if ((b.dataset.x || '') !== want) { b.dataset.x = want; b.querySelector('.sg-ic').innerHTML = svg(want ? MIC_OFF : ICON[b.dataset.m]); }
+  }
+}
+
+const muteSwitch = () => h('button.mp-mute.mm-mute', { type: 'button', role: 'switch', 'aria-checked': 'false', onclick: () => setMicMuted(!micMuted) },
+  h('span.mp-mic', { 'aria-hidden': 'true' }), h('b.mm-st'), h('span.mm-sw', { 'aria-hidden': 'true' }, h('i')));
+function paintMute(mb) {
+  const off = pick === 'off', mu = micMuted && !off;
+  mb.disabled = off;
+  mb.setAttribute('aria-checked', String(mu));
+  const ms = off ? 'Off' : mu ? 'Muted' : 'Live';
+  const st = mb.querySelector('.mm-st');
+  if (st.textContent !== ms) { st.textContent = ms; mb.querySelector('.mp-mic').innerHTML = svg(mu ? MIC_OFF : MIC); }
+  const ml = off ? 'Mute mic: the mic is off' : mu ? 'Mic muted: nothing is sent, replies still play. Unmute (M)' : 'Mic live. Mute mic (M): replies still play';
+  if (mb.title !== ml) { mb.title = ml; mb.setAttribute('aria-label', ml); }
+}
+
+const spkSwitch = () => h('button.mp-spk', { type: 'button', role: 'switch', 'aria-checked': 'false', onclick: () => setSpeaker(spokenOn() ? { muted: true } : spkVolNow() > 0 ? { muted: false } : { muted: false, volume: volBack }) },
+  h('span.mp-mic', { 'aria-hidden': 'true' }), h('b.mm-st'), h('span.mm-sw', { 'aria-hidden': 'true' }, h('i')));
+function paintSpk(sb) {
+  const son = spokenOn(), am = agentMuted();
+  sb.setAttribute('aria-checked', String(son));
+  const ss = son ? 'On' : 'Off';
+  const sst = sb.querySelector('.mm-st');
+  if (sst.textContent !== ss) { sst.textContent = ss; sb.querySelector('.mp-mic').innerHTML = svg(son ? I.vol2 : I.volx); }
+  const sl = son ? 'Spoken replies are on. Turn off to get text only' : am ? 'Spoken replies are off: replies show as text only. Turn on' : 'Spoken replies are off: the volume is at 0. Turn on';
+  if (sb.title !== sl) { sb.title = sl; sb.setAttribute('aria-label', sl); }
+}
+
+const LEVELS = [
+  { v: 'brief', label: 'Brief', note: 'One short sentence, just the answer' },
+  { v: 'normal', label: 'Normal', note: 'A couple of sentences' },
+  { v: 'detailed', label: 'Detailed', note: 'The full explanation, read out' },
+];
+const lvlNow = () => (LEVELS.find((l) => l.v === S.voice?.talk_level) || LEVELS[1]);
+function setTalkLevel(v) {
+  if (!LEVELS.some((l) => l.v === v)) return;
+  const sv = S.voice || (S.voice = {});
+  const prev = sv.talk_level;
+  sv.talk_level = v;
+  paintLvls();
+  tool('speaker', { talk_level: v }).then((r) => {
+    if (!r?.error && r?.ok !== false) return;
+    sv.talk_level = prev;
+    toast(r.error || 'Could not change how much is said', 'warn');
+    paintLvls();
+  });
+}
+const lvlPick = (cls, label) => h('label.lvl.' + cls, {},
+  h('span.lvl-ic', { 'aria-hidden': 'true', html: svg(I.lines) }),
+  h('span.lvl-l', {}, label),
+  h('select.lvl-s', { 'aria-label': 'How much is said out loud', onchange: (e) => setTalkLevel(e.target.value) },
+    LEVELS.map((l) => h('option', { value: l.v }, l.label))));
+function paintLvl(el) {
+  if (!el) return;
+  const s = el.querySelector('select'), l = lvlNow(), son = spokenOn();
+  if (s.value !== l.v) s.value = l.v;
+  s.disabled = !son;
+  el.classList.toggle('off', !son);
+  const tip = son ? `How much is said out loud: ${l.label}. ${l.note}. What is written stays the same` : 'How much is said out loud. Spoken replies are off';
+  if (el.title !== tip) el.title = tip;
+}
+function paintLvls() { for (const el of document.querySelectorAll('.lvl')) paintLvl(el); }
+
+function paintPickers() {
+  if (vx.inp) paintInput(vx.inp);
+  paintMenu();
+}
+
+let micUi = null;
+function paintMenu() {
+  const el = micUi;
+  if (!el) return;
+  const mu = micMuted && pick !== 'off';
+  paintModeSeg(el.querySelector('.sg-mic'));
+  const note = el.querySelector('.mp-micnote');
+  const nt = mu ? 'Muted, nothing is sent. M unmutes' : pick === 'wake' ? `Say "${wakeLabel()}", then your request` : MIC_SEG.find((o) => o.v === pick)?.note || '';
+  if (note.textContent !== nt) note.textContent = nt;
+  note.classList.toggle('bad', mu);
+  paintMute(el.querySelector('.mp-mute'));
+  const tr = el.querySelector('.mm-typed'), ton = typedOn();
+  tr.setAttribute('aria-checked', String(ton));
+  const son = spokenOn(), am = agentMuted();
+  paintSpk(el.querySelector('.mp-spk'));
+  el.querySelector('.mm-vol').hidden = am;
+  paintLvl(el.querySelector('.mm-lvl'));
+  tr.hidden = !son;
+  const sn = el.querySelector('.mp-spknote');
+  sn.hidden = son;
+  const st2 = am ? 'Replies show as text only' : 'Volume is at 0, so nothing is heard';
+  if (sn.textContent !== st2) sn.textContent = st2;
+  paintInput(el.querySelector('.mp-in'));
+  const k = talkNow();
+  const dis = [];
+  if (!k.can) dis.push('tab');
+  if (!k.can && !k.on) dis.push('follow');
+  segSet(el.querySelector('.sg-talk'), k.v, dis);
+  const who = el.querySelector('.mp-who');
+  const sig = JSON.stringify([k.on, k.follow, k.here, k.name, k.can, !!k.t]);
+  if (who.dataset.sig !== sig) {
+    who.dataset.sig = sig;
+    const name = h('b', {}, k.on ? k.name : 'the assistant');
+    const tail = !k.on ? (k.t ? (k.can ? '' : '. This tab is not running') : '. Open a tab to talk to it')
+      : k.follow ? (k.here ? ' and to the tab you open next' : k.t && !k.can ? '. This tab is not running' : '')
+        : k.here ? '' : ', not the tab you see';
+    who.replaceChildren('Talking to ', name, tail);
+  }
+}
+
 function openMicMenu(anchor) {
   if (menuSkip) { menuSkip = false; return; }
   menuAnchor = anchor;
   const r = anchor.getBoundingClientRect();
-  const w = Math.min(300, innerWidth - 16);
-  const at = { x: Math.max(8, r.right - w), y: r.bottom + 6 };
-  const item = (m, label, sub) => h('button.mm-i', { type: 'button', role: 'menuitemradio', 'aria-checked': String(pick === m), 'data-m': m,
-    onclick: () => { closeSheet(); setMode(m); } },
-  h('span.mm-ic', { html: svg(ICON[m]) }), h('span.mm-t', {}, label, h('small', {}, sub)), h('span.mm-ck', { html: pick === m ? CHECK : '' }));
-  const flags = S.mode_flags || {};
-  const t = curTab();
-  const direct = !!flags.direct;
-  const dRow = h('button.mm-i.mm-tog', { type: 'button', role: 'menuitemcheckbox', 'aria-checked': String(direct), disabled: !direct && !t,
-    onclick: () => { closeSheet(); if (direct) send({ t: 'voice', direct: false }); else if (t) send({ t: 'voice', direct: t.uid }); } },
-  h('span.mm-ic', { html: svg('<path d="M4 12h12M12 6l6 6-6 6"/>') }),
-  h('span.mm-t', {}, 'Direct to this tab', h('small', {}, direct ? `Talking to ${flags.direct}` : t ? `Talk to ${t.name} itself` : 'Open a tab first')),
-  h('span.mm-sw', { 'aria-hidden': 'true' }, h('i')));
-  const muteRow = h('button.mm-i.mm-tog.mm-mute', { type: 'button', role: 'menuitemcheckbox', 'aria-checked': String(micMuted), disabled: pick === 'off',
-    onclick: () => { closeSheet(); setMicMuted(!micMuted); } },
-  h('span.mm-ic', { html: svg(MIC_OFF) }),
-  h('span.mm-t', {}, 'Mute mic', h('small', {}, pick === 'off' ? 'The mic is off' : micMuted ? 'Nothing is sent; replies still play (M)' : 'Keep listening to replies (M)')),
-  h('span.mm-sw', { 'aria-hidden': 'true' }, h('i')));
-  openMenu(at, h('div.mm', { role: 'none' },
-    item('off', MODE.off, 'The mic stays closed'),
-    item('push', 'Push to talk', 'Hold Talk while you talk'),
-    item('open', 'Open mic', 'Always listening for commands'),
-    item('wake', 'Wake word', `Say "${wakeLabel()}", then your request`),
+  const w = Math.min(320, innerWidth - 16);
+  const x = Math.max(8, r.right - w);
+  const at = r.top > innerHeight / 2 ? { x, y: r.top - 6, up: true } : { x, y: r.bottom + 6 };
+  const muteBtn = muteSwitch();
+  const spkBtn = spkSwitch();
+  const typedRow = h('button.mp-row.mm-tog.mm-typed', { type: 'button', role: 'switch', 'aria-checked': 'false' },
+    h('span.mm-t', {}, 'Also speak replies to typed messages'),
+    h('span.mm-sw', { 'aria-hidden': 'true' }, h('i')));
+  typedRow.onclick = async () => {
+    const want = !typedOn();
+    const res = await tool('speaker', { speak_typed: want });
+    if (res.error || res.ok === false) return toast(res.error || 'Could not change it', 'warn');
+    if (S.voice) S.voice.typed_spoken = want;
+    paintMenu();
+  };
+  micUi = h('div.mm.mp', { role: 'none' },
+    h('div.mm-h.mp-h', { role: 'none' }, h('span', { id: 'mp-mic-l' }, 'Microphone'), muteBtn),
+    segGroup('sg-mic', 'Microphone mode', MIC_SEG, (m) => setMode(m)),
+    h('p.mp-note.mp-micnote', { 'aria-live': 'polite' }),
+    h('div.mp-in', { hidden: true }),
     h('div.mm-sep'),
-    muteRow,
-    volRow('mm-vol'),
+    h('div.mm-h', { role: 'none' }, h('span', {}, 'Spoken replies'), spkBtn),
+    h('div.mm-vl', {}, volRow('mm-vol', 'Volume'), lvlPick('mm-lvl', 'Reply length')),
+    typedRow,
+    h('p.mp-note.mp-spknote', { 'aria-live': 'polite', hidden: true }),
     h('div.mm-sep'),
-    dRow,
-    h('button.mm-i', { type: 'button', onclick: () => { closeSheet(); openVoiceSheet(); } },
-      h('span.mm-ic', { html: SET_ICON }), h('span.mm-t', {}, 'Voice settings', h('small', {}, 'Voice, speed, wake word, mic test')), h('span.mm-ck'))));
-  const pop = document.getElementById('pop');
-  if (pop) { pop.classList.add('mic-pop'); pop.style.width = w + 'px'; }
+    h('div.mm-h', { role: 'none' }, h('span', {}, 'Talk to')),
+    segGroup('sg-talk', 'Who your voice talks to', TALK_SEG, pickTalk),
+    h('p.mp-note.mp-who', { 'aria-live': 'polite' }),
+    h('div.mm-sep'),
+    h('button.mp-row.mp-set', { type: 'button', onclick: () => { closeSheet(); openVoiceSheet(); } },
+      h('span.mm-ic', { html: SET_ICON }), h('span.mm-t', {}, 'Voice settings', h('small', {}, 'Voice, speed, wake word, mic test'))));
+  micW = w;
+  paintMenu();
+  openMenu(at, micUi);
+  micPopSync();
+  openMenu(at, micUi);
+  if (document.body.classList.contains('kbd')) micUi.querySelector('.sg-mic .sg-b[tabindex="0"]')?.focus({ preventScroll: true });
+}
+
+let micW = 320;
+function micPopSync() {
+  const mine = !!micUi && micUi.isConnected;
+  if (!mine) micUi = null;
+  const p = document.getElementById('pop');
+  if (!p || p.classList.contains('mic-pop') === mine) return;
+  p.classList.toggle('mic-pop', mine);
+  p.setAttribute('role', mine ? 'dialog' : 'menu');
+  if (mine) { p.setAttribute('aria-label', 'Voice'); p.style.width = micW + 'px'; } else { p.removeAttribute('aria-label'); p.style.width = ''; }
+}
+
+let moveBar = null, moveGone = null;
+function moveWant() {
+  const k = talkNow();
+  if (!k.on || k.follow || k.uid == null) { moveGone = null; return null; }
+  if (!k.t || k.here) { if (k.here) moveGone = null; return null; }
+  if (!k.can || moveGone === k.uid || sheetKind) return null;
+  return k;
+}
+function placeMove() {
+  if (!moveBar || moveBar.hidden) return;
+  const vis = (e) => e && !e.hidden && e.getClientRects().length;
+  const pill = [$('#b-ptt'), $('#mic-strip')].find(vis);
+  const r = pill ? pill.getBoundingClientRect() : { left: 8, right: 8, bottom: 48 };
+  let top = r.bottom;
+  for (const e of [$('#mic-strip'), $('#voice-bar'), $('#top'), isDesk() ? $('#panes .pane-head') : null]) if (vis(e)) top = Math.max(top, e.getBoundingClientRect().bottom);
+  const w = moveBar.offsetWidth;
+  const mid = (r.left + r.right) / 2;
+  moveBar.style.left = Math.round(Math.max(8, Math.min(mid - w / 2, innerWidth - w - 8))) + 'px';
+  moveBar.style.top = Math.round(top + 6) + 'px';
+}
+function paintMove() {
+  const k = moveWant();
+  if (!k) { if (moveBar && !moveBar.hidden) moveBar.hidden = true; return; }
+  if (!moveBar) {
+    moveBar = h('div', { id: 'voice-move', role: 'status', 'aria-live': 'polite', hidden: true },
+      h('span.vm-ic', { 'aria-hidden': 'true', html: svg(MIC) }),
+      h('span.vm-t'),
+      h('button.vm-go', { type: 'button' }, 'Move here'),
+      h('button.vm-x', { type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss', html: svg(I.x) }));
+    moveBar.querySelector('.vm-go').addEventListener('click', () => {
+      const n = talkNow();
+      if (n.t && !send({ t: 'voice', direct: n.t.uid })) toast('Not connected', 'warn');
+    });
+    moveBar.querySelector('.vm-x').addEventListener('click', () => { moveGone = talkNow().uid ?? null; paintMove(); });
+    $('#app').append(moveBar);
+    addEventListener('resize', placeMove);
+  }
+  const t = moveBar.querySelector('.vm-t');
+  const text = `Voice is talking to ${k.name}.`;
+  if (t.textContent !== text) t.textContent = text;
+  const go = moveBar.querySelector('.vm-go');
+  const gl = `Move voice here, to ${k.t.name}`;
+  if (go.title !== gl) { go.title = gl; go.setAttribute('aria-label', gl); }
+  moveBar.hidden = false;
+  placeMove();
 }
 
 function paint() {
@@ -936,7 +1406,7 @@ function paint() {
     om.textContent = micWords(pick, state, micMuted).text;
   }
   paintStrip(s);
-  paintTalk(s);
+  paintVbar(s);
   const here = serverOn && S.voice?.web === S.client;
   const engineErr = here && S.voice?.status === 'off' && S.voice?.error;
   const note = $('#voice-note');
@@ -957,10 +1427,12 @@ function paint() {
   else if (s === 'speaking') { text = TEXT.speaking; act = 'stop'; sub = extra; }
   else if (s) { text = TEXT[s] || upFirst(s); sub = extra; }
   else if (hint) text = hint;
+  const model = S.voice?.model;
+  if (text && !sub && (model === 'loading' || model === 'unloaded')) sub = model === 'loading' ? 'Loading the speech model' : 'Speech model unloaded; it loads when you talk';
 
   const inStrip = (pick === 'open' || pick === 'wake') && !engineErr && s !== 'locked';
 
-  const inTalk = pick === 'push' && !err && !engineErr && talk && !talk.hidden && ['listening', 'sending', 'thinking', 'starting'].includes(s);
+  const inTalk = pick === 'push' && !err && !engineErr && barOn() && ['listening', 'sending', 'thinking', 'starting'].includes(s);
   b.hidden = !text || inStrip || inTalk || sheetKind === 'voice';
   b.dataset.state = err || engineErr ? 'error' : s || 'idle';
   delete b.dataset.hf;
@@ -974,6 +1446,9 @@ function paint() {
   dbAt = 0;
   meter();
   if (sheetKind === 'voice') paintSheet();
+  micPopSync();
+  if (micUi) paintMenu();
+  paintMove();
 }
 
 function ptt(btn, menuElse = false) {
@@ -988,6 +1463,7 @@ function ptt(btn, menuElse = false) {
       if (playing.size || S.voice?.speaking) { hush(); send({ t: 'voice', hush: true }); }
       return;
     }
+    if (pick !== 'push') { tap = 'alt'; return; }
     if (starting) return;
     if (micMuted) { hint = 'The mic is muted: M or the mic menu unmutes'; paint(); return; }
     pressed = true;
@@ -1010,7 +1486,7 @@ function ptt(btn, menuElse = false) {
     }
   });
   const up = (e) => {
-    if (tap) { tap = false; if (e?.type === 'pointerup') openMicMenu(btn); return; }
+    if (tap) { const a = tap; tap = false; if (e?.type === 'pointerup') { if (a === 'alt') talkAlt(); else openMicMenu(btn); } return; }
     if (!pressed) return;
     pressed = false;
     if (!starting && mode === 'push') stop();
@@ -1064,11 +1540,13 @@ export function setMicMuted(on) {
 }
 
 let duck = 1;
-const spkGain = () => (spkMuted ? 0 : spkVol * duck);
+const spkGain = () => (srvMuted() ? 0 : duck * spkVolNow());
 function applyGain() {
   if (!outGain || !ctx) return;
-  try { outGain.gain.setTargetAtTime(spkGain(), ctx.currentTime, 0.015); } catch { outGain.gain.value = spkGain(); }
+  const g = spkGain();
+  try { outGain.gain.setTargetAtTime(g, ctx.currentTime, 0.015); } catch { outGain.gain.value = g; }
 }
+export const outLevel = () => ({ gain: outGain ? outGain.gain.value : null, target: spkGain(), playing: playing.size, state: ctx ? ctx.state : '' });
 function onDuck(m) {
   const l = Number(m?.level);
   const v = Number.isFinite(l) ? Math.max(0, Math.min(1, l)) : 1;
@@ -1077,39 +1555,57 @@ function onDuck(m) {
   if (playing.size) dlog(v < 1 ? `reply ducked to ${Math.round(v * 100)}% (is it a barge-in?)` : 'reply back to full volume');
   applyGain();
 }
+let volTimer = 0, volBack = 0.5;
 export function setSpeaker({ volume, muted } = {}) {
+  const v = S.voice || (S.voice = {});
+  if (spkVolNow() > 0) volBack = spkVolNow();
+  const prev = { speaker_muted: v.speaker_muted, volume_pct: v.volume_pct };
+  const args = {};
   if (volume != null && Number.isFinite(+volume)) {
-    spkVol = Math.max(0, Math.min(1, +volume));
-    store.set('voice.spkvol', spkVol);
-
-    if (spkMuted && spkVol > 0 && muted == null) { spkMuted = false; store.set('voice.spkmute', false); }
+    v.volume_pct = Math.round(Math.max(0, Math.min(1, +volume)) * 100);
+    args.volume = v.volume_pct;
+    if (v.speaker_muted && v.volume_pct > 0 && muted == null) muted = false;
   }
-  if (muted != null) { spkMuted = !!muted; store.set('voice.spkmute', spkMuted); }
+  if (muted != null) { v.speaker_muted = !!muted; args.muted = !!muted; }
+  const sendNow = () => {
+    volTimer = 0;
+    tool('speaker', args).then((r) => {
+      if (r?.error || r?.ok === false) {
+        v.speaker_muted = prev.speaker_muted; v.volume_pct = prev.volume_pct;
+        toast(r.error || 'Could not change the agent voice', 'warn');
+        applyGain(); for (const x of document.querySelectorAll('.vol-row')) paintVol(x); paint();
+      }
+    });
+  };
+  clearTimeout(volTimer);
+  if (args.volume != null && args.muted == null) volTimer = setTimeout(sendNow, 160); else sendNow();
   applyGain();
   for (const r of document.querySelectorAll('.vol-row')) paintVol(r);
   paint();
 }
 
-function volRow(cls) {
-  const b = h('button.vr-b', { type: 'button', onclick: (e) => { e.stopPropagation(); setSpeaker({ muted: !spkMuted }); } });
+function volRow(cls, label = 'Agent voice') {
+  const b = h('button.vr-b', { type: 'button', onclick: (e) => { e.stopPropagation(); setSpeaker({ muted: !agentMuted() }); } });
   const r = h('input.vr-r', { type: 'range', min: 0, max: 100, step: 5, 'aria-label': 'The agent\'s voice volume here',
     oninput: (e) => setSpeaker({ volume: +e.target.value / 100 }) });
-  const row = h('div.vol-row.' + cls, {}, b, h('span.vr-t', {}, 'Agent voice', h('small.vr-s')), r, h('span.vr-v'));
+  const row = h('div.vol-row.' + cls, {}, b, h('span.vr-t', {}, label, h('small.vr-s')), r, h('span.vr-v'));
   paintVol(row);
   return row;
 }
 function paintVol(row) {
   const b = row.querySelector('.vr-b');
   b.innerHTML = spkIcon();
-  b.setAttribute('aria-pressed', String(spkMuted));
-  b.setAttribute('aria-label', spkMuted ? 'Unmute the agent\'s voice here' : 'Mute the agent\'s voice here');
+  const am = agentMuted();
+  b.setAttribute('aria-pressed', String(am));
+  b.setAttribute('aria-label', am ? 'Unmute the agent\'s voice' : 'Mute the agent\'s voice');
   b.title = b.getAttribute('aria-label');
   const r = row.querySelector('.vr-r');
-  const v = String(Math.round(spkVol * 100));
+  const v = String(Math.round(spkVolNow() * 100));
   if (r.value !== v && document.activeElement !== r) r.value = v;
-  r.classList.toggle('off', spkMuted);
-  row.querySelector('.vr-v').textContent = spkMuted ? 'muted' : Math.round(spkVol * 100) + '%';
-  row.querySelector('.vr-s').textContent = spkMuted ? 'Muted in this browser: replies show as text' : 'In this browser';
+  r.classList.toggle('off', am);
+  row.classList.toggle('muted', am);
+  row.querySelector('.vr-v').textContent = am ? 'Muted' : Math.round(spkVolNow() * 100) + '%';
+  row.querySelector('.vr-s').textContent = spkWhy();
 }
 
 let chain = Promise.resolve(), gen = 0;
@@ -1249,6 +1745,7 @@ function hush() {
 }
 
 function onVoice(m) {
+  if (m.preview !== undefined) { onPreview(m); return; }
   if (m.web_tts_list !== undefined) { ttsList = m; paintTts(); return; }
   if (m.web_tts !== undefined) {
     if (m.ok === false) toast('Voice for this browser not set: ' + (m.error || 'refused'), 'warn');
@@ -1295,16 +1792,16 @@ function onVoice(m) {
   paint();
 }
 
-const KEYS = ['voice.tts', 'voice.tts_engine', 'voice.kokoro_voice', 'voice.grok.voice', 'voice.tts_voice', 'voice.tts_speed', 'voice.tts_volume',
+const KEYS = ['voice.tts', 'voice.tts_engine', 'voice.kokoro_voice', 'voice.grok.voice', 'voice.tts_voice', 'voice.tts_speed', 'voice.tts_volume', 'voice.talk_level',
   'voice.wake_words', 'voice.wake_sensitivity', 'voice.wake_follow_up_s', 'voice.open_mic_sleep_min', 'voice.barge_in', 'voice.barge_margin_db',
-  'voice.barge_in_min_words', 'voice.barge_in_duck', 'voice.direct_reply', 'voice.instant_commands', 'voice.end_silence_ms', 'voice.engine', 'voice.language', 'voice.speaker_lock'];
+  'voice.barge_in_min_words', 'voice.barge_in_duck', 'voice.direct_reply', 'voice.direct_follow', 'voice.instant_commands', 'voice.end_silence_ms', 'voice.engine', 'voice.language', 'voice.speaker_lock'];
 let settings = null;
 
 function curTab() {
   const p = panes.focused?.();
   const uid = p?.id ? +String(p.id).replace(/^t/, '') : S.focused;
   const t = uid != null ? S.tabs.find((x) => x.uid === uid) : null;
-  return t ? { uid, name: t.label || t.name || t.title || 't' + uid } : null;
+  return t ? { uid, name: tabName(t), can: t.can_direct !== false } : null;
 }
 
 function liveInfo() {
@@ -1326,7 +1823,8 @@ function paintSheet() {
   if (!root) return;
   const flags = S.mode_flags || {};
   const t = curTab();
-  const sig = JSON.stringify([micMuted, cap?.method, store.get('voice.method', ''), store.get('voice.force', ''), pick, flags.direct, flags.brainstorm, t, mode === 'test', wakeWord()]);
+  const follow = S.voice?.direct_follow === true;
+  const sig = JSON.stringify([micMuted, cap?.method, store.get('voice.method', ''), store.get('voice.force', ''), pick, flags.direct, follow, flags.brainstorm, t, mode === 'test', wakeWord()]);
   if (root.dataset.sig === sig) { liveInfo(); meter(); return; }
   root.dataset.sig = sig;
   root.querySelector('.seg-mode').replaceChildren(
@@ -1342,7 +1840,7 @@ function paintSheet() {
   }[pick];
   const d = root.querySelector('.direct');
   d.replaceChildren(
-    h('span', {}, flags.direct ? `Talking to ${flags.direct} directly` : 'Direct mode', h('small', {}, flags.direct ? 'What you say goes to that tab; its replies are spoken.' : t ? `Talk to ${t.name} without the assistant in between.` : 'Open a tab to talk to it directly.')),
+    h('span', {}, flags.direct ? `Talking to ${flags.direct} directly` : 'Direct mode', h('small', {}, flags.direct ? (follow ? 'What you say goes to that tab, and to the tab you open next; its replies are spoken.' : 'What you say goes to that tab; its replies are spoken.') : t ? `Talk to ${t.name} without the assistant in between.` : 'Open a tab to talk to it directly.')),
     flags.direct
       ? h('button.btn', { type: 'button', onclick: () => send({ t: 'voice', direct: false }) }, 'Back to the assistant')
       : h('button.btn', { type: 'button', disabled: !t, onclick: () => t && send({ t: 'voice', direct: t.uid }) }, 'Talk to this tab'));
@@ -1384,8 +1882,54 @@ function settingRow(s) {
   } else {
     input = h('input', { type: 'text', value: v, onchange: (e) => save(e.target.value) });
   }
-  return h('label.row', {}, h('span', {}, s.label, h('small', {}, s.help ? String(s.help).split('. ')[0] : '')), input);
+  const pv = PREVIEW_KEYS[s.key];
+  const field = pv ? h('span.pv-wrap', {}, input, previewBtn(() => pv(input.value))) : input;
+  return h('label.row', {}, h('span', {}, s.label, h('small', {}, s.help ? String(s.help).split('. ')[0] : '')), field);
 }
+const PREVIEW_KEYS = {
+  'voice.tts_engine': () => ({ engine: 'mac', voice: '' }),
+  'voice.kokoro_voice': (v) => ({ engine: 'kokoro', voice: v }),
+  'voice.grok.voice': (v) => ({ engine: 'grok', voice: v }),
+  'voice.tts_voice': (v) => ({ engine: 'say', voice: v }),
+};
+
+let previewing = false, previewPoll = 0;
+function paintPreview() {
+  for (const b of document.querySelectorAll('.pv-b')) {
+    b.textContent = previewing ? 'Stop' : 'Preview';
+    b.setAttribute('aria-pressed', String(previewing));
+    b.title = previewing ? 'Stop the sample' : 'Hear a short sample with this choice';
+  }
+}
+function previewEnd() {
+  clearInterval(previewPoll); previewPoll = 0;
+  previewing = false;
+  paintPreview();
+}
+function previewStop() {
+  send({ t: 'voice', preview_stop: true });
+  hush();
+  previewEnd();
+}
+function previewStart(choice) {
+  if (previewing) { previewStop(); return; }
+  if (agentMuted()) { toast('The agent voice is muted, so a sample would be silent. Unmute it first (tap the speaker in the voice pill).', 'warn'); return; }
+  if (!choice || !choice.engine) return;
+  unlock();
+  if (!send({ t: 'voice', preview_tts: choice })) { toast('Not connected', 'warn'); return; }
+  previewing = true;
+  paintPreview();
+  clearTimeout(previewPoll);
+  previewPoll = setTimeout(previewEnd, 45000);
+}
+function onPreview(m) {
+  if (m.preview === 'error') { previewEnd(); toast(m.error || 'No sample for this choice', 'warn'); return; }
+  if (m.preview === 'done') {
+    clearTimeout(previewPoll);
+    previewPoll = setInterval(() => { if (!previewing) { clearInterval(previewPoll); return; } if (!playing.size && !held.length) previewEnd(); }, 300);
+  }
+}
+const previewBtn = (get) => h('button.btn.pv-b', { type: 'button', onclick: (e) => { e.preventDefault(); e.stopPropagation(); previewStart(get()); } }, previewing ? 'Stop' : 'Preview');
 
 const TTS_DEFAULT = { engine: 'kokoro', voice: 'af_heart' };
 const ttsChoice = () => { const c = store.get('voice.webtts', null); return c && typeof c === 'object' && c.engine ? c : null; };
@@ -1436,6 +1980,7 @@ function paintTtsBox(box) {
   } },
   h('option', { value: 'mac', selected: cur.engine === 'mac' }, 'Same as the Mac'),
   L.map((x) => h('option', { value: x.engine, selected: x.engine === cur.engine, disabled: x.available === false && x.engine !== cur.engine }, x.label + (x.available === false ? ' (not here)' : ''))));
+  const pcur = () => (ttsChoice() || def);
   const en = L.find((x) => x.engine === cur.engine);
   const voices = en?.voices?.length
     ? h('select.tts-v', { 'aria-label': 'Voice', onchange: (e) => { setTts({ engine: cur.engine, voice: e.target.value }); paintTts(); } },
@@ -1443,8 +1988,8 @@ function paintTtsBox(box) {
     : null;
   const mac = ttsList.mac ? `The Mac speaks with ${ttsLabel(ttsList.mac)}.` : '';
   box.replaceChildren(
-    h('label.row', {}, h('span', {}, 'Engine', h('small', {}, en?.note || (cur.engine === 'mac' ? 'Replies here use the Mac\'s voice setting' : 'Replies spoken in this browser'))), engines),
-    voices ? h('label.row', {}, h('span', {}, 'Voice', h('small', {}, cur.engine === def.engine && cur.voice === def.voice ? 'The default for browsers' : '')), voices) : null,
+    h('label.row', {}, h('span', {}, 'Engine', h('small', {}, en?.note || (cur.engine === 'mac' ? 'Replies here use the Mac\'s voice setting' : 'This device only: replies spoken in this browser'))), h('span.pv-wrap', {}, engines, previewBtn(pcur))),
+    voices ? h('label.row', {}, h('span', {}, 'Voice', h('small', {}, cur.engine === def.engine && cur.voice === def.voice ? 'The default for browsers' : '')), h('span.pv-wrap', {}, voices, previewBtn(pcur))) : null,
     h('p.note', {}, mac + ' Changing this does not change the Mac.'));
 }
 
@@ -1483,7 +2028,7 @@ function openVoiceSheet() {
       h('div.row', {}, h('span', {}, 'How the mic is read', h('small.method-note')), sel),
       h('button.btn.mtest', { type: 'button', onclick: () => (mode === 'test' ? stop() : mode ? null : start('test')) }),
       h('div.row.mmute'),
-      h('h4', {}, 'Voice in this browser'),
+      h('h4', {}, 'Agent voice (shared with the Mac app)'),
       volRow('vs-vol'),
       ttsBox(),
       h('h4', {}, 'GodTerm settings (the Mac)'),
@@ -1498,7 +2043,11 @@ export function initVoice() {
   const hm = $('#b-ptt');
   if (hm) {
     addEventListener('pointerdown', (e) => { if (menuOpen() && menuAnchor && menuAnchor.contains(e.target)) menuSkip = true; }, true);
-    hm.addEventListener('click', () => openMicMenu(hm));
+    hm.addEventListener('click', (e) => {
+      const first = hm.dataset.sphit === '1'; delete hm.dataset.sphit;
+      if (agentMuted() && (first || e.target.closest('.ml-sp'))) { setSpeaker({ muted: false }); return; }
+      openMicMenu(hm);
+    });
   }
 
   ptt($('#b-ptt2'), true);
@@ -1523,6 +2072,8 @@ export function initVoice() {
   on('msg:voice_level', onRecLevel);
   on('open-voice', openVoiceSheet);
   on('sheet', () => paint());
+  on('focus', () => paint());
+  on('layout', placeMove);
   const onConn = (s) => {
     if (s === 'live') sendTts();
     if (s === 'live' && debug) {
@@ -1551,6 +2102,8 @@ export function initVoice() {
 
   on('state', () => {
     const v = S.voice || {};
+    applyGain();
+    for (const r of document.querySelectorAll('.vol-row')) paintVol(r);
     if (serverOn && v.web != null && v.web !== S.client) { serverOn = ''; mode = ''; release(); phase = ''; }
     if (v.heard && v.heard !== lastHeard) {
       if (lastHeard !== null) { heardText = v.heard; heardUntil = performance.now() + 2500; }
@@ -1566,6 +2119,10 @@ export function initVoice() {
   });
   addEventListener('pageshow', () => { if (!document.hidden) backAgain(); });
   if (!secure()) for (const b of ['#b-openmic', '#b-ptt', '#b-ptt2']) $(b)?.classList.add('off');
+  if (canPickInput()) {
+    try { navigator.mediaDevices.addEventListener('devicechange', inputChanged); } catch {}
+    refreshInputs();
+  }
 
   if ((pick === 'open' || pick === 'wake') && !mode) resumeMode = pick;
 

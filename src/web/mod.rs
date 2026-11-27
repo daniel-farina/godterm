@@ -2,15 +2,21 @@ pub mod app_web;
 pub mod assets;
 pub mod assist;
 pub mod auth;
+pub mod authapi;
 pub mod clientlog;
 pub mod http;
+pub mod login;
 pub mod pack;
 pub mod push;
+pub mod remote;
 pub mod tailnet;
 pub mod tap;
 pub mod voice;
+pub mod webauthn;
 pub mod ws;
 
+#[cfg(test)]
+mod login_tests;
 #[cfg(test)]
 mod tests;
 
@@ -32,6 +38,7 @@ pub enum ToApp {
         client: u64,
         text: String,
         images: Vec<Vec<u8>>,
+        raw: bool,
     },
 
     Answer {
@@ -41,6 +48,11 @@ pub enum ToApp {
     },
 
     Typed(u64),
+
+    Viewing {
+        client: u64,
+        uid: u64,
+    },
 
     Resize {
         client: u64,
@@ -74,6 +86,21 @@ pub enum ToApp {
         v: serde_json::Value,
     },
 
+    Embedded {
+        client: u64,
+        v: serde_json::Value,
+    },
+
+    OpenExt {
+        client: u64,
+        v: serde_json::Value,
+    },
+
+    Apps {
+        client: u64,
+        v: serde_json::Value,
+    },
+
     Accounts {
         client: u64,
         v: serde_json::Value,
@@ -93,6 +120,17 @@ pub struct Client {
     pub view: Mutex<serde_json::Value>,
 
     pub tts: Mutex<Option<crate::voice::web_tts::WebTts>>,
+
+    pub sid: Mutex<Option<String>>,
+
+    pub remote: AtomicBool,
+}
+
+pub type TsRun = Arc<dyn Fn(&[String]) -> Option<(bool, String)> + Send + Sync>;
+
+#[derive(Default)]
+pub struct Conn {
+    tailscale: Option<bool>,
 }
 
 pub struct Hub {
@@ -109,6 +147,10 @@ pub struct Hub {
     tailnet: Option<Arc<tailnet::Tailnet>>,
 
     pub assets: Arc<assets::Assets>,
+
+    pub login: login::Login,
+
+    pub ts_run: Mutex<TsRun>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +206,8 @@ impl Hub {
             stopped: AtomicBool::new(false),
             tailnet,
             assets: assets::Assets::embedded(),
+            login: login::Login::open(crate::config::app_home()),
+            ts_run: Mutex::new(Arc::new(remote::system_run)),
         })
     }
 
@@ -282,6 +326,8 @@ impl Hub {
             mic: Mutex::new(None),
             view: Mutex::new(serde_json::Value::Null),
             tts: Mutex::new(None),
+            sid: Mutex::new(None),
+            remote: AtomicBool::new(false),
         });
         self.clients
             .lock()
@@ -313,6 +359,55 @@ impl Hub {
             .is_some_and(|v| auth::same(v.as_bytes(), want.as_bytes()))
     }
 
+    fn is_remote(
+        &self,
+        req: &http::Request,
+        peer: SocketAddr,
+        via: Via,
+        conn: &mut Conn,
+        deep: bool,
+    ) -> bool {
+        if via != Via::Loopback || !peer.ip().is_loopback() {
+            return true;
+        }
+        if crate::config::env_var("WEB_ALL_REMOTE").is_some() {
+            return true;
+        }
+        if !auth::loopback_host(req.header("host").unwrap_or("")) {
+            return true;
+        }
+        if req.headers.iter().any(|(k, _)| {
+            let k = k.to_ascii_lowercase();
+            k.starts_with("x-forwarded-")
+                || k.starts_with("tailscale-")
+                || matches!(
+                    k.as_str(),
+                    "forwarded" | "x-real-ip" | "via" | "cf-connecting-ip" | "true-client-ip"
+                )
+        }) {
+            return true;
+        }
+        deep && *conn
+            .tailscale
+            .get_or_insert_with(|| auth::proxied_by_tailscale(peer))
+    }
+
+    pub fn kick_stale(&self) {
+        let login_on = self.login.enabled();
+        let now = login::now();
+        for c in self.clients() {
+            let sid = c.sid.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let stale = match sid {
+                Some(s) => !self.login.session_live(&s, now),
+                None => login_on && c.remote.load(Ordering::Relaxed),
+            };
+            if stale {
+                crate::log::info(&format!("web: client {} was signed out", c.id));
+                c.out.close();
+            }
+        }
+    }
+
     pub fn handle(self: &Arc<Self>, s: TcpStream, via: Via) {
         let Ok(peer) = s.peer_addr() else {
             return;
@@ -330,6 +425,7 @@ impl Hub {
         }
 
         let mut first = true;
+        let mut conn = Conn::default();
         loop {
             let Some(req) = http::read_head(&mut s) else {
                 if first {
@@ -341,7 +437,7 @@ impl Hub {
             let ws = req.path == "/ws";
             let keep = req.keep_alive && !ws;
             http::set_keep(keep);
-            if self.route(&mut s, req, peer, via).is_err() || !keep {
+            if self.route(&mut s, req, peer, via, &mut conn).is_err() || !keep {
                 return;
             }
             let _ = s.set_read_timeout(Some(KEEP_IDLE));
@@ -362,10 +458,40 @@ impl Hub {
         req: http::Request,
         peer: SocketAddr,
         via: Via,
+        conn: &mut Conn,
     ) -> std::io::Result<()> {
         let host = req.header("host").unwrap_or("").to_string();
         if !self.host_ok(&host) {
             return http::text(s, "421 Misdirected Request", "unknown host");
+        }
+
+        let login_on = self.login.enabled();
+        let remote = self.is_remote(&req, peer, via, conn, login_on);
+        let gate = remote && login_on;
+        let sid = req
+            .header("cookie")
+            .and_then(login::session_from_cookie)
+            .and_then(|v| self.login.check_session(v, login::now()));
+        let authed = sid.is_some() || (!gate && self.authed(&req));
+
+        if req.path.starts_with("/auth/") {
+            let cx = authapi::Ctx {
+                peer,
+                remote,
+                gate,
+                sid: sid.clone(),
+                authed,
+            };
+            return self.auth_api(s, &req, &cx);
+        }
+        if req.path == "/login" {
+            if req.method != "GET" && req.method != "HEAD" {
+                return http::text(s, "405 Method Not Allowed", "GET only");
+            }
+            if http::serve_page(s, &req, &self.assets.current(), "login.html", "200 OK")? {
+                return Ok(());
+            }
+            return http::text(s, "404 Not Found", "not found");
         }
 
         if req.method == "POST" && req.path == "/share" {
@@ -387,6 +513,14 @@ impl Hub {
                 s,
                 "403 Forbidden",
                 "not from inside GodTerm: its tabs get the read-only control socket",
+            );
+        }
+        if gate && req.param("t").is_some() {
+            crate::log::info("web: a token link was refused: login is on for remote requests");
+            return http::text(
+                s,
+                "403 Forbidden",
+                "Login is on for remote access: sign in with a passkey at /login. The token link works on this Mac only.",
             );
         }
         if let Some(t) = req.param("t") {
@@ -430,7 +564,7 @@ impl Hub {
             );
         }
 
-        if http::public(&req.path) && !self.authed(&req) {
+        if http::public(&req.path) && !authed {
             if http::serve_static(s, &req, &self.assets.current(), &[])? {
                 return Ok(());
             }
@@ -438,7 +572,27 @@ impl Hub {
         }
 
         let mut signed_in = None;
-        if !self.authed(&req) {
+        if !authed && gate {
+            let page = req.path == "/" || req.path == "/index.html";
+            if page
+                && req
+                    .header("accept")
+                    .is_some_and(|a| a.contains("text/html"))
+            {
+                return http::respond(
+                    s,
+                    "303 See Other",
+                    &[
+                        ("Location", "/login".into()),
+                        ("Cache-Control", "no-store".into()),
+                    ],
+                    &[],
+                    false,
+                );
+            }
+            return http::text(s, "401 Unauthorized", "Sign in with a passkey at /login.");
+        }
+        if !authed {
             match self.identity(&req, peer, via) {
                 tailnet::Who::Allowed(login) => {
                     crate::log::info(&format!("web: {login} signed in by tailnet identity"));
@@ -482,7 +636,7 @@ impl Hub {
                 return http::text(s, "403 Forbidden", "bad origin");
             }
 
-            return ws::accept(self, s.try_clone()?, &req);
+            return ws::accept(self, s.try_clone()?, &req, sid, remote);
         }
         let cookie: Vec<(&str, String)> = if signed_in.is_some() {
             vec![(
@@ -492,6 +646,29 @@ impl Hub {
         } else {
             vec![]
         };
+        if let Some(name) = req.path.strip_prefix("/avatar/") {
+            return match crate::tab_avatar::read_stored(name) {
+                Some(body) => http::respond(
+                    s,
+                    "200 OK",
+                    &[
+                        ("Content-Type", crate::tab_avatar::mime(name).to_string()),
+                        (
+                            "Cache-Control",
+                            "private, max-age=31536000, immutable".into(),
+                        ),
+                        (
+                            "Content-Security-Policy",
+                            "default-src 'none'; style-src 'unsafe-inline'; sandbox".into(),
+                        ),
+                        ("X-Content-Type-Options", "nosniff".into()),
+                    ],
+                    &body,
+                    req.method == "HEAD",
+                ),
+                None => http::text(s, "404 Not Found", "not found"),
+            };
+        }
         if http::serve_static(s, &req, &self.assets.current(), &cookie)? {
             return Ok(());
         }
@@ -543,6 +720,19 @@ pub fn start_with(
     std::thread::Builder::new()
         .name("web".into())
         .spawn(move || accept_loop(h, listener, Via::Loopback, None))?;
+    let w = Arc::downgrade(&hub);
+    std::thread::Builder::new()
+        .name("web-login".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let Some(h) = w.upgrade() else {
+                return;
+            };
+            if h.is_stopped() {
+                return;
+            }
+            h.kick_stale();
+        })?;
     crate::log::info(&format!("web: serving http://127.0.0.1:{port}"));
     if let Some(ip_port) = opts.ip_port {
         let h = Arc::clone(&hub);

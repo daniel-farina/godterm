@@ -7,7 +7,243 @@ copies the section for a tag into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-27
+
+Platforms: macOS (Apple silicon and Intel, universal), Linux (x86_64 and aarch64) and Windows (x64; built on GitHub Actions). The Windows installer and zip are not code signed, so SmartScreen will warn: click More info, then Run anyway.
+
+The first release since 0.3.0: 0.3.1 was tagged but never published, so its changes ship here too (see "From 0.3.1" at the end). The web app gets a voice bar under the panes, an Apps page, passkey sign in for the remote address, an embedded browser, tab avatars and a way to find and reopen lost conversations. Direct voice is now a plain conversation with one tab, a tab can be sent through a proxy, and Antigravity CLI accounts each get their own Google login. Several of these are new and lightly tested; the notes say which.
+
+### Voice
+- Web app: a voice bar below the panes replaces the floating Talk
+  button. It has Talk, a Talk to dropdown for the assistant or any tab,
+  the mic mode switch, mic mute, the Spoken replies switch and the
+  volume. A muted purple mark on the bar, the header mic and the pane
+  shows where your voice goes.
+- Direct mode is a plain conversation with the tab. Its reply is said as
+  it is, in its own words, with no assistant turn in between (so no
+  paraphrase and no tokens spent on one). Speech skips markdown, emoji,
+  code, tables and links; numbered options are said in order with their
+  numbers ("One: ...", "Two: ..."), and questions and options are never
+  cut. Talking over it stops it. It no longer says "Queued", "Sent to"
+  or "started on it"; a message that waits for a busy tab is marked
+  quietly on its line in the panel.
+- Direct mode steers a working tab: what you say while a Claude Code tab
+  is working is typed in after about a second without new speech (never
+  later than about four seconds), so it is taken in at the tab's next
+  step. Several things said in a row go in as one message, in order.
+  Nothing is typed while the tab shows an approval, a question, a trust
+  or login prompt or any other menu; the messages wait and go in as one
+  once the prompt is answered. Tabs of CLIs that take no input mid turn
+  (Grok and the others) get the merged message when their turn ends.
+  Muting the mic or turning voice off drops everything not typed in yet.
+- Direct mode can follow the active tab: with `voice.direct_follow` on
+  (off by default), switching to another running tab, in the app or in
+  the web app, moves your voice there after a moment and GodTerm says
+  "Now talking to" and the tab's name. With it off, the web app offers
+  a small "Move here" bar instead.
+- Reply length: Brief, Normal or Detailed (`voice.talk_level`) sets how
+  much is said out loud; what is written stays the same. In direct mode
+  Brief says the first sentence, Normal the opening and Detailed all of
+  it, and questions and options are said at every level. The control is
+  on the voice bar, in the voice menu and in Settings > Voice (web and
+  terminal).
+- One Spoken replies switch in the web voice menu replaces the speaker
+  button, the "On 80%" label and the separate Speak typed replies
+  switch. It is the same switch as Talk back in Settings > Voice, and
+  turning it on takes effect at once.
+- Volume and mute act on the reply that is playing, on the Mac and in
+  the browser, instead of only on the next one.
+- Web app: an Input row in the voice menu picks which of the browser's
+  microphones is used. The choice is kept per browser, a change while
+  the mic is live switches at once, and an unplugged microphone falls
+  back to the system default until it returns.
+- Web app: the voice menu is about half as tall. The four mic modes are
+  one segmented control with the mute switch in its header, and voice
+  pickers have a Preview button that plays a short sample.
+- Talk with this tab (tab menu in the web app): an assistant
+  conversation bound to one tab. It sees only that tab, answers for it
+  while it works and acts on it; closing it brings the main thread
+  back. Assistant replies about one tab carry a small tab pill in the
+  main thread.
+- The whisper server (about 2 GB of memory) is stopped after five
+  minutes with the mic muted or push to talk unused
+  (`voice.stt_unload_after_s`, 0 = never) and starts again on the next
+  use without losing the first words. The voice line shows loading and
+  unloaded, and a server orphaned by a crash is cleaned up at the next
+  start.
+
+### Web app
+- Apps (new): a personal catalog of what you built on this machine.
+  It lists every app, game, utility, dashboard, page, tool or library
+  from a catalog file (`apps.json` in the data folder, written by an
+  agent) merged with the folders known from session history, with
+  search, kind chips and sorting. Each card reopens its conversations
+  or starts a new chat in its folder; Describe and Refresh catalog open
+  a tab with a ready prompt that you send yourself.
+- Apps keeps projects whose folder is gone: they are marked Missing,
+  their conversations can be reopened after you confirm that the empty
+  folder is made again, and Rebuild from history asks the agent to
+  restore the project from a git remote or from the conversation.
+- A tab's job request (create, update or delete a job, adopt a loop)
+  now shows in the web app: a banner with Yes and No on the tab's pane,
+  "needs your OK" on its list row, and a place in the approvals count.
+  Before, only the terminal UI showed it, so in a browser it expired
+  unanswered. A request waits an hour instead of ten minutes, and a
+  phone gets a push for it.
+- Passkey sign in for the remote address (new): Settings > Remote
+  access sets up the Tailscale HTTPS address and can require a passkey
+  (Face ID, Touch ID, a security key) for every remote request, with a
+  list of signed in browsers, a one time recovery code and
+  `godterm login reset`. The address is private to your tailnet unless
+  you turn on Funnel, which needs login on first. The browser on the
+  machine itself keeps the token link. Only you, from the app, can
+  change these settings; tabs and the assistant cannot.
+- Embedded browser (experimental, off by default:
+  `web.embedded_browser`): a headless Chrome page beside the terminal
+  for local dev servers and public pages. You see and click it live and
+  the tab's agent drives the same page with an `embedded_browser` tool.
+  One Chrome is shared by all tabs, each tab owns its pages (up to 6),
+  idle pages sleep, and a page can be opened in Chrome or Safari. The
+  view is in the web app only, and it has not been run on a real phone
+  yet (docs/EMBEDDED_BROWSER.md).
+- Tab avatars: a round picture per tab with a harness badge and a
+  status dot, set from the avatar menu, by drag and drop or by the
+  tab's agent (`set_tab_avatar`); `web.tab_avatars` and a per device
+  toggle turn them off. A tab's accent color tints its row, pane
+  outline, header and the status bar.
+- New tab sheet: Existing sessions finds conversations that are not
+  open in GodTerm and opens them. A session running in a terminal can
+  be taken over, and one that is open in Claude Desktop says so.
+- Relink a lost conversation: a tab whose conversation file moved or
+  whose folder changed says so and offers the matching conversations to
+  link it to again.
+- Tab menu: Reload tab (stop and resume in place), Open in GodTerm
+  desktop and, for Claude tabs, Open in Claude Desktop.
+- Tab list: an archive button per row with a 5 second countdown that
+  can be cancelled, and a Restore toast.
+- Account emails show in every account list (Move to, Duplicate to,
+  Copy session to, Usage, Accounts) with one Show emails toggle per
+  device; when hidden they are not rendered anywhere.
+- The pane header shows whether an account shares data for model
+  training (Claude, Grok, Cursor), read only, with a link to the page
+  where you change it.
+- The sessions sheet filters by Antigravity and OpenCode too, the Git
+  panel refreshes itself every 15 seconds, the assistant message box
+  has a clear button, and icons are one consistent set with a distinct
+  icon per action.
+
+### Tabs and sessions
+- A route per tab (new): a tab's agent can be sent through a proxy of
+  your own (`http://`, `https://`, `socks5://`, `socks5h://`), chosen
+  with the Route chip in the web app's top bar or Manage > Routes. A
+  routed tab is not started while its route is down unless you say so.
+  It sets the proxy variables for the tab's process and is not a kill
+  switch: programs that ignore them connect directly. Only the user
+  sets routes; agents cannot, and routes are never synced.
+- Routes through a Tailscale exit node (experimental): a route can use
+  a userspace `tailscaled` that GodTerm runs for it, leaving the system
+  Tailscale alone. This kind has been tested against stand-ins only,
+  not end to end against a real tailnet, so treat it as a preview.
+- Tabs of one account in the same folder no longer drift onto each
+  other's conversations. A new Claude tab is started with its own
+  session id (`--session-id`), a tab that has a session keeps it
+  however new a neighbouring transcript is, and a change inside a
+  running tab (`/clear`, a fork) is followed only through the harness's
+  own record for that process. Every session change of a tab is logged
+  with the old id, the new id and the reason.
+- Claude Code tabs run with telemetry, error reporting and the feedback
+  survey off, and every harness is started with `DO_NOT_TRACK=1`.
+- The data folder can live anywhere: `godterm data-path <folder>`
+  copies (or `--move`s) it and writes a pointer file (`location` in
+  ~/.godterm); GODTERM_HOME still wins. Settings > About shows the
+  current path.
+- A moved tab keeps its pin, color and group.
+
+### Coding agents
+- Antigravity CLI (`agy`) accounts (preview): each account runs in its
+  own home with its own Google login (macOS and Linux), so several
+  Google accounts can be signed in side by side. State (working, ready,
+  needs approval), the conversation id, sessions, the tab job tools and
+  the usage the CLI reports are read from the CLI itself. Its screens,
+  files and flags were checked against the real CLI, but Google sign
+  in, the account's email, plan and quota, and a real approval prompt
+  have not been exercised end to end with a signed in account yet
+  (docs/CLI_HARNESSES.md lists what is unverified).
+- Antigravity conversations made with plain `agy` in a terminal show
+  up in GodTerm as "Antigravity (plain terminal)", in the web app's
+  Sessions page and in New tab > Existing sessions. Opening one asks
+  first, then copies that one conversation into an Antigravity account
+  and resumes it there; the original is left as it is and no login is
+  copied.
+- Web app: the Sessions page's Agent filter lists every agent that has
+  an account or sessions instead of only Claude and Grok, and an empty
+  result names the filters that are on.
+
+### Fixed
+- Loops: a tab is asked to stop a job at most twice, never twice at
+  once, and a job that is no longer listed counts as stopped.
+- A durable job (`.claude/scheduled_tasks.json`) shared by several tabs
+  of one folder is listed once, under the tab that created it, so
+  stopping it asks one tab and counts it once.
+- Web settings: the microphone and speaker lists are loaded when the
+  settings are listed, so the pickers are dropdowns and not text boxes.
+- The speaker switch shows off when talk back is off, and turning it on
+  turns talk back on.
+- Web mic: a remembered recorder no longer pins capture, raw audio is
+  tried first, and the recorder asks for 128 kbps.
+- Direct mode reads a tab's reply even while the tab has a background
+  shell running.
+- Voice off or mute drops spoken messages that still wait for their
+  tab, and tab events are not spoken from a stale voice turn when the
+  mic is off.
+- The tab list no longer flips order: a tab's recent activity time
+  never moves backwards.
+- Deliveries to a tab wait 10 seconds after your last keystroke there,
+  only typed text counts as a draft (a dim suggestion in the input box
+  does not), a new tab is not held back as if you had just typed in it,
+  GodTerm's own typing into a tab does not hold the next delivery, and
+  a delivery that fails because the tab never became ready says what
+  the tab was doing.
+- A job that fails the same way again is not announced again.
+- Taking over a session that is not running anywhere simply opens it.
+- A folder written with a trailing slash maps to the same project
+  folder as the plain one.
+
+### From 0.3.1 (tagged 2026-10-27, never published)
+- Web app: Loops and Scheduled in the toolbar with live counts, and a
+  job can be edited from the web app. The tab list sorts by Recent
+  activity or Least recent, shows "active 5 min ago" on each row, a
+  small harness mark before each name and compact dots for working
+  tabs, loops and jobs.
+- Assistant (web and terminal): the model is chosen from a dropdown and
+  defaults to Sonnet 5.5 at low effort. Every message carries the tab
+  in view as a small tag, the sentence being read aloud is highlighted,
+  and the web panel is resizable with a context selector (all tabs or
+  this tab) and timestamps.
+- Model lists come from the harness itself (Anthropic `/v1/models`,
+  Grok models and so on) instead of a fixed list.
+- Dropping files onto a terminal pane uploads them and types their
+  paths. Reopen on a tab that is in the list but not running starts it
+  again in place.
+- Settings sections have group headers and a search.
+- GodTerm Sync tools: `sync_plan`, `sync_init`, `sync_clone`,
+  `sync_pause` and a richer `sync_status`; Codex and Cursor sessions
+  are in the session index.
+- Focus, mouse and cursor reports from a viewer no longer count as tab
+  activity, deliveries wait while you have text in a tab's input box,
+  and a tab stopped at its usage limit is not busy.
+- Fixed: a tab whose conversation file has no messages starts a new
+  conversation instead of failing to resume; a web pane follows a
+  moved tab to its new id; confirm sheet buttons wrap instead of
+  clipping.
+- Windows: the port is finished. The assistant's system prompt is
+  passed by file, sync and git paths use portable separators, image
+  paste handles drive paths, and the unit tests that were skipped on
+  Windows run on every push.
+
 ## [0.3.1] - 2026-10-27
+
+Tagged, but never published as a release: the downloads went from 0.3.0 straight to 0.4.0, whose notes include these changes.
 
 Platforms: macOS (Apple silicon and Intel, universal), Linux (x86_64 and aarch64) and Windows (x64; built on GitHub Actions). The Windows installer and zip are not code signed, so SmartScreen will warn: click More info, then Run anyway.
 

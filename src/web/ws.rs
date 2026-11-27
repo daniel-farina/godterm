@@ -87,7 +87,13 @@ pub fn unframe(b: &[u8]) -> Option<(u8, u64, &[u8])> {
     Some((b[0], uid, &b[5..]))
 }
 
-pub fn accept(hub: &Arc<Hub>, mut s: TcpStream, req: &super::http::Request) -> std::io::Result<()> {
+pub fn accept(
+    hub: &Arc<Hub>,
+    mut s: TcpStream,
+    req: &super::http::Request,
+    sid: Option<String>,
+    remote: bool,
+) -> std::io::Result<()> {
     let key = req.header("sec-websocket-key").unwrap_or("");
     if key.is_empty() || req.header("sec-websocket-version") != Some("13") {
         return super::http::text(&mut s, "400 Bad Request", "bad websocket request");
@@ -103,6 +109,10 @@ pub fn accept(hub: &Arc<Hub>, mut s: TcpStream, req: &super::http::Request) -> s
     let rd = s.try_clone()?;
     let shut = s.try_clone()?;
     let client = hub.add();
+    *client.sid.lock().unwrap_or_else(|e| e.into_inner()) = sid;
+    client
+        .remote
+        .store(remote, std::sync::atomic::Ordering::Relaxed);
     let mut cfg = WebSocketConfig::default();
     cfg.max_message_size = Some(32 << 20);
     cfg.max_frame_size = Some(32 << 20);
@@ -197,6 +207,19 @@ struct ReadState {
     log: super::clientlog::Rate,
 
     rec: Option<crate::voice::webdec::Decoder>,
+
+    viewing: Option<(Instant, Option<u64>)>,
+}
+
+const VIEW_SETTLE: Duration = Duration::from_millis(1500);
+
+fn viewed_tab(v: &Value) -> Option<u64> {
+    let i = v["focused"].as_u64()? as usize;
+    let t = v["tabs"].get(i)?;
+    t.as_u64().or_else(|| {
+        t.as_str()
+            .and_then(|s| s.trim_start_matches('t').parse().ok())
+    })
 }
 
 fn rec_start(c: &Arc<Client>, st: &mut ReadState, mime: &str) {
@@ -461,6 +484,18 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
                 }
             }
             *c.view.lock().unwrap_or_else(|e| e.into_inner()) = keep;
+            let now = viewed_tab(v);
+            match st.viewing {
+                None => st.viewing = Some((Instant::now(), now)),
+                Some((since, was)) => {
+                    st.viewing = Some((since, now.or(was)));
+                    if let Some(uid) = now.filter(|u| Some(*u) != was) {
+                        if since.elapsed() >= VIEW_SETTLE {
+                            hub.send(ToApp::Viewing { client: c.id, uid });
+                        }
+                    }
+                }
+            }
         }
         "unsubscribe" => {
             for uid in uids(&v["tabs"]) {
@@ -540,6 +575,7 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
                     client: c.id,
                     text,
                     images,
+                    raw: v["raw"].as_bool() == Some(true),
                 });
             }
         }
@@ -616,6 +652,7 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
 
             if [
                 "direct",
+                "follow",
                 "brainstorm",
                 "hush",
                 "away",
@@ -623,6 +660,8 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
                 "unmute_mac",
                 "set",
                 "web_tts_list",
+                "preview_tts",
+                "preview_stop",
             ]
             .iter()
             .any(|k| !v[*k].is_null())
@@ -653,6 +692,27 @@ fn on_text(hub: &Arc<Hub>, c: &Arc<Client>, st: &mut ReadState, v: &Value) {
 
         "bview" => {
             hub.send(ToApp::BrowserView {
+                client: c.id,
+                v: v.clone(),
+            });
+        }
+
+        "ebv" => {
+            hub.send(ToApp::Embedded {
+                client: c.id,
+                v: v.clone(),
+            });
+        }
+
+        "oext" => {
+            hub.send(ToApp::OpenExt {
+                client: c.id,
+                v: v.clone(),
+            });
+        }
+
+        "apps" => {
+            hub.send(ToApp::Apps {
                 client: c.id,
                 v: v.clone(),
             });

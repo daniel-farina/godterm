@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1b1d21">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GodTerm">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Sign in · GodTerm</title>
+<style>
+:root{--bg:#1b1d21;--panel:#23262b;--line:#33373e;--text:#d9d6cf;--dim:#8d8a84;--accent:#c9a46a;--ink:#1b1d21;--err:#c4806f;color-scheme:dark}
+@media (prefers-color-scheme:light){:root{--bg:#f4f1ea;--panel:#ebe7de;--line:#d3ccbf;--text:#2b2a27;--dim:#6f6b63;--accent:#9a7a3f;--ink:#fbf9f4;--err:#a2523f;color-scheme:light}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:calc(24px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom));background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+main{width:min(420px,100%);display:flex;flex-direction:column;gap:14px}
+img{width:64px;height:64px;border-radius:14px}
+h1{font-size:22px;margin:0}
+p{margin:0;color:var(--dim)}
+label{display:flex;flex-direction:column;gap:6px;font-size:14px;color:var(--dim)}
+input{height:48px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text);font:16px ui-monospace,Menlo,monospace;outline:none;width:100%}
+input:focus{border-color:var(--accent)}
+button{height:48px;border:0;border-radius:10px;background:var(--accent);color:var(--ink);font:600 16px -apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer}
+button[disabled]{opacity:.55;cursor:default}
+button.alt{background:transparent;color:var(--text);border:1px solid var(--line)}
+svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+#msg{min-height:1.4em;font-size:14px;color:var(--dim)}
+#msg.bad{color:var(--err)}
+details{border-top:1px solid var(--line);padding-top:12px}
+summary{cursor:pointer;color:var(--dim);font-size:14px}
+details form{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+</style>
+<script src="login.js" defer></script>
+</head>
+<body>
+<main>
+<img src="icon-192.png" alt="">
+<h1>Sign in to GodTerm</h1>
+<p>Use the passkey you saved for this Mac. On an iPhone, iPad or Mac that is Face ID, Touch ID or your device code; a security key works too.</p>
+<label class="sr" for="u">Passkey</label>
+<input class="sr" id="u" name="username" autocomplete="username webauthn" tabindex="-1" aria-hidden="true">
+<button id="go" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg><span>Sign in with passkey</span></button>
+<div id="msg" role="status" aria-live="polite"></div>
+<details id="rec">
+<summary>I lost my passkey</summary>
+<form id="rf">
+<label>Recovery code<input id="code" name="code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"></label>
+<button class="alt" type="submit">Sign in with recovery code</button>
+<p>The code was shown once when login was turned on. It works one time. On the Mac you can also run <code>godterm login reset</code>.</p>
+</form>
+</details>
+</main>
+</body>
+</html>

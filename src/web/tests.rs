@@ -509,6 +509,18 @@ fn a_snapshot_then_output_has_no_gap_and_no_repeat() {
 fn a_resize_sends_its_size_and_a_respawn_a_new_snapshot() {
     let (mut p, _rx) = shell_tab(&["say:hello\\n", "sleep:5"], 10, 40);
     let uid = p.uid;
+    let t0 = std::time::Instant::now();
+    let said = |p: &Pane| {
+        p.parser
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .screen()
+            .contents()
+            .contains("hello")
+    };
+    while !said(&p) && t0.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     std::thread::sleep(Duration::from_millis(200));
     let out = Outbox::new();
     tap::get(uid).unwrap().subscribe(1, &out);
@@ -1140,6 +1152,30 @@ fn websocket_voice_and_images_reach_the_app() {
         t => panic!("{t:?}"),
     }
 
+    ws.send(Message::text(r#"{"t":"voice","follow":true}"#))
+        .unwrap();
+    match next() {
+        ToApp::VoiceCtl { v, .. } => assert_eq!(v["follow"], serde_json::json!(true)),
+        t => panic!("{t:?}"),
+    }
+    ws.send(Message::text(r#"{"t":"view","tabs":[12,13],"focused":0}"#))
+        .unwrap();
+    ws.send(Message::text(r#"{"t":"view","tabs":[12,13],"focused":1}"#))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1700));
+    ws.send(Message::text(
+        r#"{"t":"view","tabs":[12,13],"focused":1,"open":"chat"}"#,
+    ))
+    .unwrap();
+    ws.send(Message::text(
+        r#"{"t":"view","tabs":["t12",13],"focused":0}"#,
+    ))
+    .unwrap();
+    match next() {
+        ToApp::Viewing { client, uid } => assert_eq!((client, uid), (id, 12)),
+        t => panic!("{t:?}"),
+    }
+
     let dir = std::env::temp_dir().join(format!("gt-ws-rec-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let webm = dir.join("r.webm");
@@ -1254,6 +1290,17 @@ fn chat_messages_carry_when_they_were_written() {
     assert_eq!(m["id"], 3);
     assert_eq!(m["role"], "user");
     assert!(m.get("hidden").is_none());
+}
+
+#[test]
+fn a_reply_about_one_tab_carries_the_tab_and_the_history_keeps_it() {
+    use crate::app_assistant::{Entry, Who};
+    let e = Entry::new(Who::Reply, "The tab merged PR 67.").tagged(Some((12, "hyper".into())));
+    let m = super::app_web::message(5, &e, false);
+    assert_eq!(m["tab"], "t12");
+    assert_eq!(m["tab_name"], "hyper");
+    let plain = super::app_web::message(6, &Entry::new(Who::Reply, "Two tabs work."), false);
+    assert!(plain.get("tab").is_none());
 }
 
 #[test]

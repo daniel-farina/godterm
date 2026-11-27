@@ -323,7 +323,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 .map(|(a, left)| {
                     let c = app.account_cfg(a);
                     let l = left.map(|l| format!("{l:.0}% left")).unwrap_or_else(|| {
-                        if app.accounts[a].login.cli_managed {
+                        if app.accounts[a].login.cli_managed && !app.accounts[a].login.logged_in() {
                             "CLI-managed login".into()
                         } else if app.accounts[a].login.logged_in() {
                             "usage ?".into()
@@ -1150,7 +1150,12 @@ fn draw_pane(f: &mut Frame, app: &App, i: usize, area: Rect) {
                     }
                     _ => " session ended: Enter starts a new one, Ctrl-a s sessions ".to_string(),
                 };
-                let msg = if pane.restart_at.is_some() {
+                let msg = if let Some(l) = &pane.lost {
+                    format!(
+                        " conversation not found for {}: relink it from the web app's tab menu, or ask the assistant ",
+                        crate::config::tilde(&l.dir)
+                    )
+                } else if pane.restart_at.is_some() {
                     " restarting... ".to_string()
                 } else if let Some(l) = &pane.bg_lock {
                     if l.stopping {
@@ -1342,10 +1347,21 @@ fn draw_idle(f: &mut Frame, app: &App, i: usize, area: Rect) {
                 lines.push(Line::styled(line, Style::default().fg(theme::SAND)));
                 lines.push(Line::raw(""));
             } else if let PaneState::Failed(e) = &pane.state {
-                lines.push(Line::styled(
-                    format!("Failed to start: {e}"),
-                    Style::default().fg(theme::CLAY),
-                ));
+                if pane.route_block.is_some() {
+                    lines.push(Line::styled(
+                        format!("Not started: {e}"),
+                        Style::default().fg(theme::CLAY),
+                    ));
+                    lines.push(Line::styled(
+                        "It was not launched without its route. Enter tries again; the web app's Route menu changes the route.",
+                        Style::default().fg(theme::SAND),
+                    ));
+                } else {
+                    lines.push(Line::styled(
+                        format!("Failed to start: {e}"),
+                        Style::default().fg(theme::CLAY),
+                    ));
+                }
                 lines.push(Line::raw(""));
             }
             if st.login.cli_managed {
@@ -1523,7 +1539,7 @@ fn account_card(app: &App, idx: usize) -> (Vec<Line<'static>>, Color) {
         info.push(Span::styled(format!("  ·  {r}"), Style::default().fg(DIM)));
     }
     lines.push(Line::from(info));
-    if st.login.cli_managed {
+    if st.login.cli_managed && !st.login.logged_in() {
         lines.push(Line::styled(
             "Login and usage managed by the CLI",
             Style::default().fg(DIM),
@@ -1713,6 +1729,9 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                 SourceSel::All => ("All".to_string(), theme::STONE),
                 SourceSel::One(Src::Main) => ("This Mac (main)".to_string(), theme::MAUVE),
                 SourceSel::One(Src::MainGrok) => ("This Mac (grok)".to_string(), theme::STONE),
+                SourceSel::One(Src::MainAgy) => {
+                    (crate::antigravity::NATIVE_LABEL.to_string(), theme::STONE)
+                }
                 SourceSel::One(Src::Account(a)) => (
                     app.account_cfg(*a).display().to_string(),
                     theme::parse_color(&app.account_cfg(*a).color),
@@ -2368,7 +2387,9 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                         };
                         Span::styled(txt, base.patch(theme::remaining_style(left)))
                     }
-                    None if st.login.cli_managed => Span::styled("CLI-managed ", base.fg(DIM)),
+                    None if st.login.cli_managed && !st.login.logged_in() => {
+                        Span::styled("CLI-managed ", base.fg(DIM))
+                    }
                     None if !st.login.logged_in() => Span::styled(
                         if level == 2 {
                             "-- ".to_string()
@@ -2636,7 +2657,7 @@ pub fn footer_lines(
         )];
     };
     let st = &app.accounts[a];
-    if st.login.cli_managed {
+    if st.login.cli_managed && !st.login.logged_in() {
         return vec![Line::styled(
             " login and usage managed by the CLI",
             Style::default().fg(DIM),
@@ -2770,7 +2791,7 @@ fn exact_time(t: DateTime<Utc>) -> String {
 
 fn usage_breakdown(st: &AccountState, now: DateTime<Utc>) -> Vec<Line<'static>> {
     let mut lines = vec![];
-    if st.login.cli_managed {
+    if st.login.cli_managed && !st.login.logged_in() {
         return vec![Line::styled(
             "Usage is available in the CLI",
             Style::default().fg(DIM),
@@ -5369,6 +5390,11 @@ fn draw_voice_hud(f: &mut Frame, app: &App, area: Rect) {
         }
         VoiceStatus::Off(None) => ("push to talk: Ctrl-a space".to_string(), DIM),
         VoiceStatus::Off(Some(r)) => (format!("off: {r}"), theme::CLAY),
+    };
+    let state = match app.voice.engine.as_ref().map(|e| e.model_state()) {
+        Some(crate::voice::stt::MODEL_LOADING) => format!("{state} (loading the speech model)"),
+        Some(crate::voice::stt::MODEL_UNLOADED) => format!("{state} (speech model unloaded)"),
+        _ => state,
     };
     let mut spans = vec![Span::styled(
         " voice ",
@@ -10576,6 +10602,8 @@ mod tests {
                 && sent.contains("one or two spoken sentences"),
             "{sent}"
         );
+        let (voice, _voice_rx) = crate::voice::Voice::fake(false);
+        app.voice.engine = Some(voice);
         app.assistant.spoken.clear();
         app.on_brain(B::Text("The trading room says the long pauses are fixed; Marcus starts talking within 400 milliseconds now. Want the details?".into()));
         app.on_brain(B::Done {

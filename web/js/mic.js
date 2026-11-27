@@ -94,7 +94,7 @@ function openRecorder(stream, { onChunk, log, broken }) {
 
     start(begin) {
       if (cap.recording()) return;
-      const r = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 64000 } : undefined);
+      const r = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 128000 } : undefined);
       cap.mime = r.mimeType || type || 'audio/mp4';
       rec = r;
       n = bytes = 0;

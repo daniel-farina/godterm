@@ -126,6 +126,25 @@ fn a_finished_tab_is_not_announced_and_the_assistant_gets_the_event() {
 
     assert!(app.assistant.busy && app.assistant.system_turn);
     assert!(app.assistant.events.events[0].delivered);
+    assert_eq!(app.assistant.turn_tabs, vec![uid]);
+    assert_eq!(
+        app.turn_tab_tag(),
+        Some((uid, "minitest".to_string())),
+        "a reply to a one-tab event names the tab"
+    );
+    app.assistant.turn_tabs.push(uid + 1000);
+    assert_eq!(app.turn_tab_tag(), None, "several tabs: no tag");
+    app.assistant.turn_tabs.clear();
+    app.assistant_log_tool(
+        "send_prompt",
+        &serde_json::json!({"tab": format!("t{uid}"), "text": "go on"}),
+        &serde_json::json!({"ok": true}),
+    );
+    assert_eq!(
+        app.assistant.turn_tabs,
+        vec![uid],
+        "a tool aimed at one tab tags it"
+    );
     let s = sent(&rec);
     assert!(
         s.contains(&format!("t{uid} (minitest"))

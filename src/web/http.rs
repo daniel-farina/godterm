@@ -166,6 +166,35 @@ pub fn respond(
     s.flush()
 }
 
+pub const MAX_BODY: usize = 16 << 10;
+
+pub fn read_body(s: &mut impl Read, req: &Request, max: usize) -> Option<Vec<u8>> {
+    let n: usize = req.header("content-length")?.trim().parse().ok()?;
+    if n > max || req.header("transfer-encoding").is_some() {
+        return None;
+    }
+    let mut b = vec![0u8; n];
+    s.read_exact(&mut b).ok()?;
+    Some(b)
+}
+
+pub fn json(
+    s: &mut impl Write,
+    status: &str,
+    v: &serde_json::Value,
+    extra: &[(&str, String)],
+) -> std::io::Result<()> {
+    let mut h = vec![
+        (
+            "Content-Type",
+            "application/json; charset=utf-8".to_string(),
+        ),
+        ("Cache-Control", "no-store".to_string()),
+    ];
+    h.extend(extra.iter().cloned());
+    respond(s, status, &h, v.to_string().as_bytes(), false)
+}
+
 pub fn text(s: &mut impl Write, status: &str, msg: &str) -> std::io::Result<()> {
     respond(
         s,
@@ -212,6 +241,8 @@ pub fn public(path: &str) -> bool {
             | "sw.js"
             | "signin.html"
             | "signin.js"
+            | "login.html"
+            | "login.js"
             | "offline.html"
             | "icon.svg"
     ) || (p.starts_with("icon-") && p.ends_with(".png") && !p.contains('/'))

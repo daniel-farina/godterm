@@ -32,6 +32,8 @@ pub struct ClosedTab {
     pub name: Option<String>,
     #[serde(default)]
     pub accent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
     #[serde(default)]
     pub loops: Vec<SavedLoop>,
 
@@ -51,6 +53,9 @@ pub struct ClosedTab {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub browser_also: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 pub fn needs_confirm(mode: &str, running: bool, busy: bool, loops: usize) -> bool {
@@ -105,6 +110,7 @@ impl App {
             session_id: tab.session_id.clone(),
             name: tab.custom_name.clone(),
             accent: tab.accent.clone(),
+            avatar: tab.avatar.clone(),
             loops,
             group,
             closed_at: chrono::Utc::now().timestamp(),
@@ -113,6 +119,7 @@ impl App {
             pinned: tab.pinned,
             browser: tab.browser.clone(),
             browser_also: tab.browser_also.clone(),
+            route: tab.route.clone(),
         })
     }
 
@@ -401,6 +408,7 @@ impl App {
         };
         self.panes[p].tabs[t].custom_name = c.name.clone();
         self.panes[p].tabs[t].accent = c.accent.clone();
+        self.panes[p].tabs[t].avatar = crate::tab_avatar::clean(c.avatar.clone());
         self.panes[p].tabs[t].pinned = c.pinned;
 
         self.panes[p].tabs[t].browser = c
@@ -411,6 +419,7 @@ impl App {
             self.panes[p].tabs[t].browser.as_deref(),
             &c.browser_also,
         );
+        self.panes[p].tabs[t].route = c.route.clone();
         if let Some(g) = &c.tab_group {
             self.panes[p].group_tabs(&[t], g, None);
         }

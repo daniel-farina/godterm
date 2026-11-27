@@ -254,6 +254,9 @@ pub struct Config {
     #[serde(default)]
     pub browser: BrowserCfg,
 
+    #[serde(default, skip_serializing_if = "is_default_routes")]
+    pub routes: crate::routes::RoutesCfg,
+
     #[serde(default)]
     pub ui: UiCfg,
 
@@ -294,6 +297,16 @@ pub struct WebCfg {
     pub assets_dir: String,
 
     pub embedded_assets: bool,
+
+    pub tab_avatars: bool,
+
+    pub embedded_browser: bool,
+
+    pub embedded_browser_bin: String,
+
+    pub embedded_browser_max_pages: usize,
+
+    pub embedded_browser_sleep_minutes: u64,
 }
 
 impl Default for WebCfg {
@@ -308,6 +321,11 @@ impl Default for WebCfg {
             ip_port: 7880,
             assets_dir: String::new(),
             embedded_assets: false,
+            tab_avatars: true,
+            embedded_browser: false,
+            embedded_browser_bin: String::new(),
+            embedded_browser_max_pages: 40,
+            embedded_browser_sleep_minutes: 30,
         }
     }
 }
@@ -573,6 +591,8 @@ pub struct VoiceCfg {
 
     pub whisper_threads: usize,
 
+    pub stt_unload_after_s: u32,
+
     pub wake_sensitivity: f32,
 
     pub open_mic_sleep_min: u32,
@@ -584,6 +604,10 @@ pub struct VoiceCfg {
     pub direct_reply: String,
 
     pub direct_sentences: usize,
+
+    pub direct_follow: bool,
+
+    pub talk_level: String,
 
     pub pause_max_s: u32,
 
@@ -716,11 +740,14 @@ impl Default for VoiceCfg {
             wake_follow_up_s: 7,
             direct_reply: "auto".into(),
             direct_sentences: 3,
+            direct_follow: false,
+            talk_level: String::new(),
             pause_max_s: 3600,
             noise_floor: "auto".into(),
             preroll_ms: 360,
             partial_model: "auto".into(),
             whisper_threads: 0,
+            stt_unload_after_s: 300,
             wake_sensitivity: 0.75,
             tts: true,
             speaker_muted: false,
@@ -1011,6 +1038,7 @@ impl Default for Config {
             usage: UsageCfg::default(),
             tabs: TabsCfg::default(),
             browser: BrowserCfg::default(),
+            routes: Default::default(),
             ui: UiCfg::default(),
         }
     }
@@ -1088,12 +1116,10 @@ pub struct Dirs {
 
 #[cfg(not(test))]
 pub fn dirs() -> Dirs {
-    let home = env_var("HOME");
+    let (root, source) = crate::datapath::live();
     let d = Dirs {
-        explicit_home: home.is_some(),
-        app_home: home
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home_dir().join(".godterm")),
+        explicit_home: source != crate::datapath::Source::Default,
+        app_home: root,
         main_claude: env_var("MAIN_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| home_dir().join(".claude")),
@@ -1126,6 +1152,10 @@ pub fn dirs() -> Dirs {
     let d = testing::current();
     testing::assert_safe(&d);
     d
+}
+
+fn is_default_routes(r: &crate::routes::RoutesCfg) -> bool {
+    *r == Default::default()
 }
 
 pub fn app_home() -> PathBuf {

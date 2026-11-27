@@ -140,6 +140,11 @@ pub const TOOLS: &[Tool] = &[
         schema: || props(json!({"query": {"type": "string"}, "section": {"type": "string"}}), &[]),
     },
     Tool {
+        name: "login_status",
+        description: "Whether remote login (passkeys) is on for the web app, the remote address, and how many passkeys and signed in browsers there are. Read only: only the owner can change login, in the web app's Settings, Remote access and login.",
+        schema: || props(json!({}), &[]),
+    },
+    Tool {
         name: "get_setting",
         description: "One setting's value and allowed values; account for a per account setting.",
         schema: || props(json!({"key": {"type": "string"}, "account": account_prop()}), &["key"]),
@@ -280,6 +285,16 @@ pub const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "list_lost_sessions",
+        description: "Coding sessions that are NOT open in any GodTerm tab: started in a plain terminal with the claude, grok, codex, cursor or agy CLI, or whose tab was closed or never tracked. Read-only, newest first. query (words from the name, prompt or folder), harness (claude, grok, codex, cursor, antigravity, all), account (a number, \"main\" or all), limit (30), offset. Each has session_id, harness, folder, account, last_activity, closed_tab (the GodTerm tab it came from, if any) and running (true when a CLI process in a plain terminal still runs it: opening a second copy can fork the conversation, take_over_session moves it instead). open_session with its session_id resumes it in its folder as a tab.",
+        schema: || {
+            props(
+                json!({"query": {"type": "string"}, "harness": {"type": "string", "enum": ["claude", "grok", "codex", "cursor", "antigravity", "all"]}, "account": {"type": ["string", "integer"]}, "limit": {"type": "integer"}, "offset": {"type": "integer"}, "include_headless": {"type": "boolean"}}),
+                &[],
+            )
+        },
+    },
+    Tool {
         name: "session_detail",
         description: "A short account of one session (from sessions): its first prompt, the last few exchanges, files it touched and how it ended. Snippets only.",
         schema: || props(json!({"id": {"type": "string"}}), &["id"]),
@@ -291,11 +306,11 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "open_session",
-        description: "Resume a session (from sessions) in a tab: on its own account, or for a main ~/.claude or ~/.grok session, copied into account (default: the best account of the same harness) first. name: rename its tab at once.",
+        description: "Resume a session (from sessions) in a tab: on its own account, or for a main ~/.claude or ~/.grok session, copied into account (default: the best account of the same harness) first. An Antigravity conversation made in a plain terminal (plain_terminal true) is copied into an Antigravity account too, the original stays: the first call returns needs_confirmation (it names the account), ask the user and after a yes call again with copy true. name: rename its tab at once.",
         schema: || {
             props(
-                json!({"id": {"type": "string"}, "account": account_prop(), "name": {"type": "string"}}),
-                &["id"],
+                json!({"id": {"type": "string"}, "session_id": {"type": "string"}, "harness": {"type": "string"}, "account": account_prop(), "name": {"type": "string"}, "copy": {"type": "boolean"}}),
+                &[],
             )
         },
     },
@@ -409,8 +424,13 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "open_desktop",
-        description: "The web app's \"Open on Mac\" button: brings the GodTerm app's own window to the front on the Mac (open -a GodTerm). Only the user's own press in the web app; refused for anyone else.",
-        schema: || props(json!({}), &[]),
+        description: "The web app's \"Open on Mac\" button: brings the GodTerm app's own window to the front on the Mac (open -a GodTerm). With tab (a tab id) it also shows that tab in the Mac's GodTerm. Only the user's own press in the web app; refused for anyone else.",
+        schema: || props(json!({"tab": {"type": "string"}}), &[]),
+    },
+    Tool {
+        name: "open_in_claude_desktop",
+        description: "The web app's \"Open in Claude Desktop\" tab menu item: opens a Claude tab's conversation in the Claude Desktop app on the Mac (claude --desktop --resume <session id>, run in the tab's folder and account). Only Claude tabs; a tab with no conversation yet only brings Claude Desktop to the front. Only the user's own press in the web app; refused for anyone else.",
+        schema: || props(json!({"tab": {"type": "string"}}), &["tab"]),
     },
     Tool {
         name: "link_browser",
@@ -577,10 +597,10 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "speaker",
-        description: "Your voice, at once (no yes needed): muted true when the user wants you silent (\"mute your voice\", \"be quiet\", \"stop talking to me\", \"text only\"), false to talk again (\"speak again\", \"you can talk\"); while muted your answers show as text and nothing is said, and the mic keeps listening. volume: 0 to 100 (\"volume 50%\", \"louder\" = current + 20). speak_typed: whether replies to typed messages are spoken too (\"don't talk when I type\" = false). Not pause_listening: that stops hearing, this stops talking.",
+        description: "Your voice, at once (no yes needed): muted true when the user wants you silent (\"mute your voice\", \"be quiet\", \"stop talking to me\", \"text only\"), false to talk again (\"speak again\", \"you can talk\"); while muted your answers show as text and nothing is said, and the mic keeps listening. volume: 0 to 100 (\"volume 50%\", \"louder\" = current + 20). speak_typed: whether replies to typed messages are spoken too (\"don't talk when I type\" = false). talk_level: how much you say out loud, brief (\"talk less\", \"keep it short\", \"just the answer\"), normal, or detailed (\"explain more\", \"give me the full detail\"); it also sets how much of a tab's reply is read in direct mode, and never changes what is written. Not pause_listening: that stops hearing, this stops talking.",
         schema: || {
             props(
-                json!({"muted": {"type": "boolean"}, "volume": {"type": ["number", "string"]}, "speak_typed": {"type": "boolean"}}),
+                json!({"muted": {"type": "boolean"}, "volume": {"type": ["number", "string"]}, "speak_typed": {"type": "boolean"}, "talk_level": {"type": "string", "enum": ["brief", "normal", "detailed"]}}),
                 &[],
             )
         },
@@ -676,6 +696,21 @@ pub const TOOLS: &[Tool] = &[
             props(
                 json!({"since": {"type": "string"}, "until": {"type": "string"}, "text": {"type": "string"}, "account": {"type": ["string", "integer"]}, "event": {"type": "string"}, "limit": {"type": "integer"}}),
                 &[],
+            )
+        },
+    },
+    Tool {
+        name: "reload_tab",
+        description: "Reload a tab: stop its program and start it again in the same tab, resuming its conversation. For a tab that is stuck or shows a stale screen. Work in progress in the tab is interrupted.",
+        schema: || props(json!({"id": {"type": "string"}}), &["id"]),
+    },
+    Tool {
+        name: "relink_conversation",
+        description: "A tab's conversation is lost (the tab says \"Conversation not found for <folder>\", get_state shows conversation_lost, or a resume failed with \"No conversation found\") because its project folder was moved or renamed, or the conversation is stored under another folder: ask \"do you have the path for this project?\". id: the tab. Without path it only looks: the folders where this conversation is stored (matches) and known project folders, to offer. With path (the project's folder now; must exist, ~ works) it points the tab at that folder and resumes the conversation. When the conversation is stored under a different folder the result has needs_copy: ask the user once, and only after a yes call again with copy true (copies it next to the project, the original stays). fresh true (only when the user asks, or nothing is stored anywhere) starts a new conversation in path instead. Never opens a new tab or a blank session in its place.",
+        schema: || {
+            props(
+                json!({"id": {"type": "string"}, "path": {"type": "string"}, "copy": {"type": "boolean"}, "fresh": {"type": "boolean"}}),
+                &["id"],
             )
         },
     },
@@ -885,6 +920,16 @@ pub const TOOLS: &[Tool] = &[
         schema: || props(json!({"tab": tab_prop(), "account": account_prop(), "color": {"type": "string"}}), &["color"]),
     },
     Tool {
+        name: "set_tab_avatar",
+        description: "A tab's avatar, the round picture in its tab row (every tab has a generated pixel avatar by default). Set it to the project's logo once you know the project: from_project true picks the logo, icon, favicon or og image in the tab's folder (or its repository root); or path: an image file (PNG, JPEG, GIF, WebP or plain SVG, at most 512 KB) inside the tab's folder. regenerate true gives the generated pixel avatar a new look; clear true goes back to the default one. An agent can change only its own tab's avatar.",
+        schema: || props(json!({"tab": tab_prop(), "account": account_prop(), "from_project": {"type": "boolean"}, "path": {"type": "string"}, "regenerate": {"type": "boolean"}, "clear": {"type": "boolean"}}), &[]),
+    },
+    Tool {
+        name: "embedded_browser",
+        description: "The embedded browser: THIS tab's own pages in a separate Chrome with an empty throwaway profile that GodTerm runs, shown beside the terminal in the web app, where the user can also see and click them live. You only see and drive this tab's pages, never another tab's. Use it for localhost and dev servers, local apps and tools, pages you are building, and any public page that needs no login. It has none of the user's cookies or logins (its throwaway cookies and storage are shared by the pages of all GodTerm tabs). For anything that needs the user's accounts (Gmail, X, a signed-in dashboard) use BrowserSkill (bsk) in their real Chrome instead (see list_browsers), never this. action: open (url optional; also device phone|tablet|desktop or width and height), navigate (url; http or https only, a bare localhost:3000 works; file: and chrome: are refused: serve the folder instead), back, forward, reload, screenshot (you get the picture and a file path; full_page true for the whole page), snapshot (numbered clickable and typeable elements, their text and position: refs last until the next snapshot or navigation), click (ref, selector, text, or x and y in viewport pixels), type (text into ref or selector, replacing what is there unless clear false; submit true presses Enter), press (key such as Enter, Tab, Control+A), scroll (dy, dx, or ref or selector into view), hover, text (the visible page text, or selector's; max_chars), html (selector optional), eval (expression), wait (selector, text, gone, ms, or neither to wait for the page to finish loading; timeout_ms), console (level error for errors only; since: the cursor of your last call), network (failed requests; all true for every response), resize (device or width and height), tabs (the page tabs: id, url, title, active, asleep), new_tab (url optional; opens and activates it), switch_tab (id), close_tab (id), status (also owned_pages and asleep_pages), close (closes all of this tab's pages). The browser has page tabs, at most 6: window.open and target=_blank links open as a new tab, and every other action acts on the active tab, so check tabs after a click that may open one. Every result carries the active page url and title. After you change code, reload and check console and network for errors. Close page tabs you no longer need: the pages awake over all tabs are limited. A page nobody used for a while is put to sleep and reloaded on its next use; that result carries woke true and a note, and form input and script state in that page are gone. Your pages close with the tab. Only on when the user turned on Embedded browser in GodTerm's settings.",
+        schema: || props(json!({"action": {"type": "string", "enum": ["open", "navigate", "back", "forward", "reload", "screenshot", "snapshot", "click", "type", "press", "scroll", "hover", "text", "html", "eval", "wait", "console", "network", "resize", "tabs", "new_tab", "switch_tab", "close_tab", "status", "close"]}, "id": {"type": "integer"}, "url": {"type": "string"}, "ref": {"type": "integer"}, "selector": {"type": "string"}, "text": {"type": "string"}, "key": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "dx": {"type": "number"}, "dy": {"type": "number"}, "expression": {"type": "string"}, "clear": {"type": "boolean"}, "submit": {"type": "boolean"}, "full_page": {"type": "boolean"}, "format": {"type": "string", "enum": ["jpeg", "png"]}, "gone": {"type": "boolean"}, "ms": {"type": "integer"}, "timeout_ms": {"type": "integer"}, "level": {"type": "string", "enum": ["all", "error"]}, "all": {"type": "boolean"}, "since": {"type": "integer"}, "limit": {"type": "integer"}, "max_chars": {"type": "integer"}, "device": {"type": "string", "enum": ["phone", "tablet", "desktop"]}, "width": {"type": "integer"}, "height": {"type": "integer"}}), &["action"]),
+    },
+    Tool {
         name: "sort_tabs",
         description: "Sort an account's tab list (its Sort ▾ dropdown): manual (drag order), active (most active: working first, then latest output), recent (most recent activity), name, state (status: blocked and confirm first, then working, then idle), opened (created, newest first) or folder. \"sort account 2 by most recent\" is account 2, by recent. Pinned tabs stay first; groups are sorted inside.",
         schema: || props(json!({"account": account_prop(), "by": {"type": "string", "enum": ["manual", "active", "recent", "name", "state", "opened", "folder"]}}), &["by"]),
@@ -933,6 +978,21 @@ pub const TOOLS: &[Tool] = &[
         name: "remember_summary",
         description: "Save one to three lines about this conversation for your future self (a new process after a restart reads it): what was asked, what you did (tab ids, folders, sessions), and anything left pending or unanswered. Call it when a conversation reaches a natural end (thanks, that's all, a pause) or after a significant piece of work; write nothing else for it.",
         schema: || props(json!({"summary": {"type": "string"}}), &["summary"]),
+    },
+    Tool {
+        name: "tab_context",
+        description: "Only inside a conversation about one tab: the full current picture of that tab (state, what it is doing, what it waits for, queued prompts, background work, loops, repository, recent files, recent turns, screen). The message already carries a compact copy; call this for the detail. lines: how many screen lines (default 30).",
+        schema: || props(json!({"lines": {"type": "integer"}, "turns": {"type": "integer"}}), &[]),
+    },
+    Tool {
+        name: "tab_note",
+        description: "Only inside a conversation about one tab: keep a short note about this tab for later turns of this conversation (a decision, a preference, something to check back on). It shows in the tab's context every turn until removed (text empty removes the oldest).",
+        schema: || props(json!({"text": {"type": "string"}}), &[]),
+    },
+    Tool {
+        name: "tab_chat",
+        description: "Opens (tab) or ends (off true) the user's own conversation about one tab. Only the user starts it, from the tab menu; you cannot.",
+        schema: || props(json!({"tab": tab_prop(), "off": {"type": "boolean"}}), &[]),
     },
     Tool {
         name: "ignore",
@@ -1161,6 +1221,10 @@ impl App {
     }
 
     pub fn deliver(&mut self, uid: u64, text: &str) -> u64 {
+        self.deliver_as(uid, text, false)
+    }
+
+    pub(crate) fn deliver_as(&mut self, uid: u64, text: &str, spoken: bool) -> u64 {
         self.delivery_seq += 1;
         let id = self.delivery_seq;
         let before = self
@@ -1185,7 +1249,11 @@ impl App {
             created: Instant::now(),
             before,
             reported: false,
-            rc: crate::app_receipts::Track::new(busy),
+            rc: crate::app_receipts::Track {
+                spoken,
+                notify: spoken,
+                ..crate::app_receipts::Track::new(busy)
+            },
         });
         self.state_dirty = true;
         self.deliveries_tick();
@@ -1212,7 +1280,7 @@ impl App {
         let tab = &mut self.panes[s].tabs[t];
         tab.reset_scroll();
 
-        tab.write(&crate::keys::encode_paste(text, true));
+        tab.write_own(&crate::keys::encode_paste(text, true));
     }
 
     pub fn paste_then_enter(&mut self, s: usize, t: usize, text: &str) {
@@ -1298,6 +1366,7 @@ impl App {
     }
 
     pub fn deliveries_tick(&mut self) {
+        self.spoken_release_tick();
         let mut ds = std::mem::take(&mut self.deliveries);
         for d in &mut ds {
             let now = self.current_uid(d.uid);
@@ -1322,16 +1391,29 @@ impl App {
                 Stage::Queued => {
                     let tab = &self.panes[s].tabs[t];
 
-                    let typing = self.pending_enters.iter().any(|p| p.uid == d.uid);
+                    let typing = self.pending_enters.iter().any(|p| p.uid == d.uid)
+                        || tab.user_typed_within(Duration::from_secs(10));
 
                     let drafting = tab.activity == Activity::Ready
                         && tab.is_running()
-                        && crate::archive::unsent_input(&self.tab_screen(s, t)).is_some();
-                    if tab.activity == Activity::Ready && tab.is_running() && !typing && !drafting {
+                        && crate::pane::typed_draft(
+                            self.panes[s].tabs[t]
+                                .parser
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .screen(),
+                        );
+                    let go = if d.rc.spoken {
+                        std::mem::take(&mut d.rc.go) && tab.is_running()
+                    } else {
+                        tab.activity == Activity::Ready && tab.is_running() && !typing && !drafting
+                    };
+                    if go {
                         crate::log::info(&format!(
-                            "deliver: pasting into {} ({} chars)",
+                            "deliver: pasting into {} ({} chars{})",
                             tab_id(d.uid),
-                            d.text.len()
+                            d.text.len(),
+                            if d.rc.mid_turn { ", mid-turn" } else { "" }
                         ));
                         let text = d.text.clone();
                         d.rc.before = Some((tab.model.clone(), tab.effort.clone()));
@@ -1351,10 +1433,31 @@ impl App {
                     {
                         d.stage = Stage::Failed("the tab is not running".into());
                     } else if d.created.elapsed() > Duration::from_secs(600) {
-                        d.stage = Stage::Failed("the tab never became ready (10 minutes)".into());
+                        let why = if typing {
+                            "the tab was being typed in".to_string()
+                        } else if drafting {
+                            "its input box held unsent text".to_string()
+                        } else {
+                            format!("it stayed {}", self.state_word(s, t))
+                        };
+                        d.stage = Stage::Failed(format!(
+                            "the tab never became ready (10 minutes): {why}"
+                        ));
                     }
                 }
                 Stage::Pasted(at) => {
+                    if d.rc.spoken && self.spoken_prompt_up(s, t) {
+                        crate::log::info(&format!(
+                            "deliver: {} shows a prompt, not pressing Enter for spoken #{}",
+                            tab_id(d.uid),
+                            d.id
+                        ));
+                        d.stage = Stage::Failed(
+                            "a prompt came up in the tab while it was typed in; Enter was not pressed"
+                                .into(),
+                        );
+                        continue;
+                    }
                     if crate::pane::asks_question(&self.tab_screen(s, t)) {
                         crate::log::info(&format!(
                             "deliver: {} shows a question, not sending",
@@ -1375,7 +1478,7 @@ impl App {
                                 tab_id(d.uid)
                             ));
                         }
-                        self.panes[s].tabs[t].write(b"\r");
+                        self.panes[s].tabs[t].write_own(b"\r");
                         d.stage = Stage::Submitted {
                             at: Instant::now(),
                             retried: false,
@@ -1394,12 +1497,15 @@ impl App {
                             tab_id(d.uid)
                         ));
                         d.stage = Stage::Delivered;
-                    } else if !retried && at.elapsed() >= RETRY_AFTER {
+                    } else if !retried
+                        && at.elapsed() >= RETRY_AFTER
+                        && !(d.rc.spoken && self.spoken_prompt_up(s, t))
+                    {
                         crate::log::info(&format!(
                             "deliver: {} did not take it, pressing Enter again",
                             tab_id(d.uid)
                         ));
-                        self.panes[s].tabs[t].write(b"\r");
+                        self.panes[s].tabs[t].write_own(b"\r");
                         d.stage = Stage::Submitted {
                             at,
                             retried: true,
@@ -1484,6 +1590,7 @@ impl App {
     pub fn control_tick(&mut self) {
         self.deliveries_tick();
         self.pending_enters_tick();
+        self.app_prefill_tick();
         self.tab_model_tick();
         self.busy_tick();
         self.receipts_tick();
@@ -1658,7 +1765,7 @@ impl App {
             let _ = w.tx.send(ok(w.reply));
         }
 
-        let late: Vec<(String, String)> = self
+        let late: Vec<(u64, String, String)> = self
             .deliveries
             .iter_mut()
             .filter(|d| d.done() && !d.reported)
@@ -1666,6 +1773,7 @@ impl App {
                 d.reported = true;
                 let (st, why) = d.status();
                 (
+                    d.id,
                     tab_id(d.uid),
                     match why {
                         Some(w) if st == "failed" => format!("failed: {w}"),
@@ -1674,8 +1782,11 @@ impl App {
                 )
             })
             .collect();
-        for (tab, what) in late {
+        for (id, tab, what) in late {
             crate::log::info(&format!("deliver: {tab} {what}"));
+            if what == "delivered" && self.direct_spoke(id) {
+                continue;
+            }
             self.assistant_note(format!("Prompt to {tab}: {what}"));
         }
     }
@@ -2001,6 +2112,36 @@ impl App {
             ],
             "delete_job" => &["job", "id"],
             "list_browsers" | "browser_status" => &[],
+            "embedded_browser" => &[
+                "action",
+                "id",
+                "url",
+                "ref",
+                "selector",
+                "text",
+                "key",
+                "x",
+                "y",
+                "dx",
+                "dy",
+                "expression",
+                "clear",
+                "submit",
+                "full_page",
+                "format",
+                "gone",
+                "ms",
+                "timeout_ms",
+                "level",
+                "all",
+                "since",
+                "limit",
+                "max_chars",
+                "device",
+                "width",
+                "height",
+            ],
+            "set_tab_avatar" => &["tab", "from_project", "path", "clear"],
             _ => &[
                 "tab",
                 "loop",
@@ -2047,7 +2188,10 @@ impl App {
             "list_jobs" => {
                 a.insert("_only_uid".into(), json!(uid));
             }
-            "list_browsers" | "browser_status" => {}
+            "list_browsers" | "browser_status" | "embedded_browser" => {}
+            "set_tab_avatar" => {
+                a.insert("tab".into(), json!(own));
+            }
             _ => {
                 let key = a
                     .remove("job")
@@ -2109,7 +2253,7 @@ impl App {
         }
     }
 
-    fn tab_json(&self, s: usize, t: usize) -> Value {
+    pub(crate) fn tab_json(&self, s: usize, t: usize) -> Value {
         let slot = &self.panes[s];
         let tab = &slot.tabs[t];
         let mut v = json!({
@@ -2147,6 +2291,9 @@ impl App {
         if let Some(l) = self.bg_lock_json(s, t) {
             v["background_lock"] = l;
         }
+        if let Some(l) = &tab.lost {
+            v["conversation_lost"] = crate::app_relink::lost_json(l);
+        }
         if s == self.focus && t == slot.active {
             v["focused"] = json!(true);
         }
@@ -2159,11 +2306,17 @@ impl App {
         if let Some(c) = slot.accent_of(t) {
             v["color"] = json!(c);
         }
+        if let Some(a) = &tab.avatar {
+            v["avatar"] = json!(a);
+        }
         if let Some(m) = self.tab_model_label(s, t) {
             v["model"] = json!(m);
         }
         if let Some(b) = self.tab_browser_json(s, t) {
             v["browser"] = b;
+        }
+        if let Some(r) = self.tab_route_json(s, t) {
+            v["route"] = r;
         }
         if let Some(e) = &tab.effort {
             v["effort"] = json!(e);
@@ -3305,6 +3458,9 @@ fn name_matches(name: &str, pat: &str) -> bool {
 impl App {
     pub fn control_call(&mut self, tool: &str, args: &Value) -> Value {
         self.web_caller = args.get("_client").and_then(Value::as_str) == Some("web");
+        if tool == "tab_route" {
+            return self.tab_route_call(args);
+        }
 
         if let Some(r) = crate::demo::control_tool(self, tool, args) {
             return r.unwrap_or_else(err);
@@ -3339,6 +3495,34 @@ impl App {
         }
 
         let args = &args;
+
+        let scoped;
+        let args = if brain && self.assistant.bound.is_some() {
+            match self.tab_conv_scope(tool, args) {
+                Ok(a) => {
+                    scoped = a;
+                    &scoped
+                }
+                Err(e) => {
+                    crate::log::info(&format!(
+                        "control: {tool} refused in a tab conversation: {e}"
+                    ));
+                    let v = err(e);
+                    self.assistant_log_tool(tool, args, &v);
+                    return v;
+                }
+            }
+        } else {
+            args
+        };
+
+        if tool == "tab_chat" && brain {
+            let v = err(
+                "refused: only the user opens or ends a conversation with a tab, from the tab menu",
+            );
+            self.assistant_log_tool(tool, args, &v);
+            return v;
+        }
 
         if brain && !self.assistant.stale_ids.is_empty() {
             let named: Vec<String> = match &args["tab"] {
@@ -3375,6 +3559,7 @@ impl App {
                     | "read_file"
                     | "list_dir"
                     | "session_detail"
+                    | "list_lost_sessions"
                     | "history"
                     | "tab_history"
                     | "find"
@@ -3525,6 +3710,9 @@ impl App {
         if tool == "talk_to_tab" {
             return self.talk_to_tab_tool(args);
         }
+        if let Some(r) = self.tab_conv_tool(tool, args) {
+            return r;
+        }
         if tool == "set_tab_model" {
             return self.set_tab_model_tool(args);
         }
@@ -3574,6 +3762,9 @@ impl App {
             return r;
         }
         if let Some(r) = self.projects_tool(tool, args) {
+            return r;
+        }
+        if let Some(r) = self.relink_tool(tool, args) {
             return r;
         }
         if let Some(r) = self.sync_tool(tool, args) {
@@ -4093,7 +4284,8 @@ impl App {
             "list_jobs" => return self.list_jobs_json(args),
             "list_browsers" | "browser_status" => return self.browser_tool(tool),
             "tab_browser" => return self.tab_browser_tool(args),
-            "open_desktop" => return self.open_desktop_tool(),
+            "open_desktop" => return self.open_desktop_tool(args),
+            "open_in_claude_desktop" => return self.open_in_claude_desktop_tool(args),
             "link_browser" => return self.link_browser_tool(args),
             "run_job_now" => return self.run_job_now_tool(args),
             "create_job" | "update_job" | "delete_job" | "adopt_loop" => {
@@ -4611,6 +4803,22 @@ impl App {
                 };
                 ok(json!({"records": rows, "say": say}))
             }
+            "reload_tab" => {
+                let id = s("id").ok_or("id is required")?;
+                let (sl, t) = id
+                    .trim()
+                    .strip_prefix('t')
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .and_then(|u| self.locate_uid(u))
+                    .ok_or_else(|| format!("no open tab {}", id.trim()))?;
+                let kind = self.panes[sl].tabs[t].relaunch_kind();
+                self.panes[sl].tabs[t].kill();
+                self.launch_tab(sl, t, kind);
+                let name = self.panes[sl].tabs[t].name();
+                ok(
+                    json!({"reloaded": true, "tab": id.trim(), "say": format!("Reloaded '{name}'.")}),
+                )
+            }
             "reopen_tab" => {
                 let id = s("id").ok_or("id is required")?;
 
@@ -4792,6 +5000,7 @@ impl App {
                 ok(json!("ignored; say nothing"))
             }
             "sessions" => ok(self.query_sessions(args)?),
+            "list_lost_sessions" => ok(self.lost_sessions(args)?),
             "session_detail" => {
                 let id = s("id").ok_or("id is required")?;
                 self.kick_index(false);
@@ -4815,7 +5024,9 @@ impl App {
             }
             "open_session" => {
                 use crate::app_sessions::Src;
-                let id = s("id").ok_or("id is required")?;
+                let id = s("id")
+                    .or_else(|| s("session_id"))
+                    .ok_or("id is required")?;
                 self.kick_index(false);
                 let rows = self.session_copies(&id)?;
                 let want = match args.get("account") {
@@ -4828,6 +5039,14 @@ impl App {
                     .max_by_key(|r| r.info.modified)
                     .cloned()
                     .ok_or("no session with that id (call sessions first)")?;
+                if let Some(h) = s("harness").filter(|h| !h.is_empty() && h != "all") {
+                    if crate::harness::Harness::of(&h) != newest.harness {
+                        return Err(format!(
+                            "that session belongs to {}, not {h}",
+                            newest.harness.name()
+                        ));
+                    }
+                }
                 let in_want =
                     want.and_then(|w| rows.iter().find(|r| r.src == Src::Account(w)).cloned());
                 let r = match in_want {
@@ -4879,6 +5098,43 @@ impl App {
                         }
                         let from = self.src_dir(r.src);
                         let to = self.cfg.accounts[want].config_dir();
+                        if r.harness == crate::harness::Harness::Antigravity {
+                            let shown = self.cfg.accounts[want].display().to_string();
+                            if crate::antigravity::has_conversation(&to, &r.info.id) {
+                                note = Some(format!(
+                                    "{shown} already has its own copy of it, so that one opened."
+                                ));
+                            } else {
+                                let yes =
+                                    |k: &str| args.get(k).and_then(Value::as_bool) == Some(true);
+                                if !yes("copy") && !yes("confirm") {
+                                    return Ok(json!({
+                                        "ok": false,
+                                        "needs_confirmation": format!("Copy this conversation, made with agy in a plain terminal, into {shown} and resume it there? {shown} keeps its own conversations; the original stays where it is."),
+                                        "args": {"id": r.info.id, "harness": "antigravity", "account": want + 1, "copy": true},
+                                        "account_label": shown,
+                                        "next": "Ask the user that once. Only after a clear yes, call open_session again with the same id and account and copy true.",
+                                    }));
+                                }
+                                let n =
+                                    crate::antigravity::copy_conversation(&from, &to, &r.info.id)?;
+                                crate::antigravity::remember(
+                                    &to,
+                                    &r.info.id,
+                                    &r.info.cwd,
+                                    r.info.title.as_deref(),
+                                );
+                                crate::log::info(&format!(
+                                    "open_session: copied the Antigravity conversation {} ({n} files) into {}",
+                                    r.info.id, self.cfg.accounts[want].name
+                                ));
+                                note = Some(format!(
+                                    "It was copied from the plain terminal's conversations into {shown}; the original is untouched."
+                                ));
+                                self.kick_index(true);
+                            }
+                            return self.open_resumed(want, &r, note, s("name"));
+                        }
 
                         let older = rows
                             .iter()
@@ -4930,40 +5186,7 @@ impl App {
                         want
                     }
                 };
-                crate::log::info(&format!(
-                    "open_session: {} from {} on {}",
-                    r.info.id, r.source, self.cfg.accounts[acct].name
-                ));
-
-                if let Some(st) = self.accounts.get_mut(acct) {
-                    if !st.sessions.iter().any(|x| x.id == r.info.id) {
-                        st.sessions.insert(0, r.info.clone());
-                    }
-                }
-                self.resume(acct, r.info.id.clone());
-
-                if let Some(n) = s("name").filter(|n| !n.trim().is_empty()) {
-                    let (p, t) = (self.focus, self.panes[self.focus].active);
-                    self.rename_tab(p, t, &n);
-                }
-                let tab = self.panes.get(self.focus).map(|p| tab_id(p.cur().uid));
-                let folder = self
-                    .panes
-                    .get(self.focus)
-                    .map(|p| crate::config::tilde(&p.cur().cwd));
-                if let Some(p) = self.panes.get(self.focus) {
-                    self.last_target = Some(p.cur().uid);
-                }
-                let shown = self.cfg.accounts[acct].display().to_string();
-                let say = format!(
-                    "Opened it on {shown} as {}.{}",
-                    tab.clone().unwrap_or_default(),
-                    note.as_deref().map(|n| format!(" {n}")).unwrap_or_default()
-                );
-
-                ok(
-                    json!({"opened": r.info.id, "account": shown, "from": r.source, "tab": tab, "folder": folder, "say": say}),
-                )
+                return self.open_resumed(acct, &r, note, s("name"));
             }
             "speak" => {
                 let text = s("text").ok_or("text is required")?;
@@ -4981,6 +5204,49 @@ impl App {
             }
             other => return Err(format!("unknown tool {other}")),
         })
+    }
+
+    fn open_resumed(
+        &mut self,
+        acct: usize,
+        r: &crate::session_index::Row,
+        note: Option<String>,
+        name: Option<String>,
+    ) -> Result<Value, String> {
+        crate::log::info(&format!(
+            "open_session: {} from {} on {}",
+            r.info.id, r.source, self.cfg.accounts[acct].name
+        ));
+
+        if let Some(st) = self.accounts.get_mut(acct) {
+            if !st.sessions.iter().any(|x| x.id == r.info.id) {
+                st.sessions.insert(0, r.info.clone());
+            }
+        }
+        self.resume(acct, r.info.id.clone());
+
+        if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
+            let (p, t) = (self.focus, self.panes[self.focus].active);
+            self.rename_tab(p, t, &n);
+        }
+        let tab = self.panes.get(self.focus).map(|p| tab_id(p.cur().uid));
+        let folder = self
+            .panes
+            .get(self.focus)
+            .map(|p| crate::config::tilde(&p.cur().cwd));
+        if let Some(p) = self.panes.get(self.focus) {
+            self.last_target = Some(p.cur().uid);
+        }
+        let shown = self.cfg.accounts[acct].display().to_string();
+        let say = format!(
+            "Opened it on {shown} as {}.{}",
+            tab.clone().unwrap_or_default(),
+            note.as_deref().map(|n| format!(" {n}")).unwrap_or_default()
+        );
+
+        Ok(ok(
+            json!({"opened": r.info.id, "account": shown, "from": r.source, "tab": tab, "folder": folder, "say": say}),
+        ))
     }
 
     pub fn index_sources(&self) -> Vec<crate::session_index::Source> {
@@ -5023,6 +5289,22 @@ impl App {
         let g = Harness::Grok.main_home();
         if mains && g.join("sessions").is_dir() {
             v.push((Src::MainGrok, Harness::Grok, g, "main ~/.grok".into()));
+        }
+        if let Some(home) = crate::antigravity::native_home().filter(|_| mains) {
+            let shared = v.iter().any(|(_, h, dir, _)| {
+                *h == Harness::Antigravity && crate::antigravity::is_native(dir)
+            });
+            if !shared
+                && !crate::guard::in_vault(&home)
+                && crate::antigravity::has_conversations(&home)
+            {
+                v.push((
+                    Src::MainAgy,
+                    Harness::Antigravity,
+                    home,
+                    crate::antigravity::NATIVE_LABEL.into(),
+                ));
+            }
         }
         v
     }
@@ -5252,7 +5534,7 @@ impl App {
             .filter(|r| {
                 source.as_deref().is_none_or(|src| {
                     if src == "main" {
-                        r.source.starts_with("main")
+                        r.source.starts_with("main") || r.src == crate::app_sessions::Src::MainAgy
                     } else {
                         r.source == src
                     }
@@ -5389,31 +5671,48 @@ impl App {
                 v
             })
             .collect();
-        let n = |h: Harness| hits.iter().filter(|(_, r)| r.harness == h).count();
-        let say = match (n(Harness::Claude), n(Harness::Grok)) {
-            (0, 0) => "No sessions match.".to_string(),
-            (c, 0) => format!(
-                "{} Claude {}.",
-                c,
-                if c == 1 { "session" } else { "sessions" }
+        let mut counts: Vec<(Harness, usize)> = vec![];
+        for (_, r) in &hits {
+            match counts.iter_mut().find(|(h, _)| *h == r.harness) {
+                Some(c) => c.1 += 1,
+                None => counts.push((r.harness, 1)),
+            }
+        }
+        let say = match counts.as_slice() {
+            [] => "No sessions match.".to_string(),
+            [(h, n)] => format!(
+                "{n} {} {}.",
+                h.short_label(),
+                if *n == 1 { "session" } else { "sessions" }
             ),
-            (0, g) => format!(
-                "{} Grok {}.",
-                g,
-                if g == 1 { "session" } else { "sessions" }
-            ),
-            (c, g) => format!(
-                "{c} Claude and {g} Grok {}.",
-                if c + g == 1 { "session" } else { "sessions" }
-            ),
+            many => {
+                let parts: Vec<String> = many
+                    .iter()
+                    .map(|(h, n)| format!("{n} {}", h.short_label()))
+                    .collect();
+                let (last, first) = parts.split_last().unwrap_or((&parts[0], &[]));
+                format!("{} and {last} sessions.", first.join(", "))
+            }
         };
+        let mut known: Vec<Harness> = self.cfg.accounts.iter().map(|a| a.harness()).collect();
+        known.extend(ix.rows.iter().map(|r| r.harness));
+        let harnesses: Vec<&str> = crate::harness::ALL
+            .iter()
+            .filter(|h| known.contains(h))
+            .map(|h| h.name())
+            .collect();
+        let plain_agy = ix
+            .rows
+            .iter()
+            .filter(|r| r.src == crate::app_sessions::Src::MainAgy && r.info.parent.is_none())
+            .count();
         let hidden = hidden.get();
         let say = if hidden > 0 {
             format!("{say} ({hidden} headless hidden.)")
         } else {
             say
         };
-        let mut out = json!({"sessions": rows, "matched": total, "shown": rows.len(), "headless_hidden": hidden, "indexing": building, "indexed": ix.rows.len(), "say": say});
+        let mut out = json!({"sessions": rows, "matched": total, "shown": rows.len(), "headless_hidden": hidden, "indexing": building, "indexed": ix.rows.len(), "say": say, "harnesses": harnesses, "plain_antigravity": plain_agy});
         if web {
             out["offset"] = json!(offset);
         }
@@ -5846,6 +6145,7 @@ fn handle(conn: UnixStream, events: Sender<AppEvent>, token: &str, ro_token: &st
                         if !args.is_object() {
                             args = json!({});
                         }
+                        let given = args.clone();
                         args["_client"] = json!(format!("tab:{uid}"));
                         let (tx, rx) = std::sync::mpsc::channel();
                         if events
@@ -5854,8 +6154,23 @@ fn handle(conn: UnixStream, events: Sender<AppEvent>, token: &str, ro_token: &st
                         {
                             break;
                         }
-                        rx.recv_timeout(reply_wait(&tool))
-                            .unwrap_or_else(|_| err("godterm did not answer in time"))
+                        let first = rx
+                            .recv_timeout(reply_wait(&tool))
+                            .unwrap_or_else(|_| err("godterm did not answer in time"));
+                        match first.pointer("/_embedded").cloned() {
+                            Some(c) if tool == "embedded_browser" => {
+                                let ctx = crate::embedded::Ctx {
+                                    uid: c["uid"].as_u64().unwrap_or(uid),
+                                    bin: c["bin"].as_str().unwrap_or("").to_string(),
+                                };
+                                let mut a = given;
+                                if let Some(o) = a.as_object_mut() {
+                                    o.remove("tab");
+                                }
+                                crate::embedded::run(&ctx, &a)
+                            }
+                            _ => first,
+                        }
                     }
                 }
             }
@@ -5972,6 +6287,8 @@ pub fn test_control() -> bool {
 
 pub const READ_ONLY: &[&str] = &[
     "get_state",
+    "login_status",
+    "tab_context",
     "account_capabilities",
     "mcp_catalog",
     "get_setting",
@@ -5983,6 +6300,7 @@ pub const READ_ONLY: &[&str] = &[
     "list_dir",
     "read_file",
     "sessions",
+    "list_lost_sessions",
     "session_detail",
     "history",
     "tab_history",

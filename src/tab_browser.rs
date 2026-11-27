@@ -1573,12 +1573,18 @@ impl App {
         Ok(json!({"ok": true, "result": result}))
     }
 
-    pub(crate) fn open_desktop_tool(&mut self) -> Result<Value, String> {
+    pub(crate) fn open_desktop_tool(&mut self, args: &Value) -> Result<Value, String> {
         if !self.web_caller {
             return Err("open_desktop is the user's own button in the web app".into());
         }
         if !cfg!(target_os = "macos") {
             return Err("only on a Mac".into());
+        }
+        let mut shown = None;
+        if let Some(a) = crate::app_claude_desktop::tab_args(args) {
+            let (s, t) = self.one_tab(&a)?;
+            self.jump_to(s, t);
+            shown = Some(self.panes[s].tabs[t].name());
         }
         let r = std::process::Command::new("open")
             .args(["-a", "GodTerm"])
@@ -1587,7 +1593,10 @@ impl App {
             .stderr(std::process::Stdio::null())
             .status();
         match r {
-            Ok(st) if st.success() => Ok(json!({"ok": true, "say": "GodTerm is at the front on the Mac."})),
+            Ok(st) if st.success() => Ok(json!({"ok": true, "say": match shown {
+                Some(n) => format!("{n} is on screen in GodTerm on the Mac."),
+                None => "GodTerm is at the front on the Mac.".to_string(),
+            }})),
             Ok(_) => Err("the GodTerm app was not found in Applications (this GodTerm runs from a terminal?)".into()),
             Err(e) => Err(format!("open failed: {e}")),
         }

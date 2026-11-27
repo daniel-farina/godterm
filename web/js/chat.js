@@ -1,9 +1,11 @@
-import { $, h, on, emit, toast, isDesk, isTouch, store, emptyState, words, icon } from './util.js';
+import { $, h, on, emit, toast, isDesk, isTouch, store, emptyState, words, icon, tcOf, tcStyle } from './util.js';
 import { send, tool } from './conn.js';
 import { S, tabById } from './state.js';
 import { md } from './md.js';
+import { avatarHtml, avatarsOn } from './avatar.js';
 import { openSheet, openMenu, closeSheet, sheetKind } from './sheet.js';
 import { panes } from './term.js';
+import { asks, isGod, askTabs, askWhat, askAge, answerAsk, answered, unanswer } from './asks.js';
 
 const msgs = new Map();
 const MAX = 500;
@@ -88,6 +90,23 @@ async function copyText(text, said) {
   try { await navigator.clipboard.writeText(text); toast(said, 'ok'); } catch { toast('Could not copy', 'warn'); }
 }
 
+function tagPill(e, m) {
+  const old = e.el.querySelector(':scope > .tabtag');
+  const t = m.tab && !tabConv() ? tabById(m.tab) : null;
+  const name = t?.name || m.tab_name || '';
+  if (!m.tab || tabConv() || !name) { old?.remove(); return; }
+  const key = [m.tab, name, t?.color, t?.avatar, t?.state].join('|');
+  if (old?._k === key) return;
+  const pill = h('button.tabtag', { type: 'button', title: t ? 'Go to ' + name : name + ' is closed', onclick: () => { if (tabById(m.tab)) showTab(m.tab); } },
+    t && avatarsOn() ? h('span.tt-av', { html: avatarHtml(t, 'xs') }) : null,
+    h('span.tt-n', {}, name));
+  pill._k = key;
+  pill.disabled = !t;
+  pill.classList.toggle('tc', !!(t && tcOf(t)));
+  if (t) pill.setAttribute('style', tcStyle(t));
+  if (old) old.replaceWith(pill); else e.el.insertBefore(pill, e.body);
+}
+
 function upsert(m, hist) {
   const b = box();
 
@@ -148,6 +167,7 @@ function upsert(m, hist) {
     if (e.thumbs?.length && !e.el.querySelector('.thumbs')) e.el.insertBefore(h('div.thumbs', {}, e.thumbs.map((u) => h('img', { src: u, alt: '' }))), e.body.nextSibling);
   }
   else paintBody(e, streaming);
+  if (m.role === 'assistant' && !streaming) tagPill(e, m);
   e.el.classList.toggle('streaming', streaming);
 
   e.el.toggleAttribute('aria-hidden', streaming);
@@ -233,7 +253,7 @@ function humanTool(v) {
     get_state: () => 'Looked at the tabs', search_tabs: () => 'Searched the tabs', find: () => 'Searched', sessions: () => 'Searched the sessions',
     read_tab: () => 'Read ' + tab, tab_history: () => 'Read ' + tab + "'s history", recent_turns: () => 'Read the recent turns',
     open_tab: () => 'Opened a tab' + (a.name ? ': ' + a.name : ''), reopen_tab: () => 'Reopened ' + tab, close_tabs: () => 'Closed ' + (tab || 'tabs'),
-    rename_tab: () => 'Renamed ' + tab + (a.name ? ' to ' + a.name : ''), pin_tab: () => 'Pinned ' + tab, unpin_tab: () => 'Unpinned ' + tab,
+    relink_conversation: () => (a.path ? 'Relinked ' + tab + ' to ' + a.path : 'Looked for the folder of ' + tab), rename_tab: () => 'Renamed ' + tab + (a.name ? ' to ' + a.name : ''), pin_tab: () => 'Pinned ' + tab, unpin_tab: () => 'Unpinned ' + tab,
     press_key: () => 'Pressed ' + (a.key || 'a key') + (tab ? ' in ' + tab : ''), answer_prompt: () => 'Answered ' + tab,
     show: () => 'Showed ' + tab, web_show: () => 'Showed ' + tab + ' here', web_layout: () => 'Changed the panes here', web_view: () => 'Opened ' + (a.view || 'a view') + ' here', web_font: () => 'Changed the text size here',
     set_tab_model: () => 'Set ' + tab + "'s model", archive_tabs: () => 'Archived ' + (tab || 'tabs'), move_tab: () => 'Moved ' + tab,
@@ -276,13 +296,16 @@ export function setChat(openIt) {
 }
 
 function examples() {
+  const tc = tabConv();
+  if (tc) return ['What are you doing right now?', 'Is anything waiting for me?', 'Tell it to run the tests'];
   const t = (S.tabs || []).find((x) => x.running && x.name) || (S.tabs || [])[0];
   return ['What is every tab doing?', 'Which tabs need me?', t ? `Tell ${t.name} to run the tests` : 'Open a new tab for me'];
 }
 function showEmptyIfNone() {
   const b = box();
   if (b.querySelector('.msg:not(#typing)') || $('#chat-empty')) return;
-  b.append(h('div.chat-empty', { id: 'chat-empty' }, h('div.ce-t', {}, 'Ask about your tabs'), h('div.ce-h', {}, 'The assistant sees every tab: what each one runs, what waits for you, what it last said.'),
+  const tc = tabConv();
+  b.append(h('div.chat-empty', { id: 'chat-empty' }, h('div.ce-t', {}, tc ? 'Talk with ' + tc.name : 'Ask about your tabs'), h('div.ce-h', {}, tc ? 'The assistant sees this tab only: its state, what it is doing and what it waits for. Ask it, or tell it what the tab should do.' : 'The assistant sees every tab: what each one runs, what waits for you, what it last said.'),
     h('div.ce-ex', {}, examples().map((x) => h('button.ex', { type: 'button', onclick: () => { $('#say').value = x; grow(); submit(); } }, x)))));
 }
 const hideEmpty = () => $('#chat-empty')?.remove();
@@ -294,13 +317,15 @@ function scopeTab() {
   return scope.startsWith('id:') ? tabById(scope.slice(3)) : null;
 }
 export function scopeLabel() {
+  if (tabConv()) return 'Tab: ' + tabConv().name;
   const t = scopeTab();
   return t ? t.name : scope === 'all' || (scope !== 'tab' && !t) ? 'All tabs' : 'This tab';
 }
 function setScope(v) { scope = v; store.set('chatscope', scope); paintScope(); emit('scope'); }
 
 export function scopeMenu(at) {
-  const row = (label, v, hint) => h('button.mm-i', { type: 'button', role: 'menuitemradio', 'aria-checked': String(scope === v), onclick: () => { closeSheet(); setScope(v); } },
+  const row = (label, v, hint, tab) => h('button.mm-i', { type: 'button', role: 'menuitemradio', 'aria-checked': String(scope === v), onclick: () => { closeSheet(); setScope(v); } },
+    tab && avatarsOn() ? h('span.mm-av', { html: avatarHtml(tab, 'sm') }) : null,
     h('span.mm-t', {}, label, hint ? h('small', {}, hint) : null), h('span.mm-ck'));
   const list = h('div.ctx-list', { role: 'none' });
   const q = h('input.ctx-q', { type: 'search', placeholder: 'Filter tabs', 'aria-label': 'Filter tabs', autocomplete: 'off', spellcheck: false });
@@ -311,7 +336,7 @@ export function scopeMenu(at) {
     const fixed = w.length ? [] : [row(cur ? 'This tab: ' + cur.name : 'This tab', 'tab', 'The tab you are looking at'), row('All tabs', 'all', 'Everything')];
 
     const rec = [...(S.tabs || [])].filter((t) => t.name && hit(t)).sort((x, y) => (y.active_at || 0) - (x.active_at || 0));
-    const tabs = (w.length ? rec : rec.slice(0, 8)).map((t) => row(t.name, 'id:' + t.id, t.folder || ''));
+    const tabs = (w.length ? rec : rec.slice(0, 8)).map((t) => row(t.name, 'id:' + t.id, t.folder || '', t));
     list.replaceChildren(...fixed, ...(tabs.length || fixed.length ? tabs : [h('div.mnote', { style: 'padding:8px 12px' }, 'No tab matches')]));
   };
   q.oninput = paint;
@@ -322,8 +347,11 @@ export function scopeMenu(at) {
 
 const CTX = /^(?:\[(viewing|about) (.+?) t\d+\] |\((?:About the tab|In view: tab|Context only[^"]*) "([^"]*)" \[[^\]]*\]([^)]*)\) )/;
 
+const tabConv = () => S.assistant?.tab_conv || null;
+let rawMode = false;
+
 function scoped(text) {
-  if (scope === 'all') return text;
+  if (tabConv() || scope === 'all') return text;
   const t = scopeTab();
   return t ? `[about ${t.name} ${t.id}] ${text}` : text;
 }
@@ -336,9 +364,12 @@ function paintScope() {
   one.textContent = t ? 'Tab: ' + t.name : 'This tab';
   one.disabled = false;
 }
-function say(raw, images) {
+function say(raw, images, asIs) {
   const text = scoped(raw);
-  if (!send(images.length ? { t: 'say', text, images } : { t: 'say', text })) return false;
+  const frame = { t: 'say', text };
+  if (images.length) frame.images = images;
+  if (asIs && tabConv() && !images.length) frame.raw = true;
+  if (!send(frame)) return false;
   const id = 'local' + ++local;
 
   const prev = lastSaid && msgs.get(lastSaid.id), prevId = lastSaid?.id;
@@ -346,6 +377,7 @@ function say(raw, images) {
   if (prev?.acts) acts(prev, prevId);
   waiting = Date.now();
   upsert({ id, role: 'user', text, done: true, thumbs: images });
+  if (frame.raw) { waiting = 0; return true; }
   paintTyping();
   return true;
 }
@@ -353,11 +385,11 @@ function resay() {
   if (!lastSaid) return;
   if (!say(lastSaid.text, lastSaid.images || [])) toast('Not connected', 'warn');
 }
-function submit() {
+function submit(once) {
   const ta = $('#say');
   const text = ta.value.trim();
   if (!text && !attached.length) return;
-  if (!say(text, attached.map((a) => a.url))) return toast('Not connected: your message stays in the box', 'warn');
+  if (!say(text, attached.map((a) => a.url), once === true || rawMode)) return toast('Not connected: your message stays in the box', 'warn');
   ta.value = '';
   store.set('draft.say', null);
   attached = [];
@@ -371,10 +403,40 @@ function paintSend() {
   const b = $('#b-send'), ta = $('#say');
   const empty = !ta.value.trim() && !attached.length, off = offline && connSeen;
   b.disabled = offline || empty;
+  $('#b-clear').hidden = !ta.value.length;
   b.title = off ? 'Not connected' : empty ? 'Type a message to send' : isDesk() ? 'Send (Enter)' : 'Send';
   $('#composer').classList.toggle('off', off);
 
-  ta.placeholder = off ? 'Not connected' : $('#chat').clientWidth < 340 ? 'Ask' : 'Ask the assistant';
+  const tc = tabConv();
+  ta.placeholder = off ? 'Not connected' : tc ? (rawMode ? 'Typed into ' + tc.name + ' as is' : $('#chat').clientWidth < 340 ? 'Ask about ' + tc.name : 'Ask or tell the assistant about ' + tc.name) : $('#chat').clientWidth < 340 ? 'Ask' : 'Ask the assistant';
+}
+
+function paintTabConv() {
+  const tc = tabConv();
+  const band = $('#tabconv'), mode = $('#tcmode'), sc = $('#scope');
+  const was = band.dataset.id || '';
+  band.hidden = !tc;
+  mode.hidden = !tc;
+  sc.hidden = !!tc;
+  $('#chat').classList.toggle('tabchat', !!tc);
+  if (!tc) { band.dataset.id = ''; if (rawMode) { rawMode = false; paintRaw(); } if (was) paintSend(); return; }
+  const t = tabById(tc.id);
+  band.dataset.id = tc.id;
+  band.querySelector('b').textContent = 'Talking with ' + (t?.name || tc.name);
+  band.querySelector('small').textContent = [tc.harness, tc.account, tc.model].filter(Boolean).join(' · ') + (tc.state ? ' · ' + tc.state : '');
+  if (tc.id !== was) { rawMode = false; paintRaw(); paintSend(); }
+}
+function paintRaw() {
+  for (const x of $('#tcmode').querySelectorAll('button')) x.setAttribute('aria-pressed', String(x.dataset.v === (rawMode ? 'raw' : 'ask')));
+  paintSend();
+}
+
+export async function openTabChat(id) {
+  const r = await tool('tab_chat', { tab: id });
+  if (r.ok === false || r.error) { toast(r.error || r.result?.error || 'Could not open it', 'error'); return r; }
+  if (!isDesk()) { $('#side').classList.remove('open'); $('#scrim').classList.remove('on'); }
+  setChat(true);
+  return r;
 }
 
 let attached = [];
@@ -403,13 +465,22 @@ function paintAtt() {
 
 function grow() { const ta = $('#say'); ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 168, innerHeight * 0.4) + 'px'; paintJump(); }
 
-const approvals = new Map();
+const approvals = asks;
 function addApproval(a) {
   if (a.done || a.resolved) { approvals.delete(a.id); return paintBadge(); }
   const isNew = !approvals.has(a.id);
   approvals.set(a.id, a);
   paintBadge();
   if (isNew) { fresh.push(a); clearTimeout(freshT); freshT = setTimeout(announce, 300); }
+}
+
+function syncAsks() {
+  if (!Array.isArray(S.approvals)) return false;
+  const ids = new Set(S.approvals.map((a) => a.id));
+  for (const k of [...approvals.keys()]) if (!ids.has(k)) approvals.delete(k);
+  for (const a of S.approvals) if (!approvals.has(a.id) && !answered(a.id)) approvals.set(a.id, a);
+  paintBadge();
+  return true;
 }
 
 const mine = new Set();
@@ -434,7 +505,7 @@ function announce() {
     const cs = choicesOf(a);
     const pick = (re) => cs.find((c) => re.test(c.id));
     const yes = pick(/^(yes|approve|allow)/i), no = pick(/^(no|deny|reject)/i);
-    const answer = (c) => () => { send({ t: 'answer', id: a.id, choice: c.id }); approvals.delete(a.id); paintBadge(); toast('Answered ' + c.label.toLowerCase(), 'ok'); };
+    const answer = (c) => () => { answerAsk(a, c.id); toast('Answered ' + c.label.toLowerCase(), 'ok'); };
 
     const acts = yes && no ? [{ label: 'No', fn: answer(no) }, { label: 'Yes', cls: 'pri', fn: answer(yes) }]
       : !cs.length && t ? [{ label: 'Show', cls: 'pri', fn: () => showTab(t.id) }] : [{ label: 'Review', fn: approvalsSheet }];
@@ -444,13 +515,19 @@ function announce() {
   }
   if (navigator.userActivation?.hasBeenActive) navigator.vibrate?.(60);
 }
-function paintBadge() {
+const paintBadge = () => emit('asks');
+function paintAsks() {
   const n = approvals.size;
 
   if (lastToast?.isConnected && (lastToast.dataset.appr ? !approvals.has(lastToast.dataset.appr) : !n)) lastToast.remove();
   const b = $('#appr-n');
   b.hidden = !n;
   b.textContent = n;
+  const btn = $('#b-appr');
+  btn.classList.toggle('has', n > 0);
+  const label = n ? `${n} ${n === 1 ? 'approval waits' : 'approvals wait'} for you` : 'Approvals';
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
   if (sheetKind === 'approvals') approvalsSheet();
 }
 
@@ -468,14 +545,17 @@ function choicesOf(a) {
 export function approvalsSheet() {
   const cards = [...approvals.values()].map((a) => {
     const t = tabById(typeof a.tab === 'number' ? 't' + a.tab : a.tab);
-    return h('div.lrow.appr', {}, h('div.ct', {}, h('b', {}, t ? t.name : a.name || (a.kind === 'confirm' || a.kind === 'switch' ? 'Assistant' : 'GodTerm')), h('span.cs', {}, t?.account_label || '')),
+    const at = t || tabById(askTabs(a)[0]);
+    const kind = isGod(a) ? ['GodTerm asks: ' + askWhat(a), askAge(a), at ? '' : a.kind === 'tabjob' ? 'its tab is closed' : ''].filter(Boolean).join(' · ') : 'Prompt in the tab\'s terminal';
+    return h('div.lrow.appr', { 'data-id': a.id, 'data-kind': a.kind || '' }, h('div.ct', {}, h('b', {}, t ? t.name : a.name || (a.kind === 'confirm' || a.kind === 'switch' ? 'Assistant' : 'GodTerm')), h('span.cs', {}, t?.account_label || '')),
+      h('div.appr-k', {}, h('span', {}, kind), at && choicesOf(a).length ? h('button.appr-go', { type: 'button', onclick: () => showTab(at.id) }, 'Show the tab') : null),
       h('div.appr-q', {}, a.question || ''),
       h('div.appr-btns', {}, choicesOf(a).length ? choicesOf(a).map((c) => h('button.btn' + (/^(yes|approve|allow)/i.test(c.id) ? '.pri' : /^(no|deny|reject)/i.test(c.id) ? '.bad' : ''), {
-        onclick: () => { send({ t: 'answer', id: a.id, choice: c.id }); approvals.delete(a.id); paintBadge(); if (!approvals.size) closeSheet(); },
+        onclick: () => { answerAsk(a, c.id); if (!approvals.size) closeSheet(); },
       }, c.label)) : [h('span.dim', {}, 'GodTerm cannot read this prompt: answer it in the tab'), t ? h('button.btn.pri', { onclick: () => showTab(t.id) }, 'Show the tab') : null]));
   });
-  openSheet({ kind: 'approvals' }, h('div.sh-title', {}, h('span', {}, 'Approvals'), h('button.ib', { 'aria-label': 'Close', onclick: closeSheet, html: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>' })),
-    cards.length ? h('div.list', {}, cards) : emptyState('Nothing waits for you', 'A tab at a permission prompt, or a yes the assistant asks for, shows up here.', { label: 'Close', fn: closeSheet }));
+  openSheet({ kind: 'approvals' }, h('div.sh-title', {}, h('span', {}, 'Approvals'), h('button.ib', { 'aria-label': 'Close', onclick: closeSheet, html: icon('x') })),
+    cards.length ? h('div.list', {}, cards) : emptyState('Nothing waits for you', 'A tab at a permission prompt, or a yes GodTerm asks you for, shows up here.', { label: 'Close', fn: closeSheet }));
 }
 
 function failLine(text) {
@@ -537,21 +617,15 @@ export function initChat() {
     if (x.dataset.v === 'all') setScope('all'); else if (scope !== 'all') scopeMenu({ x: r.left, y: r.top - 6, up: true }); else setScope('tab');
   };
   on('state', paintScope);
+  on('state', paintTabConv);
   paintScope();
-
-  const tts = $('#b-tts');
-  const ttsOn = () => (S.voice?.typed_spoken ?? store.get('ttsOn', false));
-  const paintTts = () => { const on = !!ttsOn(); tts.setAttribute('aria-pressed', String(on)); tts.title = on ? 'Answers are read aloud (tap to stop)' : 'Read answers aloud (TTS)'; };
-  on('state', paintTts);
-  paintTts();
-  tts.onclick = async () => {
-    const want = !ttsOn();
-    const r = await tool('speaker', { speak_typed: want });
-    if (r.error || r.ok === false) return toast(r.error || 'Could not change it', 'warn');
-    store.set('ttsOn', want);
-    paintTts();
-    toast(want ? (S.voice?.web ? 'Answers will be read aloud' : 'Answers will be read aloud on the Mac; turn on voice here to hear them in this browser') : 'Answers stay text', 'ok');
+  paintTabConv();
+  for (const x of $('#tcmode').querySelectorAll('button')) x.onclick = () => { rawMode = x.dataset.v === 'raw'; paintRaw(); $('#say').focus(); };
+  $('#b-tc-x').onclick = async () => {
+    const r = await tool('tab_chat', { off: true });
+    if (r.ok === false || r.error) toast(r.error || 'Could not leave it', 'error');
   };
+
   on('msg:assistant', (m) => upsert(m));
   const reset = (list, live, liveAt) => {
     if (!Array.isArray(list)) return;
@@ -565,7 +639,8 @@ export function initChat() {
   };
   on('hello', (m) => reset(m.messages || m.assistant?.messages, m.live, m.live_at));
   on('msg:assistant_reset', (m) => reset(m.messages));
-  on('msg:answered', (m) => { if (m.ok === false) toast(m.error || 'That answer did not go through', 'error'); });
+  on('msg:answered', (m) => { if (m.ok === false) { toast(m.error || 'That answer did not go through', 'error'); unanswer(m.id); syncAsks(); } });
+  on('asks', paintAsks);
   on('msg:approval', addApproval);
   on('msg:approval_done', (m) => { approvals.delete(m.id); paintBadge(); });
   on('msg:toast', (m) => toast(m.text, m.level || 'info'));
@@ -574,12 +649,7 @@ export function initChat() {
   on('state', () => {
     paintTyping();
 
-    if (Array.isArray(S.approvals)) {
-      const ids = new Set(S.approvals.map((a) => a.id));
-      for (const k of [...approvals.keys()]) if (!ids.has(k)) approvals.delete(k);
-      for (const a of S.approvals) if (!approvals.has(a.id)) approvals.set(a.id, a);
-      return paintBadge();
-    }
+    if (syncAsks()) return;
 
     const live = new Set();
     for (const p of S.pending_confirmations || []) {
@@ -622,9 +692,11 @@ export function initChat() {
   $('#b-img').addEventListener('click', () => $('#f-img').click());
   $('#f-img').addEventListener('change', (e) => { [...e.target.files].forEach(addImage); e.target.value = ''; });
   ta.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && isDesk()) { e.preventDefault(); submit(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && isDesk()) { e.preventDefault(); submit((e.metaKey || e.ctrlKey) && !!tabConv()); }
   });
   $('#composer').addEventListener('submit', (e) => { e.preventDefault(); submit(); });
+  $('#b-clear').addEventListener('pointerdown', (e) => e.preventDefault());
+  $('#b-clear').addEventListener('click', () => { ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); paintSend(); ta.focus(); });
   $('#b-send').addEventListener('click', (e) => { e.preventDefault(); submit(); ta.focus(); });
   const b = box();
 

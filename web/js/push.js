@@ -136,7 +136,7 @@ function rows() {
       c.onchange = () => setKind(k, c.checked);
       out.push(h('label.li', {}, c, h('span.ll', {}, label)));
     }
-    out.push(li('send', 'Send a test notification', { fn: test }));
+    out.push(li('bell', 'Send a test notification', { fn: test }));
   }
   return out;
 }

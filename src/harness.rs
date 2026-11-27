@@ -60,6 +60,7 @@ impl Harness {
             Harness::Claude => "CLAUDE_CONFIG_DIR",
             Harness::Grok => "GROK_HOME",
             Harness::Codex => "CODEX_HOME",
+            Harness::Antigravity if cfg!(unix) => "HOME",
 
             Harness::Cursor | Harness::Antigravity | Harness::OpenCode => "",
         }
@@ -219,6 +220,17 @@ impl Harness {
         }
     }
 
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::Grok => "Grok",
+            Self::Codex => "Codex",
+            Self::Cursor => "Cursor",
+            Self::Antigravity => "Antigravity",
+            Self::OpenCode => "OpenCode",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Claude => "Claude Code",
@@ -246,7 +258,7 @@ impl Harness {
     }
 
     pub fn has_tab_tools(self) -> bool {
-        !matches!(self, Harness::Antigravity)
+        !matches!(self, Harness::Antigravity) || cfg!(unix)
     }
 
     pub fn no_tab_tools_reason(self) -> Option<String> {
@@ -274,6 +286,16 @@ impl Harness {
     pub fn installed(self, cfg: &crate::config::Config) -> bool {
         crate::deps::which(&cfg.harness_bin(self)).is_some()
     }
+}
+
+pub fn picks_session(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        let flag = a.split('=').next().unwrap_or(a);
+        matches!(
+            flag,
+            "--session-id" | "--resume" | "-r" | "--continue" | "-c" | "--fork-session" | "--bg"
+        )
+    })
 }
 
 #[cfg(test)]

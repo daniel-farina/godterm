@@ -107,9 +107,6 @@ function style() {
 }
 
 const btn = (ic, label, fn) => h('button.ib.sm', { type: 'button', 'aria-label': label, title: label, onclick: fn, html: icon(ic) });
-const ICONS = {
-  fwd: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
-};
 
 class View {
   constructor(t, big) {
@@ -129,7 +126,7 @@ class View {
     this.screen = h('div.bv-screen', { role: 'img', 'aria-label': 'Live browser page: click to click, drag or scroll to scroll' }, this.empty);
     this.addr = h('input', { type: 'url', placeholder: 'Open a web address', enterkeyhint: 'go', autocapitalize: 'off', spellcheck: false });
     this.addr.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); this.go(); } });
-    const fwd = h('button.ib.sm', { type: 'button', 'aria-label': 'Forward', title: 'Forward', onclick: () => this.act({ do: 'forward' }), html: ICONS.fwd });
+    const fwd = h('button.ib.sm', { type: 'button', 'aria-label': 'Forward', title: 'Forward', onclick: () => this.act({ do: 'forward' }), html: icon('chev') });
     this.tools = h('div.bv-tools', {}, btn('back', 'Back', () => this.act({ do: 'back' })), fwd,
       btn('reopen', 'Reload', () => this.act({ do: 'reload' })), this.addr, h('button.btn.sm', { type: 'button', onclick: () => this.go() }, 'Go'));
     this.typed = h('input', { type: 'text', placeholder: 'Type into the page', enterkeyhint: 'send', autocapitalize: 'off', spellcheck: false });

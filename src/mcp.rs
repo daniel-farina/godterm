@@ -57,10 +57,23 @@ pub fn handle_as(
             } else {
                 call(name, &args)
             } {
-                Ok(v) => {
+                Ok(mut v) => {
                     let failed =
                         v.get("ok") == Some(&json!(false)) && v.get("needs_confirmation").is_none();
-                    json!({"content": [{"type": "text", "text": v.to_string()}], "isError": failed})
+                    let image = v
+                        .as_object_mut()
+                        .and_then(|o| o.remove("image_b64"))
+                        .and_then(|d| d.as_str().map(str::to_string));
+                    let mime = v
+                        .as_object_mut()
+                        .and_then(|o| o.remove("image_type"))
+                        .and_then(|d| d.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "image/jpeg".into());
+                    let mut content = vec![json!({"type": "text", "text": v.to_string()})];
+                    if let Some(data) = image {
+                        content.push(json!({"type": "image", "data": data, "mimeType": mime}));
+                    }
+                    json!({"content": content, "isError": failed})
                 }
                 Err(e) => {
                     json!({"content": [{"type": "text", "text": format!("{e:#}")}], "isError": true})

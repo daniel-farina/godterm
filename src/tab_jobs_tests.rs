@@ -212,7 +212,30 @@ fn a_no_or_a_closed_dialog_creates_nothing_and_the_agent_hears_it() {
     );
     app.tab_jobs_tick();
     assert!(matches!(app.modal, Modal::ConfirmTabJob(_)));
+    app.modal = Modal::Help;
+    app.tab_jobs_tick();
+    assert_eq!(
+        app.tab_jobs.asks.len(),
+        1,
+        "a dialog pushed aside is not a no"
+    );
     app.modal = Modal::None;
+    app.tab_jobs_tick();
+    assert!(
+        matches!(app.modal, Modal::ConfirmTabJob(_)),
+        "it is asked again"
+    );
+    app.click(
+        crate::hits::UiAction::ModalCancel,
+        false,
+        &crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+    );
+    assert!(matches!(app.modal, Modal::None));
     app.tab_jobs_tick();
     assert!(app.jobs.jobs.is_empty());
     assert!(app.tab_jobs.asks.is_empty());
@@ -514,7 +537,7 @@ fn a_waiting_request_does_not_cover_another_dialog_and_expires() {
     app.tab_jobs_tick();
     assert!(matches!(app.modal, Modal::ConfirmTabJob(_)));
 
-    app.tab_jobs.asks[0].at = std::time::Instant::now() - std::time::Duration::from_secs(700);
+    app.tab_jobs.asks[0].at = std::time::Instant::now() - std::time::Duration::from_secs(3700);
     app.tab_jobs_tick();
     assert!(app.tab_jobs.asks.is_empty());
     assert!(matches!(app.modal, Modal::None));
@@ -723,6 +746,93 @@ fn a_grok_server_of_the_users_own_called_godterm_is_not_overwritten() {
         std::fs::read_to_string(slot.join("config.toml")).unwrap(),
         own
     );
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_tabs_request_is_listed_for_the_web_and_answered_there_by_the_user() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut app, home, ua, ub) = two_tabs("tabjobs-web");
+    tab_call(
+        &mut app,
+        ua,
+        "create_job",
+        json!({"name": "poll", "prompt": "check the deploy", "every": "30 minutes"}),
+    );
+    let asks: Vec<Value> = app
+        .web_approvals()
+        .into_iter()
+        .filter(|a| a["kind"] == json!("tabjob"))
+        .collect();
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    let a = &asks[0];
+    assert_eq!(a["tab"], json!(ua), "{a}");
+    assert_eq!(a["tool"], json!("create_job"), "{a}");
+    assert_eq!(a["what"], json!("create job"), "{a}");
+    assert_eq!(a["choices"], json!(["yes", "no"]), "{a}");
+    assert!(
+        a["question"].as_str().unwrap().contains("check the deploy"),
+        "{a}"
+    );
+    assert_eq!(
+        a["expires_at"].as_i64().unwrap() - a["asked_at"].as_i64().unwrap(),
+        3600
+    );
+    assert!(app.confirm_uids().contains(&ua));
+    assert!(!app.confirm_uids().contains(&ub));
+    let id = a["id"].as_str().unwrap().to_string();
+
+    let refused = tab_call(&mut app, ua, "answer", json!({"id": id, "choice": "yes"}));
+    assert_ne!(refused["ok"], json!(true), "{refused}");
+    assert!(app.jobs.jobs.is_empty(), "a tab cannot say its own yes");
+    for tool in ["answer", "tab_ask_answer", "approve"] {
+        let v = app.control_call(tool, &json!({"id": id, "choice": "yes", "token": id}));
+        assert_ne!(v["ok"], json!(true), "{tool}: {v}");
+    }
+    assert_eq!(app.tab_jobs.asks.len(), 1);
+
+    app.tab_jobs_tick();
+    assert!(matches!(app.modal, Modal::ConfirmTabJob(_)));
+    app.modal = Modal::Help;
+    app.tab_jobs_tick();
+    assert!(
+        app.web_approvals().iter().any(|a| a["id"] == json!(id)),
+        "the web still shows it when the dialog is not up"
+    );
+    app.modal = Modal::None;
+    app.tab_jobs_tick();
+    assert!(matches!(app.modal, Modal::ConfirmTabJob(_)));
+    app.tab_jobs.asks[0].at = std::time::Instant::now() - std::time::Duration::from_secs(900);
+    app.tab_jobs_tick();
+    assert_eq!(app.tab_jobs.asks.len(), 1, "ten minutes is not the end");
+    assert!(app.web_answer(&id, "maybe").is_err());
+    assert_eq!(app.web_answer(&id, "yes").unwrap(), "answered");
+    assert!(matches!(app.modal, Modal::None), "the dialog closes too");
+    assert_eq!(app.jobs.jobs.len(), 1);
+    assert!(app.tab_jobs.asks.is_empty());
+    assert!(app.web_approvals().iter().all(|a| a["id"] != json!(id)));
+    assert!(!app.confirm_uids().contains(&ua));
+    assert!(app.web_answer(&id, "yes").is_err(), "it is answered once");
+
+    tab_call(
+        &mut app,
+        ub,
+        "create_job",
+        json!({"name": "second", "prompt": "check the queue", "every": "30 minutes"}),
+    );
+    let id = app.tab_asks_json()[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(app.web_answer(&id, "no").unwrap(), "answered");
+    assert_eq!(app.jobs.jobs.len(), 1, "a no creates nothing");
+
+    tab_call(
+        &mut app,
+        ub,
+        "create_job",
+        json!({"name": "third", "prompt": "check the mail", "every": "30 minutes"}),
+    );
+    app.tab_jobs.asks[0].at = std::time::Instant::now() - std::time::Duration::from_secs(3700);
+    app.tab_jobs_tick();
+    assert!(app.tab_asks_json().is_empty(), "an expired request is gone");
     let _ = std::fs::remove_dir_all(home);
 }
 

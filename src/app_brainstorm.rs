@@ -789,15 +789,24 @@ impl App {
                     "brainstorm: typed into {} as #{id}",
                     crate::control::tab_id(uid)
                 ));
+                let direct = self.direct_with(uid);
                 if let Some(d) = self.direct.on.as_mut().filter(|d| d.uid == uid) {
                     d.log.push((true, text.clone()));
                     d.last_sent = Some(text.clone());
                 }
-                self.direct_line(format!(
-                    "you → {name}: (brainstorm, {n} words) {}",
-                    crate::sessions::snippet(&text, 200)
-                ));
-                self.bs_say(&format!("Sent to {name}."));
+                if direct {
+                    self.direct_sent(id);
+                    self.direct_line(format!(
+                        "you: (brainstorm, {n} words) {}",
+                        crate::sessions::snippet(&text, 200)
+                    ));
+                } else {
+                    self.direct_line(format!(
+                        "you → {name}: (brainstorm, {n} words) {}",
+                        crate::sessions::snippet(&text, 200)
+                    ));
+                    self.bs_say(&format!("Sent to {name}."));
+                }
             }
         }
     }
@@ -984,6 +993,7 @@ impl App {
 
     fn suggest_allowed(&self) -> bool {
         self.cfg.voice.brainstorm_suggest
+            && self.direct.on.is_none()
             && self
                 .brainstorm
                 .suggested

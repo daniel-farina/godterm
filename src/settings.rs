@@ -169,7 +169,7 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("refresh_secs", "Usage refresh (seconds)", Kind::Number { min: 60, max: 3600, step: 30 }, "How often usage is fetched per account (never more than once a minute)."),
             g("usage.auto_failover", "When an account runs out", Kind::Choice(&["ask", "auto", "off"]), "ask: a notice offers to move the tab to the account of the same provider with the most left, one yes (Ctrl-a F, a click, or \"move it\") moves it; auto: idle tabs move by themselves and it says so, busy ones are offered; off: nothing."),
             g("ui.blink_attention", "Blink when approval is needed", Kind::Toggle, "The Approvals button in the menu bar turns brick red and blinks slowly (once a second) while anything waits for your yes. Off: it stays solid red without blinking. The blink pauses while the terminal window is not in front."),
-            g("tabs.jobs_tools", "Job tools for tab agents", Kind::Toggle, "Give the agent in each Claude and Grok tab a godterm server with only create_job, list_jobs, update_job, delete_job and adopt_loop, limited to that tab, plus a hint to prefer them over CronCreate and /loop (GodTerm jobs survive restarts and show in Loops & schedules). Each new job asks you first. Applies to tabs started or resumed from now on. Codex, Cursor, Antigravity and OpenCode tabs get none of this."),
+            g("tabs.jobs_tools", "Job tools for tab agents", Kind::Toggle, "Give the agent in each Claude and Grok tab a godterm server with only create_job, list_jobs, update_job, delete_job and adopt_loop, limited to that tab, plus a hint to prefer them over CronCreate and /loop (GodTerm jobs survive restarts and show in Loops & schedules). Each new job asks you first. Applies to tabs started or resumed from now on. Codex, Cursor, Antigravity and OpenCode tabs get the tools their CLI can take (docs/CLI_HARNESSES.md)."),
             g("codex_bin", "Codex CLI binary", Kind::Text, "Path to codex; empty uses PATH."),
             g("cursor_bin", "Cursor CLI binary", Kind::Text, "Path to cursor-agent or agent; empty detects either on PATH."),
             g("antigravity_bin", "Antigravity CLI binary", Kind::Text, "Path to agy; empty uses PATH."),
@@ -178,6 +178,11 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
             g("web.port", "Web app port", Kind::Number { min: 1024, max: 65535, step: 1 }, "The port it serves on 127.0.0.1 (and that tailscale serve proxies). A busy port is tried again every 5 seconds. GODTERM_WEB_PORT or --web-port override it for one run."),
             g("web.tailnet_sign_in", "Tailnet sign in", Kind::Toggle, "Sign in with no token any device logged into this Mac's own tailnet account (and the logins in [web] tailnet_users in config.toml), through tailscale serve or the tailnet address. Other tailnet users and tagged devices are refused. Off: the token link only."),
             g("web.tailnet_ip", "Serve on the tailnet address", Kind::Toggle, "Also listen on this Mac's tailnet IPv4 (plain http, for browsers that cannot resolve *.ts.net). Follows the address when it changes."),
+            g("web.tab_avatars", "Tab avatars", Kind::Toggle, "Show a round avatar for every tab in the web app: a generated pixel picture by default, or a logo or image set from the tab menu or by the tab's agent (set_tab_avatar), with the harness as a small badge. Off: the plain status dot and harness mark. The web app can also turn it off per device."),
+            g("web.embedded_browser", "Embedded browser", Kind::Toggle, "A browser inside GodTerm for building and checking sites locally: dev servers, local apps and pages that need no login. In the web app each tab gets a Browser button that opens it beside the terminal (address bar, back, forward, reload, live and clickable), and each tab's agent gets an embedded_browser tool (open, navigate, screenshot, snapshot, click, type, text, console, network, close) for its own tab only. All tabs share one separate Chrome or Chromium with its own empty throwaway profile, listening on 127.0.0.1 only, never your Chrome profiles, cookies or logins; a tab only sees and drives its own pages, though pages of different tabs share that throwaway profile's cookies. A tab's pages close with the tab, and the browser quits with GodTerm. Pages that need your accounts (Gmail, X) still go through BrowserSkill in your own Chrome. Off by default."),
+            g("web.embedded_browser_max_pages", "Embedded browser pages", Kind::Number { min: 6, max: 200, step: 1 }, "How many pages the embedded browser keeps awake at once, counted over all tabs. Every tab can have 6 page tabs; pages that are asleep do not count. A safety limit for memory: each awake page uses roughly 100 MB."),
+            g("web.embedded_browser_sleep_minutes", "Embedded browser page sleep (minutes)", Kind::Number { min: 0, max: 1440, step: 5 }, "A page nobody has looked at or driven for this long is put to sleep: its memory is released and its tab stays, with its address and scroll position. Opening it again reloads the page, so unsaved input in the page is gone. 0 never puts pages to sleep."),
+            g("web.embedded_browser_bin", "Embedded browser program", Kind::Text, "Path to the Chrome, Chromium, Edge or Brave the embedded browser runs; empty finds one (Chrome first)."),
             g("web.ip_port", "Tailnet address port", Kind::Number { min: 1024, max: 65535, step: 1 }, "The port on the tailnet address. A busy port is tried again every 5 seconds."),
             g("usage.failover_pct", "Runs out below (% left)", Kind::Float { min: 0.0, max: 50.0, step: 1.0 }, "An account counts as running out under this much left (its binding limit, 5 hour or weekly), or when a tab says it hit its limit."),
         ],
@@ -209,7 +214,7 @@ pub fn settings_for(sec: Section, cfg: &Config) -> Vec<Setting> {
                     hidden: None,
                 };
                 v.push(acc("label", "label", Kind::Text, "Name shown in the pane header and status bar.", false, false));
-                v.push(acc("harness", "harness", Kind::Choice(crate::harness::NAMES), "The coding agent: claude, grok, codex, cursor, antigravity or opencode. Cursor, Antigravity and OpenCode use native shared login stores. Restart tabs after a change.", false, false));
+                v.push(acc("harness", "harness", Kind::Choice(crate::harness::NAMES), "The coding agent: claude, grok, codex, cursor, antigravity or opencode. Cursor and OpenCode use native shared login stores; each Antigravity account has its own. Restart tabs after a change.", false, false));
                 v.push(acc("color", "color", Kind::Choice(&crate::theme::ROTATION), "Accent color of the account.", false, false));
                 v.push(acc("cwd", "default folder", Kind::Text, "Folder new tabs of this account start in.", false, false));
                 v.push(acc("new_tab_base", "new tab base", Kind::Text, "Base folder for this account's new tabs.", true, false));
@@ -253,6 +258,9 @@ pub fn current(cfg: &Config, s: &Setting) -> Option<toml::Value> {
             let mut v = &root;
             for part in k.split('.') {
                 v = v.get(part)?;
+            }
+            if *k == "voice.talk_level" && v.as_str() == Some("") {
+                return Some(toml::Value::String("normal".into()));
             }
             Some(v.clone())
         }
@@ -539,7 +547,7 @@ fn talk_back_rows(r: &mut Rows, cfg: &Config, l: Option<&AudioLists>) {
         "voice.tts",
         "Talk back",
         Kind::Toggle,
-        "Spoken confirmations, read backs and announcements.",
+        "Spoken replies, confirmations and announcements. Off means text only. The same switch as Spoken replies in the web voice menu.",
     ));
     r.when(vc.tts, "talk back is on", g("voice.tts_engine", "Voice engine", Kind::Choice(crate::voice::catalog::engine_choices()), "kokoro: built in, the default and recommended, local. chatterbox and ming: optional local voices on Apple Silicon (install below). say: the macOS voices, local. grok: xAI's cloud voices (the spoken text is sent to xAI). off: silent."));
     let others: Vec<&str> = ["kokoro", "say", "grok"]
@@ -763,7 +771,7 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
         ),
     );
     r.add(g("voice.wake_follow_up_s", "After the wake word alone (s)", Kind::Number { min: 3, max: 30, step: 1 }, "Say the wake word alone and GodTerm answers \"Yes?\"; what you say within this many seconds is the command."));
-    r.add(g("voice.direct_reply", "Direct mode replies", Kind::Choice(&["auto", "sentences"]), "Talking to one tab directly (Ctrl-a K, or \"let me talk to that tab\"): auto says a short reply as it is and has the assistant sum up a long one; sentences always says its first sentences. Code and tables are never read out."));
+    r.add(g("voice.direct_reply", "Direct mode replies", Kind::Choice(&["auto", "sentences"]), "Talking to one tab directly (Ctrl-a K, or \"let me talk to that tab\"): auto says the tab's reply as it is, in its own words, and you cut it off by talking; sentences says only its first sentences. Once \"How much is said\" is chosen, that level decides instead. Lists, options and questions are always said, and code and tables are never read out."));
     r.add(g(
         "voice.direct_sentences",
         "Direct mode: sentences said",
@@ -772,7 +780,13 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
             max: 10,
             step: 1,
         },
-        "How many sentences of a tab's reply are said in direct mode.",
+        "How many sentences of a tab's reply are said in direct mode when replies are set to sentences.",
+    ));
+    r.add(g(
+        "voice.direct_follow",
+        "Direct mode follows the active tab",
+        Kind::Toggle,
+        "off: direct mode stays with the tab you started it on until you move it. on: when you switch to another running tab, in the app or in the web app, your voice moves to that tab after a moment and GodTerm says who you are talking to now.",
     ));
     r.add(g("voice.pause_default_s", "Pause: default (s)", Kind::Number { min: 10, max: 3600, step: 30 }, "\"Hold on\" without a duration stops acting on speech this many seconds; the wake word resumes sooner."));
     r.add(g(
@@ -886,6 +900,7 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
         ),
     );
     r.when(whisper, "engine = whisper or auto", g("voice.beam_size", "Beam size", Kind::Number { min: 1, max: 8, step: 1 }, "1 to 8: beam search for final transcripts (5 is more accurate; 1 is greedy and quicker)."));
+    r.when(whisper, "engine = whisper or auto", g("voice.stt_unload_after_s", "Speech model: unload after (s)", Kind::Number { min: 0, max: 3600, step: 60 }, "Stop the whisper server and free its memory (about 2 GB) after this many seconds with the mic muted or in push to talk and unused; it loads again when you talk or unmute, and what you say meanwhile is kept. Voice off always frees it. 0 keeps it loaded."));
     r.when(whisper, "engine = whisper or auto", g("voice.whisper_vad", "Whisper VAD", Kind::Toggle, "whisper.cpp's own voice activity detection trims non speech inside each utterance (a 1 MB model, fetched once)."));
 
     let sources = crate::voice::grok_tts::sources(cfg);
@@ -972,6 +987,12 @@ fn voice_rows(cfg: &Config, all: bool) -> Vec<Setting> {
         "Speak replies to typed messages",
         Kind::Toggle,
         "off: a typed message gets a text answer only; a spoken one is answered out loud (unless the speaker is muted).",
+    ));
+    r.add(g(
+        "voice.talk_level",
+        "How much is said",
+        Kind::Choice(crate::app_talkback::TalkLevel::NAMES),
+        "How talkative the spoken voice is; what is written never changes. brief: one short sentence, the answer only, and in direct mode the first sentence of a tab's reply. normal: a couple of sentences, and in direct mode the opening of the reply. detailed: full spoken detail, and in direct mode the whole reply. Questions and numbered options a tab asks are said at every level.",
     ));
     r.add(g(
         "voice.speak_confirm",

@@ -252,7 +252,7 @@ scripts/e2e/gate.sh --only move          # screens and flows with that text in t
   sheet owns the screen (what is behind its scrim is not checked); a message's
   hover-only actions and controls in a closed `<details>` are not controls yet.
 - **Combinations**: push to talk with the Assistant open (the Talk button
-  on screen, 40 px or more), a muted mic with the chat, the tab panel and
+  on screen, 40 px or more on a touch screen), a muted mic with the chat, the tab panel and
   the chat in a 1000 px window (the terminal keeps 520 px, the folded tab
   list opens over it), a message over a sheet.
 - **Flows with real clicks**: move a tab (the pane follows it to its new

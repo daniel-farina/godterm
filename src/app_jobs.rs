@@ -343,6 +343,7 @@ impl App {
                 session_id: Some(sid),
                 name: Some(t.label.clone()).filter(|l| !l.is_empty()),
                 accent: None,
+                avatar: None,
                 loops: vec![],
                 group: 0,
                 closed_at: self.job_now(),
@@ -351,6 +352,7 @@ impl App {
                 pinned: false,
                 browser: None,
                 browser_also: vec![],
+                route: None,
             };
             self.reopen_closed_tab(c).map(|_| ())
         })();
@@ -471,8 +473,19 @@ impl App {
         let Some(j) = self.jobs.find(id).cloned() else {
             return;
         };
+        let again = j
+            .last_result
+            .as_ref()
+            .is_some_and(|r| r.state == "failed" && r.detail == why);
         self.set_result(id, "failed", why);
         self.jobs_save();
+        if again {
+            crate::log::info(&format!(
+                "jobs: {id} ({}) failed again the same way, not telling again: {why}",
+                j.name
+            ));
+            return;
+        }
         let src = crate::told::Source {
             tab: j.target.uid,
             account: None,

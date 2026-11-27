@@ -218,6 +218,9 @@ fn interrupting_while_priming_stops_the_turn() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_ne!(b.pid(), 0, "the primer runs");
+    while lines(&d.join("args.txt")).is_empty() && t0.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     b.interrupt().unwrap();
     let evs = turn(&rx, 5);
     assert!(

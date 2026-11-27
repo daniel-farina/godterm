@@ -1167,6 +1167,14 @@ fn draw_about(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(DIM),
         ),
         Line::styled(
+            format!("  data path  {}", home.display()),
+            Style::default().fg(DIM),
+        ),
+        Line::styled(
+            "             move it with: godterm data-path <folder>",
+            Style::default().fg(DIM),
+        ),
+        Line::styled(
             format!("  program    {}", app.cfg.claude_bin()),
             Style::default().fg(DIM),
         ),

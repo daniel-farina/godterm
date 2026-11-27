@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -330,6 +330,72 @@ fn load_kokoro_with(cfg: &VoiceCfg, strict: bool) -> anyhow::Result<Kokoro> {
     Ok(k)
 }
 
+static PREVIEW_KOKORO: Mutex<Option<Kokoro>> = Mutex::new(None);
+pub static PREVIEW_GEN: AtomicU64 = AtomicU64::new(0);
+
+fn preview_run(
+    e: &mut dyn super::engines::TtsEngine,
+    text: &str,
+    sink: &mut dyn FnMut(&[f32], u32) -> bool,
+) -> Result<String, String> {
+    e.speak_stream(text, sink).map(|_| e.name())
+}
+
+pub fn preview(
+    cfg: &VoiceCfg,
+    gen: u64,
+    text: &str,
+    emit: &mut dyn FnMut(&[f32], u32),
+) -> Result<String, String> {
+    let speed = cfg.tts_speed.clamp(0.5, 2.0);
+    let mut sink = |s: &[f32], r: u32| -> bool {
+        if PREVIEW_GEN.load(Ordering::SeqCst) != gen {
+            return false;
+        }
+        if !s.is_empty() {
+            emit(s, r);
+        }
+        true
+    };
+    match cfg.tts_engine.as_str() {
+        "kokoro" => {
+            if let Some(p) = kokoro_problem(cfg) {
+                return Err(p);
+            }
+            let mut g = PREVIEW_KOKORO.lock().unwrap_or_else(|e| e.into_inner());
+            if g.is_none() {
+                *g = Some(load_kokoro_with(cfg, false).map_err(|e| e.to_string())?);
+            }
+            let Some(k) = g.as_mut() else {
+                return Err("kokoro did not load".into());
+            };
+            let voice = if k.voices.style(&cfg.kokoro_voice, 1).is_some() {
+                cfg.kokoro_voice.clone()
+            } else {
+                "af_heart".to_string()
+            };
+            let mut e = super::engines::KokoroEngine { k, voice, speed };
+            preview_run(&mut e, text, &mut sink)
+        }
+        "say" => {
+            let mut e = super::engines::SayEngine {
+                voice: cfg.tts_voice.clone(),
+                speed,
+                dir: app_home().join("voice").join("tts"),
+            };
+            preview_run(&mut e, text, &mut sink)
+        }
+        "grok" => {
+            let mut e = super::engines::GrokEngine::new(cfg.grok.clone());
+            preview_run(&mut e, text, &mut sink)
+        }
+        "off" => Err("This choice is silent".into()),
+        other => Err(format!(
+            "A preview for {other} is not available; it speaks when it answers"
+        )),
+    }
+}
+
 enum Job {
     Say { gen: u64, text: String },
 
@@ -343,6 +409,8 @@ pub struct Speaker {
     player: Arc<Mutex<Option<u32>>>,
 
     flush: Arc<AtomicBool>,
+
+    volume: Arc<AtomicU32>,
 
     pub engine: Arc<Mutex<String>>,
     speaking_flag: Arc<AtomicBool>,
@@ -359,6 +427,7 @@ impl Speaker {
             gen: Arc::new(AtomicU64::new(0)),
             player: Arc::new(Mutex::new(None)),
             flush: Arc::new(AtomicBool::new(false)),
+            volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
             engine: Arc::new(Mutex::new("idle".into())),
             speaking_flag: Arc::new(AtomicBool::new(true)),
             said: Default::default(),
@@ -379,20 +448,55 @@ impl Speaker {
     }
 
     fn start_with(cfg: &VoiceCfg, speaking: Arc<AtomicBool>, browser: bool) -> Speaker {
+        Speaker::start_on(cfg, speaking, browser, None)
+    }
+
+    #[cfg(test)]
+    pub fn start_silent(cfg: &VoiceCfg) -> (Speaker, Arc<super::player::Mix>) {
+        let flush = Arc::new(AtomicBool::new(false));
+        let volume = Arc::new(AtomicU32::new(cfg.tts_volume.clamp(0.0, 1.0).to_bits()));
+        let mix = super::player::Mix::new(Arc::clone(&flush), Arc::clone(&volume));
+        let sp = Speaker::start_on(
+            cfg,
+            Arc::new(AtomicBool::new(false)),
+            false,
+            Some((Arc::clone(&mix), flush, volume)),
+        );
+        (sp, mix)
+    }
+
+    fn start_on(
+        cfg: &VoiceCfg,
+        speaking: Arc<AtomicBool>,
+        browser: bool,
+        silent: Option<(Arc<super::player::Mix>, Arc<AtomicBool>, Arc<AtomicU32>)>,
+    ) -> Speaker {
         let (tx, rx) = mpsc::channel();
         let gen = Arc::new(AtomicU64::new(0));
         let player = Arc::new(Mutex::new(None));
-        let flush = Arc::new(AtomicBool::new(false));
+        let fake = silent.is_some();
+        let (quiet, flush, volume) = match silent {
+            Some((o, f, v)) => (Some(o), f, v),
+            None => (
+                None,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicU32::new(cfg.tts_volume.clamp(0.0, 1.0).to_bits())),
+            ),
+        };
+        if !fake {
+            super::player::set_web_volume(cfg.tts_volume);
+        }
         let engine = Arc::new(Mutex::new(String::from("starting")));
         let speaking_flag = Arc::clone(&speaking);
         let said: Arc<Mutex<VecDeque<String>>> = Default::default();
         let sd = Arc::clone(&said);
-        let (c, g, pl, fl, en) = (
+        let (c, g, pl, fl, en, vl) = (
             cfg.clone(),
             Arc::clone(&gen),
             Arc::clone(&player),
             Arc::clone(&flush),
             Arc::clone(&engine),
+            Arc::clone(&volume),
         );
         let _ = std::thread::Builder::new()
             .name("tts".into())
@@ -403,6 +507,7 @@ impl Speaker {
                     gen: g,
                     player: pl,
                     flush: fl,
+                    volume: vl,
                     engine: en,
                     said: sd,
                     speaking,
@@ -410,7 +515,8 @@ impl Speaker {
                     grok: None,
                     chatterbox: None,
                     ming: None,
-                    out: None,
+                    out: quiet.map(|m| Player::silent(m, kokoro::SAMPLE_RATE)),
+                    fake,
                     seq: 0,
                     browser,
                     web_said: None,
@@ -423,10 +529,22 @@ impl Speaker {
             gen,
             player,
             flush,
+            volume,
             engine,
             speaking_flag,
             said,
         }
+    }
+
+    pub fn set_volume(&self, v: f32) {
+        let v = v.clamp(0.0, 1.0);
+        self.volume.store(v.to_bits(), Ordering::Relaxed);
+        super::player::set_web_volume(v);
+    }
+
+    #[cfg(test)]
+    pub fn volume(&self) -> f32 {
+        f32::from_bits(self.volume.load(Ordering::Relaxed))
     }
 
     pub fn said(&self) -> Vec<String> {
@@ -458,6 +576,7 @@ impl Speaker {
     }
 
     pub fn configure(&self, cfg: &VoiceCfg) {
+        self.set_volume(cfg.tts_volume);
         let _ = self.tx.send(Job::Config(Box::new(cfg.clone())));
     }
 
@@ -486,6 +605,7 @@ struct Worker {
     gen: Arc<AtomicU64>,
     player: Arc<Mutex<Option<u32>>>,
     flush: Arc<AtomicBool>,
+    volume: Arc<AtomicU32>,
     engine: Arc<Mutex<String>>,
     said: Arc<Mutex<VecDeque<String>>>,
     speaking: Arc<AtomicBool>,
@@ -495,6 +615,8 @@ struct Worker {
     chatterbox: Option<super::local_tts::LocalEngine>,
     ming: Option<super::local_tts::LocalEngine>,
     out: Option<Player>,
+
+    fake: bool,
     seq: u64,
 
     browser: bool,
@@ -511,6 +633,9 @@ impl Worker {
     }
 
     fn load(&mut self) {
+        if self.fake {
+            return;
+        }
         self.kokoro = None;
         let chain = super::engines::chain(&self.cfg);
         self.grok = chain
@@ -778,8 +903,8 @@ impl Worker {
     }
 
     fn speak(&mut self, gen: u64, text: &str) {
-        let web = web_on();
-        if audio_muted() && !web {
+        let web = web_on() && !self.fake;
+        if audio_muted() && !web && !self.fake {
             crate::log::info(&format!("tts (muted, not played): {text}"));
             return;
         }
@@ -829,7 +954,11 @@ impl Worker {
         let mut batch = WebBatch::default();
         if !web && self.out.is_none() && !chain.is_empty() {
             let t = Instant::now();
-            match Player::open(&self.cfg.output_device, Arc::clone(&self.flush)) {
+            match Player::open(
+                &self.cfg.output_device,
+                Arc::clone(&self.flush),
+                Arc::clone(&self.volume),
+            ) {
                 Ok(p) => {
                     crate::log::info(&format!(
                         "tts: opened {} in {} ms",
@@ -844,7 +973,6 @@ impl Worker {
             }
         }
         let mut fallback: Option<(std::process::Child, PathBuf)> = None;
-        let vol = self.cfg.tts_volume.clamp(0.0, 1.0);
         let speed = self.cfg.tts_speed.clamp(0.5, 2.0);
         let say_dir = app_home().join("voice").join("tts");
         for sentence in split_first(chunk_sentences(&text)) {
@@ -881,8 +1009,7 @@ impl Worker {
                     if samples.is_empty() {
                         return true;
                     }
-                    let v: Vec<f32> = samples.iter().map(|x| x * vol).collect();
-                    let Some((clip, r)) = batch.push(&v, rate) else {
+                    let Some((clip, r)) = batch.push(samples, rate) else {
                         return true;
                     };
                     let n = clip.len();
@@ -893,7 +1020,7 @@ impl Worker {
                     }
                 }
                 match out {
-                    Some(o) => o.push(samples, rate, vol),
+                    Some(o) => o.push(samples, rate),
                     None => {
                         held_rate = rate;
                         held.extend_from_slice(samples);
@@ -935,6 +1062,12 @@ impl Worker {
                         .map(|x| x as &mut dyn super::engines::TtsEngine),
                 };
                 engines.extend(next);
+            }
+            #[cfg(test)]
+            let mut tone = TestTone;
+            #[cfg(test)]
+            if self.fake {
+                engines = vec![&mut tone];
             }
             let (who, failed) =
                 super::engines::speak_with_fallback(&mut engines, &sentence, &mut sink);
@@ -1069,7 +1202,7 @@ impl Worker {
     }
 
     fn afplay(&self, file: &Path) -> Option<std::process::Child> {
-        let vol = self.cfg.tts_volume.clamp(0.0, 1.0);
+        let vol = f32::from_bits(self.volume.load(Ordering::Relaxed)).clamp(0.0, 1.0);
         let c = Command::new("afplay")
             .args(["-v", &format!("{vol:.2}")])
             .arg(file)
@@ -1081,6 +1214,36 @@ impl Worker {
         *self.player.lock().unwrap_or_else(|e| e.into_inner()) = Some(c.id());
         Some(c)
     }
+}
+
+#[cfg(test)]
+struct TestTone;
+
+#[cfg(test)]
+impl super::engines::TtsEngine for TestTone {
+    fn name(&self) -> String {
+        "test tone".into()
+    }
+
+    fn speak_stream(
+        &mut self,
+        _text: &str,
+        sink: &mut dyn FnMut(&[f32], u32) -> bool,
+    ) -> Result<(), String> {
+        for _ in 0..20 {
+            if !sink(&[1.0; 1200], kokoro::SAMPLE_RATE) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
+
+    fn voices(&self) -> Vec<String> {
+        vec![]
+    }
+
+    fn cancel(&self) {}
 }
 
 pub fn bench(out_dir: &Path, play: bool) -> anyhow::Result<()> {
@@ -1307,5 +1470,98 @@ mod tests {
         let total: usize = clips.iter().map(|(c, _)| c.len()).sum();
         assert_eq!(total, 60 * 1200);
         assert_eq!(b.clips, clips.len());
+    }
+
+    fn wait_for(what: &str, f: impl Fn() -> bool) {
+        let t = Instant::now();
+        while !f() {
+            assert!(t.elapsed() < Duration::from_secs(10), "waited for {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn drain(mix: &super::super::player::Mix) -> Vec<f32> {
+        let mut all = vec![];
+        let mut quiet = Instant::now();
+        while quiet.elapsed() < Duration::from_millis(500) {
+            let n = mix.pending();
+            if n > 0 {
+                all.extend(mix.render(n));
+                quiet = Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        all
+    }
+
+    #[test]
+    fn a_volume_change_mid_reply_reaches_queued_and_later_audio() {
+        let cfg = VoiceCfg {
+            tts_volume: 0.8,
+            ..VoiceCfg::default()
+        };
+        let (sp, mix) = Speaker::start_silent(&cfg);
+        sp.enqueue("The first sentence is a long one. The second sentence follows it. And a third one ends the reply.");
+        wait_for("the first audio", || mix.pending() >= 4800);
+        let a = mix.render(2400);
+        assert!(a.iter().all(|x| (x - 0.8).abs() < 1e-6), "{:?}", &a[..4]);
+
+        let queued = mix.pending();
+        assert!(queued >= 2400, "{queued}");
+        sp.configure(&VoiceCfg {
+            tts_volume: 0.3,
+            ..cfg.clone()
+        });
+        assert!((sp.volume() - 0.3).abs() < 1e-6);
+        let b = mix.render(2400);
+        assert!(
+            b[600..].iter().all(|x| (x - 0.3).abs() < 1e-6),
+            "audio queued at 80% plays at 30%: {:?}",
+            &b[600..604]
+        );
+
+        wait_for("the last sentence", || {
+            sp.said().iter().any(|s| s.contains("third"))
+        });
+        let rest = drain(&mix);
+        assert!(rest.len() > 24_000, "{}", rest.len());
+        assert!(
+            rest.iter().all(|x| (x - 0.3).abs() < 1e-6),
+            "later chunks too"
+        );
+
+        sp.set_volume(0.0);
+        sp.enqueue("One more.");
+        wait_for("more audio", || mix.pending() >= 4800);
+        let z = mix.render(2400);
+        assert!(z[600..].iter().all(|x| *x == 0.0), "zero is silence");
+        sp.stop();
+    }
+
+    #[test]
+    fn a_stop_mid_reply_drops_the_queue_and_the_sentences_left() {
+        let (sp, mix) = Speaker::start_silent(&VoiceCfg::default());
+        sp.enqueue("The first sentence is a long one. The second sentence follows it. And a third one ends the reply.");
+        sp.enqueue("A queued reply waits behind it.");
+        wait_for("the first audio", || mix.pending() >= 4800);
+        assert!(mix.render(1200).iter().any(|x| *x > 0.0));
+        sp.stop();
+        wait_for("the queue to empty", || mix.pending() == 0);
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(mix.pending(), 0, "nothing more is synthesized");
+        assert!(mix.render(1200).iter().all(|x| *x == 0.0));
+        let said = sp.said();
+        assert!(
+            !said
+                .iter()
+                .any(|s| s.contains("third") || s.contains("queued")),
+            "{said:?}"
+        );
+
+        sp.enqueue("A new reply after it.");
+        wait_for("the new reply", || mix.pending() >= 1200);
+        assert!(sp.said().iter().any(|s| s.contains("new reply")));
+        assert!(!sp.said().iter().any(|s| s.contains("third")));
+        sp.stop();
     }
 }

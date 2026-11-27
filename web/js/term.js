@@ -3,7 +3,11 @@ import { send, sendInput, KIND, conn, tool, gzOk } from './conn.js';
 import { openSheet, closeSheet } from './sheet.js';
 import { S, tabById } from './state.js';
 import { dlog } from './debuglog.js';
+import { paintAvatar } from './avatar.js';
+import { emailOf, setEmailsOn } from './emails.js';
 import { ownTextarea } from './textinput.js';
+import { Ebv, ebvAvailable, ebvShown, toggleEbv } from './ebv.js';
+import { asksOf, askWhat, askWho, askAge, answerAsk } from './asks.js';
 
 const THEME = {
   background: '#1b1d21', foreground: '#d9d6cf', cursor: '#c9a46a', cursorAccent: '#1b1d21',
@@ -134,6 +138,53 @@ export function newlineFor(id) {
 let inputHook = (d) => d;
 export const setInputHook = (fn) => (inputHook = fn);
 
+export function sharingOf(t) {
+  const a = t && S.accounts.find((x) => x.account === t.account);
+  return a?.sharing ? { ...a.sharing, label: a.label || '' } : null;
+}
+
+export function paintSharingBtn(b, sh) {
+  b.hidden = !sh;
+  if (!sh) return;
+  b.classList.toggle('sh-on', sh.state === 'on');
+  b.classList.toggle('sh-off', sh.state === 'off');
+  b.classList.toggle('sh-unk', sh.state === 'unknown');
+  const say = sh.state === 'on' ? `${sh.product}: ON. Your conversations on this account may be used to train and improve models. Tap for how to turn it off.`
+    : sh.state === 'off' ? `${sh.product}: off. ${sh.locked ? 'Your team keeps it off. ' : ''}Your conversations on this account are not used for training.`
+    : `${sh.product}: could not be read yet. Tap for details.`;
+  b.title = say;
+  b.setAttribute('aria-label', say);
+}
+
+export function sharingSheet(id) {
+  const t = tabById(id), sh = sharingOf(t);
+  if (!sh) return;
+  const ask = (op, extra = {}) => new Promise((res) => {
+    const rid = 'sh' + Date.now();
+    const off = on('msg:accounts', (m) => { if (m.id === rid) { off(); res(m); } });
+    setTimeout(() => { off(); res({ ok: false, error: 'GodTerm did not answer in time' }); }, 15000);
+    if (!send({ t: 'accounts', id: rid, op, account: t.account, ...extra })) res({ ok: false, error: 'not connected to GodTerm' });
+  });
+  const state = sh.state === 'on' ? 'ON: data from this account may be used to train and improve models.'
+    : sh.state === 'off' ? (sh.locked ? 'OFF: your team has zero data retention, so it cannot be turned on here.' : 'OFF: your data is not used for training.')
+    : 'Not known yet: GodTerm could not read it for this account.';
+  const how = sh.how === 'slash'
+    ? 'GodTerm can read this setting but not change it. Change it inside the tab with the /privacy command.'
+    : "GodTerm can read this setting but not change it. Change it on the provider's page, then check again.";
+  const done = (r, ok) => toast(r.ok === false ? (r.error || 'It did not work') : ok, r.ok === false ? 'error' : 'ok');
+  const kids = [];
+  if (sh.how === 'slash' && !sh.locked) {
+    const ready = t.state === 'ready';
+    kids.push(h('button.btn.pri', { disabled: !ready, title: ready ? '' : 'Wait until the tab is idle', onclick: async () => { closeSheet(); done(await ask('sharing_slash', { tab: uidOf(id) }), 'Typed /privacy in the tab'); } }, 'Type /privacy in this tab'));
+  }
+  if (sh.how === 'link' && sh.url) kids.push(h('button.btn.pri', { onclick: () => { window.open(sh.url, '_blank', 'noopener'); } }, 'Open the setting'));
+  kids.push(h('button.btn', { onclick: async () => { closeSheet(); done(await ask('sharing_check'), 'Checking the setting again'); } }, 'Check again'));
+  kids.push(h('button.btn', { onclick: closeSheet }, 'Close'));
+  openSheet({ kind: 'confirm' }, h('div.sh-title', {}, h('span', {}, sh.product)),
+    h('div.appr-q', {}, `${sh.label ? sh.label + ': ' : ''}${state} ${how}`),
+    h('div.appr-btns', {}, ...kids));
+}
+
 class Pane {
   constructor(i) {
     this.i = i;
@@ -144,6 +195,7 @@ class Pane {
     this.el = h('div.pane', { 'data-i': i });
     this.name = h('span.pn', { draggable: 'true' }, 'Empty pane');
     this.dot = h('span.dot');
+    this.av = h('span.av-h', { hidden: true });
     this.sz = h('span.sz');
 
     this.meta = h('span.pmeta', { onclick: (e) => {
@@ -151,11 +203,14 @@ class Pane {
       if (f) { navigator.clipboard?.writeText(f).then(() => toast('Copied ' + f, 'ok'), () => {}); e.stopPropagation(); }
     } });
     this.takeBtn = h('button.ib', { title: 'Take size: resize the tab to this pane', 'data-i': 'max', 'aria-pressed': 'false', onclick: () => this.toggleTake() });
-    this.head = h('div.pane-head', {}, this.dot, this.name, this.meta, this.sz,
+    this.ebvBtn = h('button.ib', { type: 'button', hidden: true, title: 'Embedded browser beside the terminal', 'aria-label': 'Embedded browser', 'aria-pressed': 'false', 'data-i': 'globe', onclick: () => toggleEbv(this.id) });
+    this.shBtn = h('button.ib.sh', { type: 'button', hidden: true, 'data-i': 'shieldalert', onclick: (e) => { e.stopPropagation(); sharingSheet(this.id); } });
+    this.rt = h('button.rt-b', { type: 'button', hidden: true, onclick: (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); if (this.id) emit('routemenu', this.id, { x: r.left, y: r.bottom + 4 }); } });
+    this.head = h('div.pane-head', {}, this.av, this.dot, this.name, this.rt, this.meta, this.sz, this.shBtn,
       h('button.ib.zb', { title: 'Smaller font', onclick: () => this.zoom(-1) }, 'A-'),
       h('button.ib.zb', { title: 'Larger font', onclick: () => this.zoom(1) }, 'A+'),
       h('button.ib.zb', { title: 'Back to this device\'s font size (smaller when the tab does not fit)', onclick: () => this.zoom(0) }, 'Fit'),
-      this.takeBtn,
+      this.takeBtn, this.ebvBtn,
       h('button.ib', { title: 'Tab options', 'data-i': 'dots', onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); if (this.id) emit('tabmenu', this.id, { x: r.right - 320, y: r.bottom + 4 }); } }));
     this.host = h('div.xt');
 
@@ -178,7 +233,10 @@ class Pane {
     this.body = h('div.pane-body', {}, this.host, this.msg, this.hint, this.fz);
 
     this.lease = h('div.lease-bar', { hidden: true });
-    this.el.append(this.head, this.lease, this.body);
+    this.ebv = new Ebv(this);
+    this.split = h('div.pane-split', {}, this.body, this.ebv.grip, this.ebv.el);
+    this.ask = h('div.ask-bar', { hidden: true, role: 'region', 'aria-label': 'GodTerm needs your OK' });
+    this.el.append(this.head, this.lease, this.ask, this.split);
     paintIcons(this.head);
     this.el.addEventListener('pointerdown', () => panes.focus(this.i), true);
 
@@ -378,45 +436,93 @@ class Pane {
     this.msg.hidden = !!kept;
     this.paintHead();
     if (kept) this.layout();
+    this.ebv.sync();
 
     if (typing && !this.host.contains(document.activeElement)) this.term.focus();
   }
 
+  ebvPaint() {
+    const on = ebvAvailable() && !!this.id;
+    this.ebvBtn.hidden = !on;
+    this.ebvBtn.setAttribute('aria-pressed', on && ebvShown(this.id) ? 'true' : 'false');
+  }
+
   paintHead() {
+    this.ebvPaint();
     const t = tabById(this.id);
     this.name.textContent = t ? t.name : this.id ? this.id : 'Empty pane';
     this.dot.className = 'dot ' + (t ? t.state : '');
+    paintAvatar(this.av, t, 'sm');
 
     this.el.classList.toggle('empty', !this.id);
     tcPaint(this.el, t);
     this.sz.textContent = this.cols ? `${this.cols}x${this.rows}` : '';
 
-    for (const b of this.head.querySelectorAll('button.ib')) {
+    for (const b of this.head.querySelectorAll('button.ib:not(.sh)')) {
       if (b.dataset.t0 == null) b.dataset.t0 = b.title;
       b.disabled = !t;
       b.title = t ? b.dataset.t0 : 'Pick a tab for this pane first';
     }
     this.paintMeta(t);
+    const sh = sharingOf(t), shKey = sh ? [sh.state, sh.locked].join() : '';
+    if (shKey !== this.shKey) { this.shKey = shKey; paintSharingBtn(this.shBtn, sh); }
     if (this.id && !t && S.tabs.length) { this.msg.textContent = 'This tab is closed'; this.msg.hidden = false; }
+    else if (t?.conversation_lost) this.paintLost(t);
+    else if (t?.route?.state === 'blocked') this.paintRouteBlock(t);
 
     else if (t && this.ready && t.running === false && !this.screenText().trim()) {
       this.msg.textContent = `Not running (${t.state || 'stopped'}): its options can reopen it`;
       this.msg.hidden = false;
       this.idleMsg = true;
     } else if (this.idleMsg && this.ready) { this.idleMsg = false; this.msg.hidden = true; }
+    if (!t?.conversation_lost && this.lostKey) { this.lostKey = ''; this.msg.hidden = true; this.msg.textContent = ''; }
+    if (t?.route?.state !== 'blocked' && this.rbKey) { this.rbKey = ''; this.msg.hidden = true; this.msg.textContent = ''; }
+    const rt = t?.route;
+    this.rt.hidden = !rt;
+    if (rt) {
+      const warn = rt.state !== 'on' && rt.state !== 'idle';
+      this.rt.textContent = 'via ' + rt.name;
+      this.rt.dataset.s = warn ? 'warn' : 'on';
+      this.rt.title = warn ? 'Route ' + rt.name + ': ' + (rt.detail || rt.state) : 'This tab\'s agent goes through the route ' + rt.name + '. Tap to change';
+    }
     this.paintLease(t);
+    this.paintAsk();
+  }
+
+  paintAsk() {
+    const list = asksOf(this.id);
+    const key = list.map((a) => [a.id, a.question, askAge(a)].join('|')).join('\n');
+    if (key === this.askKey) return;
+    this.askKey = key;
+    if (!list.length) { this.ask.hidden = true; this.ask.replaceChildren(); return; }
+    const btn = (a, label, choice, cls) => h('button.btn' + cls, { type: 'button', 'data-c': choice, onclick: (e) => { e.stopPropagation(); answerAsk(a, choice); toast('Answered ' + choice, 'ok'); } }, label);
+    this.ask.replaceChildren(...list.map((a) => h('div.ask', { 'data-id': a.id },
+      h('div.ask-t', {}, h('b', {}, 'GodTerm needs your OK: ' + askWhat(a)), h('span.ask-w', {}, [askWho(a), askAge(a)].filter(Boolean).join(' · '))),
+      h('div.ask-q', {}, a.question || ''),
+      h('div.ask-b', {}, btn(a, 'Yes', 'yes', '.pri'), btn(a, 'No', 'no', ''), h('span.ask-n', {}, 'Not a prompt in the terminal: answer it here')))));
+    this.ask.hidden = false;
+  }
+
+  paintLost(t) {
+    const l = t.conversation_lost;
+    const key = [t.id, l.folder, l.conversation].join('|');
+    this.msg.hidden = false;
+    if (key === this.lostKey) return;
+    this.lostKey = key;
+    this.msg.replaceChildren(h('div.lost', {}, h('div.lost-t', {}, 'Conversation not found for ' + l.folder),
+      h('div.lost-s', {}, l.why + '. If the project moved or was renamed, point the tab at its folder.'),
+      h('button.btn.pri', { type: 'button', onclick: () => import('./manage.js').then((m) => m.relinkSheet(t.id)) }, 'Where is this project now?')));
   }
 
   paintMeta(t) {
     const g = t?.git_facts;
     const git = g?.branch ? [g.branch, g.dirty ? g.dirty + ' changed' : '', g.unpushed ? '↑' + g.unpushed : '', g.behind ? '↓' + g.behind : ''].filter(Boolean).join(' ') : '';
 
-    const email = t && S.accounts.find((x) => x.account === t.account)?.email;
-    const hide = store.get('hideEmail', false);
+    const email = t && emailOf(S.accounts.find((x) => x.account === t.account));
     const bits = t ? [
       t.folder && ['pm-dir', t.folder, t.folder_full || t.folder],
       t.account_label && ['pm-acct', t.account_label],
-      email && ['pm-email', hide ? '••••••' : email],
+      email && ['pm-email', email],
       t.model && ['pm-model', t.model + (t.effort ? ' · ' + t.effort : '')],
       git && ['pm-git', git],
       t.state && ['pm-state', t.state],
@@ -424,7 +530,7 @@ class Pane {
     const key = JSON.stringify(bits);
     if (key === this.metaKey) return;
     this.metaKey = key;
-    this.metaEls = bits.map(([c, v, full]) => c === 'pm-email' ? h('button.pm-email', { type: 'button', title: hide ? 'Show the account email' : 'Hide the account email', 'aria-label': hide ? 'Show the account email' : 'Hide the account email', onclick: () => { store.set('hideEmail', !hide); for (const q of panes.list) { q.metaKey = ''; q.paintMeta(tabById(q.id)); } } }, v) : full ? h('span.' + c, { 'data-full': full, title: 'Copy ' + full }, h('span', {}, v), h('span', { html: icon('copy') })) : h('span.' + c, { title: v }, v));
+    this.metaEls = bits.map(([c, v, full]) => c === 'pm-email' ? h('button.pm-email', { type: 'button', title: 'Hide account emails', 'aria-label': 'Hide account emails', onclick: () => setEmailsOn(false) }, v) : full ? h('span.' + c, { 'data-full': full, title: 'Copy ' + full }, h('span', {}, v), h('span', { html: icon('copy') })) : h('span.' + c, { title: v }, v));
     this.meta.replaceChildren(...this.metaEls);
     this.fitHead();
   }
@@ -442,6 +548,14 @@ class Pane {
     }
     if (!fits()) this.el.classList.add('tight');
     head.classList.remove('measuring');
+  }
+
+  paintRouteBlock(t) {
+    const key = [t.id, t.route.name, t.route.detail].join('|');
+    this.msg.hidden = false;
+    if (key === this.rbKey) return;
+    this.rbKey = key;
+    import('./route.js').then((m) => { if (this.rbKey === key) this.msg.replaceChildren(m.routeBlockCard(t)); });
   }
 
   paintLease(t) {
@@ -1018,7 +1132,7 @@ class Pane {
         e.stopPropagation();
         if (this.appBack > 0 && this.scrollPath() === 'app') { this.wheel(-this.appBack); this.saidScroll(true); } else this.term.scrollToBottom();
       } });
-      this.jump.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg>';
+      this.jump.innerHTML = icon('down');
       this.body.append(this.jump);
     }
     if (this.jump.hidden === up) this.jump.hidden = !up;
@@ -1104,6 +1218,8 @@ export const panes = {
     on('msg:wheel', (m) => { if (!m.taken) { const id = 't' + uidOf(m.tab); for (const p of this.visible()) if (p.id === id && p.appBack) { p.appBack = 0; p.paintJump(); } if (!wheelSaid) { wheelSaid = true; dlog('term', `t${uidOf(m.tab)}: the app took no wheel (main screen, no mouse reports)`); } } });
     on('msg:resized', (m) => { const id = 't' + uidOf(m.tab); for (const p of this.visible()) if (p.id === id) p.resized(m); });
     on('bin:' + KIND.OUTPUT, (uid, b) => { const id = 't' + uid; for (const p of this.visible()) if (p.id === id) p.output(b); });
+    on('asks', () => { for (const p of this.list) p.paintAsk(); });
+    setInterval(() => { for (const p of this.list) p.paintAsk(); }, 20000);
     on('state', () => {
 
       if (!this.list.some((p) => p.id) && S.focused != null && !this.picked) { this.picked = true; this.show('t' + S.focused, 0); }

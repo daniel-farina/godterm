@@ -89,6 +89,8 @@ pub struct Levels {
     pub open: AtomicBool,
 
     pub speech: AtomicBool,
+
+    pub model: Arc<std::sync::atomic::AtomicU8>,
 }
 
 fn store(a: &std::sync::atomic::AtomicU32, v: f32) {
@@ -235,6 +237,11 @@ impl Voice {
         self.speaker.stops()
     }
 
+    #[cfg(test)]
+    pub fn tts_volume(&self) -> f32 {
+        self.speaker.volume()
+    }
+
     pub fn set_brainstorm(&self, on: bool) {
         let _ = self.ctl.send(Ctl::Brainstorm(on));
     }
@@ -295,6 +302,10 @@ impl Voice {
                 .status();
             speaking.store(false, Ordering::SeqCst);
         });
+    }
+
+    pub fn model_state(&self) -> u8 {
+        self.levels.model.load(Ordering::Relaxed)
     }
 
     pub fn shutdown(&self) {
@@ -533,6 +544,7 @@ impl Engine {
             });
         }
         let mut whisper = make_whisper(&self.cfg);
+        whisper.state = Arc::clone(&self.levels.model);
 
         let locale = if self.cfg.language.contains('-') {
             self.cfg.language.clone()
@@ -707,9 +719,6 @@ impl Engine {
                         barge_pcm.clear();
                         duck(1.0);
                         if cap.is_none() {
-                            if apple.is_none() {
-                                let _ = whisper.start_server();
-                            }
                             match capture::open(&self.cfg, &self.source) {
                                 Ok(c) => {
                                     cap = Some(c);
@@ -728,6 +737,9 @@ impl Engine {
                         ep.reset();
                         ep.forced = true;
                         self.status(VoiceStatus::Listening);
+                        if apple.is_none() && !grok_only && !whisper.loaded() {
+                            let _ = whisper.start_server();
+                        }
                     }
                     Ok(Ctl::StopTalk) if ptt && !drained => {
                         stop_queued = true;
@@ -785,6 +797,7 @@ impl Engine {
                     }
                     Ok(Ctl::SetProfile(p)) => profile = p,
                     Ok(Ctl::Mic(false)) => {
+                        whisper.touch();
                         mic_off = true;
                         want_open = false;
                         if !self.speaking.load(Ordering::SeqCst) {
@@ -819,15 +832,15 @@ impl Engine {
             }
             if want_open && !mic_off {
                 want_open = false;
-                if apple.is_none() && !grok_only {
-                    let _ = whisper.start_server();
-                }
                 match capture::open(&self.cfg, &self.source) {
                     Ok(c) => {
                         cap = Some(c);
                         cap_started = Instant::now();
                         got_audio = false;
                         self.status(idle());
+                        if apple.is_none() && !grok_only && !whisper.loaded() {
+                            let _ = whisper.start_server();
+                        }
                     }
                     Err(e) => {
                         self.status(VoiceStatus::Off(Some(format!("cannot start the mic: {e}"))));
@@ -842,6 +855,17 @@ impl Engine {
                     cap = None;
                     cap_vp = None;
                     crate::log::info("voice: mic off, capture closed");
+                }
+            }
+            if (cap.is_none() || mic_off)
+                && !ptt
+                && !self.speaking.load(Ordering::SeqCst)
+                && self.cfg.stt_unload_after_s > 0
+                && whisper.unload_if_idle(self.cfg.stt_unload_after_s)
+            {
+                crate::log::info("voice: idle, speech model unloaded");
+                if let Some(w) = wake_whisper.as_mut() {
+                    w.shutdown();
                 }
             }
             if cap.is_none() || mic_off {

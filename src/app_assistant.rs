@@ -23,6 +23,7 @@ pub struct Entry {
     pub text: String,
 
     pub at: i64,
+    pub tab: Option<(u64, String)>,
 }
 
 pub fn now_ms() -> i64 {
@@ -39,7 +40,13 @@ impl Entry {
             who,
             text: text.into(),
             at,
+            tab: None,
         }
+    }
+
+    pub fn tagged(mut self, tab: Option<(u64, String)>) -> Entry {
+        self.tab = tab;
+        self
     }
 }
 
@@ -178,6 +185,8 @@ pub struct AssistantState {
 
     pub system_turn: bool,
 
+    pub turn_tabs: Vec<u64>,
+
     pub web_client: Option<u64>,
 
     pub pending_web: Option<u64>,
@@ -250,6 +259,8 @@ pub struct AssistantState {
     pub images_pruned: bool,
 
     pub clipboard: Option<Box<dyn crate::assistant_images::Clipboard>>,
+
+    pub bound: Option<crate::tab_conv::TabConv>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -437,11 +448,14 @@ impl App {
             pass_env: &self.cfg.pass_env,
             events: self.tx.clone(),
             gen: crate::assistant::next_gen(),
-            system_prompt: format!(
-                "{}{}",
-                crate::assistant::system_prompt(&acfg.style),
-                crate::learned::prompt_section(&crate::learned::load())
-            ),
+            system_prompt: match &self.assistant.bound {
+                Some(b) => crate::tab_conv::system_prompt(&b.name),
+                None => format!(
+                    "{}{}",
+                    crate::assistant::system_prompt(&acfg.style),
+                    crate::learned::prompt_section(&crate::learned::load())
+                ),
+            },
             extra_env,
         };
         let b = Brain::start(provider, account, ctx).map_err(|e| format!("{e:#}"))?;
@@ -474,6 +488,9 @@ impl App {
     }
 
     pub fn state_preamble(&self) -> String {
+        if let Some(b) = &self.assistant.bound {
+            return self.tab_conv_context(b.uid);
+        }
         const BUDGET: usize = 2400;
         let mut s = String::from("<state>\n");
         for a in 0..self.cfg.accounts.len() {
@@ -838,6 +855,10 @@ impl App {
         } else {
             self.quiet_user_typed();
         }
+        if self.assistant.bound.is_some() {
+            self.tab_conv_ask(text, heard);
+            return;
+        }
         if (heard.is_none() && self.onboarding_typed(text))
             || self.self_switch_heard(text)
             || self.say_more(text)
@@ -850,6 +871,9 @@ impl App {
     }
 
     pub fn ask_assistant_system(&mut self, note: &str, msg: &str) {
+        if self.assistant.bound.is_some() {
+            return;
+        }
         self.start_turn(msg, None, Some(note));
     }
 
@@ -869,6 +893,7 @@ impl App {
         ));
         self.assistant.unsaid = None;
         self.assistant.system_turn = system.is_some();
+        self.assistant.turn_tabs.clear();
         self.assistant.web_client = if system.is_none() {
             self.turn_web_client(heard.is_some())
         } else {
@@ -914,6 +939,7 @@ impl App {
 
         let memory = if std::mem::take(&mut self.assistant.brain_fresh)
             && self.cfg.assistant.memory_days > 0
+            && self.assistant.bound.is_none()
         {
             crate::assistant_memory::block(self.cfg.assistant.memory_days).map(|b| {
                 let refs = crate::assistant_memory::recent_tab_refs(self.cfg.assistant.memory_days);
@@ -1021,7 +1047,35 @@ impl App {
         }
     }
 
+    pub(crate) fn reset_turn_state(&mut self) {
+        self.assistant.brain = None;
+        self.assistant.stale = 0;
+        self.assistant.queued_after_cut = false;
+        self.assistant.busy = false;
+        self.assistant.muted = false;
+        self.assistant.last_event = None;
+        self.assistant.current.clear();
+        self.assistant.block.clear();
+        self.assistant.finals.clear();
+        self.assistant.held.clear();
+        self.assistant.system_turn = false;
+        self.assistant.web_client = None;
+        self.assistant.unsaid = None;
+        if self
+            .voice
+            .action
+            .as_deref()
+            .is_some_and(|a| a.starts_with("asking"))
+        {
+            self.voice.action = None;
+        }
+    }
+
     pub fn reset_assistant(&mut self) {
+        if self.assistant.bound.is_some() {
+            self.tab_conv_reset();
+            return;
+        }
         self.assistant.brain = None;
         self.assistant.fresh_session = true;
         self.assistant.conv = None;
@@ -1070,7 +1124,9 @@ impl App {
 
     pub fn reply_spoken(&self) -> bool {
         !self.cfg.voice.speaker_muted
-            && (self.assistant.turn_spoken || self.cfg.assistant.speak_typed)
+            && ((self.assistant.turn_spoken
+                && (!self.assistant.system_turn || self.voice_mode_now() != "off"))
+                || self.cfg.assistant.speak_typed)
     }
 
     pub fn tts_on(&self) -> bool {
@@ -1102,6 +1158,17 @@ impl App {
         }
     }
 
+    pub(crate) fn turn_tab_tag(&self) -> Option<(u64, String)> {
+        if self.assistant.bound.is_some() {
+            return None;
+        }
+        let [uid] = self.assistant.turn_tabs.as_slice() else {
+            return None;
+        };
+        let (s, t) = self.find_tab(*uid)?;
+        Some((*uid, self.panes[s].tabs[t].name()))
+    }
+
     pub fn assistant_log_tool(
         &mut self,
         tool: &str,
@@ -1124,6 +1191,16 @@ impl App {
                 .to_string()
         };
 
+        if args.get("tab").is_some() || args.get("group").is_some() {
+            if let Ok(ts) = self.tab_targets(args, true) {
+                for (s, t) in ts {
+                    let uid = self.panes[s].tabs[t].uid;
+                    if !self.assistant.turn_tabs.contains(&uid) {
+                        self.assistant.turn_tabs.push(uid);
+                    }
+                }
+            }
+        }
         self.assistant.log.push(Entry::new(
             Who::Tool,
             serde_json::json!({"tool": tool, "args": args, "status": status}).to_string(),
@@ -1169,7 +1246,7 @@ impl App {
     }
 
     fn speak_reply(&mut self, reply: &str) -> String {
-        let max = self.cfg.assistant.spoken_sentences;
+        let max = crate::app_talkback::TalkLevel::spoken_max(&self.cfg);
 
         let r = crate::md::reply(reply, max);
         if !r.narration.is_empty() {
@@ -1234,9 +1311,12 @@ impl App {
             .rev()
             .find(|e| e.who == Who::Reply)
             .is_some_and(|e| {
-                crate::assistant::spoken_part(&e.text, self.cfg.assistant.spoken_sentences)
-                    .0
-                    .contains('?')
+                crate::assistant::spoken_part(
+                    &e.text,
+                    crate::app_talkback::TalkLevel::spoken_max(&self.cfg),
+                )
+                .0
+                .contains('?')
             });
 
         let yes_ok = offered_plainly && self.pending_confirms.is_empty();
@@ -1457,10 +1537,11 @@ impl App {
                         "assistant: {}",
                         crate::sessions::snippet(&crate::md::speech(&reply), 80)
                     ));
-                    self.assistant.log.push(Entry::new(
-                        if error { Who::Note } else { Who::Reply },
-                        reply.clone(),
-                    ));
+                    let tab = if error { None } else { self.turn_tab_tag() };
+                    self.assistant.log.push(
+                        Entry::new(if error { Who::Note } else { Who::Reply }, reply.clone())
+                            .tagged(tab),
+                    );
                 }
                 self.assistant.busy = false;
                 self.assistant.system_turn = false;
@@ -1471,7 +1552,18 @@ impl App {
                 let sum = self.assistant.timing.summary(ep);
                 crate::log::info(&format!("assistant: timing: {sum}"));
                 if let Some(c) = &self.assistant.conv {
-                    c.write("reply", serde_json::json!({"text": reply, "error": error, "cost_usd": cost, "timing": sum}));
+                    let mut rec = serde_json::json!({"text": reply, "error": error, "cost_usd": cost, "timing": sum});
+                    if let Some((uid, name)) = self
+                        .assistant
+                        .log
+                        .last()
+                        .and_then(|e| e.tab.clone())
+                        .filter(|_| !error && !reply.is_empty())
+                    {
+                        rec["tab"] = serde_json::json!(uid);
+                        rec["tab_name"] = serde_json::json!(name);
+                    }
+                    c.write("reply", rec);
                 }
                 self.assistant.last_timing = Some(sum);
                 self.trim_log();
@@ -1602,6 +1694,7 @@ impl App {
             return;
         }
         if self.assistant.brain.is_some()
+            || self.assistant.bound.is_some()
             || self
                 .assistant
                 .warm_tried
@@ -1622,6 +1715,7 @@ impl App {
 
     pub fn assistant_tick(&mut self) {
         self.assistant_deadlines();
+        self.tab_conv_tick();
         self.follow_ups_tick();
         self.quiet_tick();
         self.crash_check();

@@ -44,7 +44,7 @@ impl ConvLog {
         v["kind"] = json!(kind);
         v["at"] = json!(chrono::Local::now().to_rfc3339());
         let res = (|| -> std::io::Result<()> {
-            std::fs::create_dir_all(dir())?;
+            std::fs::create_dir_all(self.path.parent().unwrap_or(&dir()))?;
             let mut f = {
                 use crate::platform::OpenOptionsExt;
                 std::fs::OpenOptions::new()
@@ -292,11 +292,12 @@ impl App {
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map(|d| d.timestamp_millis())
                 .unwrap_or_else(crate::app_assistant::now_ms);
-            self.assistant.log.push(Entry::at(
-                who,
-                e["text"].as_str().unwrap_or("").to_string(),
-                at,
-            ));
+            let tab = e["tab"]
+                .as_u64()
+                .map(|u| (u, e["tab_name"].as_str().unwrap_or("").to_string()));
+            self.assistant
+                .log
+                .push(Entry::at(who, e["text"].as_str().unwrap_or("").to_string(), at).tagged(tab));
         }
         let started = summarize(&c.path).map(|s| s.started).unwrap_or_default();
         self.assistant.conv = Some(c);

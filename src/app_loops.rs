@@ -21,7 +21,10 @@ pub struct StopReq {
     pub ids: Vec<String>,
     pub wakeup: bool,
     pub sent: Option<Instant>,
+    pub tries: u8,
 }
+
+pub const STOP_TRIES: u8 = 2;
 
 pub fn grok_stop_prompt(ids: &[String]) -> String {
     format!(
@@ -85,15 +88,13 @@ impl App {
             let mut rows = vec![];
             let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
             let mut paths = std::collections::HashSet::new();
+            let mut tabs = vec![];
             for (uid, account, tab_name, path, cwd, grok) in jobs {
-                let mut seen = vec![];
-
                 let path = path.filter(|p| paths.insert(p.clone()));
                 if let Some(p) = path {
                     let sc = c.scanners.entry(p.clone()).or_default();
                     sc.update(&p);
                     for l in sc.loops() {
-                        seen.push(l.id.clone());
                         rows.push(LoopRow {
                             uid,
                             account,
@@ -102,22 +103,16 @@ impl App {
                         });
                     }
                 }
-                let durable = if grok {
-                    vec![]
-                } else {
-                    crate::loops::durable(&cwd)
-                };
-                for l in durable {
-                    if !seen.contains(&l.id) {
-                        rows.push(LoopRow {
-                            uid,
-                            account,
-                            tab_name: tab_name.clone(),
-                            lp: l,
-                        });
-                    }
+                if !grok {
+                    tabs.push(DurableTab {
+                        uid,
+                        account,
+                        tab_name,
+                        cwd,
+                    });
                 }
             }
+            let rows = durable_rows(rows, &tabs);
             let _ = tx.send(AppEvent::Loops(rows));
         });
     }
@@ -130,14 +125,25 @@ impl App {
             .filter(|r| r.lp.deleted)
             .map(|r| (r.uid, r.lp.id.clone()))
             .collect();
+        let now = Utc::now();
+        let live: Vec<(u64, String)> = rows
+            .iter()
+            .filter(|r| r.lp.active(now))
+            .map(|r| (r.uid, r.lp.id.clone()))
+            .collect();
         let mut done = vec![];
         self.stop_reqs.retain(|q| {
+            let quiet = !q
+                .ids
+                .iter()
+                .any(|id| live.iter().any(|(u, g)| *u == q.uid && g == id))
+                && !(q.wakeup && live.iter().any(|(u, g)| *u == q.uid && g == "wakeup"));
             let all = q
                 .ids
                 .iter()
                 .all(|id| gone.iter().any(|(u, g)| *u == q.uid && g == id))
                 && (!q.wakeup || gone.iter().any(|(u, g)| *u == q.uid && g == "wakeup"));
-            if q.sent.is_some() && all {
+            if q.sent.is_some() && (all || quiet) {
                 done.push(q.ids.clone());
                 false
             } else {
@@ -152,7 +158,6 @@ impl App {
             };
             self.flash(format!("Stopped {what} (confirmed in the transcript)"));
         }
-        let now = Utc::now();
         self.loops = dedupe_loops(rows.into_iter().filter(|r| r.lp.active(now)).collect());
         self.sel_loop = self.sel_loop.min(self.loops.len().saturating_sub(1));
     }
@@ -182,11 +187,19 @@ impl App {
         if ids.is_empty() && !wakeup {
             return;
         }
+        if self
+            .stop_reqs
+            .iter()
+            .any(|q| q.uid == uid && q.wakeup == wakeup && q.ids == ids)
+        {
+            return;
+        }
         self.stop_reqs.push(StopReq {
             uid,
             ids,
             wakeup,
             sent: None,
+            tries: 0,
         });
         self.stop_tick();
     }
@@ -217,6 +230,27 @@ impl App {
 
     pub fn stop_tick(&mut self) {
         let mut sends = vec![];
+        let mut gave_up = vec![];
+        self.stop_reqs.retain(|q| {
+            let spent = q.tries >= STOP_TRIES
+                && q.sent
+                    .is_some_and(|t| t.elapsed() > Duration::from_secs(120));
+            if spent {
+                gave_up.push(q.ids.join(", "));
+            }
+            !spent
+        });
+        for what in gave_up {
+            crate::log::info(&format!("loops: gave up asking to stop {what}"));
+            self.flash(format!(
+                "Asked {STOP_TRIES} times to stop {}, with no confirmation in the transcript",
+                if what.is_empty() {
+                    "the loop"
+                } else {
+                    what.as_str()
+                }
+            ));
+        }
         for q in self.stop_reqs.iter_mut() {
             if q.sent
                 .is_some_and(|t| t.elapsed() > Duration::from_secs(120))
@@ -235,6 +269,7 @@ impl App {
             let tab = &self.panes[s].tabs[t];
             if tab.is_running() && tab.activity == Activity::Ready {
                 q.sent = Some(Instant::now());
+                q.tries += 1;
                 let grok = self.panes[s]
                     .account
                     .and_then(|a| self.cfg.accounts.get(a))
@@ -300,6 +335,62 @@ impl App {
             _ => {}
         }
     }
+}
+
+pub struct DurableTab {
+    pub uid: u64,
+    pub account: Option<usize>,
+    pub tab_name: String,
+    pub cwd: std::path::PathBuf,
+}
+
+pub fn durable_rows(rows: Vec<LoopRow>, tabs: &[DurableTab]) -> Vec<LoopRow> {
+    let folder_of = |uid: u64| {
+        tabs.iter()
+            .find(|t| t.uid == uid)
+            .map(|t| crate::state::normalize_cwd(&t.cwd))
+    };
+    let mut out: Vec<LoopRow> = vec![];
+    for r in rows {
+        let twin = match folder_of(r.uid).filter(|_| r.lp.durable) {
+            Some(f) => out.iter().position(|o| {
+                o.lp.durable && o.lp.id == r.lp.id && folder_of(o.uid).as_ref() == Some(&f)
+            }),
+            None => None,
+        };
+        match twin {
+            Some(i) => {
+                let o = &out[i];
+                if (r.lp.deleted, std::cmp::Reverse(r.uid))
+                    > (o.lp.deleted, std::cmp::Reverse(o.uid))
+                {
+                    out[i] = r;
+                }
+            }
+            None => out.push(r),
+        }
+    }
+    let mut folders: Vec<std::path::PathBuf> = vec![];
+    let mut by_uid: Vec<&DurableTab> = tabs.iter().collect();
+    by_uid.sort_by_key(|t| t.uid);
+    for t in by_uid {
+        let folder = crate::state::normalize_cwd(&t.cwd);
+        if folders.contains(&folder) {
+            continue;
+        }
+        for l in crate::loops::durable(&folder) {
+            if !out.iter().any(|o| o.lp.id == l.id) {
+                out.push(LoopRow {
+                    uid: t.uid,
+                    account: t.account,
+                    tab_name: t.tab_name.clone(),
+                    lp: l,
+                });
+            }
+        }
+        folders.push(folder);
+    }
+    out
 }
 
 pub fn dedupe_loops(rows: Vec<LoopRow>) -> Vec<LoopRow> {

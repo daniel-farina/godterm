@@ -440,8 +440,12 @@ fn a_held_answer_is_told_after_the_deadline() {
         app.assistant.follow_ups[0].state,
         FuState::Reported { .. }
     ));
-    std::thread::sleep(Duration::from_millis(300));
-    let sent = std::fs::read_to_string(&rec).unwrap_or_default();
+    let t0 = std::time::Instant::now();
+    let mut sent = String::new();
+    while !sent.contains("regression groups") && t0.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(50));
+        sent = std::fs::read_to_string(&rec).unwrap_or_default();
+    }
     assert!(sent.contains("regression groups"), "{sent}");
     app.assistant.quiet.fake_tts = false;
     app.assistant.brain = None;

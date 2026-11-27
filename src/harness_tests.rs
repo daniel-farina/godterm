@@ -40,7 +40,11 @@ fn native_flags_and_registry() {
     assert_eq!(Harness::Cursor.login_args().unwrap(), ["login"]);
     assert_eq!(Harness::Codex.login_args().unwrap(), ["login"]);
     assert!(Harness::Antigravity.login_args().is_none());
-    for h in [Harness::Cursor, Harness::Antigravity, Harness::OpenCode] {
+    if cfg!(unix) {
+        assert_eq!(Harness::Antigravity.home_env(), "HOME");
+    }
+    assert!(Harness::Antigravity.permission_args("dont-ask").is_empty());
+    for h in [Harness::Cursor, Harness::OpenCode] {
         assert!(h.home_env().is_empty(), "no unsupported isolation variable");
         assert!(
             h.permission_args("dont-ask").is_empty(),
@@ -155,10 +159,25 @@ fn native_pty_launch_resume_login_and_autostart() {
                 }
                 _ => [own, h.permission_args("plan")].concat(),
             };
+            let expected = if h == Harness::Antigravity && cfg!(unix) {
+                [
+                    expected,
+                    vec!["--settings".into(), crate::antigravity::settings_arg()],
+                ]
+                .concat()
+            } else {
+                expected
+            };
             assert_eq!(actual.trim(), expected.join(" "), "{} {kind:?}", h.name());
             let actual_env = std::fs::read_to_string(&env).unwrap();
             assert!(!actual_env.contains("CLAUDE_CONFIG_DIR="));
             assert!(!actual_env.contains("GROK_HOME="));
+            if h == Harness::Antigravity && cfg!(unix) {
+                assert!(actual_env.contains(&format!(
+                    "HOME={}",
+                    app.cfg.accounts[0].config_dir().display()
+                )));
+            }
             if h == Harness::Codex {
                 assert!(actual_env.contains(&format!(
                     "CODEX_HOME={}",
@@ -364,37 +383,32 @@ fn tab_tools_use_each_clis_per_launch_mcp_and_never_a_global_config() {
     let _ = std::fs::remove_dir_all(home);
 
     let h = Harness::Antigravity;
-    assert!(!h.has_tab_tools());
-    let reason = h.no_tab_tools_reason().unwrap();
-    assert!(reason.contains(h.label()) && reason.contains("global mcp_config.json"));
+    if !cfg!(unix) {
+        assert!(!h.has_tab_tools());
+        return;
+    }
+    assert!(h.has_tab_tools() && h.no_tab_tools_reason().is_none());
     let mut args = vec!["--keep".to_string()];
     let x = crate::tab_jobs::extend_launch(h, exe, "shared", 7, &mut args).unwrap();
-    assert!(x.env.is_empty());
-    assert_eq!(args, ["--keep"]);
-    let (mut app, t, home) = native_app("tt-agy", h);
+    assert!(x.env.iter().any(|(k, v)| k == "GODTERM_TAB" && v == "7"));
+    assert!(x.env.iter().any(|(k, _)| k == "GODTERM_TOKEN"));
+    assert_eq!(
+        args,
+        ["--keep"],
+        "the server comes from the account's own mcp_config.json"
+    );
+    let (app, _t, home) = native_app("tt-agy", h);
     let dir = home.join("slot-home");
     std::fs::create_dir_all(&dir).unwrap();
     let mut a2 = vec![];
-    assert!(app.tab_jobs_launch(h, 7, &dir, &mut a2, false).is_empty());
-    assert!(a2.is_empty());
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    let uid = app.panes[0].tabs[t].uid;
-    for tool in ["list_jobs", "create_job", "list_browsers", "browser_status"] {
-        let e = app.tab_scoped(uid, tool, &json!({})).unwrap_err();
-        assert!(
-            e.contains(h.label()) && e.contains("no GodTerm job or browser tools"),
-            "{e}"
-        );
-    }
-
-    app.open_browser_dialog(0);
-    assert!(matches!(app.modal, crate::app::Modal::None));
-    assert!(app
-        .flash
-        .as_ref()
-        .unwrap()
-        .0
-        .contains("no GodTerm job or browser tools"));
+    let env = app.tab_jobs_launch(h, 7, &dir, &mut a2, false);
+    assert!(env.iter().any(|(k, _)| k == "GODTERM_TAB") && a2.is_empty());
+    let cfg: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join(".gemini/config/mcp_config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(cfg["mcpServers"]["godterm"]["args"], json!(["mcp"]));
+    assert_eq!(cfg["mcpServers"]["godterm"]["env"]["GODTERM_CLIENT"], "tab");
     let _ = std::fs::remove_dir_all(home);
 }
 

@@ -16,6 +16,8 @@ pub const HOME_FILES: &[(&str, &str)] = &[
 
 pub const NEVER_FILES: &[&str] = &[
     "web-token",
+    "passkeys.json",
+    "web-sessions.json",
     crate::acct_tokens::USE_FILE,
     "demo-tokens.json",
     "web-push-vapid.pk8",

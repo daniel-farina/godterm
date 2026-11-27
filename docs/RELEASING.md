@@ -35,8 +35,11 @@ Publish the current `master` tree to the public repo as one new commit
 hosts; extra patterns in `~/.config/godterm/public-deny.txt`):
 
 ```sh
+DRY_RUN=1 scripts/release/publish-public.sh    # only the check: commits and pushes nothing
 scripts/release/publish-public.sh "What changed"
 ```
+
+`SRC=<ref>` publishes (or checks) another ref than `master`.
 
 Tag releases on the public commit (`git tag -a vX.Y.Z public-main`).
 

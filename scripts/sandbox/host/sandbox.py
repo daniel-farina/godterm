@@ -163,6 +163,8 @@ def write_config(home, slots, projects, extra=""):
         ]
         if s.get("config_dir"):
             lines.append(f"config_dir = {toml_str(s['config_dir'])}")
+        elif s["harness"] == "antigravity":
+            lines.append('config_dir = "~"')
         args = list(s.get("args", []))
         if s["harness"] == "codex":
             args += ["-c", f'projects."{proj}".trust_level="trusted"']

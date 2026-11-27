@@ -2,6 +2,7 @@ mod acct_tokens;
 mod activity;
 mod add_account;
 mod admin;
+mod antigravity;
 mod app;
 mod app_accounts;
 mod app_admin;
@@ -11,8 +12,15 @@ mod app_bglock;
 mod app_brainstorm;
 mod app_browser;
 mod app_busy;
+mod app_catalog;
+#[cfg(test)]
+mod app_catalog_tests;
+mod app_claude_desktop;
+#[cfg(test)]
+mod app_claude_desktop_tests;
 mod app_continue;
 mod app_direct;
+mod app_embedded;
 mod app_events;
 mod app_failover;
 mod app_followup;
@@ -94,10 +102,16 @@ mod config;
 mod confirm_click_tests;
 mod control;
 mod creds;
+mod datapath;
 mod demo;
 mod demo_agent;
 mod demo_seed;
 mod deps;
+#[cfg(test)]
+mod draft_tests;
+mod embedded;
+#[cfg(test)]
+mod embedded_tests;
 #[cfg(test)]
 mod events_tests;
 #[cfg(test)]
@@ -139,6 +153,7 @@ mod local_voice_tests;
 mod log;
 mod login_screen;
 mod loops;
+mod lost_sessions;
 mod mcp;
 mod md;
 mod media_keys;
@@ -158,6 +173,9 @@ mod notify;
 mod onboarding;
 #[cfg(test)]
 mod onboarding_tests;
+mod open_ext;
+#[cfg(test)]
+mod open_ext_tests;
 mod palette;
 mod pane;
 #[cfg(test)]
@@ -173,6 +191,7 @@ mod panel_win_tests;
 mod scroll_click_tests;
 mod supervisor;
 mod sync;
+mod tab_conv;
 #[cfg(test)]
 mod tabopts_tests;
 mod ui_browser;
@@ -185,6 +204,8 @@ mod wheel_mode_tests;
 mod app_git;
 mod app_gitcfg;
 mod app_gitpanel;
+mod app_relink;
+mod app_routes;
 #[cfg(test)]
 mod brainstorm_tests;
 #[cfg(all(test, unix))]
@@ -227,11 +248,16 @@ mod receipts;
 mod recover;
 #[cfg(test)]
 mod recover_tests;
+mod relink;
 #[cfg(test)]
 mod remote_keep_tests;
 #[cfg(test)]
 mod remote_tests;
 mod risk;
+mod routes;
+#[cfg(all(test, unix))]
+mod routes_tests;
+mod routes_ts;
 #[cfg(test)]
 mod schedcard_tests;
 mod scrollbar;
@@ -246,11 +272,14 @@ mod session_index;
 mod session_ops;
 mod session_other;
 mod session_rename;
+#[cfg(test)]
+mod session_stable_tests;
 mod sessions;
 mod settings;
 mod setup;
 #[cfg(test)]
 mod setup_tests;
+mod sharing;
 mod slot;
 mod splash;
 #[cfg(test)]
@@ -262,11 +291,16 @@ mod startup_tests;
 mod state;
 mod syscheck;
 mod sysprompt;
+mod tab_avatar;
+#[cfg(test)]
+mod tab_avatar_tests;
 mod tab_browser;
 #[cfg(test)]
 mod tab_browser_multi_tests;
 #[cfg(test)]
 mod tab_browser_tests;
+#[cfg(test)]
+mod tab_conv_tests;
 mod tab_groups;
 mod tab_history;
 mod tab_jobs;
@@ -359,6 +393,9 @@ USAGE:
     godterm --web [--web-port N]
                         also serve the web app on 127.0.0.1 (as [web] enabled)
     godterm web-url    print the links that sign a browser in to the web app
+    godterm login [status|reset]
+                        web app remote login (passkeys): show it, or turn it off
+                        from this Mac if you are locked out
     godterm web-log [--follow] [--client N] [--lines N]
                         print the web app's debug log (what browsers report)
     godterm setup      guided setup: choose accounts, then log each one in
@@ -382,6 +419,8 @@ USAGE:
     godterm migrate [--dry-run]    move a claudego install to ~/.godterm (runs once on its own)
     godterm migrate-accounts [--dry-run]
                                    move account slots into ~/.godterm/accounts, carrying logins over
+    godterm data-path [DIR] [--move]
+                                   show where GodTerm keeps its data, or copy (or --move) it to DIR
     godterm mcp                    MCP server (stdio) with the tools of the running godterm
     godterm install [--dock]       the GodTerm app in ~/Applications and the godterm command in ~/.local/bin
     godterm uninstall [--purge]    remove them (--purge also deletes ~/.godterm)
@@ -394,7 +433,8 @@ USAGE:
     godterm --version  print the version
     godterm help       show this text
 
-Config lives at ~/.godterm/config.toml (override the root with GODTERM_HOME).
+Config lives at ~/.godterm/config.toml. Move the whole data folder with `godterm data-path DIR`
+(or override the root with GODTERM_HOME).
 Inside the TUI press Ctrl-a then ? for key bindings.";
 
 #[derive(Default)]
@@ -455,6 +495,13 @@ fn main() -> Result<()> {
         return r;
     }
     let arg = args.first().cloned();
+
+    if arg.as_deref() != Some("data-path") {
+        if let Err(e) = datapath::check() {
+            eprintln!("godterm: {e:#}");
+            std::process::exit(2);
+        }
+    }
 
     if arg.as_deref() == Some("git-credential") {
         return git_cred::helper_main(&args[1..]);
@@ -601,6 +648,7 @@ fn main() -> Result<()> {
         Some("doctor") => setup::doctor(),
         Some("voice") => voice::speaker_cli::command(&args[1..]),
         Some("mcp") => mcp::run(),
+        Some("data-path") => datapath::command(&args[1..]),
         Some("migrate") => migrate::command(args.iter().any(|a| a == "--dry-run")),
         Some("grok-compat") => {
             let cfg = Config::load_or_init()?;
@@ -657,6 +705,7 @@ fn main() -> Result<()> {
         Some("window") => window_cmd(args.get(1).map(String::as_str)),
         Some("web-url") => web::url_command(),
         Some("web-log") => web::clientlog::command(&args[1..]),
+        Some("login") => web::login::command(&args[1..]),
         Some("sync") => sync::cli::command(&args[1..]),
         Some("status") => print_status(false),
         Some("usage") => print_status(true),

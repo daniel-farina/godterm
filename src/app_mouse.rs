@@ -1586,6 +1586,11 @@ impl App {
             {
                 self.cancel_op()
             }
+            UiAction::ModalCancel if matches!(self.modal, Modal::ConfirmTabJob(_)) => {
+                if let Modal::ConfirmTabJob(tok) = std::mem::replace(&mut self.modal, Modal::None) {
+                    self.tab_ask_answer(&tok, false);
+                }
+            }
             UiAction::ModalCancel => self.modal = Modal::None,
             UiAction::TourNext => {
                 if let Modal::Tour(n) = self.modal {
@@ -1833,6 +1838,25 @@ impl App {
         let acfg = self.cfg.accounts[a].clone();
         let dir = acfg.config_dir();
         let h = acfg.harness();
+        if h == crate::harness::Harness::Antigravity && crate::antigravity::isolated(&dir) {
+            let label = acfg.display().to_string();
+            for s in self.panes.iter_mut() {
+                if s.account == Some(a) {
+                    s.kill_all();
+                }
+            }
+            if crate::antigravity::logout(&dir) {
+                crate::log::info(&format!("logout {label}"));
+                self.flash(format!("Logged out {label}"));
+            } else {
+                self.flash(format!("Could not remove the login of {label}"));
+            }
+            let snap = crate::app::snapshot_of(&acfg, false);
+            let _ = self
+                .tx
+                .send(crate::app::AppEvent::Status(a, Box::new(snap)));
+            return;
+        }
         if !h.integrated() {
             self.flash(format!(
                 "Manage {} login in its CLI; native stores may be shared",

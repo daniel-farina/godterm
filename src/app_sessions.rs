@@ -10,6 +10,8 @@ pub enum Src {
     Main,
 
     MainGrok,
+
+    MainAgy,
     Account(usize),
 }
 
@@ -38,6 +40,8 @@ impl App {
         match s {
             Src::Main => session_ops::main_dir(),
             Src::MainGrok => crate::harness::Harness::Grok.main_home(),
+            Src::MainAgy => crate::antigravity::native_home()
+                .unwrap_or_else(|| crate::config::app_home().join("no-native-antigravity")),
             Src::Account(a) => self.cfg.accounts[a].config_dir(),
         }
     }
@@ -46,6 +50,7 @@ impl App {
         match s {
             Src::Main => crate::harness::Harness::Claude,
             Src::MainGrok => crate::harness::Harness::Grok,
+            Src::MainAgy => crate::harness::Harness::Antigravity,
             Src::Account(a) => self
                 .cfg
                 .accounts
@@ -75,6 +80,7 @@ impl App {
         match s {
             Src::Main => "This Mac (main)".into(),
             Src::MainGrok => "This Mac (grok)".into(),
+            Src::MainAgy => crate::antigravity::NATIVE_LABEL.into(),
             Src::Account(a) => self
                 .cfg
                 .accounts
@@ -113,6 +119,7 @@ impl App {
             }
             SourceSel::One(Src::Main) => self.load_main_sessions(),
             SourceSel::One(Src::MainGrok) => self.load_main_grok_sessions(),
+            SourceSel::One(Src::MainAgy) => {}
             SourceSel::One(Src::Account(a)) => self.load_sessions(a),
         }
     }
@@ -142,6 +149,7 @@ impl App {
                 v.extend(self.main_grok_sessions.iter().map(|s| (Src::MainGrok, s)));
                 v.sort_by_key(|(_, s)| std::cmp::Reverse(s.modified));
             }
+            SourceSel::One(Src::MainAgy) => {}
             SourceSel::One(Src::Main) => {
                 v.extend(self.main_sessions.iter().map(|s| (Src::Main, s)))
             }
@@ -404,6 +412,7 @@ impl App {
                     self.load_main_sessions();
                 }
                 Src::MainGrok => self.load_main_grok_sessions(),
+                Src::MainAgy => {}
                 Src::Account(a) => {
                     if let Some(st) = self.accounts.get_mut(a) {
                         st.sessions_loading = false;
@@ -534,7 +543,7 @@ impl App {
         match self.selected_row() {
             Some((Src::Account(a), _, id, _)) => self.resume(a, id),
             Some((Src::Main | Src::MainGrok, ..)) => self.start_session_op(false, true),
-            None => {}
+            Some((Src::MainAgy, ..)) | None => {}
         }
     }
 

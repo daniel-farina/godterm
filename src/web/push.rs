@@ -542,7 +542,8 @@ impl crate::app::App {
             ));
         }
         let asking = self.pending_confirms.iter().any(|p| p.answerable())
-            || self.assistant.selfswitch.asked.is_some();
+            || self.assistant.selfswitch.asked.is_some()
+            || !self.tab_jobs.asks.is_empty();
         let Some(w) = self.web.as_mut() else {
             return;
         };

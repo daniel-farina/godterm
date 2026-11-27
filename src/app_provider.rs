@@ -272,8 +272,12 @@ pub fn bucket_parts(b: &[providers::Bucket]) -> Vec<Part> {
 
 impl App {
     pub fn account_buckets(&self, a: usize) -> Option<Vec<providers::Bucket>> {
-        let p = providers::for_harness(self.cfg.accounts.get(a)?.harness())?;
+        let h = self.cfg.accounts.get(a)?.harness();
         let u = self.accounts.get(a)?.usage.as_ref()?;
+        if h == crate::harness::Harness::Antigravity {
+            return Some(providers::buckets_of(u, crate::antigravity::QUOTA_KEYS));
+        }
+        let p = providers::for_harness(h)?;
         Some((p.usage)(u))
     }
 

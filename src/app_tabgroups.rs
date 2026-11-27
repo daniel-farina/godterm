@@ -727,6 +727,7 @@ impl App {
             "pin_tab",
             "unpin_tab",
             "set_tab_color",
+            "set_tab_avatar",
             "sort_tabs",
             "search_tabs",
             "resize_tab_list",
@@ -888,6 +889,50 @@ impl App {
                 };
                 Ok(ok(
                     json!({"tabs": self.uids(&tabs), "color": c, "say": say}),
+                ))
+            }
+            "set_tab_avatar" => {
+                let tabs = self.tab_targets(args, false)?;
+                let (sl, t) = tabs[0];
+                let cwd = self.panes[sl].tabs[t].cwd.clone();
+                let flag = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
+                let value: Option<String> = if flag("clear") {
+                    None
+                } else if flag("regenerate") {
+                    Some(crate::tab_avatar::new_variation())
+                } else if let Some(d) = args.get("data").and_then(Value::as_str) {
+                    if !self.web_caller {
+                        return Err("data is for the web app; use path or from_project".into());
+                    }
+                    let b64 = d.split_once("base64,").map_or(d, |(_, b)| b);
+                    let bytes = crate::assistant_images::unbase64(b64)
+                        .ok_or("the image could not be read")?;
+                    Some(crate::tab_avatar::store(&bytes).map_err(|e| format!("{e:#}"))?)
+                } else if let Some(p) = args.get("path").and_then(Value::as_str) {
+                    let p = crate::config::expand_tilde(p);
+                    let p = if p.is_absolute() { p } else { cwd.join(p) };
+                    let mut roots = vec![cwd.clone()];
+                    if let Some(top) = crate::project_git::repo_top(&cwd) {
+                        roots.push(top);
+                    }
+                    Some(crate::tab_avatar::from_file(&p, &roots).map_err(|e| format!("{e:#}"))?)
+                } else if flag("from_project") {
+                    Some(crate::tab_avatar::from_project(&cwd).map_err(|e| format!("{e:#}"))?)
+                } else {
+                    return Err("give from_project, path, regenerate or clear".into());
+                };
+                self.panes[sl].tabs[t].avatar = value.clone();
+                self.state_dirty = true;
+                let name = self.panes[sl].tabs[t].name();
+                let say = match &value {
+                    None => format!("{name} is back to its generated avatar."),
+                    Some(v) if crate::tab_avatar::is_generated(v) => {
+                        format!("{name} has a new generated avatar.")
+                    }
+                    Some(_) => format!("{name} has a new avatar."),
+                };
+                Ok(ok(
+                    json!({"tabs": self.uids(&tabs), "avatar": value, "say": say}),
                 ))
             }
             "resize_tab_list" => {

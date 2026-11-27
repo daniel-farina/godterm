@@ -57,6 +57,12 @@ pub struct Track {
     pub mode: crate::app_busy::Mode,
 
     pub note: Option<String>,
+
+    pub spoken: bool,
+
+    pub go: bool,
+
+    pub mid_turn: bool,
 }
 
 impl Track {
@@ -81,6 +87,9 @@ impl Track {
             before: None,
             mode: crate::app_busy::Mode::Direct,
             note: None,
+            spoken: false,
+            go: false,
+            mid_turn: false,
         }
     }
 
@@ -443,6 +452,9 @@ impl App {
             return;
         }
         if c.mode.external() && !c.to.lost() {
+            return;
+        }
+        if !c.to.lost() && self.direct_spoke(c.id) {
             return;
         }
         match &c.to {

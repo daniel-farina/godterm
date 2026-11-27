@@ -473,8 +473,7 @@ impl crate::app::App {
             .screen()
             .contents();
         if let Some(id) = exit_session_id(t.harness, &screen) {
-            if t.session_id.as_deref() != Some(&id) {
-                t.session_id = Some(id);
+            if t.set_session(Some(id), "the harness printed it on exit") {
                 self.state_dirty = true;
             }
         }

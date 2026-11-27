@@ -472,6 +472,13 @@ impl App {
 
         let browser = src.browser.clone();
         let browser_also = src.browser_also.clone();
+        let route = src.route.clone();
+        let (pinned, accent, group, avatar) = (
+            src.pinned,
+            src.accent.clone(),
+            src.group.clone(),
+            src.avatar.clone(),
+        );
         let kind = match self.copy_transcript(slot, tab, target) {
             Ok(Some(id)) => LaunchKind::Resume(id),
             Err(e) => {
@@ -501,12 +508,22 @@ impl App {
             self.panes[p].add_tab(cwd.clone())
         };
         self.panes[p].tabs[ti].custom_name = name;
-        self.panes[p].tabs[ti].session_id = match &kind {
-            LaunchKind::Resume(id) => Some(id.clone()),
-            _ => None,
-        };
+        self.panes[p].tabs[ti].set_session(
+            match &kind {
+                LaunchKind::Resume(id) => Some(id.clone()),
+                _ => None,
+            },
+            "a moved or copied conversation landed here",
+        );
         self.panes[p].tabs[ti].browser = browser;
         self.panes[p].tabs[ti].browser_also = browser_also;
+        self.panes[p].tabs[ti].route = route;
+        self.panes[p].tabs[ti].accent = accent;
+        self.panes[p].tabs[ti].avatar = avatar;
+        self.panes[p].tabs[ti].pinned = pinned && !copy;
+        if let Some(g) = &group {
+            self.panes[p].group_tabs(&[ti], g, None);
+        }
         self.launch_tab(p, ti, kind);
         self.panes[p].active = ti;
         self.focus = p;

@@ -170,6 +170,22 @@ pub fn draw(buf: &mut Buffer, app: &App, i: usize, r: Rect) {
         end
     };
 
+    let end = match app.route_label(i, t) {
+        Some((label, warn)) => {
+            let l = format!(" {label} ");
+            let w = l.chars().count() as u16;
+            if end.saturating_sub(r.x) > w + 20 {
+                let x = end - w;
+                let fg = if warn { theme::CLAY } else { theme::SAND };
+                text(buf, x, y, end, &l, Style::default().fg(fg).bg(bg));
+                x.saturating_sub(1)
+            } else {
+                end
+            }
+        }
+        None => end,
+    };
+
     let end = if queued.is_none() {
         browser_button(buf, app, i, y, r.x + models_w, r.x + tight_w, end, bg)
     } else {

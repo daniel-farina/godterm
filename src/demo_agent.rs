@@ -1457,7 +1457,10 @@ pub fn run(flavor: Flavor) -> Result<()> {
         return Ok(());
     }
 
-    let env_name = flavor.harness().home_env();
+    let env_name = match flavor {
+        Flavor::Antigravity => "",
+        _ => flavor.harness().home_env(),
+    };
     let config = (!env_name.is_empty())
         .then(|| std::env::var_os(env_name))
         .flatten()

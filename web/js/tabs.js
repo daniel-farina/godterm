@@ -1,7 +1,10 @@
 import { $, h, esc, on, emit, store, icon, isDesk, pctClass, debounce, hscroll, tcOf, tcStyle } from './util.js';
 import { S } from './state.js';
+import { emailOf } from './emails.js';
 import { panes } from './term.js';
+import { HARNESS, harnessOf, hbadge, avatarHtml, avatarsOn } from './avatar.js';
 import { findText, foundHtml, foundClick, onFound, foundNone } from './find.js';
+import { waitWords, needsOk } from './asks.js';
 
 const CHIPS = [
   ['all', 'All'], ['busy', 'Working'], ['wait', 'Needs you'], ['ready', 'Ready'], ['pinned', 'Pinned'],
@@ -14,6 +17,8 @@ let grp = store.get('tgroup', 'account');
 let q = '';
 let tabActions = () => {};
 export const setTabActions = (fn) => (tabActions = fn);
+let tabArchive = () => {};
+export const setTabArchive = (fn) => (tabArchive = fn);
 
 const posOf = (t) => parseInt(String(t.position || '').replace(/^tab /, ''), 10) || 0;
 
@@ -28,22 +33,31 @@ function fuzzy(hay, needle) {
   return i === n.length && n.length > 2;
 }
 
+const waits = (t) => WAIT.has(t.state) || WAIT.has(t.label) || needsOk(t);
+
 function keep(t) {
   if (chip === 'busy' && !(BUSY.has(t.state) || t.busy)) return false;
-  if (chip === 'wait' && !(WAIT.has(t.state) || WAIT.has(t.label))) return false;
+  if (chip === 'wait' && !waits(t)) return false;
   if (chip === 'ready' && t.state !== 'ready') return false;
   if (chip === 'pinned' && !t.pinned) return false;
   if (q && !fuzzy([t.name, t.folder, t.account_label, t.id, t.group, t.model, t.label].filter(Boolean).join(' '), q)) return false;
   return true;
 }
 
+const seenAt = new Map();
+function activeAt(t) {
+  const k = t.uid ?? t.id;
+  const at = Math.max(t.active_at || 0, seenAt.get(k) || 0);
+  if (at) seenAt.set(k, at);
+  return at;
+}
 const ORDER = { approval: 0, waiting: 1, working: 2, background: 3, ready: 4 };
 function cmp(a, b) {
 
   if (sort !== 'recent' && sort !== 'oldest' && !!b.pinned - !!a.pinned) return !!b.pinned - !!a.pinned;
   if (sort === 'recent' || sort === 'oldest') {
 
-    const d = (b.active_at || 0) - (a.active_at || 0);
+    const d = activeAt(b) - activeAt(a);
     if (d) return sort === 'recent' ? d : -d;
     return posOf(a) - posOf(b);
   }
@@ -53,11 +67,8 @@ function cmp(a, b) {
   return posOf(a) - posOf(b);
 }
 
-const HARNESS = { claude: 'Claude', grok: 'Grok', codex: 'Codex', opencode: 'OpenCode', gemini: 'Gemini' };
-const acctOf = (t) => S.accounts.find((a) => a.account === t.account);
-const harnessOf = (t) => t.harness || acctOf(t)?.harness || 'claude';
 const STATUS = ['Needs you', 'Working', 'Ready', 'Other'];
-const statusOf = (t) => WAIT.has(t.state) || WAIT.has(t.label) ? 0 : BUSY.has(t.state) || t.busy ? 1 : t.state === 'ready' ? 2 : 3;
+const statusOf = (t) => waits(t) ? 0 : BUSY.has(t.state) || t.busy ? 1 : t.state === 'ready' ? 2 : 3;
 function groups(tabs) {
   if (grp === 'none') return [{ label: '', tabs: [...tabs].sort(cmp) }];
   const by = new Map();
@@ -88,12 +99,15 @@ function agoWords(at) {
 
 function sub(t) {
   const bits = [];
-  if (t.label && t.label !== t.state) bits.push(t.label);
+  const w = waitWords(t);
+  if (w && needsOk(t)) return w;
+  if (w) bits.push(w);
+  else if (t.label && t.label !== t.state) bits.push(t.label);
   else if (t.state && t.state !== 'ready') bits.push(t.state);
   if (t.waiting_for) bits.push(t.waiting_for);
   if (t.move_pending) bits.push('→ ' + t.move_pending.to + ' when ' + t.move_pending.waiting_for + ' end');
   if (t.folder && grp !== 'folder') bits.push(t.folder);
-  if (t.active_at && (sort === 'recent' || sort === 'oldest')) bits.push(agoWords(t.active_at));
+  if (t.active_at && (sort === 'recent' || sort === 'oldest')) bits.push(agoWords(activeAt(t)));
   if (grp === 'harness' && t.account_label) bits.push(t.account_label);
   return bits.join(' · ');
 }
@@ -107,6 +121,7 @@ function render() {
   const list = $('#list');
   const shown = new Set(panes.visible().map((p) => p.id));
   let html = '';
+  const av = avatarsOn();
   const open = S.tabs.filter(keep);
 
   if (q) html += `<div class="acct fhead"><span class="an">Open tabs</span><span>${open.length}</span></div>`;
@@ -114,16 +129,16 @@ function render() {
     if (grp === 'account') {
       const a = S.accounts.find((x) => x.account === g.acct);
       const left = a?.effective_left_pct ?? a?.five_hour_left_pct;
-      html += `<div class="acct"><span class="an">${esc(g.label)}${a?.harness && a.harness !== 'claude' ? ' · ' + esc(a.harness) : ''}</span>`;
+      html += `<div class="acct"><span class="an">${esc(g.label)}${a?.harness && a.harness !== 'claude' ? ' · ' + esc(a.harness) : ''}${emailOf(a) ? ` <span class="em">${esc(emailOf(a))}</span>` : ''}</span>`;
       if (left != null) html += `<span class="meter" title="${esc(left)}% left"><i class="${pctClass(left)}" style="width:${Math.max(0, Math.min(100, left))}%"></i></span>`;
       html += `<span>${g.tabs.length}</span></div>`;
     } else if (grp !== 'none') {
       html += `<div class="acct"><span class="an" title="${esc(g.label)}">${esc(g.label)}</span><span>${g.tabs.length}</span></div>`;
     }
     for (const t of g.tabs) {
-      html += `<div class="row${shown.has(t.id) ? ' on' : ''}${tcOf(t) ? ' tc" style="' + tcStyle(t) : ''}" role="listitem" tabindex="0" aria-current="${shown.has(t.id)}" data-id="${esc(t.id)}" draggable="${isDesk()}">` +
-        `<span class="dot ${esc(t.state)}"></span><span class="tx"><span class="n">${hbadge(harnessOf(t))}${esc(t.name)}${t.pinned ? ' <span class="pin">pinned</span>' : ''}${t.git_warn ? ` <span class="gitw" style="color:var(--warn)" title="Git: ${esc(t.git_warn)}">⚠</span>` : ''}</span>` +
-        `<span class="s">${esc(sub(t))}</span></span>${indicators(t)}<button class="ib" data-act="1" aria-label="Tab actions" title="Tab actions">${icon('dots')}</button></div>`;
+      html += `<div class="row${shown.has(t.id) ? ' on' : ''}${av ? ' hasav' : ''}${tcOf(t) ? ' tc" style="' + tcStyle(t) : ''}" role="listitem" tabindex="0" aria-current="${shown.has(t.id)}" data-id="${esc(t.id)}" draggable="${isDesk()}">` +
+        `${av ? avatarHtml(t) : `<span class="dot ${esc(t.state)}"></span>`}<span class="tx"><span class="n">${av ? '' : hbadge(harnessOf(t))}${esc(t.name)}${t.pinned ? ' <span class="pin">pinned</span>' : ''}${t.git_warn ? ` <span class="gitw" style="color:var(--warn)" title="Git: ${esc(t.git_warn)}">⚠</span>` : ''}</span>` +
+        `<span class="s${needsOk(t) ? ' need' : ''}">${t.route ? `<span class="rtb" data-s="${t.route.state === 'on' || t.route.state === 'idle' ? 'on' : 'warn'}" title="${esc(t.route.detail || 'Routed via ' + t.route.name)}">via ${esc(t.route.name)}</span> ` : ''}${esc(sub(t))}</span></span>${indicators(t)}<button class="ib ar" data-arch="1" aria-label="Archive ${esc(t.name)}" title="Archive (undo for 5 s)">${icon('archive')}</button><button class="ib" data-act="1" aria-label="Tab actions" title="Tab actions">${icon('dots')}</button></div>`;
     }
   }
 
@@ -162,6 +177,7 @@ export function initTabs() {
     if (foundClick(e)) return;
     const row = e.target.closest('.row');
     if (!row) return;
+    if (e.target.closest('[data-arch]')) return tabArchive(row.dataset.id);
     const b = e.target.closest('[data-act]');
     if (b) { const r = b.getBoundingClientRect(); return tabActions(row.dataset.id, { x: r.left, y: r.bottom + 4 }); }
     panes.show(row.dataset.id);
@@ -192,6 +208,8 @@ export function initTabs() {
     if (row) e.dataTransfer.setData('text/gt-tab', row.dataset.id);
   });
   on('state', render);
+  on('asks', render);
+  on('emails', () => { for (const e of document.querySelectorAll('#list .em')) e.remove(); lastHtml = ''; });
   on('focus', render);
 }
 
@@ -204,18 +222,4 @@ function indicators(t) {
   if (!on && !off) return '';
   const tip = [run && run + ' loop' + (run > 1 ? 's' : ''), live && live + ' scheduled', idle && idle + ' paused'].filter(Boolean).join(', ');
   return `<span class="ind" title="${esc(tip)}">${'<i class="run"></i>'.repeat(on)}${'<i></i>'.repeat(off)}</span>`;
-}
-
-const HGLYPH = {
-  claude: '<path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/>',
-  grok: '<circle cx="12" cy="12" r="8"/><path d="M8 16l8-8"/>',
-  codex: '<path d="M6 8l5 4-5 4M13 17h5"/>',
-  cursor: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/>',
-  antigravity: '<path d="M12 4l8 15H4z"/>',
-  opencode: '<path d="M9 5C7 5 7 8 7 10s-1 2-2 2c1 0 2 0 2 2s0 5 2 5M15 5c2 0 2 3 2 5s1 2 2 2c-1 0-2 0-2 2s0 5-2 5"/>',
-};
-function hbadge(k) {
-  const g = HGLYPH[k];
-  if (!g) return '';
-  return `<span class="hb hb-${esc(k)}" title="${esc(HARNESS[k] || k)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${g}</svg></span>`;
 }

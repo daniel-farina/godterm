@@ -222,6 +222,7 @@ fn random_text_never_panics_the_text_helpers() {
         let _ = crate::assistant::spoken_part(&t, r.below(500));
         let _ = crate::app_direct::speakable(&t);
         let _ = crate::app_direct::spoken_reply(&t, r.below(10));
+        let _ = crate::app_direct::shown_reply(&t);
         let _ = crate::app_privacy::mask_emails(&t);
         let _ = crate::app_privacy::middle_truncate(&t, r.below(40));
         let _ = crate::paths::middle(&t, r.below(40));

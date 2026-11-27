@@ -11,11 +11,82 @@ const CONFIRM_TTL: Duration = Duration::from_secs(120);
 
 const REPLY_WAIT: Duration = Duration::from_secs(4);
 
+const FULL_REPLY: usize = 40;
+
+const SPOKEN_KEPT: usize = 200;
+
+pub const FOLLOW_SETTLE: Duration = Duration::from_millis(700);
+
+pub const SPOKEN_QUIET: Duration = Duration::from_millis(1200);
+
+pub const SPOKEN_MAX: Duration = Duration::from_secs(4);
+
+const STEER_SETTLE: Duration = Duration::from_millis(400);
+
+const TYPING_HOLD: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Gate {
+    Now,
+    Steer,
+    Hold(&'static str),
+}
+
+pub fn join_spoken(parts: &[String]) -> String {
+    let parts: Vec<&str> = parts
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.len() < 2 {
+        return parts.first().map(|p| p.to_string()).unwrap_or_default();
+    }
+    let mut out = String::new();
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(p);
+        let closed = p
+            .chars()
+            .last()
+            .is_some_and(|c| matches!(c, '.' | '!' | '?' | ',' | ';' | ':' | '\u{2026}'));
+        if !closed {
+            out.push('.');
+        }
+    }
+    out
+}
+
+fn shown_activity(h: crate::harness::Harness, screen: &str) -> Activity {
+    crate::prompt_cli::activity_for(h, screen)
+        .unwrap_or_else(|| crate::pane::detect_activity(screen))
+}
+
+pub(crate) fn input_line(screen: &str) -> bool {
+    let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
+    let k = lines.len().saturating_sub(8);
+    lines[k..].iter().any(|l| {
+        let t = l.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '\u{2502}' | '|'));
+        t.starts_with('>') || t.starts_with('\u{276f}')
+    })
+}
+
 #[derive(Default)]
 pub struct DirectState {
     pub on: Option<DirectMode>,
 
     pub said: Vec<String>,
+
+    pub spoken: Vec<u64>,
+
+    pub picked: Option<(u64, Instant)>,
+
+    pub shown: Option<u64>,
+
+    pub held: bool,
+
+    pub hold: Vec<(u64, &'static str)>,
 }
 
 pub struct DirectMode {
@@ -44,7 +115,7 @@ pub struct DirectConfirm {
     pub at: Instant,
 }
 
-fn tab_can_direct(tab: &crate::pane::Pane) -> bool {
+pub(crate) fn tab_can_direct(tab: &crate::pane::Pane) -> bool {
     (tab.suspended || tab.pending.is_some() || tab.is_running()) && tab.activity != Activity::Exited
 }
 
@@ -232,10 +303,326 @@ pub fn speakable(text: &str) -> String {
     out.join(" ")
 }
 
-pub fn spoken_reply(text: &str, n: usize) -> (String, bool) {
-    let sp = speakable(text);
-    let (say, _, rest) = crate::assistant::spoken_part(&sp, n.max(1));
-    (say, rest.is_some())
+fn is_emoji(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x200D
+            | 0x20E3
+            | 0xFE00..=0xFE0F
+            | 0x2190..=0x21FF
+            | 0x2300..=0x23FF
+            | 0x25A0..=0x27BF
+            | 0x2900..=0x297F
+            | 0x2B00..=0x2BFF
+            | 0x3030
+            | 0x303D
+            | 0x3297
+            | 0x3299
+            | 0x1F000..=0x1FAFF
+            | 0xE0020..=0xE007F
+    )
+}
+
+fn no_emoji(s: &str) -> String {
+    let kept: String = s.chars().filter(|&c| !is_emoji(c)).collect();
+    let mut out = String::new();
+    for w in kept.split_whitespace() {
+        let w = match w
+            .strip_prefix("https://")
+            .or_else(|| w.strip_prefix("http://"))
+        {
+            Some(rest) => {
+                let tail = rest
+                    .chars()
+                    .last()
+                    .filter(|c| matches!(c, '.' | ',' | '!' | '?' | ';' | ':'));
+                format!("a link{}", tail.map(String::from).unwrap_or_default())
+            }
+            None => w.to_string(),
+        };
+        let joins = w
+            .chars()
+            .all(|c| matches!(c, '.' | ',' | '!' | '?' | ';' | ':'));
+        if !out.is_empty() && !joins {
+            out.push(' ');
+        }
+        out.push_str(&w);
+    }
+    out
+}
+
+fn number_word(marker: &str) -> Option<String> {
+    const WORDS: [&str; 20] = [
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+        "Six",
+        "Seven",
+        "Eight",
+        "Nine",
+        "Ten",
+        "Eleven",
+        "Twelve",
+        "Thirteen",
+        "Fourteen",
+        "Fifteen",
+        "Sixteen",
+        "Seventeen",
+        "Eighteen",
+        "Nineteen",
+        "Twenty",
+    ];
+    let n: usize = marker.trim_end_matches('.').parse().ok()?;
+    Some(match n {
+        1..=20 => WORDS[n - 1].to_string(),
+        _ => n.to_string(),
+    })
+}
+
+fn clean_piece(s: &str) -> Option<String> {
+    let s = no_emoji(&crate::md::plain(s));
+    s.chars().any(char::is_alphanumeric).then_some(s)
+}
+
+fn closed(mut s: String) -> String {
+    if !s.ends_with(['.', '!', '?']) {
+        s = s.trim_end_matches([':', ';', ',']).to_string();
+        s.push('.');
+    }
+    s
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Part {
+    Prose,
+    Head,
+    Note,
+    Intro,
+    Lead,
+    Ask,
+    Choice,
+    Point,
+}
+
+impl Part {
+    fn keep(self) -> bool {
+        !matches!(self, Part::Prose | Part::Head | Part::Note)
+    }
+}
+
+const CHOICE_WORDS: &[&str] = &[
+    "which",
+    "option",
+    "options",
+    "choose",
+    "pick",
+    "prefer",
+    "either",
+    "or",
+    "alternative",
+    "alternatives",
+    "choice",
+    "choices",
+    "select",
+];
+
+fn asks_to_choose(text: &str) -> bool {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| CHOICE_WORDS.contains(&w))
+}
+
+fn choice_lists(blocks: &[crate::md::Block]) -> Vec<bool> {
+    use crate::md::Block;
+    fn prose(b: Option<&Block>) -> Option<&str> {
+        match b {
+            Some(Block::Para(t) | Block::Quote(t)) => Some(t.as_str()),
+            _ => None,
+        }
+    }
+    let mut out = vec![false; blocks.len()];
+    let mut i = 0;
+    while i < blocks.len() {
+        let Block::Item { marker, .. } = &blocks[i] else {
+            i += 1;
+            continue;
+        };
+        let mut end = i;
+        while matches!(blocks.get(end + 1), Some(Block::Item { .. })) {
+            end += 1;
+        }
+        let before = i.checked_sub(1).and_then(|k| prose(blocks.get(k)));
+        let after = prose(blocks.get(end + 1)).filter(|t| t.contains('?'));
+        let choice = number_word(marker).is_some()
+            || before.is_some_and(asks_to_choose)
+            || after.is_some_and(asks_to_choose);
+        for c in &mut out[i..=end] {
+            *c = choice;
+        }
+        i = end + 1;
+    }
+    out
+}
+
+fn tagged_parts(text: &str, aloud: bool) -> Vec<(String, Part)> {
+    use crate::md::Block;
+    let blocks = crate::md::parse(text);
+    let choice = choice_lists(&blocks);
+    let mut out: Vec<(String, Part)> = vec![];
+    for (i, b) in blocks.iter().enumerate() {
+        match b {
+            Block::Para(t) | Block::Quote(t) => {
+                let before_list = matches!(blocks.get(i + 1), Some(Block::Item { .. }));
+                let pieces: Vec<String> = crate::assistant::sentence_spans(t)
+                    .into_iter()
+                    .filter_map(|(a, e)| clean_piece(&t[a..e]))
+                    .collect();
+                let last = pieces.len().saturating_sub(1);
+                for (k, s) in pieces.into_iter().enumerate() {
+                    let lead = k == last && (before_list || s.ends_with(':'));
+                    let s = if aloud || !s.ends_with(':') {
+                        closed(s)
+                    } else {
+                        s
+                    };
+                    let kind = if s.ends_with('?') {
+                        Part::Ask
+                    } else if lead && before_list && choice[i + 1] {
+                        Part::Lead
+                    } else if lead {
+                        Part::Intro
+                    } else {
+                        Part::Prose
+                    };
+                    out.push((s, kind));
+                }
+            }
+            Block::Heading(_, t) => {
+                if let Some(s) = clean_piece(t) {
+                    out.push((closed(s), Part::Head));
+                }
+            }
+            Block::Item { marker, text, .. } => {
+                let Some(s) = clean_piece(text) else {
+                    continue;
+                };
+                let s = closed(s);
+                let s = match number_word(marker) {
+                    Some(n) if aloud => format!("{n}: {s}"),
+                    Some(_) => format!("{marker} {s}"),
+                    None => s,
+                };
+                out.push((s, if choice[i] { Part::Choice } else { Part::Point }));
+            }
+            Block::Table { rows, .. } if !rows.is_empty() => out.push((
+                format!(
+                    "A table of {} row{} is on screen.",
+                    rows.len(),
+                    if rows.len() == 1 { "" } else { "s" }
+                ),
+                Part::Note,
+            )),
+            Block::Table { .. } | Block::Code(_) | Block::Rule => {}
+        }
+    }
+    out
+}
+
+pub fn reply_parts(text: &str, aloud: bool) -> Vec<(String, bool)> {
+    tagged_parts(text, aloud)
+        .into_iter()
+        .map(|(s, k)| (s, k.keep()))
+        .collect()
+}
+
+fn pick(parts: Vec<(String, bool)>, max: usize) -> Vec<String> {
+    let mut room = max;
+    parts
+        .into_iter()
+        .filter(|(_, keep)| {
+            if *keep {
+                true
+            } else if room > 0 {
+                room -= 1;
+                true
+            } else {
+                false
+            }
+        })
+        .map(|p| p.0)
+        .collect()
+}
+
+pub fn spoken_reply(text: &str, n: usize) -> String {
+    pick(reply_parts(text, true), n.max(1)).join(" ")
+}
+
+const CUE: &str = "More on screen.";
+
+const CUE_AT: usize = 6;
+
+pub fn leveled_reply(
+    text: &str,
+    level: crate::app_talkback::TalkLevel,
+    sentences: usize,
+) -> String {
+    use crate::app_talkback::TalkLevel;
+    let parts = tagged_parts(text, true);
+    let said: Vec<bool> = match level {
+        TalkLevel::Detailed => return spoken_reply(text, FULL_REPLY),
+        TalkLevel::Normal => {
+            let mut room = sentences.max(1);
+            parts
+                .iter()
+                .map(|(_, k)| {
+                    if k.keep() {
+                        true
+                    } else if room > 0 {
+                        room -= 1;
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .collect()
+        }
+        TalkLevel::Brief => {
+            let first = [
+                &[Part::Prose][..],
+                &[Part::Intro],
+                &[Part::Head, Part::Point, Part::Note],
+            ]
+            .iter()
+            .find_map(|kinds| parts.iter().position(|(_, k)| kinds.contains(k)));
+            parts
+                .iter()
+                .enumerate()
+                .map(|(i, (_, k))| {
+                    Some(i) == first || matches!(k, Part::Lead | Part::Ask | Part::Choice)
+                })
+                .collect()
+        }
+    };
+    let dropped = said.iter().filter(|s| !**s).count();
+    let cue_at = (dropped >= CUE_AT)
+        .then(|| said.iter().position(|s| !*s))
+        .flatten();
+    let mut out: Vec<&str> = vec![];
+    for (i, (s, _)) in parts.iter().enumerate() {
+        if Some(i) == cue_at {
+            out.push(CUE);
+        }
+        if said[i] {
+            out.push(s);
+        }
+    }
+    out.join(" ")
+}
+
+pub fn shown_reply(text: &str) -> String {
+    pick(reply_parts(text, false), usize::MAX).join(" ")
 }
 
 pub fn screen_reply(screen: &str, sent: &str) -> Option<String> {
@@ -290,8 +677,9 @@ impl App {
             return Err("that tab is not running; start it first".into());
         }
         let uid = tab.uid;
-        let act = tab.activity;
         let name = self.spoken_tab_name(uid);
+        self.direct.picked = None;
+        self.direct.held = false;
         if self.direct.on.as_ref().is_some_and(|d| d.uid == uid) {
             return Ok(format!(
                 "You're already talking to {name} directly. Say 'back to the assistant' to return."
@@ -301,21 +689,8 @@ impl App {
         if self.direct.on.is_some() {
             self.end_direct("switched", false);
         }
-        let last_reply = self
-            .transcript_path(s, t)
-            .and_then(|p| crate::sessions::last_assistant_text(&p));
         crate::log::info(&format!("direct: talking to {} ({name})", tab_id(uid)));
-        self.direct.on = Some(DirectMode {
-            uid,
-            name: name.clone(),
-            since: chrono::Local::now(),
-            log: vec![],
-            last_act: act,
-            last_reply,
-            reply_wait: None,
-            last_sent: None,
-            confirm: None,
-        });
+        self.direct_begin(s, t, name.clone());
         self.jump_to(s, t);
         self.assistant.log.push(Entry::new(
             Who::Note,
@@ -325,6 +700,160 @@ impl App {
         Ok(format!(
             "You're now talking to {name} directly. Say 'back to the assistant' to return."
         ))
+    }
+
+    fn direct_begin(&mut self, s: usize, t: usize, name: String) {
+        let tab = &self.panes[s].tabs[t];
+        let (uid, act) = (tab.uid, tab.activity);
+        let last_reply = self
+            .transcript_path(s, t)
+            .and_then(|p| crate::sessions::last_assistant_text(&p));
+        self.direct.on = Some(DirectMode {
+            uid,
+            name,
+            since: chrono::Local::now(),
+            log: vec![],
+            last_act: act,
+            last_reply,
+            reply_wait: None,
+            last_sent: None,
+            confirm: None,
+        });
+        self.web_changed();
+    }
+
+    pub fn set_direct_follow(&mut self, on: bool) {
+        if self.cfg.voice.direct_follow == on {
+            return;
+        }
+        let _ = crate::settings::write(
+            &crate::config::Config::path(),
+            &crate::settings::Key::Global("voice.direct_follow"),
+            Some(toml_edit::value(on)),
+        );
+        self.config_mtime = crate::app::config_mtime();
+        self.cfg.voice.direct_follow = on;
+        self.direct.picked = None;
+        self.direct.held = false;
+        self.web_changed();
+        crate::log::info(&format!(
+            "direct: following the active tab is {}",
+            if on { "on" } else { "off" }
+        ));
+    }
+
+    pub fn user_picked_tab(&mut self, uid: u64, whence: &str) {
+        if self.direct.on.is_none() || !self.cfg.voice.direct_follow {
+            return;
+        }
+        crate::log::info(&format!(
+            "direct: the user went to {} ({whence})",
+            tab_id(uid)
+        ));
+        self.direct.picked = Some((uid, Instant::now()));
+        self.direct.held = false;
+    }
+
+    fn follow_watch_focus(&mut self) {
+        let cur = self.panes.get(self.focus).map(|p| p.cur().uid);
+        if cur == self.direct.shown {
+            return;
+        }
+        let prev = std::mem::replace(&mut self.direct.shown, cur);
+        let same_tab = prev.is_some_and(|p| Some(self.current_uid(p)) == cur);
+        if let (Some(uid), Some(_), false) = (cur, prev, same_tab) {
+            self.user_picked_tab(uid, "in the app");
+        }
+    }
+
+    fn follow_tick(&mut self) {
+        let Some((want, at)) = self.direct.picked else {
+            return;
+        };
+        let cur = self.direct.on.as_ref().map(|d| d.uid);
+        let (Some(cur), true) = (cur, self.cfg.voice.direct_follow) else {
+            self.direct.picked = None;
+            return;
+        };
+        let want = self.current_uid(want);
+        if want == cur {
+            self.direct.picked = None;
+            return;
+        }
+        if at.elapsed() < FOLLOW_SETTLE {
+            return;
+        }
+        let spot = self
+            .find_tab(want)
+            .filter(|&(s, t)| tab_can_direct(&self.panes[s].tabs[t]));
+        let Some((s, t)) = spot else {
+            crate::log::info(&format!(
+                "direct: not following to {}: it is not running",
+                tab_id(want)
+            ));
+            self.direct.picked = None;
+            return;
+        };
+        let confirming = self.direct.on.as_ref().is_some_and(|d| {
+            d.confirm
+                .as_ref()
+                .is_some_and(|c| c.at.elapsed() < CONFIRM_TTL)
+        });
+        let pasting = self
+            .deliveries
+            .iter()
+            .any(|d| d.uid == cur && d.in_flight());
+        if confirming || pasting {
+            if !self.direct.held {
+                self.direct.held = true;
+                crate::log::info(&format!(
+                    "direct: waiting to follow to {}: {}",
+                    tab_id(want),
+                    if confirming {
+                        "an approval is being answered by voice"
+                    } else {
+                        "a message is being typed into the current tab"
+                    }
+                ));
+            }
+            return;
+        }
+        self.follow_to(s, t);
+    }
+
+    fn follow_to(&mut self, s: usize, t: usize) {
+        let uid = self.panes[s].tabs[t].uid;
+        let name = self.spoken_tab_name(uid);
+        self.direct.picked = None;
+        self.direct.held = false;
+        if let Some(old) = self.direct.on.take() {
+            crate::log::info(&format!(
+                "direct: followed the active tab from {} to {} ({name}) after {} exchange lines",
+                tab_id(old.uid),
+                tab_id(uid),
+                old.log.len()
+            ));
+            if !old.log.is_empty() {
+                self.keep_direct_note(&old);
+            }
+        }
+        self.direct_begin(s, t, name.clone());
+        self.assistant.log.push(Entry::new(
+            Who::Note,
+            format!("Voice followed the active tab: now talking to {name}"),
+        ));
+        self.voice.action = Some(format!("direct: {name}"));
+        let say = format!("Now talking to {name}.");
+        self.flash(say.clone());
+        self.direct_say(&say);
+    }
+
+    fn keep_direct_note(&mut self, d: &DirectMode) {
+        let note = direct_note(d);
+        self.assistant.direct_note = Some(match self.assistant.direct_note.take() {
+            Some(prev) => format!("{prev}\n{note}"),
+            None => note,
+        });
     }
 
     pub fn mic_targets(&self) -> Vec<(u64, String)> {
@@ -400,6 +929,207 @@ impl App {
         self.direct.on.as_ref().is_some_and(|d| d.uid == uid)
     }
 
+    pub(crate) fn spoken_prompt_up(&self, s: usize, t: usize) -> bool {
+        let tab = &self.panes[s].tabs[t];
+        let screen = self.tab_screen(s, t);
+        tab.activity == Activity::Permission
+            || shown_activity(tab.harness, &screen) == Activity::Permission
+            || crate::pane::asks_question(&screen)
+            || crate::prompt_cli::parse_prompt_for(tab.harness, &screen).is_some()
+            || crate::prompt::parse_prompt(&screen).is_some()
+    }
+
+    pub(crate) fn spoken_gate(&self, s: usize, t: usize) -> Gate {
+        use crate::harness::Harness;
+        let tab = &self.panes[s].tabs[t];
+        if !tab.is_running() {
+            return Gate::Hold("the tab is not running yet");
+        }
+        if self.spoken_prompt_up(s, t) {
+            return Gate::Hold("the tab shows a prompt");
+        }
+        let screen = self.tab_screen(s, t);
+        let shown = shown_activity(tab.harness, &screen);
+        let claude = tab.harness == Harness::Claude
+            && self.pane_harness(s).is_none_or(|h| h == Harness::Claude);
+        let gate = match (tab.activity, shown) {
+            (Activity::Ready, Activity::Ready) => Gate::Now,
+            (Activity::Working, Activity::Working) => {
+                if !claude {
+                    return Gate::Hold("the tab is working and its CLI takes no input mid-turn");
+                }
+                if !input_line(&screen) {
+                    return Gate::Hold("the tab is working and shows no input box");
+                }
+                if tab.activity_since.elapsed() < STEER_SETTLE {
+                    return Gate::Hold("the tab just started working");
+                }
+                Gate::Steer
+            }
+            (Activity::Working, _) | (_, Activity::Working) => {
+                return Gate::Hold("the tab is working")
+            }
+            _ => return Gate::Hold("the tab is not ready"),
+        };
+        if self.pending_enters.iter().any(|p| p.uid == tab.uid) {
+            return Gate::Hold("the tab is being typed in");
+        }
+        let typing = if claude {
+            tab.user_typed_within(TYPING_HOLD)
+        } else {
+            tab.last_input.elapsed() < TYPING_HOLD
+        };
+        if typing {
+            return Gate::Hold("the tab is being typed in");
+        }
+        let drafting = crate::pane::typed_draft(
+            tab.parser
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .screen(),
+        );
+        if drafting {
+            return Gate::Hold("its input box holds unsent text");
+        }
+        gate
+    }
+
+    fn spoken_hold(&mut self, uid: u64, n: usize, why: &'static str) {
+        if self.direct.hold.contains(&(uid, why)) {
+            return;
+        }
+        self.direct.hold.retain(|(u, _)| *u != uid);
+        self.direct.hold.push((uid, why));
+        crate::log::info(&format!(
+            "deliver: holding {n} spoken message(s) for {}: {why}",
+            tab_id(uid)
+        ));
+    }
+
+    pub(crate) fn spoken_release_tick(&mut self) {
+        use crate::control::Stage;
+        let mut tabs: Vec<u64> = vec![];
+        for d in &self.deliveries {
+            if d.rc.spoken && d.stage == Stage::Queued {
+                let uid = self.current_uid(d.uid);
+                if !tabs.contains(&uid) {
+                    tabs.push(uid);
+                }
+            }
+        }
+        self.direct.hold.retain(|(u, _)| tabs.contains(u));
+        for uid in tabs {
+            let ids: Vec<u64> = self
+                .deliveries
+                .iter()
+                .filter(|d| {
+                    d.rc.spoken && d.stage == Stage::Queued && self.current_uid(d.uid) == uid
+                })
+                .map(|d| d.id)
+                .collect();
+            let Some((s, t)) = self.find_tab(uid) else {
+                continue;
+            };
+            let blocked = self
+                .deliveries
+                .iter()
+                .any(|d| !d.done() && !ids.contains(&d.id) && self.current_uid(d.uid) == uid);
+            let gate = if blocked {
+                Gate::Hold("an earlier message is still going in")
+            } else {
+                self.spoken_gate(s, t)
+            };
+            let mine = |d: &&crate::control::Delivery| ids.contains(&d.id);
+            let first = self.deliveries.iter().filter(mine).map(|d| d.created).min();
+            let last = self.deliveries.iter().filter(mine).map(|d| d.created).max();
+            let mid = match gate {
+                Gate::Now => false,
+                Gate::Steer => {
+                    let quiet = last.is_none_or(|x| x.elapsed() >= SPOKEN_QUIET);
+                    let capped = first.is_none_or(|x| x.elapsed() >= SPOKEN_MAX);
+                    if !quiet && !capped {
+                        self.spoken_hold(uid, ids.len(), "waiting a moment for more speech");
+                        continue;
+                    }
+                    true
+                }
+                Gate::Hold(why) => {
+                    self.spoken_hold(uid, ids.len(), why);
+                    continue;
+                }
+            };
+            let texts: Vec<String> = self
+                .deliveries
+                .iter()
+                .filter(mine)
+                .map(|d| d.text.clone())
+                .collect();
+            let merged = join_spoken(&texts);
+            let keep = ids[0];
+            self.deliveries
+                .retain(|d| d.id == keep || !ids.contains(&d.id));
+            if let Some(d) = self.deliveries.iter_mut().find(|d| d.id == keep) {
+                d.text = merged.clone();
+                d.rc.go = true;
+                d.rc.mid_turn = mid;
+            }
+            let others = if ids.len() > 1 {
+                format!(
+                    ", merged {}",
+                    ids[1..]
+                        .iter()
+                        .map(|i| format!("#{i}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            } else {
+                String::new()
+            };
+            crate::log::info(&format!(
+                "deliver: spoken #{keep} for {}: {} as one message ({} chars), {}{others}",
+                tab_id(uid),
+                crate::control::plural(ids.len(), "utterance"),
+                merged.len(),
+                if mid {
+                    "mid-turn while the tab works"
+                } else {
+                    "the tab is ready"
+                }
+            ));
+            self.direct.hold.retain(|(u, _)| *u != uid);
+            if ids.len() > 1 {
+                if let Some(d) = self.direct.on.as_mut().filter(|d| d.uid == uid) {
+                    d.last_sent = Some(merged);
+                }
+            }
+            self.state_dirty = true;
+        }
+    }
+
+    pub fn drop_spoken_queue(&mut self, why: &str) -> usize {
+        let ids = self.direct.spoken.clone();
+        if ids.is_empty() {
+            return 0;
+        }
+        self.direct.hold.clear();
+        let before = self.deliveries.len();
+        self.deliveries
+            .retain(|d| !(ids.contains(&d.id) && d.stage == crate::control::Stage::Queued));
+        let n = before - self.deliveries.len();
+        if n > 0 {
+            let left: Vec<u64> = self.deliveries.iter().map(|d| d.id).collect();
+            self.direct.spoken.retain(|id| left.contains(id));
+            crate::log::info(&format!(
+                "direct: dropped {n} spoken message(s) still waiting for their tab ({why})"
+            ));
+            self.direct_line(format!(
+                "Dropped {n} spoken message{} that had not reached the tab yet",
+                if n == 1 { "" } else { "s" }
+            ));
+        }
+        n
+    }
+
     pub fn end_direct(&mut self, why: &str, say: bool) {
         let Some(d) = self.direct.on.take() else {
             return;
@@ -409,11 +1139,10 @@ impl App {
             tab_id(d.uid),
             d.log.len()
         ));
-        let note = direct_note(&d);
-        self.assistant.direct_note = Some(match self.assistant.direct_note.take() {
-            Some(prev) => format!("{prev}\n{note}"),
-            None => note,
-        });
+        self.keep_direct_note(&d);
+        self.direct.picked = None;
+        self.direct.held = false;
+        self.web_changed();
         self.assistant.log.push(Entry::new(
             Who::Note,
             format!("Back to the assistant (direct mode with {} ended)", d.name),
@@ -566,29 +1295,40 @@ impl App {
         if let Some(v) = &self.voice.engine {
             v.stop_speaking();
         }
-        let tab = &self.panes[s].tabs[t];
-        let busy = matches!(
-            tab.activity,
-            Activity::Working | Activity::Permission | Activity::Starting
-        ) || !tab.is_running()
-            || self.queued_for(uid) > 0;
-        self.brainstorm_suggest_check(text);
-        let id = self.deliver_request(uid, text);
+        let waits = self.panes[s].tabs[t].activity == Activity::Permission;
+        let steer = self.spoken_gate(s, t) == Gate::Steer;
+        let id = self.deliver_as(uid, text, true);
+        self.direct_sent(id);
+        let went = !self
+            .deliveries
+            .iter()
+            .any(|d| d.id == id && d.stage == crate::control::Stage::Queued);
+        let busy = !went && !steer;
         crate::log::info(&format!(
             "direct: typed into {} as #{id}{}",
             tab_id(uid),
-            if busy { " (queued: busy)" } else { "" }
+            if busy {
+                " (queued: busy)"
+            } else if !went {
+                " (goes in mid-turn)"
+            } else {
+                ""
+            }
         ));
         if let Some(d) = self.direct.on.as_mut() {
             d.log.push((true, text.to_string()));
             d.last_sent = Some(text.to_string());
         }
-        self.direct_line(format!("you → {name}: {text}"));
-        self.voice.action = Some(format!("→ {name}"));
-        if self.panes[s].tabs[t].activity == Activity::Permission {
-            self.direct_say("Queued. It's waiting for approval: say yes or no.");
+        self.direct_line(if waits {
+            format!("you: {text} (queued: {name} waits for your yes or no)")
         } else if busy {
-            self.direct_say("Queued.");
+            format!("you: {text} (queued: {name} is busy)")
+        } else {
+            format!("you: {text}")
+        });
+        self.voice.action = Some(format!("→ {name}"));
+        if waits {
+            self.direct_say("It still needs your yes or no first.");
         }
     }
 
@@ -623,7 +1363,7 @@ impl App {
                     }
                     self.direct_say(&format!("{question} Say yes to go ahead."));
                 } else {
-                    self.direct_run_answer(&plan, choice);
+                    self.direct_run_answer(s, t, &plan, choice);
                 }
             }
             Err(e) => self.direct_say(&format!("I couldn't answer it: {e}.")),
@@ -634,15 +1374,22 @@ impl App {
         let tid = tab_id(self.panes[s].tabs[t].uid);
         let args = json!({"tab": tid, "choice": c.choice});
         match self.plan_for("answer_prompt", &args) {
-            Ok((plan, _, _)) if plan == c.plan => self.direct_run_answer(&plan, c.choice),
+            Ok((plan, _, _)) if plan == c.plan => self.direct_run_answer(s, t, &plan, c.choice),
             Ok(_) => self.direct_say("The prompt changed meanwhile, so I did nothing."),
             Err(e) => self.direct_say(&format!("I couldn't answer it: {e}.")),
         }
     }
 
-    fn direct_run_answer(&mut self, plan: &Value, choice: &str) {
+    fn direct_run_answer(&mut self, s: usize, t: usize, plan: &Value, choice: &str) {
+        let uid = self.panes.get(s).and_then(|p| p.tabs.get(t)).map(|x| x.uid);
+        let before = uid.map(|_| self.panes[s].tabs[t].last_input);
         match self.run_plan("answer_prompt", plan) {
             Ok(_) => {
+                if let Some(tab) = self.panes.get_mut(s).and_then(|p| p.tabs.get_mut(t)) {
+                    if Some(tab.uid) == uid && Some(tab.last_input) != before {
+                        tab.own_input = Some(tab.last_input);
+                    }
+                }
                 let said = match choice {
                     "yes" => "Approved.",
                     "always" => "Always allowed.",
@@ -659,7 +1406,9 @@ impl App {
     }
 
     pub fn direct_tick(&mut self) {
+        self.follow_watch_focus();
         let Some(uid) = self.direct.on.as_ref().map(|d| d.uid) else {
+            self.direct.picked = None;
             return;
         };
         let now_uid = self.current_uid(uid);
@@ -732,6 +1481,7 @@ impl App {
             }
         }
         self.direct_reply_tick(s, t);
+        self.follow_tick();
     }
 
     fn direct_reply_tick(&mut self, s: usize, t: usize) {
@@ -746,9 +1496,6 @@ impl App {
         }
 
         let screen = self.tab_screen(s, t);
-        if crate::app_continue::background_busy(&screen) {
-            return;
-        }
         let last = d.last_reply.clone();
         let sent = d.last_sent.clone();
         let name = d.name.clone();
@@ -756,6 +1503,9 @@ impl App {
             .transcript_path(s, t)
             .and_then(|p| crate::sessions::last_assistant_text(&p))
             .filter(|r| Some(r) != last.as_ref() && !r.trim().is_empty());
+        if fresh.is_none() && crate::app_continue::background_busy(&screen) {
+            return;
+        }
         let reply = match fresh {
             Some(r) => Some(r),
             None if since.elapsed() < REPLY_WAIT => return,
@@ -779,38 +1529,37 @@ impl App {
     }
 
     pub fn direct_say_reply(&mut self, name: &str, reply: &str) {
-        let n = self.cfg.voice.direct_sentences.clamp(1, 10);
-        let (say, long) = spoken_reply(reply, n);
+        let sentences = self.cfg.voice.direct_sentences.clamp(1, 10);
+        let say = match crate::app_talkback::TalkLevel::chosen(&self.cfg) {
+            Some(level) => leveled_reply(reply, level, sentences),
+            None if self.cfg.voice.direct_reply == "sentences" => spoken_reply(reply, sentences),
+            None => spoken_reply(reply, FULL_REPLY),
+        };
         if let Some(d) = self.direct.on.as_mut() {
             d.log.push((false, reply.to_string()));
         }
-        self.direct_line(format!(
-            "{name}: {}",
-            crate::sessions::snippet(&speakable(reply), 300)
-        ));
-        if long && self.cfg.voice.direct_reply == "auto" && self.direct_summarize(name, reply) {
+        if say.is_empty() {
+            self.direct_line(format!("{name} finished (nothing to read out)"));
+            self.direct_say(&format!("{name} finished."));
             return;
         }
+        self.direct_line(format!(
+            "{name}: {}",
+            crate::sessions::snippet(&shown_reply(reply), 600)
+        ));
         self.direct_say(&say);
     }
 
-    fn direct_summarize(&mut self, name: &str, reply: &str) -> bool {
-        if !self.assistant_on() || self.assistant.busy {
-            return false;
+    pub(crate) fn direct_spoke(&self, id: u64) -> bool {
+        self.direct.spoken.contains(&id)
+    }
+
+    pub(crate) fn direct_sent(&mut self, id: u64) {
+        self.direct.spoken.push(id);
+        let n = self.direct.spoken.len();
+        if n > SPOKEN_KEPT {
+            self.direct.spoken.drain(..n - SPOKEN_KEPT);
         }
-        let tid = self
-            .direct
-            .on
-            .as_ref()
-            .map(|d| tab_id(d.uid))
-            .unwrap_or_default();
-        let msg = format!(
-            "(The agent in {tid} ({name}) replied to the user in direct mode; the user talks to it directly, this is only to be read out:) {}\nSummarize it for the user in one or two spoken sentences, as what {name} said. Never read code or tables. Call no tools.",
-            crate::sessions::first_sentences(reply, 1500)
-        );
-        self.assistant.turn_spoken = true;
-        self.ask_assistant_system(&format!("({name} replied; summing it up)"), &msg);
-        self.assistant.busy
     }
 }
 
@@ -913,6 +1662,49 @@ mod tests {
     }
 
     #[test]
+    fn utterances_join_as_sentences_in_order() {
+        let j = |v: &[&str]| join_spoken(&v.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        assert_eq!(j(&["fix the build"]), "fix the build");
+        assert_eq!(
+            j(&[
+                "fix the build",
+                " then run it! ",
+                "",
+                "is it green?",
+                "and, also,"
+            ]),
+            "fix the build. then run it! is it green? and, also,"
+        );
+        assert_eq!(j(&[]), "");
+    }
+
+    #[test]
+    fn the_input_box_is_found_near_the_bottom_only() {
+        let working = include_str!("../tests/fixtures/screens/working.txt");
+        assert!(input_line(working));
+        assert!(!input_line("* Pondering (3s . esc to interrupt)\n"));
+        let far = format!("> old message\n{}", "line\n".repeat(12));
+        assert!(!input_line(&far));
+        for name in [
+            "permission_bash",
+            "ask_question",
+            "login_method",
+            "trust_prompt",
+        ] {
+            let s = std::fs::read_to_string(format!(
+                "{}/tests/fixtures/screens/{name}.txt",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap();
+            assert!(
+                crate::prompt::parse_prompt(&s).is_some()
+                    || crate::pane::detect_activity(&s) == Activity::Permission,
+                "{name} counts as a prompt"
+            );
+        }
+    }
+
+    #[test]
     fn switch_needs_a_name() {
         let n = crate::voice::grammar::normalize;
         assert_eq!(
@@ -936,9 +1728,119 @@ mod tests {
             s,
             "Here is the fix. It showed some code. It showed a table. Result. All tests pass, see the log. Second point."
         );
-        let (say, long) = spoken_reply(r, 2);
-        assert_eq!(say, "Here is the fix. It showed some code.");
-        assert!(long);
+    }
+
+    #[test]
+    fn a_reply_is_cleaned_for_speech_in_its_own_words() {
+        let r = "\u{2705} Here is the **fix**:\n```rust\nfn x() {}\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n\n## Result\nAll `tests` pass \u{1F389}, see [the log](https://x.y/z) or https://example.com/run/1 for more.";
+        assert_eq!(
+            spoken_reply(r, 40),
+            "Here is the fix. A table of 1 row is on screen. Result. All tests pass, see the log or a link for more."
+        );
+        assert_eq!(spoken_reply("```sh\nls\n```", 40), "");
+        assert_eq!(spoken_reply("\u{1F44D}", 40), "");
+    }
+
+    #[test]
+    fn options_are_said_in_order_with_their_numbers() {
+        let r = "I can do this two ways.\n\nOptions:\n1. Keep the cache and add a lock\n2. Drop the cache\n\nWhich?";
+        assert_eq!(
+            spoken_reply(r, 40),
+            "I can do this two ways. Options. One: Keep the cache and add a lock. Two: Drop the cache. Which?"
+        );
+        assert_eq!(
+            shown_reply(r),
+            "I can do this two ways. Options: 1. Keep the cache and add a lock. 2. Drop the cache. Which?"
+        );
+        let tight =
+            "I can do this two ways.\nOptions:\n1. Keep the cache\n2. Drop the cache\nWhich?";
+        let said = spoken_reply(tight, 40);
+        assert!(said.contains("One: Keep the cache."), "{said}");
+        assert!(said.contains("Two: Drop the cache."), "{said}");
+        assert!(said.ends_with("Which?"), "{said}");
+        let bullets = "Pick one:\n- **Fast**: skip the tests\n- Safe: run them all";
+        assert_eq!(
+            spoken_reply(bullets, 40),
+            "Pick one. Fast: skip the tests. Safe: run them all."
+        );
+    }
+
+    #[test]
+    fn a_limit_drops_prose_and_never_the_options_or_the_question() {
+        let prose: Vec<String> = (1..=30)
+            .map(|i| format!("Detail number {i} is here."))
+            .collect();
+        let r = format!(
+            "{}\n\nOptions:\n1. Ship it now\n2. Wait a day\n\nWhich one do you want?",
+            prose.join(" ")
+        );
+        assert_eq!(
+            spoken_reply(&r, 2),
+            "Detail number 1 is here. Detail number 2 is here. Options. One: Ship it now. Two: Wait a day. Which one do you want?"
+        );
+        let all = spoken_reply(&r, 40);
+        assert!(all.contains("Detail number 30 is here."), "{all}");
+    }
+
+    const LONG: &str = "I looked into the cache bug. The lock is taken twice on the hot path, which is why it stalls under load. Fixing it means touching the writer and the reader. The tests cover the writer only. The reader has no tests at all. I also saw that the config loader swallows errors. That is a separate problem. It can wait.\n\nWhat changed so far:\n- The writer takes the lock once\n- The reader is untouched\n\nOptions:\n1. Fix the reader now\n2. Add reader tests first\n3. Leave it for later\n\nWhich one do you want?";
+
+    const ASKED: &str =
+        "Options. One: Fix the reader now. Two: Add reader tests first. Three: Leave it for later. Which one do you want?";
+
+    #[test]
+    fn each_level_says_the_options_and_less_and_less_of_the_rest() {
+        use crate::app_talkback::TalkLevel;
+        let detailed = leveled_reply(LONG, TalkLevel::Detailed, 3);
+        let normal = leveled_reply(LONG, TalkLevel::Normal, 3);
+        let brief = leveled_reply(LONG, TalkLevel::Brief, 3);
+        assert_eq!(detailed, spoken_reply(LONG, FULL_REPLY));
+        assert!(detailed.contains("It can wait."), "{detailed}");
+        assert!(!detailed.contains(CUE), "{detailed}");
+        assert_eq!(
+            normal,
+            format!("I looked into the cache bug. The lock is taken twice on the hot path, which is why it stalls under load. Fixing it means touching the writer and the reader. What changed so far. The writer takes the lock once. The reader is untouched. {ASKED}")
+        );
+        assert_eq!(brief, format!("I looked into the cache bug. {CUE} {ASKED}"));
+        for said in [&detailed, &normal, &brief] {
+            assert!(said.ends_with(ASKED), "{said}");
+        }
+        assert!(brief.len() < normal.len() && normal.len() < detailed.len());
+    }
+
+    #[test]
+    fn brief_keeps_bullets_that_are_a_choice_and_drops_the_rest() {
+        use crate::app_talkback::TalkLevel;
+        let b = |t: &str| leveled_reply(t, TalkLevel::Brief, 3);
+        assert_eq!(
+            b("Pick one:\n- **Fast**: skip the tests\n- Safe: run them all"),
+            "Pick one. Fast: skip the tests. Safe: run them all."
+        );
+        assert_eq!(
+            b("Done.\n\n- Keep the cache\n- Drop the cache\n\nWhich do you prefer?"),
+            "Done. Keep the cache. Drop the cache. Which do you prefer?"
+        );
+        assert_eq!(
+            b("All tests pass. I changed three files.\n\nWhat changed:\n- The parser\n- The lexer\n\nWant me to commit?"),
+            "All tests pass. Want me to commit?"
+        );
+        assert_eq!(b("Done, all green."), "Done, all green.");
+        assert_eq!(
+            b("## Result\nHere is what I did:\n- One thing\n- Another"),
+            "Here is what I did."
+        );
+        assert_eq!(b("```sh\nls\n```"), "");
+    }
+
+    #[test]
+    fn the_cue_is_only_for_long_replies() {
+        use crate::app_talkback::TalkLevel;
+        let short = "It works. I ran it twice. Both runs were clean.";
+        assert_eq!(leveled_reply(short, TalkLevel::Brief, 3), "It works.");
+        let long: Vec<String> = (1..=9).map(|i| format!("Detail {i} is here.")).collect();
+        assert_eq!(
+            leveled_reply(&long.join(" "), TalkLevel::Normal, 3),
+            format!("Detail 1 is here. Detail 2 is here. Detail 3 is here. {CUE}")
+        );
     }
 
     #[test]

@@ -72,7 +72,7 @@ impl TabLabel {
     pub fn hint(self) -> &'static str {
         match self {
             TabLabel::Blocked => "Blocked: it waits for your approval",
-            TabLabel::Confirm => "The assistant asked you to confirm something about this tab",
+            TabLabel::Confirm => "GodTerm asks you to confirm something about this tab",
             TabLabel::Limit => "It hit a usage limit",
             TabLabel::Error => "claude ended with an error; Enter restarts it",
             TabLabel::Background => {
@@ -132,6 +132,7 @@ impl App {
                 out.extend(us.iter().filter_map(|v| v.as_u64()));
             }
         }
+        out.extend(self.tab_jobs.asks.iter().map(|k| k.uid));
         out
     }
 

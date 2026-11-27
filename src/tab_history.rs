@@ -279,6 +279,7 @@ impl App {
             session_id: r.session_id.clone(),
             name: Some(r.name.clone()),
             accent: None,
+            avatar: None,
             loops: r.loops.clone(),
             group: 0,
             closed_at: 0,
@@ -287,6 +288,7 @@ impl App {
             pinned: false,
             browser: None,
             browser_also: vec![],
+            route: None,
         };
         let msg = self.reopen_closed_tab(c)?;
         self.flash(msg.clone());

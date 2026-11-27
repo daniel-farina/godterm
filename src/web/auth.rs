@@ -121,6 +121,17 @@ pub fn host_ok(host: &str, extra: &[String]) -> bool {
         || extra.iter().any(|e| e.eq_ignore_ascii_case(&h))
 }
 
+pub fn loopback_host(host: &str) -> bool {
+    matches!(
+        hostname(authority(host)).to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "localhost" | "::1"
+    )
+}
+
+pub fn host_name(host: &str) -> String {
+    hostname(authority(host)).to_ascii_lowercase()
+}
+
 pub fn ts_net_host(host: &str) -> bool {
     let h = hostname(authority(host)).to_ascii_lowercase();
     h.ends_with(".ts.net") && h.len() > 7
@@ -267,6 +278,16 @@ pub fn via_tailscale(peer: std::net::SocketAddr) -> bool {
     }
     match conn_peers(peer.ip(), peer.port()) {
         Some(pids) => pids.into_iter().all(is_tailscale),
+        None => false,
+    }
+}
+
+pub fn proxied_by_tailscale(peer: std::net::SocketAddr) -> bool {
+    if !peer.ip().is_loopback() {
+        return false;
+    }
+    match conn_peers(peer.ip(), peer.port()) {
+        Some(pids) => !pids.is_empty() && pids.into_iter().all(is_tailscale),
         None => false,
     }
 }

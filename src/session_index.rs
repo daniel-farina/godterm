@@ -121,6 +121,11 @@ fn list(h: Harness, home: &Path) -> Vec<Item> {
                 .into_iter()
                 .map(|path| Item::Other { path }),
         ),
+        Harness::Antigravity => out.extend(
+            crate::antigravity::list_transcripts(home)
+                .into_iter()
+                .map(|path| Item::Other { path }),
+        ),
         _ => {}
     }
     out
@@ -133,6 +138,8 @@ fn parse_one(p: &Path) -> Option<SessionInfo> {
         crate::session_other::parse_codex(p)
     } else if crate::session_other::is_cursor(p) {
         crate::session_other::parse_cursor(p)
+    } else if crate::antigravity::is_transcript(p) {
+        crate::antigravity::parse_transcript(p)
     } else {
         crate::sessions::parse_file_quick(p)
     }
@@ -433,6 +440,7 @@ pub fn row_json(r: &Row, open_tab: Option<String>, live: bool) -> Value {
         "cost_usd": cost,
         "subagents": (i.subagents > 0).then_some(i.subagents),
         "subagent_of": i.parent,
+        "plain_terminal": (r.src == Src::MainAgy).then_some(true),
         "open_in_tab": open_tab,
         "live": live,
     })

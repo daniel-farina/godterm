@@ -20,6 +20,8 @@ pub struct Archived {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -34,6 +36,9 @@ pub struct Archived {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub browser_also: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 
     pub last_activity: i64,
     pub archived_at: i64,
@@ -50,6 +55,7 @@ impl Archived {
             session_id: self.session_id.clone(),
             name: self.name.clone(),
             accent: self.accent.clone(),
+            avatar: self.avatar.clone(),
             loops: self.loops.clone(),
             group: 0,
             closed_at: self.archived_at,
@@ -58,6 +64,7 @@ impl Archived {
             pinned: self.pinned,
             browser: self.browser.clone(),
             browser_also: self.browser_also.clone(),
+            route: self.route.clone(),
         }
     }
 
@@ -163,6 +170,7 @@ mod tests {
             name: Some("billing".into()),
             label: "billing".into(),
             accent: Some("#7a9".into()),
+            avatar: Some("gen:7".into()),
             pinned: true,
             tab_group: Some("api".into()),
             model: Some("opus".into()),
@@ -175,6 +183,7 @@ mod tests {
             }],
             browser: None,
             browser_also: vec![],
+            route: None,
             last_activity: 1000,
             archived_at: 2000,
             by: "user".into(),

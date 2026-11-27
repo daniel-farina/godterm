@@ -4,7 +4,10 @@ import { S, tabById } from './state.js';
 import { openSheet, openMenu, closeSheet, sheetKind } from './sheet.js';
 import { panes } from './term.js';
 import { acctOf } from './state.js';
-import { ownQuestion } from './chat.js';
+import { ownQuestion, openTabChat } from './chat.js';
+import { emailOf, emailsOn, emailToggle } from './emails.js';
+import { avatarHtml, avatarsOn, setAvatarsOn, pickImage } from './avatar.js';
+import { ebvAvailable, ebvShown, ebvOpen, toggleEbv, stopEbv } from './ebv.js';
 
 const say = (r, fallback) => r?.result?.say || r?.say || fallback;
 
@@ -45,7 +48,7 @@ function confirmSheet(name, c) {
 }
 
 const field = (label, el) => h('label.field', {}, label, el);
-const title = (t, extra) => h('div.sh-title', {}, h('span', {}, t), extra, h('button.ib', { 'aria-label': 'Close', title: 'Close', onclick: closeSheet, html: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>' }));
+const title = (t, extra) => h('div.sh-title', {}, h('span', {}, t), extra, h('button.ib', { 'aria-label': 'Close', title: 'Close', onclick: closeSheet, html: icon('x') }));
 
 function acctSelect(cur, filter) {
   const s = h('select');
@@ -53,7 +56,7 @@ function acctSelect(cur, filter) {
     if (filter && !filter(a)) continue;
     const left = a.effective_left_pct ?? a.five_hour_left_pct;
     s.append(h('option', { value: a.account, disabled: a.available === false || a.logged_in === false, selected: a.account === cur },
-      `${a.label}${a.harness ? ' (' + a.harness + ')' : ''}${left != null ? ' · ' + left + '% left' : ''}`));
+      `${a.label}${a.harness ? ' (' + a.harness + ')' : ''}${emailOf(a) ? ' · ' + emailOf(a) : ''}${left != null ? ' · ' + left + '% left' : ''}`));
   }
   return s;
 }
@@ -75,13 +78,15 @@ function leave() {
   else closeSheet();
 }
 function sub(t, name, ...kids) {
-  show(h('div.subhead', {}, h('button.ib.sm', { 'aria-label': 'Back', title: 'Back', onclick: () => go('root', t), html: icon('back') }), h('span', {}, name)), ...kids);
+  const tog = ACCT_VIEWS.has(curKey) ? emailToggle(null, () => go(curKey, t), 'sm.em-right') : null;
+  show(h('div.subhead', {}, h('button.ib.sm', { 'aria-label': 'Back', title: 'Back', onclick: () => go('root', t), html: icon('back') }), h('span', {}, name), tog), ...kids);
 }
 
 const SECTIONS = {
   root: (t) => menu(t.id),
   rename: (t) => renameSheet(t),
   color: (t) => colorSheet(t),
+  avatar: (t) => avatarSheet(t),
   group: (t) => groupSheet(t),
   move: (t) => moveSheet(t, 'move'),
   dup: (t) => moveSheet(t, 'dup'),
@@ -99,9 +104,12 @@ const SECTIONS = {
   },
 };
 
-const LIVE = new Set(['root', 'usage', 'model', 'loops', 'color', 'group', 'move', 'dup', 'copy']);
+const LIVE = new Set(['root', 'usage', 'model', 'loops', 'color', 'avatar', 'group', 'move', 'dup', 'copy']);
 let view = 'root';
+const ACCT_VIEWS = new Set(['move', 'dup', 'copy', 'usage']);
+let curKey = 'root';
 function go(key, t) {
+  curKey = key;
   if (host.panel) view = key;
   (SECTIONS[key] || SECTIONS.root)(t);
 }
@@ -216,20 +224,30 @@ function menu(id) {
       li('copyto', 'Copy session to', { fn: () => go('copy', t), off: noTarget || (t.session_id ? '' : 'no conversation yet'), chev: true, tip: 'Copy the conversation to another account, no tab opened' }),
       li('model', 'Switch model', { fn: () => go('model', t), hint: [t.model, t.effort].filter(Boolean).join(' · '), chev: true }),
       li('usage', 'Usage', { fn: () => go('usage', t), hint: usageHint(t), chev: true, tip: 'This account\'s usage, and where to move the tab' }),
+      t.session_id ? li('folderopen', 'Find project folder', { fn: () => { leave(); relinkSheet(id); }, hint: t.conversation_lost ? 'not found' : '', tip: 'The project moved or was renamed? Point this tab at its folder so the conversation resumes' }) : null,
       li('reopen', 'Reopen', { fn: act(() => run('reopen_tab', { id }, 'Reopening')), tip: 'Start the tab again, resuming its conversation' }),
+      li('reload', 'Reload tab', { fn: act(() => (t.state === 'working' ? confirmSheet('reload_tab', { question: 'This tab is working. Reloading stops what it is doing and resumes the conversation. Reload it?', args: { id } }) : run('reload_tab', { id }, 'Reloading'))), tip: 'Stop the program and start it again here, resuming the conversation' }),
     ]),
     ...group('Tab', [
+      li('image', 'Avatar', { fn: () => go('avatar', t), hint: t.avatar && !t.avatar.startsWith('gen:') ? 'picture' : 'generated', chev: true, tip: 'The round picture in the tab list: the project logo, an image of yours, or a generated pixel one' }),
       li('color', 'Accent color', { fn: () => go('color', t), hint: t.color && t.color !== 'default' ? t.color : '', chev: true }),
       li('group', 'Group', { fn: () => go('group', t), hint: t.group || '', chev: true }),
-      li('clock', 'Loops and jobs', { fn: () => go('loops', t), hint: t.loops ? t.loops + ' loops' : '', chev: true }),
-      li('hash', 'Git', { fn: () => go('git', t), hint: t.git_warn ? '⚠ ' + t.git_warn : '', chev: true, tip: 'Status, commit, push and pull, branches, the GitHub repo; nothing changes without your yes' }),
+      li('loops', 'Loops and jobs', { fn: () => go('loops', t), hint: t.loops ? t.loops + ' loops' : '', chev: true }),
+      li('branch', 'Git', { fn: () => go('git', t), hint: t.git_warn ? '⚠ ' + t.git_warn : '', chev: true, tip: 'Status, commit, push and pull, branches, the GitHub repo; nothing changes without your yes' }),
+      ebvAvailable() ? li('globe', 'Embedded browser', { fn: act(() => toggleEbv(id)), on: ebvShown(id), hint: ebvShown(id) ? 'shown' : 'hidden', tip: 'A browser beside the terminal for local sites and dev servers. It has no logins; accounts like Gmail go through Browser below' }) : null,
+      ebvAvailable() && ebvOpen(id) ? li('stop', 'Stop the embedded browser', { fn: act(() => stopEbv(id)), tip: 'Close it and forget its pages' }) : null,
+      li('route', 'Route', { fn: act(() => import('./route.js').then((m) => m.routeMenu(id))), hint: t.route ? 'via ' + t.route.name : 'Direct', tip: 'Send this tab\'s agent through a proxy or a Tailscale exit node' }),
       li('globe', 'Browser', { fn: () => go('browser', t), hint: t.browser ? describeBrowser(t.browser) : '', chev: true, tip: 'BrowserSkill status for agents' }),
-      li('mic', 'Talk directly', { fn: act(() => run('talk_to_tab', { tab: id })), tip: 'Your voice goes to this tab and its replies are said' }),
+      li('mic', 'Talk with this tab', { fn: act(() => openTabChat(id)), tip: 'A conversation about this one tab: the assistant sees what it is doing, answers for it and acts on it, even while it works' }),
+    ]),
+    ...group('Open on the Mac', [
+      li('squareterminal', 'Open in GodTerm desktop', { fn: act(() => run('open_desktop', { tab: id }, 'Opened in GodTerm on the Mac')), tip: 'Bring the GodTerm app on the Mac to the front, showing this tab' }),
+      S.claude_desktop && hs === 'claude' ? li('appwindow', 'Open in Claude Desktop', { fn: act(() => run('open_in_claude_desktop', { tab: id }, 'Opened in Claude Desktop')), tip: t.session_id ? 'Resume this conversation in the Code tab of the Claude app on the Mac' : 'No conversation yet: only brings the Claude app to the front' }) : null,
     ]),
     ...group('Copy', [
-      li('dup', 'Folder path', { fn: copy(t.folder || '', 'Copied ' + (t.folder || '')), hint: short(t.folder, 22) }),
-      t.session_id ? li('hash', 'Session id', { fn: copy(t.session_id, 'Copied the session id'), hint: t.session_id.slice(0, 8) }) : null,
-      li('ext', 'Open folder', { fn: act(() => run('open_path', { paths: [t.folder], tab: id }, 'Opened')), tip: 'Show the folder on the Mac' }),
+      li('copy', 'Folder path', { fn: copy(t.folder || '', 'Copied ' + (t.folder || '')), hint: short(t.folder, 22) }),
+      t.session_id ? li('copy', 'Session id', { fn: copy(t.session_id, 'Copied the session id'), hint: t.session_id.slice(0, 8) }) : null,
+      li('folderopen', 'Open folder', { fn: act(() => run('open_path', { paths: [t.folder], tab: id }, 'Opened')), tip: 'Show the folder on the Mac' }),
     ]),
     keys,
     ...group('', [
@@ -238,17 +256,98 @@ function menu(id) {
     ]));
 }
 
+const LOOSE = /working|approval|unsent|on the way|busy|background|queued|force/;
+const BUSYSTATE = new Set(['working', 'background', 'busy', 'approval', 'waiting', 'blocked', 'confirm']);
+const busyNow = (t) => !!t && (BUSYSTATE.has(t.state) || BUSYSTATE.has(t.label) || !!t.busy);
+
+function archiveAnyway(t, why) {
+  openSheet({ kind: 'confirm' }, h('div.sh-title', {}, h('span', {}, 'Archive ' + t.name + '?')),
+    h('div.appr-q', {}, (why ? 'It ' + why.replace(/^it /, '') + '. ' : 'It is working. ') + 'Archiving stops what it is doing.'),
+    h('div.appr-btns', {}, h('button.btn.bad', { onclick: async () => { closeSheet(); await run('archive_tabs', { tab: t.id, force: true }, 'Archived'); } }, 'Archive anyway'),
+      h('button.btn', { onclick: closeSheet }, 'Cancel')));
+}
+
 async function archive(t) {
   leave();
   const r = await tool('archive_tabs', { tab: t.id });
   const err = r.error || r.result?.error || '';
   if (r.ok !== false && !err) { toast(say(r, 'Archived'), 'ok'); return; }
   if (!/force/.test(err)) { toast(err || 'It did not work', 'error'); return; }
-  openSheet({ kind: 'confirm' }, h('div.sh-title', {}, h('span', {}, 'Archive ' + t.name + '?')),
-    h('div.appr-q', {}, 'It is working: archiving stops what it is doing.'),
-    h('div.appr-btns', {}, h('button.btn.bad', { onclick: async () => { closeSheet(); await run('archive_tabs', { tab: t.id, force: true }, 'Archived'); } }, 'Archive anyway'),
-      h('button.btn', { onclick: closeSheet }, 'Cancel')));
+  archiveAnyway(t);
 }
+
+const ARCH_SECS = 5;
+const countdowns = new Map();
+
+function endCountdown(c) {
+  countdowns.delete(c.id);
+  clearInterval(c.iv);
+  c.el.classList.add('gone');
+  setTimeout(() => c.el.remove(), 160);
+}
+
+function dropCountdown(id, why) {
+  const c = countdowns.get(id);
+  if (!c) return;
+  endCountdown(c);
+  if (why) toast(why, 'warn');
+}
+
+async function fireArchive(c) {
+  const t = tabById(c.id);
+  if (!t) return dropCountdown(c.id, c.name + ' is gone: nothing archived');
+  if (busyNow(t)) return dropCountdown(c.id, c.name + ' became busy: not archived');
+  endCountdown(c);
+  const r = await tool('archive_tabs', { tab: c.id });
+  const err = r.error || r.result?.error || '';
+  if (r.ok === false || err) {
+    if (/force/.test(err)) { toast(c.name + ' became busy: not archived', 'warn'); return; }
+    toast(err || 'It did not work', 'error');
+    return;
+  }
+  const aid = r.result?.tabs?.[0]?.id;
+  toast('Archived ' + c.name, 'ok sticky', aid ? { label: 'Restore', fn: () => run('restore_archived', { id: aid }, 'Restored ' + c.name) } : null, 8000);
+}
+
+export async function archiveSoon(id) {
+  const t = tabById(id);
+  if (!t || countdowns.has(id)) return;
+  const name = t.name;
+  if (busyNow(t)) return archiveAnyway(t, t.state === 'approval' || t.state === 'waiting' ? 'is waiting for you' : 'is working');
+  const pre = await tool('archive_tabs', { tab: id, dry_run: true });
+  const err = pre.error || pre.result?.error || '';
+  if (pre.ok === false || err) {
+    if (/force/.test(err)) return archiveAnyway(t);
+    toast(err || 'It did not work', 'error');
+    return;
+  }
+  const skip = pre.result?.skipped?.[0];
+  if (skip) {
+    if (LOOSE.test(skip.reason || '')) return archiveAnyway(t, skip.reason);
+    toast(name + ' cannot be archived: ' + (skip.reason || 'not now'), 'warn');
+    return;
+  }
+  const cur = tabById(id);
+  if (!cur || countdowns.has(id)) return;
+  if (busyNow(cur)) return archiveAnyway(cur, 'is working');
+  const c = { id, name, until: Date.now() + ARCH_SECS * 1000, last: Date.now() };
+  const label = () => `Archiving ${name} in ${Math.max(1, Math.ceil((c.until - Date.now()) / 1000))} s`;
+  c.el = toast(label(), 'info arch sticky', [{ label: 'Cancel', fn: () => dropCountdown(id) }], 0, { keep: true, onGone: () => dropCountdown(id), secs: ARCH_SECS });
+  c.txt = c.el.firstChild;
+  countdowns.set(id, c);
+  c.iv = setInterval(() => {
+    const now = Date.now();
+    if (now - c.last > 1500) return dropCountdown(id, 'Archiving ' + name + ' was cancelled');
+    c.last = now;
+    const live = tabById(id);
+    if (!live) return dropCountdown(id, name + ' is gone: nothing archived');
+    if (busyNow(live)) return dropCountdown(id, name + ' became busy: not archived');
+    if (now >= c.until) return fireArchive(c);
+    c.txt.textContent = label();
+  }, 250);
+}
+
+addEventListener('pagehide', () => { for (const id of [...countdowns.keys()]) dropCountdown(id); });
 
 function describeBrowser(b) {
   if (typeof b === 'string') return b;
@@ -286,10 +385,27 @@ function moveSheet(t, kind) {
   };
   const rows = S.accounts.filter((a) => a.account !== t.account && (a.harness || 'claude') === h0).map((a) => {
     const left = a.effective_left_pct ?? a.five_hour_left_pct;
-    return li('move', a.label, { fn: go(a.account), hint: left != null ? left + '% left' : '', off: a.available === false || a.logged_in === false ? 'not available' : '' });
+    return li('move', a.label, { fn: go(a.account), sub: emailOf(a), hint: left != null ? left + '% left' : '', off: a.available === false || a.logged_in === false ? 'not available' : '' });
   });
   if (!rows.length) { if (host.panel) sub(t, verbs[kind][0], h('div.mnote', {}, 'No other ' + h0 + ' account to use.')); else toast('No other ' + h0 + ' account to use', 'warn'); return; }
   sub(t, verbs[kind][0], h('div.mnote', {}, `Only ${h0} accounts can continue a ${h0} conversation.`), ...group('', rows));
+}
+
+function avatarSheet(t) {
+  const set = (args, done) => async () => { leave(); await run('set_tab_avatar', { tab: t.id, ...args }, done); };
+  const custom = !!t.avatar && !t.avatar.startsWith('gen:');
+  const on = avatarsOn();
+  sub(t, 'Avatar',
+    h('div.avprev', {}, h('span', { html: avatarHtml(t, 'lg') }), h('div.mnote', {}, 'Drop an image on any avatar to use it, or pick below.')),
+    ...group('', [
+      li('image', 'Upload image', { fn: () => { leave(); pickImage(t.id); }, tip: 'A square crop of the middle of the picture' }),
+      li('folderopen', 'Use the project\'s logo', { fn: set({ from_project: true }, 'Avatar set'), tip: 'Finds a logo, icon or favicon in the tab\'s folder' }),
+      li('reload', 'Regenerate pixel avatar', { fn: set({ regenerate: true }, 'New avatar'), tip: 'Another generated picture' }),
+      t.avatar ? li('x', custom ? 'Remove picture' : 'Back to the default', { fn: set({ clear: true }, 'Avatar reset'), bad: custom }) : null,
+    ]),
+    ...group('This device', [
+      li('check', on ? 'Showing avatars' : 'Avatars are hidden', { fn: () => { setAvatarsOn(!on); go('avatar', t); }, on, hint: on ? 'tap to hide' : 'tap to show', tip: S.tab_avatars === false ? 'Also off in GodTerm\'s settings (Web app)' : '' }),
+    ]));
 }
 
 const COLORS = [...SWATCHES, 'default'];
@@ -351,11 +467,11 @@ function usageSheet(t) {
   const others = S.accounts.filter((a) => a.account !== t.account && (a.harness || 'claude') === h0).map((a) => {
     const left = a.effective_left_pct ?? a.five_hour_left_pct;
     const hint = a.logged_in === false ? 'logged out' : a.available === false ? 'not available' : left != null ? left + '% left' : '';
-    return li('move', a.label, { fn: () => go('move', t), hint, off: a.available === false || a.logged_in === false ? 'not available' : '', chev: true });
+    return li('move', a.label, { fn: () => go('move', t), sub: emailOf(a), hint, off: a.available === false || a.logged_in === false ? 'not available' : '', chev: true });
   });
   sub(t, 'Usage', h('div.list', {}, usageCards((a) => a.account === t.account)),
     ...group('Other ' + h0 + ' accounts', others),
-    h('div.list', {}, li('usage', 'All accounts', { fn: () => { closeSheet(); manageSheet(); }, hint: 'Manage', chev: true })));
+    h('div.list', {}, li('users', 'All accounts', { fn: () => { closeSheet(); manageSheet(); }, hint: 'Manage', chev: true })));
 }
 
 const card = (title, right, line, dot) => h('div.lrow', {},
@@ -428,7 +544,7 @@ function browserBody(t, v, paint) {
 
   const mine = bound.length ? bound.map((b, i) => {
     const conn = (b.browsers || []).map(labelOf);
-    const line = [b.email, EXT_WORD[b.state] || b.state,
+    const line = [emailOf(b), EXT_WORD[b.state] || b.state,
       conn.length ? 'connected as ' + conn.join(', ') : b.state === 'ready' ? 'not matched to a connected browser' : ''].filter(Boolean).join(' · ');
     return h('div.lrow', {},
       h('div.ct', {}, h('span.dot.' + (b.state === 'ready' && conn.length ? 'ready' : 'approval')), h('b', {}, b.name || b.profile_dir), h('span.cs', {}, many ? (i === 0 ? 'primary' : 'also') : '')),
@@ -448,7 +564,7 @@ function browserBody(t, v, paint) {
     const tag = p.primary ? (many ? 'this tab · primary' : 'this tab') : p.bound ? 'this tab' : '';
     return h('div.lrow', {},
       h('div.ct', {}, h('span.dot.' + st), h('b', {}, p.name || p.profile_dir), tag ? h('span.cs', {}, tag) : null),
-      h('div.cs', {}, [p.email, 'extension ' + (p.extension || 'not found')].filter(Boolean).join(' · ')),
+      h('div.cs', {}, [emailOf(p), 'extension ' + (p.extension || 'not found')].filter(Boolean).join(' · ')),
       p.bound ? null : h('div.acts', {},
         btn('Use for this tab', act('set', p.profile_dir, 'Chosen')),
         bound.length ? btn('Also use', act('add', p.profile_dir, 'Added')) : null));
@@ -525,7 +641,7 @@ async function browserSheetOld(t, body, live) {
       x.unresponsive ? 'error' : x.version_skew ? 'approval' : 'ready'))),
     (v.browsers || []).length ? null : h('div.mnote', {}, 'No browser is connected. Turn on the local connection in the extension popup.'),
     ...group('Chrome profiles', profiles.map((p) => card(p.name || p.profile_dir, (p.profile_dir === bound || p.name === bound) ? 'this tab' : '',
-      [p.email, 'extension ' + (p.extension || 'not found')].filter(Boolean).join(' · '), /on|enabled/i.test(p.extension || '') ? 'ready' : 'approval'))),
+      [emailOf(p), 'extension ' + (p.extension || 'not found')].filter(Boolean).join(' · '), /on|enabled/i.test(p.extension || '') ? 'ready' : 'approval'))),
     ...group('Problems', doc.map((p) => card(p.check, p.status, p.detail, /fail|err/i.test(p.status) ? 'error' : 'approval'))),
     v.checked_secs_ago != null ? h('div.mnote', {}, 'Checked ' + v.checked_secs_ago + ' s ago' + (v.doctor?.summary ? ' · ' + v.doctor.summary : '')) : null].filter(Boolean));
 }
@@ -623,8 +739,21 @@ export function newTabSheet() {
     const id = r?.result?.tab || r?.result?.tab_id || r?.result?.tabs?.[0];
     if (id) setTimeout(() => panes.show(idOf(id)), 300);
   };
-  openSheet(title('New tab'), field('Account', acct), field('Folder', dir), chips, dl, field('Name', name), field('Prompt', prompt),
+  const form = h('div.newtab', {}, field('Account', acct), field('Folder', dir), chips, dl, field('Name', name), field('Prompt', prompt),
     h('div.acts', {}, h('button.btn', { onclick: closeSheet }, 'Cancel'), h('button.btn.pri', { onclick: go }, 'Open tab')));
+  const existing = h('div.newtab', { hidden: true });
+  const modes = h('span.seg.st-seg.nt-seg', { role: 'group', 'aria-label': 'New or existing' });
+  const mode = async (m) => {
+    form.hidden = m !== 'new';
+    existing.hidden = m !== 'old';
+    for (const b of modes.children) b.setAttribute('aria-pressed', String(b.dataset.m === m));
+    if (m === 'old' && !existing.firstChild) {
+      const { lostSessions } = await import('./lost.js');
+      existing.append(lostSessions());
+    }
+  };
+  for (const [m, l] of [['new', 'New tab'], ['old', 'Existing sessions']]) modes.append(h('button', { type: 'button', 'data-m': m, 'aria-pressed': String(m === 'new'), onclick: () => mode(m) }, l));
+  openSheet({ kind: 'newtab', tall: true }, title('New tab'), modes, form, existing);
 }
 
 export function usageCards(only) {
@@ -632,7 +761,7 @@ export function usageCards(only) {
     const buckets = a.buckets?.length ? a.buckets : [
       a.five_hour_left_pct != null && { bucket: '5 hour', left_pct: a.five_hour_left_pct },
       a.week_left_pct != null && { bucket: 'week', left_pct: a.week_left_pct }].filter(Boolean);
-    return h('div.lrow', {}, h('div.ct', {}, h('b', {}, a.label), h('span.cs', {}, [a.harness, `${a.tabs ?? 0} ${(a.tabs ?? 0) === 1 ? 'tab' : 'tabs'}`, a.assistant_runs_here && 'assistant', a.logged_in === false && 'logged out'].filter(Boolean).join(' · '))),
+    return h('div.lrow', {}, h('div.ct', {}, h('b', {}, a.label), h('span.cs', {}, [emailOf(a), a.harness, `${a.tabs ?? 0} ${(a.tabs ?? 0) === 1 ? 'tab' : 'tabs'}`, a.assistant_runs_here && 'assistant', a.logged_in === false && 'logged out'].filter(Boolean).join(' · '))),
       buckets.map((b) => h('div.bar', {}, h('span.bn', {}, b.bucket), h('span.bt', { html: `<i class="${pctClass(b.left_pct)}" style="width:${Math.max(0, Math.min(100, b.left_pct ?? 0))}%"></i>` }),
         h('span.bv', {}, `${b.left_pct ?? '?'}%${b.resets_at ? ' · ' + b.resets_at.replace(/^\w+ /, '') : ''}`))),
 
@@ -649,12 +778,12 @@ function modesCard() {
   voice.onchange = () => run('set_mode', { voice: voice.value }, VOICE[voice.value]);
   const tog = (ic, k, l, on, tip) => li(ic, l, { fn: () => run('set_mode', { [k]: !on }, l + (on ? ' off' : ' on')), hint: on ? 'On' : 'Off', on, tip });
   const notes = [S.voice?.muted && 'Mic muted', f.direct && 'Talking straight to ' + f.direct, f.brainstorm && 'Brainstorm on', f.updates && 'Update mode on',
-    !f.privacy && (f.emails_shown ? 'Emails shown' : 'Emails hidden')].filter(Boolean);
+    !f.privacy && (emailsOn() ? 'Emails shown' : 'Emails hidden')].filter(Boolean);
   return h('div.list', {}, h('label.li', {}, h('span', { html: icon('mic') }), h('span.ll', {}, 'Voice'), voice),
-    tog('archive', 'memory_saver', 'Memory saver', f.memory_saver, 'Short history, idle background tabs paused, caches dropped'),
-    tog('hash', 'privacy', 'Privacy', f.privacy, 'Hide email addresses'),
-    li('stop', 'Free memory now', { fn: () => run('set_mode', { free_memory: true }, 'Freed memory'), tip: 'Pause idle background tabs and drop caches' }),
-    li('reopen', 'New conversation', { fn: () => run('set_mode', { new_conversation: true }, 'New conversation'), tip: 'The assistant starts over after this turn' }),
+    tog('leaf', 'memory_saver', 'Memory saver', f.memory_saver, 'Short history, idle background tabs paused, caches dropped'),
+    tog('privacy', 'privacy', 'Privacy', f.privacy, 'Hide email addresses'),
+    li('memory', 'Free memory now', { fn: () => run('set_mode', { free_memory: true }, 'Freed memory'), tip: 'Pause idle background tabs and drop caches' }),
+    li('newchat', 'New conversation', { fn: () => run('set_mode', { new_conversation: true }, 'New conversation'), tip: 'The assistant starts over after this turn' }),
     notes.length ? h('div.lrow', {}, h('div.cs', {}, notes.join(' · '))) : null);
 }
 
@@ -674,7 +803,9 @@ function archivedCards() {
 export function manageSheet() {
   const L = (rows, empty) => (rows.length ? h('div.list', {}, rows) : empty ? h('div.mnote', { style: 'padding:0 4px' }, empty) : null);
   const paint = () => [title('Manage'), h('div.gl', {}, 'Usage'), L(usageCards()),
-    h('div.list', {}, li('usage', 'Accounts and logins', { fn: () => import('./accounts.js').then((m) => m.accountsSheet()), hint: 'log in, add, tokens', chev: true })),
+    h('div.list', {}, li('users', 'Accounts and logins', { fn: () => import('./accounts.js').then((m) => m.accountsSheet()), hint: 'log in, add, tokens', chev: true }),
+      li('apps', 'Apps', { fn: () => import('./apps.js').then((m) => m.appsSheet()), hint: 'everything built here', chev: true }),
+      li('route', 'Routes', { fn: () => import('./route.js').then((m) => m.routesSheet()), hint: 'proxy per tab', chev: true })),
     h('div.gl', {}, `Jobs${S.jobs?.next ? ' · next ' + S.jobs.next : ''}`), L(jobRows(), 'No jobs'),
     h('div.gl', {}, 'Loops'), L(loopRows(), 'No loops'),
     h('div.gl', {}, 'Modes'), modesCard(),
@@ -718,4 +849,62 @@ export function updateSheet(u, text) {
     h('div.acts', {}, u.page ? h('button.btn', { onclick: () => window.open(u.page, '_blank', 'noopener') }, 'Release page') : null,
       h('button.btn', { onclick: closeSheet }, 'Later'),
       h('button.btn.pri', { onclick: async () => { closeSheet(); await run('restart_to_update', {}, 'Updating'); } }, 'Update now')));
+}
+
+
+export async function relinkSheet(id) {
+  const t = tabById(id);
+  if (!t) return;
+  const dir = h('input', { type: 'text', placeholder: '~/projects/my-app', list: 'relink-dirs', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', enterkeyhint: 'go', 'aria-label': 'Project folder' });
+  const dl = h('datalist', { id: 'relink-dirs' });
+  const found = h('div.rl-found');
+  const note = h('div.mnote.rl-note', {}, '');
+  const body = h('div.rl-body');
+  const lostTxt = t.conversation_lost?.why || '';
+  const ask = (q, ...btns) => body.replaceChildren(h('div.appr-q', {}, q), h('div.appr-btns', {}, ...btns));
+  const showForm = () => body.replaceChildren(field('Where is this project now?', dir), dl, found, note,
+    h('div.acts', {}, h('button.btn', { type: 'button', onclick: search }, 'Search for it'), h('button.btn.pri', { type: 'button', onclick: () => submit() }, 'Relink and resume')));
+  const paint = (r) => {
+    dl.replaceChildren(...(r.known_folders || []).map((f) => h('option', { value: f })));
+    const ms = r.matches || [];
+    found.replaceChildren(...(ms.length ? [h('div.gl', {}, 'The conversation is stored under'),
+      h('div.list', {}, ms.map((m) => li('folderopen', short(m.folder, 40), { fn: () => { dir.value = m.folder; dir.focus(); }, off: m.folder_exists ? '' : 'that folder is gone', hint: m.folder_exists ? 'use' : 'gone', tip: m.stored_at })))] : []));
+    note.textContent = ms.length ? 'Tap one to use it, or type where the project is now.' : 'Not stored under any folder on this account. Type where the project is now.';
+  };
+  const search = async () => {
+    note.textContent = 'Searching...';
+    const r = await tool('relink_conversation', { id }, 30000);
+    if (r.ok === false || r.error) { note.textContent = r.error || 'The search did not work'; return; }
+    paint(r.result || {});
+  };
+  const submit = async (extra = {}) => {
+    const path = dir.value.trim();
+    if (!path) { note.textContent = 'Type the folder first.'; dir.focus(); return; }
+    note.textContent = 'Relinking...';
+    const r = await tool('relink_conversation', { id, path, ...extra }, 60000);
+    const res = r.result || {};
+    if (r.ok === false || r.error) { showForm(); note.textContent = r.error || 'It did not work'; return; }
+    if (res.needs_copy) {
+      ask(res.say, h('button.btn.pri', { type: 'button', onclick: () => submit({ copy: true }) }, 'Copy and resume'), h('button.btn', { type: 'button', onclick: showForm }, 'Back'));
+      return;
+    }
+    if (res.not_found) {
+      ask(res.say, h('button.btn.pri', { type: 'button', onclick: () => submit({ fresh: true }) }, 'Start a new conversation'), h('button.btn', { type: 'button', onclick: showForm }, 'Back'));
+      return;
+    }
+    closeSheet();
+    toast(res.say || 'Relinked', 'ok');
+  };
+  dir.addEventListener('keydown', (e) => e.key === 'Enter' && submit());
+  openSheet({ kind: 'relink' }, title('Find the project: ' + t.name),
+    h('div.mnote', {}, lostTxt ? 'Conversation not found: ' + lostTxt + '.' : 'Point this tab at the folder its conversation belongs to.'), body);
+  showForm();
+  search();
+}
+
+export async function openSession(s) {
+  if (!s.external) return run('open_session', { id: s.id }, 'Opened');
+  const r = await run('take_over_session', { id: s.id }, 'Opened');
+  if (/not running anywhere else/.test(String(r?.error || r?.result?.error || ''))) return run('open_session', { id: s.id }, 'Opened');
+  return r;
 }

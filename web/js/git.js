@@ -141,6 +141,17 @@ export async function gitSheet(t, place) {
   const r = await ask({ op: 'view', tab: t.id });
   if (!r.ok) { put(body, failRow(r.error, () => gitSheet(t, place), 'The Git screen')); return; }
   render(t, body, r.view);
+  let last = JSON.stringify(r.view);
+  const timer = setInterval(async () => {
+    if (!body.isConnected) { clearInterval(timer); return; }
+    if (document.hidden || body.contains(document.activeElement) && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+    const n = await ask({ op: 'view', tab: t.id }, 20000);
+    if (!n.ok || !body.isConnected) return;
+    const j = JSON.stringify(n.view);
+    if (j === last) return;
+    last = j;
+    render(t, body, n.view);
+  }, 15000);
 }
 
 function warnRow(v) {
@@ -265,11 +276,11 @@ function commitsEl(v, body) {
   const list = (v.commits || []).slice(0, mode === 'wide' ? 20 : 12);
   if (!list.length) return [];
   if (mode === 'phone') {
-    return [h('div.gl', {}, 'Commits (↑ not pushed)'), h('div.list', {}, list.map((c) => h('div.lrow', {},
+    return [h('div.gl', {}, (v.ahead ? 'Recent commits (↑ = not pushed)' : 'Recent commits (all pushed)')), h('div.list', {}, list.map((c) => h('div.lrow', {},
       h('div.ct', {}, h('b', { class: c.unpushed ? 'gup' : '' }, (c.unpushed ? '↑ ' : '') + c.subject), h('span.cs', {}, c.when)),
       h('div.cs.gmono', {}, c.hash + ' · ' + c.author))))];
   }
-  return [h('div.gl', {}, 'Commits (↑ not pushed)'), h('div.list', {}, list.map((c) => h('div.gcm', { title: c.subject },
+  return [h('div.gl', {}, (v.ahead ? 'Recent commits (↑ = not pushed)' : 'Recent commits (all pushed)')), h('div.list', {}, list.map((c) => h('div.gcm', { title: c.subject },
     h('div.s', { class: c.unpushed ? 's gup' : 's' }, (c.unpushed ? '↑ ' : '') + c.subject),
     h('div.m.gmono', {}, `${c.hash} · ${c.author} · ${c.when}`))))];
 }

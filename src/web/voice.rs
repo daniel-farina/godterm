@@ -24,6 +24,7 @@ pub const WEB_SETTINGS: &[&str] = &[
     "voice.tts_voice",
     "voice.tts_speed",
     "voice.tts_volume",
+    "voice.talk_level",
     "voice.wake_words",
     "voice.wake_sensitivity",
     "voice.wake_follow_up_s",
@@ -33,6 +34,7 @@ pub const WEB_SETTINGS: &[&str] = &[
     "voice.barge_in_min_words",
     "voice.barge_in_duck",
     "voice.direct_reply",
+    "voice.direct_follow",
     "voice.instant_commands",
     "voice.end_silence_ms",
     "voice.engine",
@@ -76,6 +78,8 @@ pub fn wav(samples: &[f32], rate: u32) -> Vec<u8> {
     }
     v
 }
+
+const PREVIEW_TEXT: &str = "This is how I sound. Hello from GodTerm.";
 
 fn route_to(out: Arc<Outbox>) {
     set_web_out(Some(Box::new(move |a| match a {
@@ -312,6 +316,13 @@ impl App {
                 e.stop_speaking();
             }
         }
+        if let Some(f) = v["follow"].as_bool() {
+            crate::log::info(&format!(
+                "web: client {client} turned following the active tab {}",
+                if f { "on" } else { "off" }
+            ));
+            self.set_direct_follow(f);
+        }
         match &v["direct"] {
             serde_json::Value::Bool(false) => {
                 if self.direct.on.is_some() {
@@ -351,6 +362,12 @@ impl App {
         if v["web_tts_list"].as_bool() == Some(true) {
             self.web_tts_list(client);
         }
+        if v["preview_stop"].as_bool() == Some(true) {
+            crate::voice::tts::PREVIEW_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        if let Some(p) = v.get("preview_tts") {
+            self.web_tts_preview(client, p);
+        }
         if let Some(b) = v["brainstorm"].as_bool() {
             if b != self.brainstorm_on() {
                 self.toggle_brainstorm();
@@ -389,6 +406,41 @@ impl App {
             .as_ref()
             .and_then(|w| w.voice.as_ref())
             .is_some_and(|wv| wv.muted)
+    }
+
+    fn web_tts_preview(&self, client: u64, p: &serde_json::Value) {
+        let Some(c) = self.web.as_ref().and_then(|w| w.hub.client(client)) else {
+            return;
+        };
+        let choice = match crate::voice::web_tts::parse(p) {
+            Ok(c) => c,
+            Err(e) => {
+                c.out
+                    .text(json!({"t": "voice", "preview": "error", "error": e}).to_string());
+                return;
+            }
+        };
+        let mac = self.cfg.voice.clone();
+        let gen =
+            crate::voice::tts::PREVIEW_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        c.out
+            .text(json!({"t": "voice", "preview": "start", "engine": choice.engine}).to_string());
+        let _ = std::thread::Builder::new()
+            .name("web-tts-preview".into())
+            .spawn(move || {
+                let cfg = crate::voice::web_tts::web_cfg(&mac, Some(&choice));
+                let mut emit = |s: &[f32], rate: u32| {
+                    c.out.audio(wav(s, rate));
+                };
+                let r = crate::voice::tts::preview(&cfg, gen, PREVIEW_TEXT, &mut emit);
+                let live =
+                    crate::voice::tts::PREVIEW_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen;
+                let msg = match r {
+                    Ok(who) => json!({"t": "voice", "preview": "done", "who": who, "live": live}),
+                    Err(e) => json!({"t": "voice", "preview": "error", "error": e}),
+                };
+                c.out.text(msg.to_string());
+            });
     }
 
     fn web_tts_list(&self, client: u64) {

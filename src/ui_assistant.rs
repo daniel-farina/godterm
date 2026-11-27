@@ -150,6 +150,7 @@ pub fn chip(app: &App, tool: &str, args: &Value, status: &str) -> (String, Color
             FAINT,
         ),
         "sessions"
+        | "list_lost_sessions"
         | "session_detail"
         | "find"
         | "search_projects"
@@ -159,6 +160,7 @@ pub fn chip(app: &App, tool: &str, args: &Value, status: &str) -> (String, Color
         | "account_capabilities"
         | "mcp_catalog"
         | "list_settings"
+        | "login_status"
         | "get_setting"
         | "list_learnings"
         | "get_system_prompt" => (format!("◦ checked {}", tool.replace('_', " ")), FAINT),
@@ -256,7 +258,7 @@ pub fn rows(app: &App, width: u16) -> Vec<Row> {
             Who::Reply => {
                 let lines = crate::md::reply_view(
                     &e.text,
-                    app.cfg.assistant.spoken_sentences,
+                    crate::app_talkback::TalkLevel::spoken_max(&app.cfg),
                     width.saturating_sub(2) as usize,
                 );
                 push_md(&mut out, &lines, label("◆ ", theme::MAUVE));

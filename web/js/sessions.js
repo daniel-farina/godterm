@@ -1,9 +1,10 @@
-import { $, h, store, toast, debounce, idOf, isDesk, skeleton, failRow, emptyState, hscroll } from './util.js';
+import { $, h, store, toast, debounce, idOf, isDesk, skeleton, failRow, emptyState, hscroll, icon } from './util.js';
 import { tool } from './conn.js';
 import { S } from './state.js';
 import { openSheet, closeSheet } from './sheet.js';
 import { panes } from './term.js';
-import { run, li } from './manage.js';
+import { run, li, openSession } from './manage.js';
+import { HARNESS_NAMES, plainConfirm } from './lost.js';
 
 const SORTS = [['modified', 'Modified'], ['created', 'Created'], ['messages', 'Messages'], ['tokens', 'Tokens'], ['context', 'Context'], ['project', 'Project'], ['source', 'Account'], ['title', 'Title'], ['oldest', 'Oldest']];
 const WHEN = [['', 'Any time'], ['today', 'Today'], ['yesterday', 'Since yesterday'], ['3 days', '3 days'], ['last week', 'Last week'], ['30 days', '30 days']];
@@ -38,7 +39,20 @@ function chipRow(key, opts) {
   return row;
 }
 
-let box, info, paintSummary = () => {};
+let box, info, warn, paintSummary = () => {}, paintAgents = () => {};
+let known = store.get('sess-harn', []);
+
+function agentOpts() {
+  const have = new Set([...S.accounts.map((a) => a.harness || 'claude'), ...known, f.harness].filter((k) => k && k !== 'all'));
+  return [['all', 'All agents'], ...Object.entries(HARNESS_NAMES).filter(([k]) => have.has(k))];
+}
+
+function activeFilters(accts) {
+  const name = (list, v) => list.find(([k]) => k === (v || ''))?.[1];
+  return [f.text && `search "${f.text}"`, f.harness && f.harness !== 'all' && 'agent ' + (HARNESS_NAMES[f.harness] || f.harness),
+    f.state && f.state !== 'all' && 'state ' + f.state, f.since && 'time ' + (name(WHEN, f.since) || f.since),
+    f.source && 'account ' + (name(accts, f.source) || f.source), f.project && `folder "${f.project}"`].filter(Boolean);
+}
 function reload() { store.set('sessf', f); limit = PAGE; query(); }
 
 async function query() {
@@ -50,6 +64,7 @@ async function query() {
   const v = r.result || r;
   if (r.ok === false && !v.sessions) { info.textContent = ''; box.replaceChildren(failRow(r.error || 'Sessions are not available', query, 'The Sessions screen')); return; }
   const rows = v.sessions || [];
+  if (Array.isArray(v.harnesses) && v.harnesses.join() !== known.join()) { known = v.harnesses; store.set('sess-harn', known); paintAgents(); }
   info.textContent = `${v.matched ?? rows.length} sessions${v.did_you_mean ? ' · did you mean: ' + [].concat(v.did_you_mean).map((d) => d.title || d).slice(0, 2).join(', ') : ''}${v.indexing ? ' · still indexing' : ''}`;
 
   if (v.headless_hidden || f.headless) {
@@ -59,11 +74,22 @@ async function query() {
   if (v.indexing) setTimeout(() => my === seq && query(), 1500);
   box.replaceChildren(...rows.map(row));
   if ((v.matched ?? 0) > rows.length) box.append(h('button.li', { style: 'justify-content:center;color:var(--accent)', onclick: () => { limit += PAGE; query(); } }, `Load more (${v.matched - rows.length} left)`));
-  const filtered = !!(f.text || f.since || f.project || f.source || (f.harness && f.harness !== 'all') || (f.state && f.state !== 'all'));
-  if (!rows.length) box.append(emptyState('No sessions match', filtered ? 'Fewer filters, or another word, may find it.' : 'Sessions appear here once an agent has run in a tab.',
-    filtered ? { label: 'Clear filters', fn: () => { f = { text: '', harness: 'all', source: '', state: 'all', since: '', project: '', sort: f.sort, reverse: f.reverse }; store.set('sessf', f); limit = PAGE; sessionsSheet(); } } : null));
+  if (!rows.length) {
+    const accts = acctOpts();
+    const active = activeFilters(accts);
+    const acct = S.accounts.find((a) => String(a.account) === f.source);
+    if (acct?.harness === 'antigravity' && v.plain_antigravity > 0) {
+      box.append(h('div.empty.plain-hint', {},
+        h('div.eh', {}, `${acct.label} has no session that matches, but ${v.plain_antigravity} ${v.plain_antigravity === 1 ? 'conversation was' : 'conversations were'} made with agy in a plain terminal.`),
+        h('button.btn.sm', { type: 'button', onclick: () => { f.source = 'main'; f.harness = 'antigravity'; store.set('sessf', f); limit = PAGE; sessionsSheet(); } }, 'Show them')));
+    }
+    box.append(emptyState('No sessions match', active.length ? `Filters on: ${active.join(' · ')}. Fewer filters, or another word, may find it.` : 'Sessions appear here once an agent has run in a tab.',
+      active.length ? { label: 'Clear filters', fn: () => { f = { text: '', harness: 'all', source: '', state: 'all', since: '', project: '', sort: f.sort, reverse: f.reverse }; store.set('sessf', f); limit = PAGE; sessionsSheet(); } } : null));
+  }
   box.hidden = false;
 }
+
+const acctOpts = () => [['', 'All accounts'], ['main', 'Main'], ...S.accounts.map((a) => [String(a.account), a.label])];
 
 function row(s) {
   const acct = typeof s.source === 'number' ? S.accounts.find((a) => a.account === s.source)?.label || 'Account ' + s.source : s.source;
@@ -74,16 +100,18 @@ function row(s) {
     h('div.sm', {}, [s.messages != null && s.messages + ' msgs', tok, s.subagents && s.subagents + ' subagents', s.cost_usd && '$' + s.cost_usd].filter(Boolean).join(' · ')));
 }
 
-async function open(s) {
+async function open(s, into) {
   if (s.open_in_tab) { closeSheet(); panes.show(idOf(s.open_in_tab)); return; }
+  if (s.plain_terminal && into == null) return plainConfirm(warn, s, (a) => open(s, a));
   closeSheet();
   toast('Opening ' + (s.title || 'session') + '...', 'info');
-  const r = await run(s.external ? 'take_over_session' : 'open_session', { id: s.id }, 'Opened');
+  const r = into == null ? await openSession(s) : await run('open_session', { id: s.id, harness: s.harness, account: into, copy: true }, 'Opened');
   const id = r?.result?.tab || r?.result?.tab_id;
   if (id) setTimeout(() => panes.show(idOf(id)), 300);
 }
 
-export function sessionsSheet() {
+export function sessionsSheet(preset) {
+  if (preset) { f = { ...f, ...preset }; store.set('sessf', f); limit = PAGE; }
   const q = h('input', { type: 'search', placeholder: 'Search sessions: name, prompts, folder', value: f.text, enterkeyhint: 'search', autocapitalize: 'off', spellcheck: 'false' });
   q.addEventListener('input', debounce(() => { f.text = q.value.trim(); reload(); }, 250));
   const proj = h('input', { type: 'search', placeholder: 'Project folder contains', value: f.project, autocapitalize: 'off', spellcheck: 'false' });
@@ -91,20 +119,24 @@ export function sessionsSheet() {
   const sort = h('select', { 'aria-label': 'Sort' }, SORTS.map(([v, l]) => h('option', { value: v, selected: f.sort === v }, l)));
   sort.onchange = () => { f.sort = sort.value; paintSummary(); reload(); };
   const rev = h('button.tog', { 'aria-pressed': String(!!f.reverse), title: 'Reverse order', onclick: () => { f.reverse = !f.reverse; rev.setAttribute('aria-pressed', f.reverse); paintSummary(); reload(); } }, 'Reverse');
-  const accts = [['', 'All accounts'], ['main', 'Main'], ...S.accounts.map((a) => [String(a.account), a.label])];
+  const accts = acctOpts();
   info = h('div.mnote', { style: 'padding:0 4px' });
   box = h('div.list.slist');
+  warn = h('div.lost-warn', { hidden: true });
+  const agents = h('div.agent-chips');
+  paintAgents = () => agents.replaceChildren(chipRow('harness', agentOpts()));
+  paintAgents();
 
   const fr = (label, el) => h('div.frow', {}, h('span.fl', {}, label), el);
   const filters = h('div.fbody', { hidden: !store.get('sessf-open', isDesk()) },
     fr('Sort', h('div.inrow', {}, sort, rev)),
-    fr('Agent', chipRow('harness', [['all', 'Claude + Grok'], ['claude', 'Claude'], ['grok', 'Grok']])),
+    fr('Agent', agents),
     fr('State', chipRow('state', [['all', 'All'], ['active', 'Active'], ['recent', 'Recent']])),
     fr('Time', chipRow('since', WHEN)), fr('Account', chipRow('source', accts)), fr('Folder', proj));
   const sum = h('span.lh');
   paintSummary = () => {
     const name = (list, v) => list.find(([k]) => k === (v || ''))?.[1];
-    const set = [f.sort !== 'modified' && name(SORTS, f.sort), f.reverse && 'reversed', f.harness !== 'all' && name([['claude', 'Claude'], ['grok', 'Grok']], f.harness),
+    const set = [f.sort !== 'modified' && name(SORTS, f.sort), f.reverse && 'reversed', f.harness !== 'all' && (HARNESS_NAMES[f.harness] || f.harness),
       f.state !== 'all' && f.state, f.since && name(WHEN, f.since), f.source && name(accts, f.source), f.project && f.project].filter(Boolean);
     sum.textContent = set.length ? set.join(' · ') : 'none';
   };
@@ -113,7 +145,7 @@ export function sessionsSheet() {
   tog.querySelector('.ll').after(sum);
   tog.classList.toggle('open', !filters.hidden);
   openSheet({ kind: 'sessions', tall: true },
-    h('div.sh-title', {}, h('span', {}, 'Sessions'), h('button.ib', { 'aria-label': 'Close', title: 'Close', onclick: closeSheet, html: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>' })),
-    q, h('div.list', {}, tog, filters), info, box);
+    h('div.sh-title', {}, h('span', {}, 'Sessions'), h('button.ib', { 'aria-label': 'Close', title: 'Close', onclick: closeSheet, html: icon('x') })),
+    q, h('div.list', {}, tog, filters), info, warn, box);
   query();
 }

@@ -860,7 +860,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "godterm"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "block2",
@@ -883,6 +883,7 @@ dependencies = [
  "ratatui",
  "regex",
  "ring",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -896,6 +897,7 @@ dependencies = [
  "unicode-width",
  "ureq",
  "vt100",
+ "webpki-roots",
  "windows-sys 0.61.2",
  "winresource",
 ]

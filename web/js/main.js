@@ -2,11 +2,15 @@ import './debuglog.js';
 import { $, h, on, emit, toast, paintIcons, isTouch, isDesk, DESK, store, uidOf, debounce, tcPaint } from './util.js';
 import { connect, conn, send, tool } from './conn.js';
 import { S, tabById } from './state.js';
-import { panes } from './term.js';
-import { initTabs, setTabActions, tabOrder, renderTabs } from './tabs.js';
+import { panes, sharingOf, paintSharingBtn, sharingSheet } from './term.js';
+import { initTabs, setTabActions, setTabArchive, tabOrder, renderTabs } from './tabs.js';
 import { initKeybar } from './keybar.js';
+import { paintAvatar } from './avatar.js';
+import { emailToggle } from './emails.js';
 import { initChat, setChat, chatOpen, approvalsSheet } from './chat.js';
+import { waitWords, needsOk } from './asks.js';
 import { initInstall } from './install.js';
+import './route.js';
 
 const once = (fn) => { let p = null; return () => (p ||= Promise.resolve(fn())); };
 const initKeys = () => { const go = once(() => import('./keys.js').then((m) => m.initKeys())); requestAnimationFrame(() => setTimeout(go, 0)); setTimeout(go, 1500); };
@@ -15,8 +19,8 @@ const initPush = () => { const go = once(() => import('./push.js')); on('hello',
 const initStatusBar = () => { const go = once(() => import('./statusbar.js').then((m) => m.initStatusBar())); if (isDesk()) go(); else matchMedia(DESK).addEventListener('change', (e) => e.matches && go()); };
 const initVoice = () => {
   const go = once(() => import('./voice.js').then((m) => m.initVoice()));
-  const want = store.get('voice.pick', 'off') !== 'off';
-  on('hello', () => (want ? go() : setTimeout(go, 3000)));
+  const want = () => store.get('voice.pick', 'off') !== 'off' || S.voice?.speaker_muted === true;
+  on('hello', () => (want() ? go() : setTimeout(go, isDesk() ? 300 : 3000)));
   on('open-voice', go);
   on('msg:voice', go);
   for (const id of ['#b-ptt', '#b-ptt2', '#b-openmic', '#b-voice']) {
@@ -24,7 +28,7 @@ const initVoice = () => {
     if (!b) continue;
 
     b.addEventListener('pointerdown', go, { once: true, passive: true });
-    const tap = (e) => { if (b.dataset.live) return; e.stopImmediatePropagation(); go().then(() => { b.dataset.live = 1; b.click(); }); };
+    const tap = (e) => { if (b.dataset.live) return; if (e.target.closest?.('.ml-sp')) b.dataset.sphit = '1'; e.stopImmediatePropagation(); go().then(() => { b.dataset.live = 1; b.click(); }); };
     b.addEventListener('click', tap, { capture: true, once: true });
   }
   setTimeout(go, 8000);
@@ -37,6 +41,7 @@ const manageSheet = () => manage().then((m) => m.manageSheet());
 const loopsAllSheet = () => manage().then((m) => m.loopsAllSheet());
 const jobsAllSheet = () => manage().then((m) => m.jobsAllSheet());
 const sessionsSheet = () => import('./sessions.js').then((m) => m.sessionsSheet());
+const appsSheet = () => import('./apps.js').then((m) => m.appsSheet());
 const settingsSheet = (at) => import('./settings.js').then((m) => m.settingsSheet(at));
 import { closeSheet, sheetOpen, sheetKind } from './sheet.js';
 
@@ -360,12 +365,17 @@ function title() {
   const t = p && tabById(p.id);
   $('#t-name').textContent = t ? t.name : 'GodTerm';
   $('#t-dot').className = 'dot' + (t ? ' ' + (t.state || 'idle') : '');
+  paintAvatar($('#t-av'), t, 'md');
   tcPaint($('#t-tc'), t);
-  $('#t-sub').textContent = t ? [t.account_label, t.model, t.state].filter(Boolean).join(' · ') : `${S.tabs.length} tabs`;
+  const st = t && (waitWords(t) || t.state);
+  $('#t-sub').textContent = t ? (isDesk() ? [t.account_label, t.model, st, t.route && 'via ' + t.route.name] : [needsOk(t) && st, t.route && 'via ' + t.route.name, t.account_label, t.model, !needsOk(t) && st]).filter(Boolean).join(' · ') : `${S.tabs.length} tabs`;
   $('#title').title = t ? [t.name, t.account_label, t.model, t.state, t.folder].filter(Boolean).join(' · ') : '';
   document.title = t ? `${t.name} · GodTerm` : 'GodTerm';
+  const sb = $('#b-share');
+  if (sb) { paintSharingBtn(sb, isDesk() ? null : sharingOf(t)); sb.onclick = () => p?.id && sharingSheet(p.id); }
 }
 on('state', title);
+on('asks', title);
 on('focus', title);
 
 const togglePanel = () => manage().then((m) => m.setPanel(!m.panelIsOn()));
@@ -377,7 +387,7 @@ on('conn', (s) => {
   c.title = s;
   clearTimeout(downTimer);
   if (s === 'live') authSaid = false;
-  if (s === 'auth') { if (!authSaid) toast('Not signed in on this device', 'error', { label: 'Sign in', fn: () => location.assign('./') }); authSaid = true; }
+  if (s === 'auth') { if (!authSaid) toast('Not signed in on this device', 'error', { label: 'Sign in', fn: () => location.assign('/login') }); authSaid = true; }
   else if (s === 'down' && !authSaid) downTimer = setTimeout(() => !conn.open && toast('GodTerm is not reachable: retrying', 'warn'), 2500);
 });
 
@@ -387,6 +397,7 @@ $('#b-split').onclick = () => {
   if (panes.n < n) toast(`Room for ${panes.n === 1 ? 'one pane' : panes.n + ' panes'} at this size`, 'info');
 };
 $('#b-sessions').onclick = sessionsSheet;
+$('#b-apps').onclick = appsSheet;
 $('#b-sess2').onclick = () => { drawer(false); sessionsSheet(); };
 $('#b-new').onclick = () => { drawer(false); newTabSheet(); };
 $('#b-more').onclick = manageSheet;
@@ -398,9 +409,14 @@ on('state', () => {
     const b = document.getElementById(id), c = b.querySelector('.cnt');
     if (c.textContent !== String(n)) { c.textContent = n; b.classList.toggle('has', n > 0); }
   }
+  const total = (S.loops || []).length + (S.jobs?.jobs || []).length, more = document.getElementById('b-more'), mc = more.querySelector('.cnt');
+  if (mc.textContent !== String(total)) { mc.textContent = total; more.classList.toggle('has', total > 0); }
 });
 $('#b-newtab').onclick = newTabSheet;
 $('#b-gear').onclick = () => settingsSheet();
+$('#b-login').onclick = () => { store.set('st-sec', 'remote'); settingsSheet(); };
+fetch('/auth/state', { credentials: 'same-origin' }).then((r) => r.json()).then((s) => { if (s?.enabled) $('#b-login').hidden = false; }).catch(() => {});
+emailToggle($('#b-eye'));
 $('#b-tabmenu').onclick = () => { if (isDesk()) return togglePanel(); const p = panes.focused(); if (!p?.id) return toast('Pick a tab first', 'warn'); tabActions(p.id, null); };
 
 on('tabsection', (key, r) => { const p = panes.focused(); if (p?.id) manage().then((m) => m.tabSection(p.id, key, r)); });
@@ -520,6 +536,7 @@ on('msg:ui', (m) => {
 connect();
 initTabs();
 setTabActions(tabActions);
+setTabArchive((id) => manage().then((m) => m.archiveSoon(id)));
 panes.init();
 initKeybar();
 import('./drop.js').then((m) => m.initDrop());

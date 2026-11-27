@@ -104,6 +104,9 @@ impl App {
         if !self.cfg.assistant.resume {
             return None;
         }
+        if self.assistant.bound.is_some() {
+            return self.tab_session_plan(provider, account, home, fresh);
+        }
         let acct = account
             .map(|a| self.cfg.accounts[a].name.clone())
             .unwrap_or_default();
@@ -171,7 +174,9 @@ impl App {
         }
         self.assistant.resumed = None;
         self.assistant.fresh_session = true;
-        if let Some(mut k) = load() {
+        if self.assistant.bound.is_some() {
+            self.tab_session_forget();
+        } else if let Some(mut k) = load() {
             k.id.clear();
             save(&k);
         }
