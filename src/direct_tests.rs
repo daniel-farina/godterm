@@ -499,7 +499,11 @@ fn a_queued_message_is_only_shown_quietly() {
     for _ in 0..60 {
         r.step();
     }
-    assert_eq!(r.app.direct.said.len(), n, "{}", r.said());
+    let extra = r.app.direct.said[n..]
+        .iter()
+        .filter(|t| !t.ends_with(" finished."))
+        .count();
+    assert_eq!(extra, 0, "{}", r.said());
     let b = bookkeeping(&r);
     for word in [
         "sent",

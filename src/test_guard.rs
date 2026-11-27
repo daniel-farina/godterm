@@ -47,10 +47,10 @@ pub fn is_current_exe(program: &std::path::Path) -> bool {
 }
 
 pub fn looks_like_test_harness(exe: &std::path::Path) -> bool {
-    let in_deps = exe
-        .parent()
-        .and_then(|p| p.file_name())
-        .is_some_and(|n| n == "deps");
+    let dir = exe.parent();
+    let in_deps = dir.and_then(|p| p.file_name()).is_some_and(|n| n == "deps");
+    let in_out = dir.and_then(|p| p.file_name()).is_some_and(|n| n == "out")
+        && exe.components().any(|c| c.as_os_str() == "build");
     let stem = exe
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -58,7 +58,7 @@ pub fn looks_like_test_harness(exe: &std::path::Path) -> bool {
     let hashed = stem
         .rsplit_once('-')
         .is_some_and(|(_, h)| h.len() == 16 && h.chars().all(|c| c.is_ascii_hexdigit()));
-    in_deps && hashed
+    (in_deps || in_out) && hashed
 }
 
 #[cfg(test)]
@@ -77,6 +77,9 @@ mod tests {
         )));
         assert!(!super::looks_like_test_harness(std::path::Path::new(
             "/Users/x/claudego/target/release/godterm"
+        )));
+        assert!(super::looks_like_test_harness(std::path::Path::new(
+            "/w/target/debug/build/godterm/e8fe55f4ba6e8769/out/godterm-e8fe55f4ba6e8769"
         )));
     }
 }
