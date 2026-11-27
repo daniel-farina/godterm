@@ -51,6 +51,41 @@ pub fn ago(d: Duration) -> Instant {
     now.checked_sub(d).unwrap_or(now)
 }
 
+pub fn past(d: Duration) -> Instant {
+    let now = Instant::now();
+    let mut d = d;
+    loop {
+        if let Some(t) = now.checked_sub(d) {
+            return t;
+        }
+        d /= 2;
+    }
+}
+
+#[cfg(test)]
+pub fn exactly_ago(d: Duration) -> Option<Instant> {
+    let t = Instant::now().checked_sub(d);
+    if t.is_none() {
+        eprintln!(
+            "this machine's clock does not reach {d:?} back; the steps that need it are skipped"
+        );
+    }
+    t
+}
+
+#[cfg(test)]
+macro_rules! ago_or_return {
+    ($d:expr) => {
+        match $crate::clock::exactly_ago($d) {
+            Some(t) => t,
+            None => return,
+        }
+    };
+}
+
+#[cfg(test)]
+pub(crate) use ago_or_return;
+
 #[cfg(test)]
 pub fn simulate_sleep(d: Duration) {
     let mut c = CLOCKS.lock().unwrap_or_else(|e| e.into_inner());
@@ -82,5 +117,17 @@ mod tests {
         assert!(age(before) >= Duration::from_secs(3600));
         assert!(age(after) < Duration::from_secs(1));
         reset();
+    }
+
+    #[test]
+    fn the_past_is_as_far_back_as_the_clock_goes() {
+        let t = past(Duration::from_secs(5));
+        assert!(t.elapsed() < Duration::from_secs(3600));
+        let far = past(Duration::MAX);
+        assert!(far <= Instant::now());
+        match exactly_ago(Duration::from_secs(2)) {
+            Some(t) => assert!(t.elapsed() >= Duration::from_secs(2)),
+            None => assert!(past(Duration::from_secs(2)).elapsed() < Duration::from_secs(2)),
+        }
     }
 }

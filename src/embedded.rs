@@ -2206,7 +2206,7 @@ fn io_loop(b: Arc<Browser>, mut ws: tungstenite::WebSocket<TcpStream>, rx: mpsc:
 }
 
 fn meta_loop(s: Arc<Session>) {
-    let mut last = Instant::now() - Duration::from_secs(10);
+    let mut last = crate::clock::past(Duration::from_secs(10));
     while s.alive.load(Ordering::Relaxed) {
         {
             let g = lk(&s.st);
@@ -2255,7 +2255,7 @@ fn new_state() -> State {
         frame: None,
         frame_dims: (0.0, 0.0),
         dirty: false,
-        last_push: Instant::now() - Duration::from_secs(1),
+        last_push: crate::clock::past(Duration::from_secs(1)),
         vp: (START_W, START_H),
         meta_sent: None,
         meta_dirty: true,
@@ -3383,7 +3383,7 @@ pub fn handle_web(ctx: &Ctx, client: u64, out: &Arc<Outbox>, v: &Value) {
 pub fn tick(live_tabs: &[u64], enabled: bool) -> bool {
     static LAST: Mutex<Option<(Instant, Vec<u64>)>> = Mutex::new(None);
     let mut g = lk(&LAST);
-    let (at, seen) = g.get_or_insert_with(|| (Instant::now() - Duration::from_secs(60), vec![]));
+    let (at, seen) = g.get_or_insert_with(|| (crate::clock::past(Duration::from_secs(60)), vec![]));
     if at.elapsed() < Duration::from_secs(2) {
         return false;
     }

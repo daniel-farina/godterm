@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
@@ -30,7 +30,7 @@ fn pane_with(tag: &str, history: usize, modes: &[u8]) -> (crate::app::App, std::
     }
     p.process(modes);
     drop(p);
-    t.last_input = Instant::now() - Duration::from_secs(3600);
+    t.last_input = crate::clock::past(Duration::from_secs(3600));
     (app, home)
 }
 
@@ -59,7 +59,7 @@ fn a_pane_that_reports_the_mouse_on_the_main_screen_still_scrolls_its_history() 
     click_pane(&mut app, &mut t);
     let (x, y) = body(&app);
 
-    app.panes[0].cur_mut().last_input = Instant::now() - Duration::from_secs(3600);
+    app.panes[0].cur_mut().last_input = crate::clock::past(Duration::from_secs(3600));
     crate::pane::SENT.with(|s| s.borrow_mut().clear());
     mouse(&mut app, MouseEventKind::ScrollUp, x, y);
     assert!(

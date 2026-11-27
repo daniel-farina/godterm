@@ -295,11 +295,7 @@ impl Drop for OneChrome {
 }
 
 pub(crate) fn alive(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    crate::platform::alive(pid)
 }
 
 #[test]
@@ -340,14 +336,9 @@ fn a_real_browser_is_driven_and_cleaned_up() {
     let chrome_pid: u32 = owner.split_whitespace().nth(1).unwrap().parse().unwrap();
     assert!(alive(chrome_pid));
     assert_eq!(embedded::browser_pid(), Some(chrome_pid));
-    let args = String::from_utf8_lossy(
-        &std::process::Command::new("ps")
-            .args(["-p", &chrome_pid.to_string(), "-o", "command="])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .to_string();
+    let args = crate::procs::process(chrome_pid)
+        .expect("the browser process")
+        .command_line();
     assert!(
         args.contains("--remote-debugging-port=0")
             && args.contains("--remote-debugging-address=127.0.0.1")

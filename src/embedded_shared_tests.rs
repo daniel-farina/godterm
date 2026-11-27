@@ -567,11 +567,10 @@ fn a_killed_browser_is_started_again_on_the_next_use() {
     let ta = tab_ids(&go(a, json!({"action": "tabs"})));
     let pid = browser_pid().unwrap();
     let dir = profiles().remove(0);
-    assert!(std::process::Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status()
-        .unwrap()
-        .success());
+    assert_eq!(
+        crate::platform::kill(pid as i32, crate::platform::SIGKILL),
+        0
+    );
     wait_for("the dead browser to be noticed", || browser_pid().is_none());
     housekeep();
     assert_eq!(live_uids(), vec![a, b], "the tabs keep their page tabs");

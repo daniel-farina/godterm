@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
 
@@ -125,7 +125,8 @@ fn a_tab_with_running_subagents_is_working_everywhere() {
     );
 
     let (n, _) = ready_tab(&mut app, "notes");
-    app.panes[0].tabs[n].activity_since = Instant::now() - Duration::from_secs(2 * 3600);
+    app.panes[0].tabs[n].activity_since =
+        crate::clock::ago_or_return!(Duration::from_secs(2 * 3600));
 
     let a = app.tab_activity(0, g);
     assert_eq!(a.subagents_running, 3, "{a:?}");

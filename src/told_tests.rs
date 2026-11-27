@@ -91,7 +91,7 @@ fn held_speech_is_recorded_with_its_source_when_said() {
         )
     });
     assert!(texts(&app).is_empty(), "not said yet");
-    app.assistant.quiet.spoke_at = Some(Instant::now() - Duration::from_secs(600));
+    app.assistant.quiet.spoke_at = Some(crate::clock::ago_or_return!(Duration::from_secs(600)));
     app.quiet_tick();
     let log = app.told.borrow();
     let e = log.ring.back().expect("said");

@@ -215,7 +215,7 @@ fn watch_loop(
     let mut last: Option<Vec<(PathBuf, u64, SystemTime)>> = None;
     let mut dirty_at: Option<Instant> = None;
     let mut env_roots: Vec<PathBuf> = vec![];
-    let mut roots_at = Instant::now() - Duration::from_secs(3600);
+    let mut roots_at = crate::clock::past(Duration::from_secs(3600));
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_secs(2));
         let Ok(ctx) = make() else { continue };

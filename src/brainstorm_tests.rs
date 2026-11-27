@@ -352,7 +352,7 @@ fn the_suggestion_and_its_rate_limit() {
     hear(&mut app, "and also the queue, um");
     assert_eq!(tips(&app), 1, "rate limited");
 
-    app.brainstorm.suggested = Some(Instant::now() - Duration::from_secs(400));
+    app.brainstorm.suggested = Some(crate::clock::ago_or_return!(Duration::from_secs(400)));
     app.brainstorm.recent.clear();
     for t in ["Rename the crate.", "Then fix the build.", "Then the docs."] {
         app.assistant.busy = false;
@@ -380,15 +380,17 @@ fn long_silences_keep_it_open_and_the_timeout_asks() {
     app.cfg.voice.open_mic_sleep_min = 1;
     app.start_brainstorm(true);
     hear(&mut app, "A thought about the scheduler.");
-    app.voice.last_heard = Instant::now() - Duration::from_secs(300);
+    app.voice.last_heard = crate::clock::ago_or_return!(Duration::from_secs(300));
     app.open_mic_tick();
     assert!(app.voice.open_mic, "no sleep mid brainstorm");
 
-    app.brainstorm.on.as_mut().unwrap().last_at = Instant::now() - Duration::from_secs(300);
+    app.brainstorm.on.as_mut().unwrap().last_at =
+        crate::clock::ago_or_return!(Duration::from_secs(300));
     app.brainstorm_tick();
     assert!(app.brainstorm_on());
 
-    app.brainstorm.on.as_mut().unwrap().last_at = Instant::now() - Duration::from_secs(601);
+    app.brainstorm.on.as_mut().unwrap().last_at =
+        crate::clock::ago_or_return!(Duration::from_secs(601));
     app.brainstorm_tick();
     assert!(!app.brainstorm_on());
     assert_eq!(app.assistant.input, "A thought about the scheduler.");

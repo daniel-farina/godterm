@@ -366,9 +366,7 @@ impl Pane {
             route_block: None,
             route_skip: false,
             opened: std::time::SystemTime::now(),
-            last_input: Instant::now()
-                .checked_sub(std::time::Duration::from_secs(3600))
-                .unwrap_or_else(Instant::now),
+            last_input: crate::clock::past(std::time::Duration::from_secs(3600)),
             own_input: None,
             finished: false,
             bg_wait: false,

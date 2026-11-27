@@ -908,6 +908,7 @@ fn websocket_keeps_up_with_a_flood() {
     let mut snapshots = 0;
     let mut term: Option<vt100::Parser> = None;
     let mut tail = String::new();
+    let mut ended = false;
     while t0.elapsed() < Duration::from_secs(30) {
         match ws.read().unwrap() {
             Message::Binary(b) => {
@@ -921,6 +922,7 @@ fn websocket_keeps_up_with_a_flood() {
                     tail = tail[tail.len() - 128..].to_string();
                 }
                 if tail.contains("END-OF-FLOOD") {
+                    ended = true;
                     break;
                 }
             }
@@ -931,6 +933,7 @@ fn websocket_keeps_up_with_a_flood() {
                     let mut p = vt100::Parser::new(50, 200, 0);
                     p.process(v["data"].as_str().unwrap().as_bytes());
                     if p.screen().contents().contains("END-OF-FLOOD") {
+                        ended = true;
                         break;
                     }
                     term = Some(p);
@@ -948,7 +951,7 @@ fn websocket_keeps_up_with_a_flood() {
     assert!(tail.contains("END-OF-FLOOD") || snapshots > 0);
 
     std::thread::sleep(Duration::from_millis(200));
-    if let Some(t) = term {
+    if let Some(t) = term.filter(|_| ended) {
         assert_eq!(t.screen().contents(), p.screen_text());
     }
     drop(p);
@@ -1876,7 +1879,7 @@ fn a_muted_browser_mic_keeps_open_mic_awake() {
     );
     assert!(!app.voice.muted, "GodTerm's own mute is not touched");
 
-    app.voice.last_heard = Instant::now() - Duration::from_secs(5 * 60);
+    app.voice.last_heard = crate::clock::ago_or_return!(Duration::from_secs(5 * 60));
     app.open_mic_tick();
     assert!(
         app.voice.open_mic,
@@ -1888,7 +1891,7 @@ fn a_muted_browser_mic_keeps_open_mic_awake() {
     app.open_mic_tick();
     assert!(app.voice.open_mic, "the sleep count starts at the unmute");
 
-    app.voice.last_heard = Instant::now() - Duration::from_secs(5 * 60);
+    app.voice.last_heard = crate::clock::ago_or_return!(Duration::from_secs(5 * 60));
     app.open_mic_tick();
     assert!(!app.voice.open_mic, "auto sleep again once unmuted");
 

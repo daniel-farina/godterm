@@ -81,7 +81,7 @@ fn expired_confirmation_does_not_take_the_next_yes() {
     app.modal = crate::app::Modal::ConfirmClose;
     assert_eq!(app.run_instant(crate::instant::Instant::Approve), None);
 
-    app.pending_confirms[0].at = std::time::Instant::now() - Duration::from_secs(180);
+    app.pending_confirms[0].at = crate::clock::ago_or_return!(Duration::from_secs(180));
     let tabs = app.panes[app.focus].tabs.len();
     assert_eq!(
         app.run_instant(crate::instant::Instant::Approve).as_deref(),

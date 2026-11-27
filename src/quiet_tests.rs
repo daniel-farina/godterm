@@ -230,7 +230,7 @@ fn the_wait_limit_never_drops_silently() {
     assert_eq!(told.len(), 1, "{:?}", app.assistant.quiet.said);
 
     app.assistant.follow_ups[0].sent =
-        Instant::now() - crate::app_followup::HARD_CAP - Duration::from_secs(1);
+        crate::clock::ago_or_return!(crate::app_followup::HARD_CAP + Duration::from_secs(1));
     app.follow_ups_tick();
     assert_eq!(app.assistant.follow_ups[0].state, FuState::TimedOut);
     assert!(app

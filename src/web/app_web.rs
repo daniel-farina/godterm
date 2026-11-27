@@ -46,7 +46,7 @@ impl WebSide {
         WebSide {
             hub,
             changed: true,
-            last_push: Instant::now() - PUSH_EVERY,
+            last_push: crate::clock::past(PUSH_EVERY),
             state: String::new(),
             log: vec![],
             in_system: false,

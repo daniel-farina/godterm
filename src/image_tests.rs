@@ -188,14 +188,14 @@ fn tab(app: &mut App, home: &Path) -> u64 {
     tb.uid
 }
 
-fn attachment(app: &mut App, id: u32, ago: Duration) -> PathBuf {
+fn attachment(app: &mut App, id: u32, at: Instant) -> PathBuf {
     let (p, w, h) = img::save_png(&png(20, 10)).unwrap();
     app.assistant.images.push(Attachment {
         id,
         path: p.clone(),
         w,
         h,
-        at: Instant::now().checked_sub(ago).unwrap(),
+        at,
     });
     p
 }
@@ -206,8 +206,9 @@ fn send_prompt_with_images() {
     let (mut app, home) = test_app("send");
     let uid = tab(&mut app, &home);
     let tid = format!("t{uid}");
-    let p1 = attachment(&mut app, 1, Duration::ZERO);
-    let p2 = attachment(&mut app, 2, Duration::from_secs(31 * 60));
+    let p1 = attachment(&mut app, 1, Instant::now());
+    let old = crate::clock::exactly_ago(Duration::from_secs(31 * 60));
+    let p2 = old.map(|at| attachment(&mut app, 2, at));
     let send = |app: &mut App, images: Value| {
         app.control_call(
             "send_prompt",
@@ -240,7 +241,14 @@ fn send_prompt_with_images() {
     let n = app.deliveries.len();
     for (bad, why) in [
         (json!([9]), "not an attachment"),
-        (json!([2]), "over 30 minutes"),
+        (
+            json!([2]),
+            if old.is_some() {
+                "over 30 minutes"
+            } else {
+                "not an attachment"
+            },
+        ),
         (json!([notes.display().to_string()]), "not an image file"),
         (json!([private.display().to_string()]), "private"),
     ] {

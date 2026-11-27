@@ -9302,11 +9302,16 @@ mod tests {
             crate::app_memory::SAVER_WRITER_QUEUE
         );
 
+        let Some(idle) = crate::clock::exactly_ago(std::time::Duration::from_secs(3600)) else {
+            app.set_memory_saver(false);
+            let _ = std::fs::remove_dir_all(home);
+            return;
+        };
         for t in 1..3 {
             let tab = &mut app.panes[0].tabs[t];
             tab.state = PaneState::Running;
             tab.activity = Activity::Ready;
-            tab.activity_since = std::time::Instant::now() - std::time::Duration::from_secs(3600);
+            tab.activity_since = idle;
             tab.session_id = Some(format!("sess-{t}"));
         }
 
@@ -11753,7 +11758,8 @@ mod tests {
         );
 
         app.start_open_mic();
-        app.voice.last_heard = std::time::Instant::now() - std::time::Duration::from_secs(11 * 60);
+        app.voice.last_heard =
+            crate::clock::ago_or_return!(std::time::Duration::from_secs(11 * 60));
         app.open_mic_tick();
         assert!(!app.voice.open_mic);
 

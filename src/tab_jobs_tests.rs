@@ -537,7 +537,7 @@ fn a_waiting_request_does_not_cover_another_dialog_and_expires() {
     app.tab_jobs_tick();
     assert!(matches!(app.modal, Modal::ConfirmTabJob(_)));
 
-    app.tab_jobs.asks[0].at = std::time::Instant::now() - std::time::Duration::from_secs(3700);
+    app.tab_jobs.asks[0].at = crate::clock::ago_or_return!(std::time::Duration::from_secs(3700));
     app.tab_jobs_tick();
     assert!(app.tab_jobs.asks.is_empty());
     assert!(matches!(app.modal, Modal::None));
@@ -802,7 +802,7 @@ fn a_tabs_request_is_listed_for_the_web_and_answered_there_by_the_user() {
     app.modal = Modal::None;
     app.tab_jobs_tick();
     assert!(matches!(app.modal, Modal::ConfirmTabJob(_)));
-    app.tab_jobs.asks[0].at = std::time::Instant::now() - std::time::Duration::from_secs(900);
+    app.tab_jobs.asks[0].at = crate::clock::ago_or_return!(std::time::Duration::from_secs(900));
     app.tab_jobs_tick();
     assert_eq!(app.tab_jobs.asks.len(), 1, "ten minutes is not the end");
     assert!(app.web_answer(&id, "maybe").is_err());
@@ -830,7 +830,7 @@ fn a_tabs_request_is_listed_for_the_web_and_answered_there_by_the_user() {
         "create_job",
         json!({"name": "third", "prompt": "check the mail", "every": "30 minutes"}),
     );
-    app.tab_jobs.asks[0].at = std::time::Instant::now() - std::time::Duration::from_secs(3700);
+    app.tab_jobs.asks[0].at = crate::clock::ago_or_return!(std::time::Duration::from_secs(3700));
     app.tab_jobs_tick();
     assert!(app.tab_asks_json().is_empty(), "an expired request is gone");
     let _ = std::fs::remove_dir_all(home);

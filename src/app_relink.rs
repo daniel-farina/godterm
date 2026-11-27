@@ -314,8 +314,12 @@ mod tests {
         std::fs::write(
             &f,
             format!(
-                "{{\"type\":\"user\",\"cwd\":\"{}\",\"message\":{{\"role\":\"user\",\"content\":\"hi\"}}}}\n",
-                project.display()
+                "{}\n",
+                json!({
+                    "type": "user",
+                    "cwd": project.display().to_string(),
+                    "message": {"role": "user", "content": "hi"},
+                })
             ),
         )
         .unwrap();
@@ -357,17 +361,20 @@ mod tests {
 
         let v = t.app.control_call(
             "relink_conversation",
-            &json!({"id": id, "path": "/nope/never"}),
+            &json!({"id": id, "path": t.home.join("nope").join("never").display().to_string()}),
         );
         assert!(
             v["error"].as_str().unwrap_or("").contains("does not exist"),
             "{v}"
         );
-        let v = t.app.control_call(
-            "relink_conversation",
-            &json!({"id": id, "path": "/Volumes/Private/x"}),
-        );
-        assert!(v["error"].as_str().unwrap_or("").contains("vault"), "{v}");
+        #[cfg(unix)]
+        {
+            let v = t.app.control_call(
+                "relink_conversation",
+                &json!({"id": id, "path": "/Volumes/Private/x"}),
+            );
+            assert!(v["error"].as_str().unwrap_or("").contains("vault"), "{v}");
+        }
 
         let v = t.app.control_call(
             "relink_conversation",

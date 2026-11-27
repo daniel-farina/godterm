@@ -334,22 +334,31 @@ mod tests {
         p
     }
 
+    fn full(p: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{}", p.replace('/', "\\"))
+        } else {
+            p.to_string()
+        }
+    }
+
     #[test]
     fn resolution_order() {
-        let d = PathBuf::from("/d/.godterm");
+        let d = PathBuf::from(full("/d/.godterm"));
+        let (e, p) = (full("/e"), full("/p"));
         assert_eq!(resolve_with(None, None, &d), (d.clone(), Source::Default));
         assert_eq!(
-            resolve_with(None, Some("/p"), &d),
-            (PathBuf::from("/p"), Source::Pointer)
+            resolve_with(None, Some(&p), &d),
+            (PathBuf::from(&p), Source::Pointer)
         );
         assert_eq!(
-            resolve_with(Some("/e"), Some("/p"), &d),
-            (PathBuf::from("/e"), Source::Env)
+            resolve_with(Some(&e), Some(&p), &d),
+            (PathBuf::from(&e), Source::Env)
         );
         assert_eq!(resolve_with(Some(" "), None, &d).1, Source::Default);
         assert_eq!(
             resolve_with(None, Some("rel/x"), &d).0,
-            PathBuf::from("/d/.godterm/rel/x")
+            d.join("rel").join("x")
         );
     }
 
@@ -393,6 +402,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_vault_is_refused() {
         let v = Path::new(crate::guard::VAULT).join("godterm");

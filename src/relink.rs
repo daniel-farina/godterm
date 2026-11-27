@@ -285,8 +285,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join(format!("{id}.jsonl"));
         let line = format!(
-            "{{\"type\":\"user\",\"cwd\":\"{}\",\"sessionId\":\"{id}\",\"message\":{{\"role\":\"user\",\"content\":\"hello\"}}}}\n",
-            project.display()
+            "{}\n",
+            serde_json::json!({
+                "type": "user",
+                "cwd": project.display().to_string(),
+                "sessionId": id,
+                "message": {"role": "user", "content": "hello"},
+            })
         );
         std::fs::write(&f, line).unwrap();
         f
@@ -395,9 +400,12 @@ mod tests {
         assert!(check_dir(file.to_str().unwrap())
             .unwrap_err()
             .contains("not a folder"));
-        assert!(check_dir("/Volumes/Private/x")
-            .unwrap_err()
-            .contains("vault"));
+        #[cfg(unix)]
+        {
+            assert!(check_dir("/Volumes/Private/x")
+                .unwrap_err()
+                .contains("vault"));
+        }
         let _ = std::fs::remove_dir_all(&t);
     }
 

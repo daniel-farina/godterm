@@ -68,7 +68,10 @@ fn missing_fields_are_empty_and_get_sensible_fallbacks() {
     let loose = &c.apps[2];
     assert_eq!(loose.name, "Loose");
     assert!(loose.path.is_empty() && loose.project.is_empty());
-    assert_eq!(c.apps[3].path, "/work/harbor/tools/inner");
+    assert_eq!(
+        Path::new(&c.apps[3].path),
+        Path::new("/work/harbor/tools/inner")
+    );
 }
 
 #[test]
@@ -392,7 +395,7 @@ fn a_prompt_waits_for_its_tab_and_is_never_sent_to_a_tab_that_is_gone() {
         "missing folders are not surveyed"
     );
 
-    app.app_prefills[0].at -= Duration::from_secs(600);
+    app.app_prefills[0].at = crate::clock::ago_or_return!(Duration::from_secs(600));
     app.app_prefill_tick();
     assert!(app.app_prefills.is_empty(), "given up after the wait");
 
