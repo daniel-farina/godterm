@@ -249,6 +249,7 @@ pub fn existing_no_proxy() -> Option<String> {
 }
 
 #[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub const PROXY_VARS: [&str; 8] = [
     "HTTPS_PROXY",
     "HTTP_PROXY",
@@ -494,6 +495,7 @@ pub struct Probe {
 }
 
 #[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn tunnel_only(u: &ProxyUrl, host: &str, port: u16) -> Result<(), String> {
     let mut s = dial(&u.host, u.port, CONNECT_TIMEOUT)?;
     match u.scheme {

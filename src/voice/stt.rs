@@ -652,6 +652,7 @@ mod tests {
         drop(l);
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn stub_server(dir: &Path) -> Option<PathBuf> {
         if !which("python3") {
             return None;

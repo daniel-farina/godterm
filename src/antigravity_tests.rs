@@ -2,6 +2,7 @@ use super::*;
 use serde_json::json;
 use std::time::{Duration, SystemTime};
 
+#[cfg_attr(not(unix), allow(dead_code))]
 fn temp(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("gt-agy-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
