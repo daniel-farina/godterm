@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+#[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
 
 use crate::config::testing::LOCK as ENV_LOCK;

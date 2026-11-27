@@ -75,7 +75,7 @@ jobs:
       # The real binary in tmux on the demo world (docs/TESTING.md).
       - name: e2e demo (tmux)
         run: |
-          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get install -y --no-install-recommends tmux; else brew install tmux; fi
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux; else brew install tmux; fi
           python3 scripts/e2e/run.py --suite ci --bin target/debug/godterm --out e2e-results/ci
       - name: e2e screens
         if: failure()
@@ -118,5 +118,5 @@ jobs:
         run: scripts/release/linux.sh
       - name: install the .deb and run it
         run: |
-          sudo apt-get install -y ./dist/godterm_*_amd64.deb
+          sudo apt-get update && sudo apt-get install -y ./dist/godterm_*_amd64.deb
           godterm --version

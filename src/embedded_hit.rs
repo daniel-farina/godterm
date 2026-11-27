@@ -180,25 +180,6 @@ pub fn parse_hit(raw: &Value) -> Value {
     })
 }
 
-pub fn search_url(text: &str) -> Option<String> {
-    let t: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let t: String = t.chars().take(300).collect();
-    if t.is_empty() {
-        return None;
-    }
-    let mut q = String::new();
-    for b in t.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                q.push(b as char)
-            }
-            b' ' => q.push('+'),
-            _ => q.push_str(&format!("%{b:02X}")),
-        }
-    }
-    Some(format!("https://duckduckgo.com/?q={q}"))
-}
-
 impl Session {
     pub fn hit_test(&self, x: f64, y: f64) -> Result<Value, String> {
         let raw = self.eval(&page_js(HIT_JS, x, y))?;

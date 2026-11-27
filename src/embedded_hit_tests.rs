@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::hit::{open_policy, parse_hit, search_url};
+use super::hit::{open_policy, parse_hit};
 use super::{find_chrome, Ctx};
 use crate::config::testing::LOCK as ENV_LOCK;
 use crate::embedded;
@@ -108,19 +108,6 @@ fn fields_report_editable_readonly_and_hide_passwords() {
 fn a_huge_selection_is_cut() {
     let v = parse_hit(&json!({"selection": "x".repeat(50_000)}));
     assert_eq!(v["selection"].as_str().unwrap().chars().count(), 5000);
-}
-
-#[test]
-fn a_search_is_a_plain_https_address() {
-    assert_eq!(
-        search_url("rust  lang & more").unwrap(),
-        "https://duckduckgo.com/?q=rust+lang+%26+more"
-    );
-    assert!(search_url("   ").is_none());
-    let u = search_url("caf\u{e9}").unwrap();
-    assert!(u.ends_with("caf%C3%A9"), "{u}");
-    assert!(crate::embedded::check_url(&u).is_ok());
-    assert!(search_url(&"y".repeat(5000)).unwrap().len() < 400);
 }
 
 fn web_ask(ctx: &Ctx, out: &Arc<Outbox>, id: &str, mut m: Value) -> Value {
